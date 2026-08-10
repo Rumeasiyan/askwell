@@ -1,4 +1,4 @@
-# BRAIN.md — VaultQ build state
+# BRAIN.md — Askwell build state
 
 > Mutable. Updated at the end of every session.
 > If this file is stale, the next session starts from confusion.
@@ -10,11 +10,11 @@
 **Phase 0 — Skeleton. Not started.** Repository is documentation only: no application code, no manifests, no tests, no CI.
 
 **Version:** `0.1.0` (see `VERSION`). Phase 0 landing takes it to `0.2.0`.
-**Tracker:** `Rumeasiyan/vaultq` (private). Working agreements in `AGENTS.md`.
+**Tracker:** `Rumeasiyan/askwell` (private). Working agreements in `AGENTS.md`.
 
 ## Next task
 
-[#7](https://github.com/Rumeasiyan/vaultq/issues/7) — scaffold the Compose stack and the FastAPI skeleton:
+[#7](https://github.com/Rumeasiyan/askwell/issues/7) — scaffold the Compose stack and the FastAPI skeleton:
 
 - `compose.yaml` with `api`, `web`, `postgres` (pgvector), `redis`
 - FastAPI app with `/health`, config via Pydantic Settings
@@ -23,7 +23,7 @@
 
 Do **not** add `llm`, `voice`, `worker` or the `sandbox` Postgres yet — they arrive in later phases (`build-plan.md`).
 
-**Blocked on [#9](https://github.com/Rumeasiyan/vaultq/issues/9)** for the `web/` half: PRD-era stack versions are stale and `create-next-app` would contradict them on the first commit.
+**Blocked on [#9](https://github.com/Rumeasiyan/askwell/issues/9)** for the `web/` half: PRD-era stack versions are stale and `create-next-app` would contradict them on the first commit.
 
 The first migration no longer creates `organisations` and `users` — those tables are gone with the repositioning. See `architecture.md` §7 for the current data model.
 
@@ -64,8 +64,8 @@ Note that "Quantum Plus" and the ministry framing were in the original `PRD.md` 
 
 | # | Question | Blocks |
 | - | -------- | ------ |
-| [#9](https://github.com/Rumeasiyan/vaultq/issues/9) | Stack versions stale — Next 15→16, Tailwind 4, Postgres 18 | **Phase 0 `web/`** |
-| [#6](https://github.com/Rumeasiyan/vaultq/issues/6) | Pin Python 3.12; dev machine has 3.14, no `podman-compose` | Phase 0 |
+| [#9](https://github.com/Rumeasiyan/askwell/issues/9) | Stack versions stale — Next 15→16, Tailwind 4, Postgres 18 | **Phase 0 `web/`** |
+| [#6](https://github.com/Rumeasiyan/askwell/issues/6) | Pin Python 3.12; dev machine has 3.14, no `podman-compose` | Phase 0 |
 
 **All product decisions are answered.** Every decision issue #1–#5 and #10–#15 is closed. The three open issues are engineering tasks, not questions.
 
@@ -109,7 +109,9 @@ Not yet established. First run at the end of Phase 1.
 
 ## Session log
 
-**2026-08-10 (P2 start)** — Design system and the two highest-value screens. Direction: **instrument, not chatbot** — the templated centred-chat-column with sources behind a toggle was rejected because it makes citations a disclosure you click, contradicting the product's central claim. Signature is the **permanent provenance margin**: source cards aligned to the claim they support, joined by a hairline leader, never collapsible. An uncited claim is visibly wrong because nothing sits beside it — the layout enforces C4 rather than trusting the model to. Palette encodes epistemics: green means traceable and is spent on nothing else, ochre means VaultQ guessed. Serif for language, mono for machinery. Wrote `design-system.md`, `ask.md`, `clarifications.md`, and an HTML visual reference.
+**2026-08-10 (rename)** — VaultQ → **Askwell**, repo renamed to `Rumeasiyan/askwell`. Apache-2.0 for the application, proprietary credit service. Marginalis was more coherent with the design signature but lost on four syllables that need spelling aloud; Gleanly lost on brand adjacency to Glean. Every dictionary word was taken on npm and PyPI. Surveyed the field before choosing a discovery strategy: open-webui 148k stars, AnythingLLM 64k, private-gpt 57k, Quivr 39k, Khoj 36k, Onyx 31k — **the name will not win search against these and should not try**; none of them asks about your data or remembers the answers, and that phrase is unclaimed.
+
+**2026-08-10 (P2 start)** — Design system and the two highest-value screens. Direction: **instrument, not chatbot** — the templated centred-chat-column with sources behind a toggle was rejected because it makes citations a disclosure you click, contradicting the product's central claim. Signature is the **permanent provenance margin**: source cards aligned to the claim they support, joined by a hairline leader, never collapsible. An uncited claim is visibly wrong because nothing sits beside it — the layout enforces C4 rather than trusting the model to. Palette encodes epistemics: green means traceable and is spent on nothing else, ochre means Askwell guessed. Serif for language, mono for machinery. Wrote `design-system.md`, `ask.md`, `clarifications.md`, and an HTML visual reference.
 
 **2026-08-10 (rewrite)** — Product repositioned; see the table above. Rewrote `PRD.md` as a business-only document and split all technical content into `architecture.md`, `data-sources.md`, `memory-and-clarification.md`, `audit-log.md` and `build-plan.md`. Rewrote `success-metrics.md` (no pilot exists, so every number was re-derived) and `states-and-edge-cases.md` (licence, seat, RBAC and permission states deleted). `AGENTS.md` §1–§3 rewritten: constraints renumbered, old C7 (column access control) removed, new C3 (dump sandbox) added, C1 now allows explicit online opt-in, C6 restated as tamper-evident rather than immutable. Closed #3, #4, #5, #10, #11, #12, #13, #14, #15.
 
@@ -119,6 +121,6 @@ Not yet established. First run at the end of Phase 1.
 
 ## Notes for the next session
 
-- Dev machine runs Python **3.14.6**; the project targets **3.12**. `podman-compose` is not installed — use `podman compose`. Tracked in [#6](https://github.com/Rumeasiyan/vaultq/issues/6).
+- Dev machine runs Python **3.14.6**; the project targets **3.12**. `podman-compose` is not installed — use `podman compose`. Tracked in [#6](https://github.com/Rumeasiyan/askwell/issues/6).
 - `bench.py` exists in draft form outside this repo — port it to `eval/bench.py` in Phase 1 rather than rewriting it.
 - `decisions.md` is append-only. Entries written before 2026-08-10 describe the organisation-era product and are historically accurate for that time; the repositioning entry supersedes their framing rather than editing them.

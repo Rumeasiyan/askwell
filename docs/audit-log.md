@@ -1,6 +1,6 @@
 # Audit log
 
-What VaultQ records, where, and what happens when it cannot.
+What Askwell records, where, and what happens when it cannot.
 
 Resolves issue #10 (write failure → fail the action) and reconciles it with a product that is free, local, and running on somebody's laptop.
 
@@ -14,7 +14,7 @@ Two things broke that.
 
 **The user now owns the machine.** They own the disk, the database and the container. "Append-only" enforced by a grant stops *the application* from rewriting history. It does not stop the person, and claiming otherwise is the kind of overclaim the security section already warns against elsewhere.
 
-**Fail-closed on a laptop is a footgun.** Issue #10 chose Option A — audit write fails, the action fails — and that is right, because an unlogged action is worse than a refused one. But applied to one big log on a personal machine, it means **a full disk stops VaultQ working entirely**. For a free tool, that is the moment someone uninstalls.
+**Fail-closed on a laptop is a footgun.** Issue #10 chose Option A — audit write fails, the action fails — and that is right, because an unlogged action is worse than a refused one. But applied to one big log on a personal machine, it means **a full disk stops Askwell working entirely**. For a free tool, that is the moment someone uninstalls.
 
 Both are solved by splitting the log by what it is actually for.
 
@@ -42,7 +42,7 @@ Fail-closed only works if the disk never actually fills. Staged, so the product 
 
 1. **Budget at install.** Log storage is capped — a GB figure or a share of free disk, user-adjustable.
 2. **80% of budget** — warn in the UI. Offer export, archive, or prune of the interaction window. Not a modal; a persistent, dismissible notice.
-3. **Hard limit** — **refuse new ingestion first.** Ingestion is by far the biggest writer, and stopping it keeps asking questions working, which is what the user actually opened VaultQ to do.
+3. **Hard limit** — **refuse new ingestion first.** Ingestion is by far the biggest writer, and stopping it keeps asking questions working, which is what the user actually opened Askwell to do.
 4. **Only when the decisions store itself cannot write** does an action fail.
 
 Stage 3 is the important one. The instinct is to block everything at the limit; blocking the cheapest, most valuable operation last is what keeps the product usable while the user sorts out disk space.
@@ -103,7 +103,7 @@ Rejected SQL is recorded deliberately. It is the signal that a prompt change has
 
 **Log storage budget: 2 GB, or 5% of free disk, whichever is smaller.** User-adjustable.
 
-Two gigabytes holds a very large amount of text — years of interactions for a normal user — while staying a polite guest on a laptop that is not primarily VaultQ's. The 5% clause is what stops a 2 GB default being rude on an already-full 128 GB machine.
+Two gigabytes holds a very large amount of text — years of interactions for a normal user — while staying a polite guest on a laptop that is not primarily Askwell's. The 5% clause is what stops a 2 GB default being rude on an already-full 128 GB machine.
 
 **Interaction retention: 12 months**, then archived on export and pruned. Long enough that "what did I ask about this client last year" works; short enough that the store does not grow without limit.
 

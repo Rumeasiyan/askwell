@@ -1,6 +1,6 @@
 # Screen: Clarifications
 
-Where VaultQ asks what it could not work out, and where the memory that makes it better gets written.
+Where Askwell asks what it could not work out, and where the memory that makes it better gets written.
 
 > **This document is the specification. Any mockup is a reference.**
 
@@ -11,9 +11,9 @@ Where VaultQ asks what it could not work out, and where the memory that makes it
 
 ## 1. What it is for
 
-Turning the things VaultQ genuinely cannot know into permanent facts, without becoming a chore.
+Turning the things Askwell genuinely cannot know into permanent facts, without becoming a chore.
 
-**The failure mode this screen is designed against is its own success.** Every question raised is a small tax on the user. A user who opens this and sees forty questions closes it and never returns, and the feature that was the reason to choose VaultQ becomes the reason to uninstall it. Capped at 5 per source (`../memory-and-clarification.md` §8), and the screen must feel finishable.
+**The failure mode this screen is designed against is its own success.** Every question raised is a small tax on the user. A user who opens this and sees forty questions closes it and never returns, and the feature that was the reason to choose Askwell becomes the reason to uninstall it. Capped at 5 per source (`../memory-and-clarification.md` §8), and the screen must feel finishable.
 
 ---
 
@@ -79,20 +79,20 @@ Not a generic toast. The user needs to see that answering did something, or they
 
 | State | What is shown |
 | ----- | ------------- |
-| **None pending** | Not "no items". *"Nothing to clarify. VaultQ asks when it finds something it can't work out — an unlabelled column, a date format, two documents that disagree."* Teaches the feature to someone who has not met it |
+| **None pending** | Not "no items". *"Nothing to clarify. Askwell asks when it finds something it can't work out — an unlabelled column, a date format, two documents that disagree."* Teaches the feature to someone who has not met it |
 | **Pending** | Grouped by source, count per group, total at top |
 | **Ingestion still running** | Questions appear as they are raised. The source is already queryable |
 | **All answered** | Brief completion state naming what improved: *"5 answered. 2 tables and 14 documents re-read."* Then back to the empty state |
 | **Answered, re-processing** | Per-item progress. The source stays queryable throughout |
 | **Blocking an answer** | Rendered inline in the conversation instead (`ask.md` §5) — never bounce the user here mid-question |
-| **Capped** | If a source produced more than 5 candidates, say so: *"Asking about the 5 that matter most. VaultQ inferred the rest — you can review them in Memory."* Honest about what was not asked, and routes to where it can be corrected |
+| **Capped** | If a source produced more than 5 candidates, say so: *"Asking about the 5 that matter most. Askwell inferred the rest — you can review them in Memory."* Honest about what was not asked, and routes to where it can be corrected |
 
 ---
 
 ## 6. What this screen must never do
 
 - **Never block.** Not on ingestion, not on asking a question, not on startup. Answering is always optional (`../memory-and-clarification.md` §2).
-- **Never nag.** A badge with a count. No modal on launch, no repeated prompting, no red dot that implies something is broken. Nothing is broken; VaultQ is working without the answers.
+- **Never nag.** A badge with a count. No modal on launch, no repeated prompting, no red dot that implies something is broken. Nothing is broken; Askwell is working without the answers.
 - **Never ask twice.** Memory is checked before any question is raised. The same abbreviation across two sources is one question.
 - **Never ask what it can infer.** `created_at` is not a question. Every avoidable question spends credit that the genuinely ambiguous ones need.
 

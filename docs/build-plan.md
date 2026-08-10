@@ -107,7 +107,7 @@ The suite runs in CI on every prompt change. Prompt engineering without an eval 
 Root holds only what a tool or convention requires. Prose lives in `docs/`.
 
 ```
-vaultq/
+askwell/
 ├── AGENTS.md, CLAUDE.md, README.md, VERSION, CHANGELOG.md
 ├── .github/ISSUE_TEMPLATE/
 └── docs/

@@ -1,6 +1,8 @@
-# VaultQ
+# Askwell
 
 **Ask your own files anything. Nothing leaves your machine.**
+
+*The local AI that asks about your data instead of guessing.*
 
 A personal AI that reads your documents and databases and answers questions about them — running entirely on your own computer.
 
@@ -41,4 +43,6 @@ Full list with reasoning in [`AGENTS.md`](AGENTS.md) §3.
 
 ## Licence
 
-Not yet decided. The product is free to install; see [`docs/PRD.md`](docs/PRD.md) §7.
+**Apache-2.0.** Free to install, free to fork, free to audit — see [`LICENSE`](LICENSE).
+
+The optional online-AI credit service is proprietary. Everything you run locally is not. For a product that claims nothing leaves your machine, the source is the proof.

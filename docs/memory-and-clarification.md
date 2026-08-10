@@ -1,8 +1,8 @@
 # Clarification and memory
 
-The subsystem that makes VaultQ improve on your material over time. `PRD.md` §5 calls this the differentiator; this is how it works.
+The subsystem that makes Askwell improve on your material over time. `PRD.md` §5 calls this the differentiator; this is how it works.
 
-**The core idea:** when VaultQ ingests a source and hits something it genuinely cannot know, it asks the user, and stores the answer permanently. Every future ingest and every future question uses it.
+**The core idea:** when Askwell ingests a source and hits something it genuinely cannot know, it asks the user, and stores the answer permanently. Every future ingest and every future question uses it.
 
 This is the answer to a problem the old design had and never solved. It said schema annotations move text-to-SQL accuracy more than any model upgrade — which is true — and then relied on an administrator voluntarily sitting down to write hundreds of them. Nobody ever does. Asking at the moment of ambiguity, about one specific thing, with the file open, is the only version of this that actually gets populated.
 
@@ -10,11 +10,11 @@ This is the answer to a problem the old design had and never solved. It said sch
 
 ## 1. When to ask, and when not to
 
-**The failure mode to design against is asking too much.** A user importing 500 files who is asked 200 questions closes VaultQ and does not come back. Every question must earn its place.
+**The failure mode to design against is asking too much.** A user importing 500 files who is asked 200 questions closes Askwell and does not come back. Every question must earn its place.
 
 Ask **only** when all three hold:
 
-1. **VaultQ genuinely cannot determine the answer.** Not "is unsure" — cannot know. `st_cd` is unguessable. `created_at` is not.
+1. **Askwell genuinely cannot determine the answer.** Not "is unsure" — cannot know. `st_cd` is unguessable. `created_at` is not.
 2. **The answer materially changes future results.** A column that will never be queried does not deserve a question.
 3. **The user plausibly knows.** They know what their own abbreviation means. They do not know why a PDF's text layer is corrupt.
 
@@ -53,7 +53,7 @@ So:
 3. Pending clarifications surface as a reviewable list — batched, dismissible, answerable whenever the user feels like it.
 4. Answering one **re-processes what depends on it**: re-embed affected chunks, update schema notes, re-resolve the contradiction.
 
-**Answering is always optional.** VaultQ works without it, just less well. A user who never answers a single question still has a functioning product — the loop is an upgrade path, not a gate.
+**Answering is always optional.** Askwell works without it, just less well. A user who never answers a single question still has a functioning product — the loop is an upgrade path, not a gate.
 
 ### One exception
 
@@ -90,7 +90,7 @@ Retrieved alongside document chunks so it informs prose answers too, not just SQ
 
 ## 4. Correction is a first-class path
 
-The user must be able to correct VaultQ **from inside an answer**, at the moment they notice it is wrong. That is the only moment they reliably will.
+The user must be able to correct Askwell **from inside an answer**, at the moment they notice it is wrong. That is the only moment they reliably will.
 
 An answer showing "using: `st_cd` = student status code" with an edit control next to it turns a wrong answer into a permanent improvement in one click. Making them navigate to a settings screen to fix it means it never gets fixed.
 
@@ -100,9 +100,9 @@ A correction supersedes the prior fact, is recorded in the decisions audit (`aud
 
 ## 5. Memory is not retraining
 
-VaultQ does not fine-tune anything. Memory is retrieved and injected into the prompt as facts, exactly like a document chunk.
+Askwell does not fine-tune anything. Memory is retrieved and injected into the prompt as facts, exactly like a document chunk.
 
-This matters for three reasons: it is inspectable (the user can read everything VaultQ believes about their data), it is reversible (delete a fact and it stops applying immediately), and it is portable (memory survives a model swap, because it was never in the model).
+This matters for three reasons: it is inspectable (the user can read everything Askwell believes about their data), it is reversible (delete a fact and it stops applying immediately), and it is portable (memory survives a model swap, because it was never in the model).
 
 **Every fact is visible, editable and deletable.** A memory the user cannot inspect is a system that gets mysteriously worse and cannot be debugged.
 

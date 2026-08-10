@@ -1,6 +1,6 @@
 # Screen: Ask
 
-The core loop and the screen that decides whether anyone keeps VaultQ. Everything else supports it.
+The core loop and the screen that decides whether anyone keeps Askwell. Everything else supports it.
 
 > **This document is the specification. Any mockup is a reference.** Where they disagree, this wins, or the mockup is wrong and gets redrawn.
 
@@ -56,7 +56,7 @@ The margin is the point. It is populated or explicitly empty; it is never hidden
 
 When an answer used a memory fact, it appears as a chip: `st_cd = student status code`. Clicking it offers correction in place.
 
-This is the highest-value interaction in the product and must not be moved to a settings screen. The moment a user notices VaultQ is wrong is the only moment they will reliably fix it, and it is here. Making them navigate elsewhere means it never gets fixed and the wrong fact poisons every later answer.
+This is the highest-value interaction in the product and must not be moved to a settings screen. The moment a user notices Askwell is wrong is the only moment they will reliably fix it, and it is here. Making them navigate elsewhere means it never gets fixed and the wrong fact poisons every later answer.
 
 ---
 
@@ -66,7 +66,7 @@ Every one of these ships. A screen with only the answered state is not finished.
 
 | State | What is shown |
 | ----- | ------------- |
-| **First run, no sources** | Not an empty chat box. What VaultQ will be able to answer once files are added, and one action: **Add your first source**. An empty input invites a question that will abstain, teaching the user in thirty seconds that the product does not work |
+| **First run, no sources** | Not an empty chat box. What Askwell will be able to answer once files are added, and one action: **Add your first source**. An empty input invites a question that will abstain, teaching the user in thirty seconds that the product does not work |
 | **Empty, sources exist** | Input focused, plus three questions generated from what was actually ingested — real filenames, real column names. Not generic prompts |
 | **Retrieving** | Named steps: *searching your files · reading 4 sources · querying `sales`*. On a slow local model this can run 20s+, and an unlabelled spinner reads as broken |
 | **Streaming** | Tokens appear at their real pace. Cards enter the margin as claims are cited, leader drawing on arrival |
@@ -81,7 +81,7 @@ Every one of these ships. A screen with only the answered state is not finished.
 | **Online mode** | Persistent marker on the conversation. Before the first send, exactly what will leave the machine |
 | **Credits exhausted** | Falls back to local, says so, continues. Never blocks — the product works offline for free |
 | **Past latency budget (voice)** | Indicator appears, only once passed (#15) |
-| **Non-English question** | States that VaultQ handles English in this version. Does not attempt a poor answer |
+| **Non-English question** | States that Askwell handles English in this version. Does not attempt a poor answer |
 
 ---
 

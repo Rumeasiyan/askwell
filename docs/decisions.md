@@ -22,9 +22,34 @@ Template:
 
 ---
 
+## 2026-08-10 — Renamed to Askwell; Apache-2.0 with a proprietary credit service
+
+**Decision:** VaultQ becomes **Askwell**. The application is open source under **Apache-2.0**; the online-AI credit service stays proprietary. Repository renamed to `Rumeasiyan/askwell`.
+
+**Why the name:** The Q was dropped on the owner's call. Askwell was chosen over Marginalis and Gleanly. Marginalis was the more coherent choice on paper — it names the design signature, the permanent provenance margin — and was rejected for being four syllables that need spelling out loud, which is a real cost for a project that spreads by word of mouth. Gleanly was rejected for brand adjacency to Glean, a well-funded enterprise search company in a neighbouring space. Askwell names the differentiator directly: it is the thing that *asks*.
+
+Every real dictionary word was already taken on both npm and PyPI, so a coined name was the only option that keeps `pip install askwell` and an unscoped npm package available.
+
+**Why open source, and why it costs less than it looks:** The product's entire claim is that nothing leaves the machine. A closed-source local AI asking to be trusted offers only a promise; an open one can be audited, and the people this product is for are precisely the ones who will want to audit it or know someone who will. **The source is the proof of the central claim**, which makes this closer to a marketing asset than a giveaway.
+
+The business is not the code. It is the credit service — provider contracts, metering, billing. Forking the client gives none of that, and anyone who wants to compete has to build an inference business, which was never gated on the source.
+
+Rejected alternatives. **AGPL** looks protective and mostly is not here: its network trigger rarely fires for a local desktop application, so it buys little while deterring some contributors and corporate users. **BSL / fair-source** offers real protection against a competing commercial service and forfeits the trust and contribution benefit that is the entire reason to open the source — which for this product is the point. **Staying closed** keeps every option open and gives up the auditability argument, which is the strongest thing the product has to say about itself.
+
+**Consequences:**
+
+- Someone can fork Askwell and point it at their own credit service. Nothing prevents that. The position is protected by the trademark, the brand and the operational reality of running paid inference — so **the trademark now needs registering**, which is a new open item.
+- Free and open sets a support expectation a single maintainer cannot meet. A stated support boundary and issue triage must exist before the first public release, not after it.
+- Everything shipping before Phase 7 is free and open, so v1 earns nothing. Adoption has to come first and the credit system stops being an add-on — it is the business.
+- The competitive field is large and established: AnythingLLM (64k stars), private-gpt (57k), Quivr (39k), Khoj (36k), Onyx (31k), open-webui (148k). Askwell will not win generic search terms against these and should not try. **None of them asks the user about their data or remembers the answers** — that phrase is unclaimed, and discovery strategy should own it rather than compete on "local AI for documents".
+
+**Refs:** `PRD.md` §7, §11; `LICENSE`; repository `Rumeasiyan/askwell`.
+
+---
+
 ## 2026-08-10 — No telemetry in v1, and the metrics cost is accepted
 
-**Decision:** VaultQ ships no telemetry through Phase 6 — not anonymous, not opt-in, not off-by-default. Product understanding comes from direct contact with a small number of users, and from Phase 7 onward from paying users who are observable by necessity.
+**Decision:** Askwell ships no telemetry through Phase 6 — not anonymous, not opt-in, not off-by-default. Product understanding comes from direct contact with a small number of users, and from Phase 7 onward from paying users who are observable by necessity.
 
 **Why:** The obvious answer was opt-in, off by default, with a screen showing exactly what would be sent. That is the ethical version and it was rejected anyway, because the target user is by definition someone who cannot upload their material and has already decided cloud tools are not for them. To that person a telemetry toggle is not a reassurance, it is the first paragraph of a story they have read before. Trust is the entire reason they installed a local product, and spending some of it on numbers is a bad trade — particularly since opt-in telemetry self-selects toward engaged users and biases every retention figure optimistically.
 
@@ -54,7 +79,7 @@ The cost is a real dead end for someone holding a `.sql` file from MySQL, which 
 
 ## 2026-08-10 — Repositioned: single-user personal product, free, local-first
 
-**Decision:** VaultQ is a free local install for **one individual professional**, not on-premise software sold to organisations. No teams, roles, tenancy, seats, licence keys or high availability. Revenue comes only from optional online-AI credits, which is the last thing built. `PRD.md` becomes a business-only document; all technical content moves to `architecture.md`, `data-sources.md`, `memory-and-clarification.md`, `audit-log.md` and `build-plan.md`.
+**Decision:** Askwell is a free local install for **one individual professional**, not on-premise software sold to organisations. No teams, roles, tenancy, seats, licence keys or high availability. Revenue comes only from optional online-AI credits, which is the last thing built. `PRD.md` becomes a business-only document; all technical content moves to `architecture.md`, `data-sources.md`, `memory-and-clarification.md`, `audit-log.md` and `build-plan.md`.
 
 Two capabilities are added: **CSV and SQL dump import**, and a **clarification loop with permanent memory**.
 
@@ -64,7 +89,7 @@ The new positioning is narrower and more defensible. The people who genuinely ca
 
 Rejected alternatives: **self-hosted subscription** keeps the pricing question that made the old design heavy, and charging upfront for something the user cannot trial on their real data is the wrong order. **One-time purchase** gives no recurring line at all. Free-plus-credits was chosen knowing the trade: v1 earns nothing, so adoption must come first and the credit system stops being a nice-to-have and becomes the business.
 
-The clarification loop is the reason to prefer VaultQ over the local RAG tools that already exist. It also fixes something the old design asserted and never solved — that schema annotations matter more than a model upgrade, while relying on an administrator volunteering to write hundreds of them, which nobody does. Asking at the moment of ambiguity, about one thing, with the file open, is the only version that gets populated.
+The clarification loop is the reason to prefer Askwell over the local RAG tools that already exist. It also fixes something the old design asserted and never solved — that schema annotations matter more than a model upgrade, while relying on an administrator volunteering to write hundreds of them, which nobody does. Asking at the moment of ambiguity, about one thing, with the file open, is the only version that gets populated.
 
 **Consequences:**
 
@@ -102,7 +127,7 @@ The 5–20% boundaries are reasoned, not measured, and are flagged as assumed in
 
 **Decision:** The primary success metric is whether the pilot customer's officers are still asking questions in week 12 unprompted (`docs/success-metrics.md` §1). Eval scores (PRD §7) are a gate on shipping a model, not a measure of whether the product is succeeding.
 
-**Why:** The two are routinely conflated, and conflating them is how a product with excellent benchmark numbers gets quietly abandoned. VaultQ's competitor is a filing cabinet; the question is not whether the model is good but whether an officer reaches for VaultQ instead of the cabinet on week 12, when novelty has worn off and the first wrong answer is behind them.
+**Why:** The two are routinely conflated, and conflating them is how a product with excellent benchmark numbers gets quietly abandoned. Askwell's competitor is a filing cabinet; the question is not whether the model is good but whether an officer reaches for Askwell instead of the cabinet on week 12, when novelty has worn off and the first wrong answer is behind them.
 
 Measuring time-saved or productivity was rejected: it needs a baseline nobody has, and the numbers that result get quoted in sales material and cannot be defended when challenged.
 
@@ -120,7 +145,7 @@ A constraint shaped this: PRD §2 makes telemetry opt-in and metadata-only, and 
 
 Three hedges are kept in v1: the multilingual `bge-m3` embedding model, a Tamil-aware Postgres full-text configuration, and `tam` OCR traineddata in the offline bundle.
 
-**Why:** Tamil carried the two largest schedule risks in the plan and neither was on the critical path to a working product. Whisper `medium`-or-larger is required for usable Tamil STT, which had to run on the 16GB CPU-only `edge` floor — that is why `edge` previously advertised "voice degraded". And Tamil TTS (MMS-TTS `tam`, IndicTTS) is a model-availability problem VaultQ cannot fix in code; shipping it would have made the product's worst-sounding component the first thing a Tamil-speaking officer heard.
+**Why:** Tamil carried the two largest schedule risks in the plan and neither was on the critical path to a working product. Whisper `medium`-or-larger is required for usable Tamil STT, which had to run on the 16GB CPU-only `edge` floor — that is why `edge` previously advertised "voice degraded". And Tamil TTS (MMS-TTS `tam`, IndicTTS) is a model-availability problem Askwell cannot fix in code; shipping it would have made the product's worst-sounding component the first thing a Tamil-speaking officer heard.
 
 The alternatives were considered and rejected. **Comprehension-only Tamil** (understand Tamil questions, answer in Tamil text, English voice) keeps most of the retrieval and eval cost for a partial capability, and leaves the awkward position of a product that reads Tamil but will not speak it. **A numbered Phase 7** was rejected because a phase in this document implies its scope is understood, and Tamil scope is exactly what is not understood — what a second language actually needs should be decided with pilot evidence, not with an assumption made before the first install.
 
@@ -162,7 +187,7 @@ Splitting §10 into *exists* and *planned* was the more useful half of this chan
 
 ## 2026-08-10 — GitHub issues are the task tracker; work lands via PR
 
-**Decision:** `Rumeasiyan/vaultq` (private) is the tracker. Anything raised in conversation that a future reader would need becomes an issue at the moment it is found. Work happens on a branch off `main` and lands through a PR, not by committing to `main` directly.
+**Decision:** `Rumeasiyan/askwell` (private) is the tracker. Anything raised in conversation that a future reader would need becomes an issue at the moment it is found. Work happens on a branch off `main` and lands through a PR, not by committing to `main` directly.
 
 **Why:** The build is documented across three files that are read by an agent starting from zero context each session. Chat transcripts are not part of that set — an open question raised in conversation and not written down is gone by the next session, and the next session will re-derive a different answer. The tracker is the durable place for anything that is not yet a decision (which goes here) or a current task (which goes in `docs/BRAIN.md`).
 
@@ -224,9 +249,9 @@ Model choice is not locked by this entry: `AGENTS.md` §4 forbids hardcoding mod
 
 ## 2026-08-10 — Self-hosted licence, not hosted SaaS
 
-**Decision:** VaultQ ships as self-hosted software with an offline signed JWT licence, machine-bound to a hardware fingerprint. There is no multi-tenant hosted plane holding customer data. Ever.
+**Decision:** Askwell ships as self-hosted software with an offline signed JWT licence, machine-bound to a hardware fingerprint. There is no multi-tenant hosted plane holding customer data. Ever.
 
-**Why:** Data sovereignty is the entire value proposition. The target customers — ministries, hospitals, banks — cannot use cloud AI at all; that inability is the reason they are reachable. A hosted plane holding their content would destroy the only thing distinguishing VaultQ from a frontier model they already cannot buy. The recurring-revenue argument for SaaS was considered and rejected on those grounds; the subscription is attached to the licence and the update stream instead.
+**Why:** Data sovereignty is the entire value proposition. The target customers — ministries, hospitals, banks — cannot use cloud AI at all; that inability is the reason they are reachable. A hosted plane holding their content would destroy the only thing distinguishing Askwell from a frontier model they already cannot buy. The recurring-revenue argument for SaaS was considered and rejected on those grounds; the subscription is attached to the licence and the update stream instead.
 
 Licence expiry degrades to read-only with a 30-day grace rather than hard-failing, deliberately: a ministry losing AI access mid-week because a renewal PO moved slowly is how the account is lost, and the enforcement is not what stops piracy anyway.
 

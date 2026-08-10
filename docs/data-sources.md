@@ -1,6 +1,6 @@
 # Data sources
 
-How material gets into VaultQ. Four kinds, two of which are new since the repositioning.
+How material gets into Askwell. Four kinds, two of which are new since the repositioning.
 
 | Kind | What it is | Risk |
 | ---- | ---------- | ---- |
@@ -45,17 +45,17 @@ Date format ambiguity is the one to be most careful about. `03/04/2025` is valid
 
 **A `.sql` dump is a program.** Importing one means executing arbitrary DDL and DML from a file the user supplied and probably did not read. `sqlglot` validation (C2) governs *querying* and cannot govern *loading* — a dump that cannot write cannot import.
 
-So imports never touch VaultQ's own database.
+So imports never touch Askwell's own database.
 
 ### Isolation
 
-- A **separate Postgres instance** — the `sandbox` container — distinct from the one holding VaultQ's chunks, memory and audit log.
+- A **separate Postgres instance** — the `sandbox` container — distinct from the one holding Askwell's chunks, memory and audit log.
 - **One database per imported source**, so two imports cannot see each other.
 - Owned by a **restricted role**: no superuser, no `COPY ... FROM PROGRAM`, no large-object access, no access to any other database.
 - No network egress from the sandbox container.
 - A per-import size and time cap, so a runaway dump fails rather than filling the disk.
 
-A malicious or broken dump wrecks its own sandbox database. VaultQ drops it and reports the failure.
+A malicious or broken dump wrecks its own sandbox database. Askwell drops it and reports the failure.
 
 ### Why this is in from the start
 

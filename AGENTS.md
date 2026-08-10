@@ -1,4 +1,4 @@
-# AGENTS.md — VaultQ
+# AGENTS.md — Askwell
 
 Single source of truth for how work happens in this repository. Read this before writing anything.
 
@@ -28,7 +28,7 @@ Companion files:
 
 ## 1. What this project is
 
-VaultQ is a **personal AI over your own files and databases**, running entirely on one person's own machine. Add documents, spreadsheets, database dumps or live connections; ask questions in English; get answers with sources attached.
+Askwell is a **personal AI over your own files and databases**, running entirely on one person's own machine. Add documents, spreadsheets, database dumps or live connections; ask questions in English; get answers with sources attached.
 
 Four facts shape almost every decision here:
 
@@ -76,12 +76,12 @@ Rewritten 2026-08-10 with the repositioning. The old C7 (column-level access con
 | # | Rule | Why | Enforced at |
 | - | ---- | --- | ----------- |
 | C1 | **Local by default. No outbound network calls** — not models, fonts, telemetry or CDNs — unless the user has explicitly enabled online AI for that conversation. | Disconnect the machine and it must work identically. The target user cannot upload their material at all; a single unexpected runtime URL breaks the only promise that makes the product usable to them. Online mode is a per-conversation choice the user makes knowingly, never a default and never a drift. | Container egress policy; release test with the cable unplugged (`docs/architecture.md` §9) |
-| C2 | **Model-generated SQL is never trusted.** Parse with `sqlglot`; reject anything that is not a single `SELECT`/`WITH`. Regex filtering is not sufficient and is not acceptable even temporarily, even in a branch. | Regex misses nested statements, comment tricks and dialect quirks. The user's real database is on the other side of this check. | `api/src/vaultq/sql/` (Phase 3) **plus** a read-only database role, independently |
-| C3 | **An imported dump is untrusted code.** It loads only into the isolated sandbox Postgres, one database per source, under a restricted non-superuser role. Never into VaultQ's own database. | A `.sql` dump is a program. Importing means executing arbitrary DDL/DML from a file the user probably did not read. C2 governs querying and cannot govern loading — a dump that cannot write cannot import. | `docs/data-sources.md` §3; sandbox container with no egress |
+| C2 | **Model-generated SQL is never trusted.** Parse with `sqlglot`; reject anything that is not a single `SELECT`/`WITH`. Regex filtering is not sufficient and is not acceptable even temporarily, even in a branch. | Regex misses nested statements, comment tricks and dialect quirks. The user's real database is on the other side of this check. | `api/src/askwell/sql/` (Phase 3) **plus** a read-only database role, independently |
+| C3 | **An imported dump is untrusted code.** It loads only into the isolated sandbox Postgres, one database per source, under a restricted non-superuser role. Never into Askwell's own database. | A `.sql` dump is a program. Importing means executing arbitrary DDL/DML from a file the user probably did not read. C2 governs querying and cannot govern loading — a dump that cannot write cannot import. | `docs/data-sources.md` §3; sandbox container with no egress |
 | C4 | **Every factual claim carries a citation** — document and page, or the memory fact it came from. | The user has no external source to catch a wrong answer against; the citation is the only check they have. An uncited claim is a bug to fix, not a limitation to document. | Answer composition + quality gate (`docs/build-plan.md`) |
 | C5 | **Abstention over invention.** When retrieval returns nothing above threshold, say so and name what would need adding. Never fall back on general knowledge for questions about the user's own material. | One confident fabrication about their own contract and the product is uninstalled. Abstention rate is also the signal that the corpus has gaps. | System prompt + abstention subset, pass bar ≥ 0.90. **Do not weaken those tests to make a change pass** — and do not lower the retrieval threshold to improve the abstention number (`docs/success-metrics.md` §2) |
 | C6 | **The audit log is append-only and tamper-evident.** No `UPDATE`/`DELETE` grant for the app role; hash-chained records. **Do not call it immutable.** | The user owns the machine and can always delete a file. The honest guarantee is that the application never rewrites history and that manual tampering is detectable — which is genuinely useful and is all that is available. Overclaiming here is the same error the prompt-injection section warns about. | `docs/audit-log.md` §4 |
-| C7 | **Retrieved content is data, never instruction.** Keep it delimited and keep the system prompt's statement to that effect intact. | Prompt injection via an ingested document otherwise drives real tool calls against the user's real database. | Prompt templates in `api/src/vaultq/agent/prompts/` + trace flagging |
+| C7 | **Retrieved content is data, never instruction.** Keep it delimited and keep the system prompt's statement to that effect intact. | Prompt injection via an ingested document otherwise drives real tool calls against the user's real database. | Prompt templates in `api/src/askwell/agent/prompts/` + trace flagging |
 | C8 | **Secrets are environment variables, never committed.** `.env.example` updated in the same change that introduces a variable. | A committed connection string is a breach, not a bug. | `.gitignore` + review |
 
 ---
@@ -95,7 +95,7 @@ Rewritten 2026-08-10 with the repositioning. The old C7 (column-level access con
 - **A surface is not finished until its states are.** Before building or designing any screen, read the matching section of `docs/states-and-edge-cases.md`. A happy path with no empty, loading, denied, or failed state is a demo. When you find a state that document does not list, add it there in the same change.
 - **One task at a time.** Finish, verify, update `docs/BRAIN.md`, then take the next. Batching four features means discovering which broke by bisection.
 - **Never hardcode a model name in application code.** Models come from configuration, selected by deployment profile.
-- **All prompts live in `api/src/vaultq/agent/prompts/` as versioned files.** Never inline a system prompt in application logic.
+- **All prompts live in `api/src/askwell/agent/prompts/` as versioned files.** Never inline a system prompt in application logic.
 - **Any prompt change requires an eval run.** Run `eval/bench.py` against the affected suite and record before/after in `docs/BRAIN.md`. Prompt engineering without measurement is guessing, and small models are exactly where guessing fails.
 
 ### When to stop and ask
@@ -149,7 +149,7 @@ Derived from `docs/PRD.md` §5.1 and the two commits in history. Where the repo 
 
 **TypeScript** — strict mode. Server components by default; `"use client"` only where interactivity requires it. `zod` for anything crossing the API boundary. No `any`.
 
-**Database** — Alembic migrations, never hand-edited schema. Every migration reversible. No raw SQL in application code outside `api/src/vaultq/sql/`.
+**Database** — Alembic migrations, never hand-edited schema. Every migration reversible. No raw SQL in application code outside `api/src/askwell/sql/`.
 
 **Commits** — Conventional Commits, scoped to one logical change, with the PRD phase in brackets:
 
@@ -210,7 +210,7 @@ While the version is `0.x`, a phase completing counts as a `MINOR` bump — Phas
 
 **An item raised only in conversation is lost.** A chat transcript is not a record anyone will read again. Anything a future reader would need — an open question, a deferred fix, a discovered bug, a risky assumption, a TODO you are about to write into code — becomes a GitHub issue **at the moment it is found**, not in a closing summary.
 
-Tracker: `Rumeasiyan/vaultq` (private). Issues are assigned to `Rumeasiyan`.
+Tracker: `Rumeasiyan/askwell` (private). Issues are assigned to `Rumeasiyan`.
 
 ### Issues must be self-contained
 
