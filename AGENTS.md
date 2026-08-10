@@ -10,6 +10,8 @@ Companion files:
 | `docs/PRD.md` | What the product is: capabilities, architecture, phases, open questions | Yes, it is a draft and parts will prove wrong |
 | `docs/BRAIN.md` | Where the build stands right now: phase, next task, blockers, eval scores | Yes — update every session |
 | `docs/decisions.md` | Why things are the way they are | Append-only, newest first |
+| `docs/states-and-edge-cases.md` | Every state a user can be in: empty, loading, partial, denied, expired, failed | Yes — grows as states are found |
+| `docs/success-metrics.md` | What "working" means in numbers, in production | Yes |
 | `README.md` | What the product is, for a human arriving cold | Yes |
 | `CLAUDE.md` | Shim that imports this file | Do not add rules here |
 
@@ -42,6 +44,8 @@ Commercially it is self-hosted software with an offline signed licence, not SaaS
 | Locked architecture choices | `docs/PRD.md` §5.1 — do not re-litigate these during implementation |
 | Database tables | `docs/PRD.md` §6 |
 | Eval categories and pass bars | `docs/PRD.md` §7 |
+| What a screen must handle beyond the happy path | `docs/states-and-edge-cases.md` — **read before designing or building any surface** |
+| Whether the product is succeeding, in numbers | `docs/success-metrics.md` |
 | Security requirements | `docs/PRD.md` §8 |
 | Phase scope and acceptance criteria | `docs/PRD.md` §9 |
 | Planned repository layout | `docs/PRD.md` §10 |
@@ -79,6 +83,7 @@ Each is load-bearing for the product's reason to exist. Where enforcement lives 
 - **Edit surgically.** Targeted string replacement over file rewrites. If a change touches more than three files, describe the plan and get agreement first. Full-file regeneration silently destroys prior decisions.
 - **Run the thing.** A task is not complete because the code looks right. Start the stack, hit the endpoint, read the response. `podman compose up -d && curl ...` is the definition of done.
 - **Tests accompany the code, not the phase.** Retrieval, SQL validation, and the agent loop get tests *first* — they are where correctness is hardest to eyeball.
+- **A surface is not finished until its states are.** Before building or designing any screen, read the matching section of `docs/states-and-edge-cases.md`. A happy path with no empty, loading, denied, or failed state is a demo. When you find a state that document does not list, add it there in the same change.
 - **One task at a time.** Finish, verify, update `docs/BRAIN.md`, then take the next. Batching four features means discovering which broke by bisection.
 - **Never hardcode a model name in application code.** Models come from configuration, selected by deployment profile.
 - **All prompts live in `api/src/vaultq/agent/prompts/` as versioned files.** Never inline a system prompt in application logic.

@@ -361,7 +361,9 @@ vaultq/
 └── docs/
     ├── PRD.md                 # this file
     ├── BRAIN.md               # mutable build state (phase, next task, blockers)
-    └── decisions.md           # append-only decision log, newest first
+    ├── decisions.md           # append-only decision log, newest first
+    ├── success-metrics.md     # what "working" means in numbers, in production
+    └── states-and-edge-cases.md  # every state a user can be in
 ```
 
 `AGENTS.md` and `CLAUDE.md` are at root because agents discover them there and will not find them in `docs/`. `VERSION` and `CHANGELOG.md` are at root because build tooling and release tooling look there. `README.md` is at root because that is where a human looks. Nothing else earns a root slot.
@@ -399,6 +401,7 @@ vaultq/
 │   └── bundle/
 └── docs/                      # joins the existing docs/
     ├── architecture.md
+    ├── ux/                    # per-screen specs and visual references (Phase 2 of the build procedure)
     ├── security.md
     └── operations.md
 ```

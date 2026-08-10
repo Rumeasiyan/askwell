@@ -22,6 +22,40 @@ Template:
 
 ---
 
+## 2026-08-10 — Abstention rate is a band with a counter-metric, not a target
+
+**Decision:** `docs/success-metrics.md` treats abstention rate as a **5–20% band**, always reported alongside a citation-correctness counter-metric. Not as a number to minimise.
+
+**Why:** `docs/PRD.md` §4.5 calls abstention rate the key operational metric, reasoning that a rising rate means the corpus has gaps. That is true and it is half the picture. The dangerous direction is the other one.
+
+Abstention rate can be driven to zero by lowering the retrieval threshold — a one-line config change that makes the dashboard look excellent while breaking C4, because the system starts answering from world-knowledge instead of saying it does not know. Every incentive points that way: a customer complaining "it keeps saying it doesn't know" is a live support conversation, and the fix that ends the conversation fastest is the one that ruins the product. Nothing in the number itself reveals this happened.
+
+Hence a band with a floor, and a paired metric that moves in the opposite direction when the threshold is gamed. A falling abstention rate with falling citation correctness is the signature; either number alone looks fine.
+
+The 5–20% boundaries are reasoned, not measured, and are flagged as assumed in the document. They exist so the dashboard has something to alarm on from day one; they should be re-derived from the first month of pilot traffic.
+
+**Consequences:** The usage dashboard (PRD §4.5) must show both numbers together, and the abstention threshold becomes a configuration value whose changes belong in the audit log. Sampling answers for citation correctness needs a mechanism — it is not free, and it is not yet designed.
+
+**Refs:** `docs/success-metrics.md` §2; `docs/PRD.md` §4.5, §7; constraints C3, C4.
+
+---
+
+## 2026-08-10 — Product success is behavioural retention, not eval scores
+
+**Decision:** The primary success metric is whether the pilot customer's officers are still asking questions in week 12 unprompted (`docs/success-metrics.md` §1). Eval scores (PRD §7) are a gate on shipping a model, not a measure of whether the product is succeeding.
+
+**Why:** The two are routinely conflated, and conflating them is how a product with excellent benchmark numbers gets quietly abandoned. VaultQ's competitor is a filing cabinet; the question is not whether the model is good but whether an officer reaches for VaultQ instead of the cabinet on week 12, when novelty has worn off and the first wrong answer is behind them.
+
+Measuring time-saved or productivity was rejected: it needs a baseline nobody has, and the numbers that result get quoted in sales material and cannot be defended when challenged.
+
+A constraint shaped this: PRD §2 makes telemetry opt-in and metadata-only, and C1 forbids runtime network calls. So **every metric must be computable from the customer's own audit log and visible to them in their own admin console**. Any metric requiring content to leave the site is disqualified regardless of usefulness. That is a real limit on what can be measured, and it is the correct trade.
+
+**Consequences:** The usage dashboard becomes the measurement instrument, not a nice-to-have, which raises its priority in §9 Phase 5. Retention cannot be measured at all until a pilot exists, so these numbers are unfalsifiable until then — they are targets to design against, not evidence.
+
+**Refs:** `docs/success-metrics.md`; `docs/PRD.md` §2, §3, §4.5, §8; issue #3.
+
+---
+
 ## 2026-08-10 — v1 is English-only; Tamil and Sinhala move to v2
 
 **Decision:** Resolves `docs/PRD.md` §11 items 1 and 2 (issues #1, #2). v1 ships English only — no Tamil UI, STT, TTS, or eval gate. Tamil and Sinhala leave the phase list entirely and become v2, scoped separately after the pilot rather than as numbered phases here. Sinhala does not start until Tamil has shipped.
