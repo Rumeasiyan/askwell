@@ -92,7 +92,7 @@ Running the concept-to-build procedure over the existing docs. **Its phase numbe
 | Step | State |
 | ---- | ----- |
 | P0/P1 — spec, metrics, states | **done**, then redone after the repositioning |
-| P2 — design the screens, in `docs/ux/` | next |
+| P2 — design the screens, in `docs/ux/` | **in progress** — design system + Ask + Clarifications done; 8 screens remain |
 | Review the data model against what the screens need | after P2 |
 | P6 — user-story backlog, vertical slices ≤ 3h | after that |
 | Scaffold (Phase 0, #7) | blocked on #9 |
@@ -108,6 +108,8 @@ Not yet established. First run at the end of Phase 1.
 | —     | —     | —       | —          | —    |
 
 ## Session log
+
+**2026-08-10 (P2 start)** — Design system and the two highest-value screens. Direction: **instrument, not chatbot** — the templated centred-chat-column with sources behind a toggle was rejected because it makes citations a disclosure you click, contradicting the product's central claim. Signature is the **permanent provenance margin**: source cards aligned to the claim they support, joined by a hairline leader, never collapsible. An uncited claim is visibly wrong because nothing sits beside it — the layout enforces C4 rather than trusting the model to. Palette encodes epistemics: green means traceable and is spent on nothing else, ochre means VaultQ guessed. Serif for language, mono for machinery. Wrote `design-system.md`, `ask.md`, `clarifications.md`, and an HTML visual reference.
 
 **2026-08-10 (rewrite)** — Product repositioned; see the table above. Rewrote `PRD.md` as a business-only document and split all technical content into `architecture.md`, `data-sources.md`, `memory-and-clarification.md`, `audit-log.md` and `build-plan.md`. Rewrote `success-metrics.md` (no pilot exists, so every number was re-derived) and `states-and-edge-cases.md` (licence, seat, RBAC and permission states deleted). `AGENTS.md` §1–§3 rewritten: constraints renumbered, old C7 (column access control) removed, new C3 (dump sandbox) added, C1 now allows explicit online opt-in, C6 restated as tamper-evident rather than immutable. Closed #3, #4, #5, #10, #11, #12, #13, #14, #15.
 
