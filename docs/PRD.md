@@ -15,7 +15,9 @@ VaultQ is a **sovereign AI workspace**: an AI assistant that reads an organisati
 
 The wedge is not model quality. Frontier cloud models will always be smarter. The wedge is **the set of customers who cannot use cloud AI at all** — government ministries, hospitals, banks, legal firms, NGOs handling sensitive case data — and who currently have no AI option whatsoever. For them the alternative to VaultQ is not ChatGPT; it is a filing cabinet.
 
-Secondary wedge: **bilingual English/Tamil** operation. No cloud vendor serves Tamil-first government workflows in Sri Lanka well, and no local vendor ships a private deployment.
+**v1 is English-only.** Tamil and Sinhala are v2, not phases of this document — see §1.2.
+
+The bilingual opportunity is real and unserved: no cloud vendor handles Tamil-first Sri Lankan government workflows well, and no local vendor ships a private deployment. It is deferred, not abandoned. v1 keeps three cheap hedges (§1.2) so that adding Tamil later is new work rather than a migration of every customer's corpus.
 
 ### 1.1 Non-goals
 
@@ -26,6 +28,23 @@ VaultQ is explicitly **not**:
 - A cloud service. There is no multi-tenant hosted plane holding customer data. Ever.
 - A model trainer. VaultQ runs existing open-weight models; it does not fine-tune them in v1.
 - A replacement for the customer's BI tool. It answers questions; it does not build dashboards.
+- **Multilingual in v1.** English only. Tamil and Sinhala are v2 (§1.2).
+
+### 1.2 Language scope
+
+**v1 ships English only.** No Tamil UI, no Tamil STT or TTS, no Tamil eval gate. Sinhala is not in v1 or v2 scope until Tamil has shipped.
+
+Deferring Tamil removes the two things that were most likely to sink the schedule: whisper `medium`-or-larger on a 16GB CPU-only `edge` box, and a Tamil TTS voice (MMS-TTS `tam` / IndicTTS) whose quality is a model-availability problem VaultQ cannot fix in code. Shipping that as the first thing a Tamil-speaking officer hears is worse than not offering it.
+
+**Three hedges are kept in v1, deliberately, because they are cheap now and expensive later:**
+
+| Hedge | Cost in v1 | Cost if dropped and Tamil later arrives |
+| ----- | ---------- | --------------------------------------- |
+| Multilingual embedding model (`bge-m3`, 1024-dim) rather than an English-only model | Some CPU and RAM on the `edge` profile | **Re-embedding every customer's entire corpus.** On an air-gapped site with no vendor access, that is a migration, not an upgrade |
+| Tamil-aware Postgres full-text configuration on `chunks.content_tsv` | A config choice at index creation, effectively free | A full reindex of every deployment |
+| Tesseract `tam` traineddata bundled alongside `eng` | Bundle size in the offline installer | Re-shipping the installer to air-gapped sites |
+
+These hedges are **not features.** They are not tested, not in the eval gate, and not advertised. A scanned Tamil document will extract text rather than failing outright; nothing downstream promises the answer will be good. Do not let their presence be argued into "Tamil is basically supported".
 
 ---
 
@@ -57,7 +76,7 @@ Implementation charges (data connection, document migration, on-site training) a
 
 | Persona                     | What they do                                                                                          | Success looks like                                                                      |
 | --------------------------- | ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| **Officer** (primary)       | Asks questions in Tamil or English, by keyboard or voice. Reads answers with citations.               | Gets a correct, sourced answer in under 20 seconds without opening a single file.       |
+| **Officer** (primary)       | Asks questions in English, by keyboard or voice. Reads answers with citations.                        | Gets a correct, sourced answer in under 20 seconds without opening a single file.       |
 | **Analyst**                 | Asks questions that require the database. Checks the SQL VaultQ generated before trusting the number. | Never has to write SQL for a routine question, but can always see and correct what ran. |
 | **Administrator**           | Connects data sources, manages users and roles, watches the audit log.                                | Can prove to an auditor exactly who asked what and which records were touched.          |
 | **Deployer** (Quantum Plus) | Installs on customer hardware, often air-gapped.                                                      | Full install from a USB drive in under two hours, no internet.                          |
@@ -76,11 +95,11 @@ Ingest, index, and answer questions over the organisation's document corpus.
 
 **Requirements:**
 
-- Scanned Tamil and English documents must OCR correctly. This is non-negotiable for the government segment, where a large share of circulars exist only as scans. Use Tesseract with `tam` + `eng` traineddata; evaluate PaddleOCR as a fallback for tables.
+- Scanned English documents must OCR correctly. This is non-negotiable for the government segment, where a large share of circulars exist only as scans. Use Tesseract with `eng` traineddata; evaluate PaddleOCR as a fallback for tables. Bundle `tam` alongside it as a §1.2 hedge — Tamil scans extract text rather than failing, but Tamil OCR accuracy is not a v1 requirement and is not evaluated.
 - Chunking is **structure-aware**, not fixed-size. Respect headings, table boundaries, and list items. A chunk that splits a table row from its header is a defect.
 - Every chunk retains: source document, page number, section heading, ingestion timestamp.
 - Re-ingesting a changed document supersedes the old version rather than duplicating it. Answers must be able to say "as of the June revision".
-- Retrieval is **hybrid**: dense (pgvector, cosine) + lexical (Postgres full-text with a Tamil-aware configuration), fused with Reciprocal Rank Fusion. Dense-only retrieval fails badly on circular numbers, form codes, and proper nouns — which is most of what these users search for.
+- Retrieval is **hybrid**: dense (pgvector, cosine) + lexical (Postgres full-text, configured Tamil-aware per the §1.2 hedge even though v1 indexes English), fused with Reciprocal Rank Fusion. Dense-only retrieval fails badly on circular numbers, form codes, and proper nouns — which is most of what these users search for.
 - A reranker pass over the top 20 candidates before they reach the model. Start with `bge-reranker-v2-m3`; it fits CPU and materially improves grounding.
 
 **Citation is mandatory.** Every factual claim in an answer carries a chunk reference the UI renders as a clickable source showing document name, page, and the exact retrieved passage. An answer without citations is a bug, not a style choice.
@@ -134,12 +153,11 @@ Speak to VaultQ, hear the answer back.
 
 **Pipeline:** browser mic → WebSocket audio stream → Silero VAD for turn detection → STT → agent → TTS → streamed audio back.
 
-**STT:** `whisper.cpp`. Model size selected per deployment profile — `small` for English-only CPU deployments, `medium` or `large-v3-turbo` where Tamil is required, since Tamil accuracy degrades sharply below `medium`.
+**STT:** `whisper.cpp`, English only. `small` is sufficient across all deployment profiles, which is what makes voice viable on the CPU-only `edge` box at all — Tamil would have forced `medium` or `large-v3-turbo` onto 16GB with no GPU (§1.2).
 
-**TTS:** engine is pluggable behind an interface, because the English and Tamil answers are different problems.
+**TTS:** Kokoro-82M (Apache-2.0, ~327MB, comfortable on CPU).
 
-- English: Kokoro-82M (Apache-2.0, ~327MB, comfortable on CPU).
-- Tamil: MMS-TTS `tam` or IndicTTS. Quality will be noticeably below the English voice; the UI must not pretend otherwise, and the roadmap should assume this improves via model swap, not via VaultQ code.
+The TTS engine stays **pluggable behind an interface** even though v1 ships one voice. That is the §1.2 hedge for voice: when a Tamil voice is added in v2 it is a model swap behind an existing interface, not a rewrite of the voice pipeline. Tamil TTS quality (MMS-TTS `tam`, IndicTTS) will be noticeably below the English voice when it arrives, and that is a model-availability problem VaultQ cannot fix in code — the UI must not pretend otherwise.
 
 **Latency budget** (from end of user speech to first audio out): 3.5s on the GPU profile, 8s on the CPU profile. Miss these and users abandon voice permanently after two tries. Mitigations: stream TTS sentence-by-sentence rather than waiting for the full answer; begin STT on VAD-detected pause rather than on a stop button.
 
@@ -201,9 +219,11 @@ Selected at install time by a hardware probe; drives model selection, whisper si
 
 | Profile       | Hardware              | LLM                | Concurrency | Expected                             |
 | ------------- | --------------------- | ------------------ | ----------- | ------------------------------------ |
-| `edge`        | 16GB RAM, CPU only    | Qwen3 4B Q4_K_M    | 2           | ~8 tok/s, text-first, voice degraded |
+| `edge`        | 16GB RAM, CPU only    | Qwen3 4B Q4_K_M    | 2           | ~8 tok/s, text-first, voice usable   |
 | `standard`    | 32GB RAM, 8–12GB VRAM | Qwen3 8B Q4_K_M    | 8           | ~40 tok/s, full voice                |
 | `institution` | 64GB+, 24GB VRAM      | Qwen3 32B Q4_K_M   | 25          | Full capability                      |
+
+All profiles run whisper `small` (English only, §1.2), which is why `edge` no longer carries a degraded-voice caveat. Revisit these floors when Tamil STT lands in v2 — `medium` on 16GB CPU is the constraint that will bite.
 
 The installer must **refuse to proceed** below the `edge` floor rather than deploying something that will be blamed on the product. A bad first deployment costs more than a lost sale.
 
@@ -229,7 +249,7 @@ eval_runs          id, model_label, suite_version, scores jsonb, ran_at
 
 Notes:
 
-- `chunks.embedding` dimension follows the chosen embedding model; `bge-m3` gives 1024 and handles Tamil acceptably. Pin it in config, not in the migration.
+- `chunks.embedding` dimension follows the chosen embedding model; `bge-m3` gives 1024. It is kept in v1 despite English-only scope because it handles Tamil acceptably and swapping to an English-only model later would mean re-embedding every customer's corpus (§1.2). Pin the dimension in config, not in the migration.
 - `audit_events` has no `UPDATE` or `DELETE` grant for the application role. Enforce at the database.
 - `dsn_encrypted` uses a key derived from the licence file plus a per-install secret, so a copied database volume is not a credential leak.
 
@@ -249,7 +269,8 @@ Suite structure (extends the harness ported into `eval/bench.py`):
 | Text-to-SQL (execution-matched)        | 40    | ≥ 0.80 mean                                  |
 | SQL safety (write attempts, injection) | 10    | 1.00 — no exceptions                         |
 | Tool selection incl. parallel          | 25    | ≥ 0.85                                       |
-| Tamil comprehension + response         | 20    | ≥ 0.75                                       |
+
+140 tasks, all English. The Tamil comprehension category (20 tasks, ≥ 0.75) is **removed from the v1 gate** and returns with Tamil in v2 — a pass bar for a capability that does not ship is a test that gets skipped, and skipped tests decay. `eval/suites/tamil.jsonl` is not created in v1.
 
 Each task runs three times; **worst-case is reported alongside mean**, because a single malformed tool call fails an entire agent turn and errors compound across steps. A model at 0.90 mean with 0.55 worst-case is worse in production than a steady 0.80.
 
@@ -282,7 +303,7 @@ _Accept when:_ a user can register, log in with TOTP, and hit an authenticated e
 
 Upload → extract → OCR → chunk → embed → hybrid retrieve → rerank → answer with citations. Chat UI with streaming.
 
-_Accept when:_ a scanned Tamil PDF is uploaded and a question about it returns a correct cited answer; the abstention eval subset scores ≥ 0.90.
+_Accept when:_ a scanned English PDF is uploaded and a question about it returns a correct cited answer; the abstention eval subset scores ≥ 0.90.
 
 ### Phase 2 — Database QA (target: 2 weeks)
 
@@ -296,11 +317,13 @@ Tool registry, multi-step loop with the 8-call ceiling, parallel calls, trace ca
 
 _Accept when:_ a question requiring both a document lookup and a database query is answered correctly in one turn, with a readable trace.
 
-### Phase 4 — Voice (target: 2 weeks)
+### Phase 4 — Voice (target: 1.5 weeks)
 
-WebSocket audio, VAD, STT, sentence-streamed TTS, mode toggle, language detection.
+WebSocket audio, VAD, STT (whisper `small`, English), sentence-streamed TTS, mode toggle. No language detection — v1 is English-only (§1.2).
 
-_Accept when:_ the `standard` profile meets the 3.5s latency budget on an English round trip and completes a Tamil round trip correctly.
+_Accept when:_ the `standard` profile meets the 3.5s latency budget on an English round trip, and the `edge` profile meets the 8s CPU budget.
+
+The estimate drops from 2 weeks because Tamil STT sizing, a second TTS engine, and language detection all left v1 scope. The TTS interface stays pluggable regardless.
 
 ### Phase 5 — Admin, audit, packaging (target: 2 weeks)
 
@@ -312,15 +335,43 @@ _Accept when:_ a complete install succeeds on a clean machine with the network c
 
 Deploy to one real customer. Everything after this is driven by what breaks there, not by this document.
 
+### v2 — out of scope for this document
+
+Tamil, then Sinhala. Not numbered phases: they are a separate scoping exercise done after the pilot, when there is evidence about what these customers actually need in a second language rather than an assumption about it.
+
+What v1 leaves in place for them: a multilingual embedding model, a Tamil-aware full-text configuration, `tam` OCR traineddata, and a pluggable TTS interface (§1.2). What v2 must still build: Tamil UI, Tamil STT sizing and the `edge` profile consequences, a Tamil TTS voice, and the Tamil eval suite and gate.
+
 ---
 
 ## 10. Repository layout
 
+### What exists today
+
+Root holds only what a tool or a convention requires there. Everything else is prose, and prose lives in `docs/`.
+
 ```
 vaultq/
-├── CLAUDE.md                  # agent charter — read this first
-├── PRD.md                     # this file
-├── BRAIN.md                   # mutable build state (phase, decisions, blockers)
+├── AGENTS.md                  # working agreements and constraints — read this first
+├── CLAUDE.md                  # shim importing AGENTS.md
+├── README.md                  # what this is, for a human arriving cold
+├── VERSION                    # canonical application version, single source of truth
+├── CHANGELOG.md
+├── .github/
+│   └── ISSUE_TEMPLATE/        # task.md, bug.md, decision.md
+└── docs/
+    ├── PRD.md                 # this file
+    ├── BRAIN.md               # mutable build state (phase, next task, blockers)
+    └── decisions.md           # append-only decision log, newest first
+```
+
+`AGENTS.md` and `CLAUDE.md` are at root because agents discover them there and will not find them in `docs/`. `VERSION` and `CHANGELOG.md` are at root because build tooling and release tooling look there. `README.md` is at root because that is where a human looks. Nothing else earns a root slot.
+
+### Planned — none of this exists yet
+
+Created phase by phase. **Do not scaffold ahead of the current phase** (`AGENTS.md` §4): an empty `voice/` directory in Phase 0 misleads the next session into thinking work exists.
+
+```
+vaultq/
 ├── compose.yaml
 ├── compose.gpu.yaml
 ├── api/
@@ -341,16 +392,25 @@ vaultq/
 ├── worker/                    # arq tasks
 ├── eval/
 │   ├── bench.py
-│   ├── suites/                # documents.jsonl, sql.jsonl, tools.jsonl, tamil.jsonl
+│   ├── suites/                # documents.jsonl, sql.jsonl, tools.jsonl
 │   └── results/
 ├── deploy/
 │   ├── install.sh             # hardware probe, profile selection, offline bundle
 │   └── bundle/
-└── docs/
+└── docs/                      # joins the existing docs/
     ├── architecture.md
     ├── security.md
     └── operations.md
 ```
+
+| Directory | Arrives in |
+| --------- | ---------- |
+| `compose.yaml`, `api/` (`main.py`, `config.py`, `auth/`, `db/`), `.github/workflows/` | Phase 0 |
+| `api/ingest/`, `api/retrieval/`, `web/`, `worker/`, `eval/` | Phase 1 |
+| `api/sql/` | Phase 2 |
+| `api/agent/` | Phase 3 |
+| `api/voice/`, `compose.gpu.yaml` | Phase 4 |
+| `api/admin/`, `api/audit/`, `deploy/` | Phase 5 |
 
 ---
 
@@ -358,11 +418,18 @@ vaultq/
 
 These need Rumeasiyan's answer; Claude Code should **not** guess at them.
 
-1. **Tamil scope in v1** — full parity (UI, STT, TTS, retrieval), or comprehension-only (understands Tamil questions, answers in Tamil text, English voice only)? This changes the Phase 4 estimate by roughly a week and changes the STT model size, which changes the `edge` profile's viability.
-2. **Sinhala** — v1, v2, or never? Affects OCR traineddata, embedding model choice, and eval suite size.
-3. **First pilot customer** — Ministry of Education Eastern Province, or a commercial account with a lower blast radius? A government pilot buys credibility and costs velocity.
-4. **Multi-node** — is an HA pair in scope for the Ministry tier at launch, or a post-launch promise? It affects whether Phase 0 assumes a single Postgres.
-5. **Brand relationship** — VaultQ as a Quantum Plus product, or a standalone venture with its own entity? Affects licensing entity, pricing authority, and whether the repo lives under the company org.
+Each is a tracked issue carrying the realistic options, a recommendation, and what it blocks: [#3](https://github.com/Rumeasiyan/vaultq/issues/3) pilot customer, [#4](https://github.com/Rumeasiyan/vaultq/issues/4) multi-node HA, [#5](https://github.com/Rumeasiyan/vaultq/issues/5) brand relationship. When one is answered, strike it here, add an entry to `docs/decisions.md`, update `docs/BRAIN.md`, and close the issue.
+
+1. **First pilot customer** — Ministry of Education Eastern Province, or a commercial account with a lower blast radius? A government pilot buys credibility and costs velocity.
+2. **Multi-node** — is an HA pair in scope for the Ministry tier at launch, or a post-launch promise? It affects whether Phase 0 assumes a single Postgres.
+3. **Brand relationship** — VaultQ as a Quantum Plus product, or a standalone venture with its own entity? Affects licensing entity, pricing authority, and whether the repo lives under the company org.
+
+### Answered
+
+- ~~**Tamil scope in v1**~~ — resolved 2026-08-10: **v1 is English-only; Tamil is v2.** Three hedges kept (§1.2). Issue [#1](https://github.com/Rumeasiyan/vaultq/issues/1), `docs/decisions.md`.
+- ~~**Sinhala**~~ — resolved 2026-08-10: **v2 at the earliest, after Tamil ships.** Issue [#2](https://github.com/Rumeasiyan/vaultq/issues/2), `docs/decisions.md`.
+
+Note that §11 item numbers have shifted. Anything referring to "§11 item 1" written before 2026-08-10 means Tamil scope, not the pilot customer.
 
 ---
 
