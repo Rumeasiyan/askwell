@@ -26,7 +26,7 @@ Two facts shape almost every technical decision here:
 1. **The competitor is a filing cabinet, not ChatGPT.** These customers have no AI option today. So model quality is not the wedge — the fact that data never leaves the building is. Anything that weakens that guarantee destroys the product's reason to exist.
 2. **The deployer installs it from a USB drive on a ministry network with no internet.** That is why there are no runtime network calls, no CDNs, no hosted control plane, and why the container count is treated as a cost.
 
-Secondary wedge: bilingual English/Tamil. No cloud vendor serves Tamil-first Sri Lankan government workflows well.
+**v1 is English-only.** Tamil and Sinhala are v2 and are not phases of the current plan. Three hedges are kept so Tamil is later work rather than a migration of every customer's corpus — multilingual `bge-m3` embeddings, a Tamil-aware Postgres full-text config, and `tam` OCR traineddata in the bundle. They are hedges, not features: not tested, not in the eval gate, not advertised. See `docs/PRD.md` §1.2.
 
 Commercially it is self-hosted software with an offline signed licence, not SaaS. See `docs/PRD.md` §2.
 
@@ -140,7 +140,7 @@ Derived from `docs/PRD.md` §5.1 and the two commits in history. Where the repo 
 **Commits** — Conventional Commits, scoped to one logical change, with the PRD phase in brackets:
 
 ```
-feat(ingest): add tamil OCR fallback [P1]
+feat(ingest): add scanned-pdf OCR fallback [P1]
 fix(sql): reject CTE with trailing DELETE [P2]
 docs: correct container count in PRD §5.2
 chore(release): 0.2.0
@@ -235,7 +235,7 @@ Typos, formatting, renaming a local variable, a one-line correction to a documen
 | `constraint:audit` | Touches C5 — audit log immutability |
 | `constraint:injection` | Touches C6 — retrieved-content-as-data boundary |
 | `eval` | Changes eval suites, pass bars, or requires an eval run to land |
-| `tamil` | Tamil-specific: OCR, STT, TTS, retrieval, evals |
+| `v2:language` | Tamil or Sinhala work. Out of v1 scope — do not start without a scope decision. |
 | `deploy` | Install bundle, hardware probe, deployment profiles, licensing |
 | `bug`, `documentation`, `question` | GitHub defaults, kept |
 

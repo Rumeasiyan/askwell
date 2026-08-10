@@ -22,6 +22,34 @@ Template:
 
 ---
 
+## 2026-08-10 — v1 is English-only; Tamil and Sinhala move to v2
+
+**Decision:** Resolves `docs/PRD.md` §11 items 1 and 2 (issues #1, #2). v1 ships English only — no Tamil UI, STT, TTS, or eval gate. Tamil and Sinhala leave the phase list entirely and become v2, scoped separately after the pilot rather than as numbered phases here. Sinhala does not start until Tamil has shipped.
+
+Three hedges are kept in v1: the multilingual `bge-m3` embedding model, a Tamil-aware Postgres full-text configuration, and `tam` OCR traineddata in the offline bundle.
+
+**Why:** Tamil carried the two largest schedule risks in the plan and neither was on the critical path to a working product. Whisper `medium`-or-larger is required for usable Tamil STT, which had to run on the 16GB CPU-only `edge` floor — that is why `edge` previously advertised "voice degraded". And Tamil TTS (MMS-TTS `tam`, IndicTTS) is a model-availability problem VaultQ cannot fix in code; shipping it would have made the product's worst-sounding component the first thing a Tamil-speaking officer heard.
+
+The alternatives were considered and rejected. **Comprehension-only Tamil** (understand Tamil questions, answer in Tamil text, English voice) keeps most of the retrieval and eval cost for a partial capability, and leaves the awkward position of a product that reads Tamil but will not speak it. **A numbered Phase 7** was rejected because a phase in this document implies its scope is understood, and Tamil scope is exactly what is not understood — what a second language actually needs should be decided with pilot evidence, not with an assumption made before the first install.
+
+The trade-off accepted is real and should not be understated: the bilingual angle was the PRD's stated secondary wedge, and deferring it means the first pilot cannot be a Tamil-first ministry. That constrains the answer to §11's pilot-customer question (issue #3).
+
+The hedges were kept because their cost asymmetry is extreme. Dropping `bge-m3` for an English-only embedding model saves some `edge` CPU and RAM; adding Tamil afterwards means **re-embedding every customer's entire corpus on air-gapped sites with no vendor access** — a migration, not an upgrade. The FTS configuration is a free choice at index creation whose reversal is a full reindex. `tam` traineddata costs bundle size and means Tamil scans extract text rather than failing outright. The TTS interface stays pluggable for the same reason.
+
+**Consequences:**
+
+- Phase 4 drops from 2 weeks to 1.5 — no Tamil STT sizing, no second TTS engine, no language detection. Acceptance is an English round trip on `standard` (3.5s) and `edge` (8s).
+- The `edge` profile no longer carries a degraded-voice caveat: whisper `small` serves all three profiles.
+- The eval gate is 140 tasks, all English. The Tamil category (20 tasks, ≥ 0.75) is removed and `eval/suites/tamil.jsonl` is not created — a pass bar for a capability that does not ship is a test that gets skipped, and skipped tests decay.
+- Phase 1 acceptance changes from a scanned Tamil PDF to a scanned English one.
+- The hedges must not be argued into "Tamil is basically supported". They are untested and unevaluated. `docs/PRD.md` §1.2 states this; keep that statement intact.
+- The 2026-08-10 hybrid-retrieval entry below still says a Tamil-aware FTS configuration is "required work". That remains true as written — it is now required *as a hedge*, not for a shipping feature. That entry is not edited; this one supersedes its framing.
+- §11 item numbers shifted. "§11 item 1" in anything written before today means Tamil scope, not the pilot customer.
+
+**Refs:** `docs/PRD.md` §1, §1.1, §1.2, §4.1, §4.4, §5.3, §6, §7, §9, §11; issues #1, #2; `AGENTS.md` §1.
+
+---
+
 ## 2026-08-10 — Prose lives in `docs/`; root holds only what tooling requires
 
 **Decision:** `PRD.md` and `BRAIN.md` moved to `docs/`, joining `decisions.md`. Root keeps `AGENTS.md`, `CLAUDE.md`, `README.md`, `VERSION`, `CHANGELOG.md`, `.github/` and nothing else. `docs/PRD.md` §10 now separates the layout that exists from the layout that is planned, with a table of which directory arrives in which phase.

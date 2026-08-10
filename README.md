@@ -6,7 +6,7 @@ A sovereign AI workspace: an assistant that reads an organisation's documents, q
 
 Built for the customers who cannot use cloud AI at all — government ministries, hospitals, banks, legal firms, NGOs holding sensitive case data. For them the alternative is not ChatGPT; it is a filing cabinet.
 
-Bilingual English/Tamil. Self-hosted with an offline signed licence — there is no hosted plane holding customer data.
+**v1 is English-only** — Tamil and Sinhala are v2 ([`docs/PRD.md`](docs/PRD.md) §1.2). Self-hosted with an offline signed licence — there is no hosted plane holding customer data.
 
 ---
 

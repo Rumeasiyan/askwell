@@ -21,6 +21,13 @@ First versioned state. No application code — the repository is documentation o
 ### Changed
 
 - `CLAUDE.md` reduced to a shim importing `AGENTS.md`; its rules now live in `AGENTS.md`.
+- **v1 scope is now English-only.** Tamil and Sinhala moved out of the phase list to v2 (`docs/PRD.md` §1.2). Resolves §11 items 1 and 2, closing issues #1 and #2.
+  - Phase 4 estimate 2 weeks → 1.5; acceptance is an English round trip only, no language detection.
+  - `edge` profile no longer degraded for voice — whisper `small` serves all three profiles.
+  - Eval gate 160 → 140 tasks; Tamil category removed, `eval/suites/tamil.jsonl` not created.
+  - Phase 1 acceptance changed from a scanned Tamil PDF to a scanned English one.
+  - Hedges kept so Tamil is later work rather than a corpus migration: `bge-m3` embeddings, Tamil-aware Postgres FTS config, `tam` OCR traineddata, pluggable TTS interface.
+  - Label `tamil` replaced by `v2:language`.
 - `PRD.md` and `BRAIN.md` moved into `docs/`. Root now holds only what a tool or convention requires there.
 - `docs/PRD.md` §10 split into what exists and what is planned, with a table of which directory arrives in which phase — the previous single tree described almost nothing that existed, with no marker saying so.
 

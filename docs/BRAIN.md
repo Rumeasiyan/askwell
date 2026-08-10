@@ -43,13 +43,13 @@ Waiting on Rumeasiyan for PRD §11. Each is a tracked issue carrying the options
 
 | # | Question | Blocks |
 | - | -------- | ------ |
-| [#1](https://github.com/Rumeasiyan/vaultq/issues/1) | Tamil scope in v1 — full parity or comprehension-only? | Phase 4 estimate and the `edge` profile's STT model size |
-| [#2](https://github.com/Rumeasiyan/vaultq/issues/2) | Sinhala — v1, v2, or never? | Phase 1 embedding model choice (a late yes means re-embedding the corpus) |
 | [#3](https://github.com/Rumeasiyan/vaultq/issues/3) | First pilot customer — government or commercial? | Phase 6; shapes which evals matter most |
 | [#4](https://github.com/Rumeasiyan/vaultq/issues/4) | Multi-node HA at launch — in or out? | **Phase 0 — the current task.** Proceeding with a single Postgres; connection config must not hardcode a single host. |
 | [#5](https://github.com/Rumeasiyan/vaultq/issues/5) | Brand relationship — Quantum Plus product or standalone entity? | Licence signing entity (Phase 5) and repo ownership |
 
 When one is answered: entry in `docs/decisions.md`, strike the `docs/PRD.md` §11 item, update this table, close the issue. All four, same change.
+
+**Answered 2026-08-10:** #1 Tamil scope and #2 Sinhala. **v1 is English-only; both are v2.** Three hedges kept so Tamil is later work rather than a corpus migration — multilingual `bge-m3` embeddings, Tamil-aware Postgres FTS config, `tam` OCR traineddata bundled. See `docs/PRD.md` §1.2 and `docs/decisions.md`.
 
 ## Eval baseline
 
