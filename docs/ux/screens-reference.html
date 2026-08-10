@@ -1,0 +1,408 @@
+<title>VaultQ — screen reference</title>
+<style>
+  :root{
+    --paper:#E9EBE7; --surface:#F3F4F1; --ink:#232722; --rule:#C9CDC6;
+    --muted:#6B716A; --provenance:#2F6B62; --inferred:#8A6A22; --alarm:#8C3A2E;
+    --sunk:#DFE2DD;
+    --serif: Charter,"Bitstream Charter",Georgia,"Iowan Old Style",serif;
+    --mono: ui-monospace,"SF Mono","Cascadia Mono",Menlo,Consolas,monospace;
+    --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px; --s7:48px;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#191C1A; --surface:#222623; --ink:#E4E7E1; --rule:#333833;
+      --muted:#9AA096; --provenance:#5FA99B; --inferred:#C9A34E; --alarm:#D9705F;
+      --sunk:#141715;
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#191C1A; --surface:#222623; --ink:#E4E7E1; --rule:#333833;
+    --muted:#9AA096; --provenance:#5FA99B; --inferred:#C9A34E; --alarm:#D9705F;
+    --sunk:#141715;
+  }
+
+  *{box-sizing:border-box}
+  body{
+    background:var(--paper); color:var(--ink);
+    font-family:var(--mono); font-size:14px; line-height:1.5;
+    margin:0; padding:var(--s6) var(--s5) var(--s7);
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1180px;margin:0 auto;display:flex;flex-direction:column;gap:var(--s7)}
+
+  /* ---- page header ---- */
+  .masthead{display:flex;flex-direction:column;gap:var(--s3);border-bottom:1px solid var(--rule);padding-bottom:var(--s5)}
+  .eyebrow{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  h1{font-family:var(--serif);font-size:28px;line-height:1.2;margin:0;font-weight:600;text-wrap:balance}
+  .lede{font-family:var(--serif);font-size:16px;line-height:1.6;max-width:66ch;margin:0;color:var(--ink)}
+  .lede em{color:var(--muted);font-style:italic}
+
+  /* ---- section ---- */
+  .sec{display:flex;flex-direction:column;gap:var(--s4)}
+  .sec-head{display:flex;flex-direction:column;gap:var(--s2)}
+  h2{font-family:var(--serif);font-size:20px;margin:0;font-weight:600}
+  .note{font-family:var(--serif);font-size:15px;line-height:1.6;max-width:66ch;margin:0;color:var(--muted)}
+  .note strong{color:var(--ink);font-weight:600}
+
+  /* ---- app frame ---- */
+  .frame{border:1px solid var(--rule);border-radius:3px;background:var(--surface);overflow:hidden}
+  .chrome{display:flex;align-items:center;gap:var(--s3);padding:var(--s2) var(--s3);border-bottom:1px solid var(--rule);background:var(--sunk)}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--rule)}
+  .chrome-label{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  .chrome-right{margin-left:auto;display:flex;gap:var(--s3);align-items:center}
+  .badge{font-size:11px;padding:2px 6px;border:1px solid var(--rule);border-radius:3px;color:var(--muted)}
+
+  .app{display:grid;grid-template-columns:180px 1fr;min-height:0}
+  @media(max-width:820px){.app{grid-template-columns:1fr}.rail{display:none}}
+
+  /* ---- left rail ---- */
+  .rail{border-right:1px solid var(--rule);padding:var(--s4) var(--s3);display:flex;flex-direction:column;gap:var(--s5);background:var(--sunk)}
+  .rail-group{display:flex;flex-direction:column;gap:var(--s1)}
+  .rail-title{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:var(--s1)}
+  .rail-item{display:flex;align-items:center;gap:var(--s2);font-size:13px;color:var(--ink);padding:3px 4px;border-radius:3px}
+  .rail-item.on{background:var(--surface);outline:1px solid var(--rule)}
+  .rail-item .count{margin-left:auto;font-size:11px;color:var(--muted)}
+  .rail-item .count.live{color:var(--inferred)}
+
+  /* ---- conversation ---- */
+  .conv{padding:var(--s5);display:flex;flex-direction:column;gap:var(--s5);min-width:0}
+  .q{font-family:var(--serif);font-size:17px;line-height:1.45;font-weight:600;max-width:70ch}
+  .q::before{content:"you asked";display:block;font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:400;margin-bottom:var(--s2)}
+
+  .steps{display:flex;flex-wrap:wrap;gap:var(--s2);font-size:12px;color:var(--muted)}
+  .steps span{display:inline-flex;align-items:center;gap:6px}
+  .steps span+span::before{content:"·";color:var(--rule)}
+
+  /* the signature: claim / leader / card grid */
+  .claims{display:flex;flex-direction:column;gap:var(--s4)}
+  .row{display:grid;grid-template-columns:minmax(0,1fr) 28px 268px;align-items:start}
+  @media(max-width:980px){.row{grid-template-columns:1fr;gap:var(--s3)}.leader{display:none}}
+  .claim{font-family:var(--serif);font-size:16px;line-height:1.62;margin:0;max-width:72ch}
+  .leader{height:1px;background:var(--rule);margin-top:13px;transition:background 120ms}
+  .row:hover .leader{background:var(--provenance)}
+
+  .card{border:1px solid var(--rule);border-left:2px solid var(--provenance);border-radius:3px;background:var(--surface);padding:var(--s3);display:flex;flex-direction:column;gap:6px;transition:border-color 120ms}
+  .row:hover .card{border-color:var(--provenance);border-left-color:var(--provenance)}
+  .card-file{font-size:12px;color:var(--provenance);word-break:break-all}
+  .card-loc{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+  .card-quote{font-family:var(--serif);font-size:13px;line-height:1.5;color:var(--ink);border-top:1px solid var(--rule);padding-top:6px}
+  .card.dead{border-left-color:var(--rule);opacity:.6}
+  .card.dead .card-file{color:var(--muted);text-decoration:line-through}
+
+  /* memory chips */
+  .chips{display:flex;flex-wrap:wrap;gap:var(--s2);align-items:center}
+  .chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;border:1px solid var(--rule);border-radius:3px;padding:3px 8px;background:var(--surface)}
+  .mark{width:6px;height:6px;flex:none}
+  .mark.known{background:var(--provenance)}
+  .mark.guess{border:1px solid var(--inferred);background:transparent}
+  .chip .k{color:var(--muted)}
+
+  /* sql block */
+  details.sql{border:1px solid var(--rule);border-radius:3px;background:var(--sunk)}
+  details.sql summary{cursor:pointer;padding:var(--s2) var(--s3);font-size:12px;color:var(--provenance);list-style:none}
+  details.sql summary::-webkit-details-marker{display:none}
+  details.sql summary::before{content:"▸ ";color:var(--muted)}
+  details.sql[open] summary::before{content:"▾ "}
+  details.sql pre{margin:0;padding:0 var(--s3) var(--s3);font-size:12.5px;line-height:1.6;overflow-x:auto;color:var(--ink)}
+  .injected{color:var(--inferred)}
+
+  /* abstention */
+  .abstain{display:flex;flex-direction:column;gap:var(--s3);padding:var(--s5) 0}
+  .abstain h3{font-family:var(--serif);font-size:20px;margin:0;font-weight:600}
+  .abstain p{font-family:var(--serif);font-size:16px;line-height:1.62;margin:0;max-width:68ch;color:var(--ink)}
+  .abstain p.sub{color:var(--muted);font-size:15px}
+  .empty-margin{border:1px dashed var(--rule);border-radius:3px;padding:var(--s3);font-size:12px;color:var(--muted);text-align:center}
+  .btn{align-self:flex-start;font-family:var(--mono);font-size:13px;padding:8px 14px;min-height:36px;border:1px solid var(--ink);border-radius:3px;background:transparent;color:var(--ink);cursor:pointer}
+  .btn:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid var(--provenance);outline-offset:2px}
+
+  /* composer */
+  .composer{border-top:1px solid var(--rule);padding:var(--s3) var(--s5);display:flex;align-items:center;gap:var(--s3);background:var(--sunk)}
+  .composer .field{flex:1;border:1px solid var(--rule);border-radius:3px;background:var(--surface);padding:8px 10px;font-size:13px;color:var(--muted)}
+
+  /* clarification */
+  .clar{padding:var(--s5);display:flex;flex-direction:column;gap:var(--s4)}
+  .clar-head{display:flex;align-items:baseline;gap:var(--s3);flex-wrap:wrap}
+  .clar-head h3{font-family:var(--serif);font-size:18px;margin:0;font-weight:600}
+  .clar-head .src{font-size:12px;color:var(--muted)}
+  .qcard{border:1px solid var(--rule);border-radius:3px;background:var(--surface);padding:var(--s4);display:flex;flex-direction:column;gap:var(--s3)}
+  .qcard-top{display:flex;justify-content:space-between;gap:var(--s3);flex-wrap:wrap;align-items:baseline}
+  .subject{font-size:12.5px;color:var(--ink)}
+  .qtext{font-family:var(--serif);font-size:16px;margin:0;font-weight:600}
+  .evidence{font-size:12.5px;color:var(--muted);display:flex;flex-wrap:wrap;gap:var(--s2);align-items:center;font-variant-numeric:tabular-nums}
+  .evidence b{color:var(--ink);font-weight:400}
+  .answer-field{border:1px solid var(--provenance);border-radius:3px;background:var(--paper);padding:8px 10px;font-family:var(--serif);font-size:14.5px}
+  .qactions{display:flex;align-items:center;gap:var(--s3);flex-wrap:wrap}
+  .btn.sm{min-height:32px;padding:6px 12px;font-size:12.5px}
+  .btn.primary{border-color:var(--provenance);color:var(--provenance)}
+  .guessline{margin-left:auto;font-size:12px;color:var(--muted);display:inline-flex;align-items:center;gap:6px}
+
+  /* legend */
+  .legend{display:grid;grid-template-columns:repeat(auto-fit,minmax(228px,1fr));gap:var(--s4)}
+  .lg{border:1px solid var(--rule);border-radius:3px;padding:var(--s3);display:flex;flex-direction:column;gap:6px;background:var(--surface)}
+  .sw{height:22px;border-radius:2px;border:1px solid var(--rule)}
+  .lg-name{font-size:12px}
+  .lg-mean{font-family:var(--serif);font-size:13.5px;line-height:1.5;color:var(--muted)}
+  .lg-mean b{color:var(--ink);font-weight:600}
+
+  .rule{height:1px;background:var(--rule);border:0;margin:0}
+  @media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">VaultQ · screen reference · draft 1</div>
+    <h1>The margin is not optional</h1>
+    <p class="lede">Three screens from the core loop. The specification is in <code>docs/ux/</code> — <em>these images are a reference, and where they disagree with the written spec, the spec wins.</em></p>
+    <p class="lede">Every AI product right now is a centred chat column with sources hidden behind a toggle. VaultQ's whole claim is that answers are checkable, so the evidence sits in a permanent right-hand margin, joined to the claim it supports. An uncited sentence is visibly wrong: nothing sits beside it.</p>
+  </header>
+
+  <!-- ============ SCREEN 1 ============ -->
+  <section class="sec">
+    <div class="sec-head">
+      <h2>Ask — answered</h2>
+      <p class="note">Serif is language, mono is machinery. <strong>Hover a claim</strong> to raise its source. The green is spent on nothing except things you can trace; the ochre marks what VaultQ guessed rather than was told.</p>
+    </div>
+
+    <div class="frame">
+      <div class="chrome">
+        <span class="dot"></span><span class="chrome-label">VaultQ</span>
+        <div class="chrome-right"><span class="badge">local · Qwen3 8B</span></div>
+      </div>
+      <div class="app">
+        <nav class="rail">
+          <div class="rail-group">
+            <div class="rail-title">Sources</div>
+            <div class="rail-item">Contracts <span class="count">14</span></div>
+            <div class="rail-item">Policies <span class="count">6</span></div>
+            <div class="rail-item">sales-2024 <span class="count">db</span></div>
+          </div>
+          <div class="rail-group">
+            <div class="rail-title">Library</div>
+            <div class="rail-item on">Ask</div>
+            <div class="rail-item">Clarifications <span class="count live">5</span></div>
+            <div class="rail-item">Memory <span class="count">23</span></div>
+            <div class="rail-item">Settings</div>
+          </div>
+        </nav>
+
+        <div class="conv">
+          <div class="q">What payment terms did we agree with Meridian Foods, and how many invoices are still open?</div>
+
+          <div class="steps">
+            <span>searched 1,240 passages</span><span>read 2 documents</span><span>queried sales-2024</span>
+          </div>
+
+          <div class="claims">
+            <div class="row">
+              <p class="claim">Meridian Foods is on <strong>45-day payment terms</strong> from date of invoice, agreed in the 2024 supply agreement and unchanged since.</p>
+              <div class="leader"></div>
+              <div class="card">
+                <div class="card-file">supplier-agreement-2024.pdf</div>
+                <div class="card-loc">page 14 · §7.2 Payment</div>
+                <div class="card-quote">“Payment shall fall due forty-five (45) days from the date of a valid invoice.”</div>
+              </div>
+            </div>
+
+            <div class="row">
+              <p class="claim">That is an exception to your standard terms, which are 30 days for suppliers under £250k annual spend.</p>
+              <div class="leader"></div>
+              <div class="card">
+                <div class="card-file">procurement-policy-v3.docx</div>
+                <div class="card-loc">page 6 · Standard terms</div>
+                <div class="card-quote">“Default payment terms are 30 days unless a written exception is recorded.”</div>
+              </div>
+            </div>
+
+            <div class="row">
+              <p class="claim"><strong>7 invoices are still open</strong>, totalling £84,210. The oldest was raised on 12 May 2026 and is 41 days out.</p>
+              <div class="leader"></div>
+              <div class="card">
+                <div class="card-file">sales-2024 · invoices</div>
+                <div class="card-loc">7 rows · 240 ms</div>
+                <div class="card-quote">Live query — expand the SQL below to check it.</div>
+              </div>
+            </div>
+          </div>
+
+          <details class="sql">
+            <summary>Show the query that produced this</summary>
+<pre>SELECT invoice_no, issued_on, amount_gbp
+FROM   invoices
+WHERE  customer = 'Meridian Foods'
+  AND  st_cd = 'O'
+ORDER  BY issued_on
+<span class="injected">LIMIT  1000    -- added by VaultQ; no limit was specified</span></pre>
+          </details>
+
+          <div class="chips">
+            <span class="chip"><span class="mark known"></span>st_cd <span class="k">= invoice status code · you told me, 3 Jun</span></span>
+            <span class="chip"><span class="mark guess"></span>amount_gbp <span class="k">= pounds sterling · I guessed</span></span>
+          </div>
+        </div>
+      </div>
+      <div class="composer">
+        <div class="field">Ask about your files…</div>
+        <button class="btn sm">Ask</button>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule">
+
+  <!-- ============ SCREEN 2 ============ -->
+  <section class="sec">
+    <div class="sec-head">
+      <h2>Ask — nothing found</h2>
+      <p class="note">The state most likely to get quietly softened later. It gets <strong>more</strong> room than an answer, not less, and it is never coloured as an error — not knowing is correct behaviour. Saying what <em>was</em> searched is what stops it reading as a shrug.</p>
+    </div>
+
+    <div class="frame">
+      <div class="chrome">
+        <span class="dot"></span><span class="chrome-label">VaultQ</span>
+        <div class="chrome-right"><span class="badge">local · Qwen3 8B</span></div>
+      </div>
+      <div class="app">
+        <nav class="rail">
+          <div class="rail-group">
+            <div class="rail-title">Sources</div>
+            <div class="rail-item">Contracts <span class="count">14</span></div>
+            <div class="rail-item">Policies <span class="count">6</span></div>
+            <div class="rail-item">sales-2024 <span class="count">db</span></div>
+          </div>
+          <div class="rail-group">
+            <div class="rail-title">Library</div>
+            <div class="rail-item on">Ask</div>
+            <div class="rail-item">Clarifications <span class="count live">5</span></div>
+            <div class="rail-item">Memory <span class="count">23</span></div>
+            <div class="rail-item">Settings</div>
+          </div>
+        </nav>
+
+        <div class="conv">
+          <div class="q">What is our current professional indemnity excess?</div>
+          <div class="row">
+            <div class="abstain">
+              <h3>Nothing in your files answers this.</h3>
+              <p>I searched 1,240 passages across 38 documents and 2 databases. The closest material was <strong>public liability cover</strong> in <em>insurance-schedule-2023.pdf</em>, which does not mention professional indemnity.</p>
+              <p class="sub">Add the policy document you'd expect this in, and ask again.</p>
+              <button class="btn">Add a source</button>
+            </div>
+            <div class="leader" style="background:transparent"></div>
+            <div class="empty-margin">No sources —<br>nothing matched</div>
+          </div>
+        </div>
+      </div>
+      <div class="composer">
+        <div class="field">Ask about your files…</div>
+        <button class="btn sm">Ask</button>
+      </div>
+    </div>
+  </section>
+
+  <hr class="rule">
+
+  <!-- ============ SCREEN 3 ============ -->
+  <section class="sec">
+    <div class="sec-head">
+      <h2>Clarifications</h2>
+      <p class="note">The differentiator, and the feature most able to destroy itself. Capped at five questions per source, because a user who opens this to forty questions closes it forever. <strong>Showing the actual data is what makes each one answerable in seconds</strong> — without the value counts this is an exam, and people don't sit exams.</p>
+    </div>
+
+    <div class="frame">
+      <div class="chrome">
+        <span class="dot"></span><span class="chrome-label">VaultQ</span>
+        <div class="chrome-right"><span class="badge">5 pending</span></div>
+      </div>
+      <div class="app">
+        <nav class="rail">
+          <div class="rail-group">
+            <div class="rail-title">Library</div>
+            <div class="rail-item">Ask</div>
+            <div class="rail-item on">Clarifications <span class="count live">5</span></div>
+            <div class="rail-item">Memory <span class="count">23</span></div>
+            <div class="rail-item">Settings</div>
+          </div>
+        </nav>
+
+        <div class="clar">
+          <div class="clar-head">
+            <h3>5 things I couldn't work out</h3>
+            <span class="src">sales-2024.sql · imported 4 minutes ago · already searchable</span>
+          </div>
+
+          <div class="qcard">
+            <div class="qcard-top">
+              <span class="subject">invoices.st_cd</span>
+              <span class="src">1 of 5</span>
+            </div>
+            <p class="qtext">What does st_cd mean?</p>
+            <div class="evidence">
+              <span><b>40,112</b> rows</span>
+              <span>·</span>
+              <span>O <b>31,204</b></span>
+              <span>P <b>6,890</b></span>
+              <span>W <b>2,018</b></span>
+            </div>
+            <div class="answer-field">Invoice status: O=open, P=paid, W=written off</div>
+            <div class="qactions">
+              <button class="btn sm primary">Save</button>
+              <button class="btn sm">Skip</button>
+              <span class="guessline"><span class="mark guess"></span>I guessed: status code</span>
+            </div>
+          </div>
+
+          <div class="qcard">
+            <div class="qcard-top">
+              <span class="subject">invoices.issued_on</span>
+              <span class="src">2 of 5</span>
+            </div>
+            <p class="qtext">Is 03/04/2026 the 3rd of April, or the 4th of March?</p>
+            <div class="evidence">
+              <span>1,240 values are ambiguous</span><span>·</span><span>nothing in the data settles it</span>
+            </div>
+            <div class="qactions">
+              <button class="btn sm primary">Day first (3 April)</button>
+              <button class="btn sm">Month first (4 March)</button>
+              <span class="guessline">no guess — I won't infer this one</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="note">The date question has no default on purpose. Guessing wrong here produces answers that look entirely reasonable and are wrong by up to eleven months, so it is the one ambiguity VaultQ refuses to infer.</p>
+  </section>
+
+  <hr class="rule">
+
+  <!-- ============ LEGEND ============ -->
+  <section class="sec">
+    <div class="sec-head">
+      <h2>What the colours mean</h2>
+      <p class="note">The palette encodes <strong>how VaultQ knows a thing</strong>. That is a hard rule: spend the green anywhere else and it stops meaning anything.</p>
+    </div>
+    <div class="legend">
+      <div class="lg">
+        <div class="sw" style="background:var(--provenance)"></div>
+        <div class="lg-name">provenance</div>
+        <div class="lg-mean"><b>You can check this.</b> Citations, source cards, leaders, the query behind a number. Never a button.</div>
+      </div>
+      <div class="lg">
+        <div class="sw" style="background:var(--inferred)"></div>
+        <div class="lg-name">inferred</div>
+        <div class="lg-mean"><b>I guessed.</b> Unconfirmed memory, inferred types, an injected LIMIT. Correct me.</div>
+      </div>
+      <div class="lg">
+        <div class="sw" style="background:var(--ink)"></div>
+        <div class="lg-name">ink</div>
+        <div class="lg-mean"><b>My own words.</b> Answers, and abstention — which is not a failure and is never red.</div>
+      </div>
+      <div class="lg">
+        <div class="sw" style="background:var(--alarm)"></div>
+        <div class="lg-name">alarm</div>
+        <div class="lg-mean"><b>Something broke.</b> Failed ingestion, unreachable database. Nothing else, ever.</div>
+      </div>
+    </div>
+  </section>
+
+</div>
