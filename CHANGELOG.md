@@ -4,7 +4,38 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
-## 0.1.0 — 2026-08-10
+## 0.1.0 — 2026-08-10 (rewrite)
+
+Product repositioned. The previous documentation described on-premise software sold to government ministries; VaultQ is a free local install for one individual professional. Version unchanged — no code exists, so no user-visible behaviour changed.
+
+### Added
+
+- `docs/architecture.md` — technical decisions, topology, auth, data model, retrieval, security. Split out of the PRD.
+- `docs/data-sources.md` — files, CSV, SQL dump import with sandbox isolation, live connections.
+- `docs/memory-and-clarification.md` — the clarification loop and permanent memory. New capability and the product's differentiator.
+- `docs/audit-log.md` — three separate stores with different retention and failure behaviour; hash-chained.
+- `docs/build-plan.md` — phases, acceptance criteria, quality gate, repo layout.
+- Constraint C3: an imported dump is untrusted code and loads only into an isolated sandbox Postgres.
+- Quality-gate category for memory application (15 tasks) — without it the differentiator has no test.
+
+### Changed
+
+- `docs/PRD.md` rewritten as a **business-only** document, shareable as a pitch. All implementation detail moved out.
+- Single user, single machine. No organisations, users, roles, RBAC, seat tiers, licence keys or high availability.
+- C1 now permits an explicit per-conversation online-AI opt-in instead of forbidding all egress.
+- C6 restated as **tamper-evident, not immutable** — the user owns the disk, and any stronger claim is false.
+- Authentication reduced to a local session plus an optional at-rest passphrase. JWT/Argon2id/TOTP/blacklist removed.
+- Deployment profiles rebuilt around personal hardware; floor drops to 8GB and the installer warns rather than refuses.
+- `docs/success-metrics.md` fully re-derived — there is no pilot. Adds clarification-loop metrics.
+- `docs/states-and-edge-cases.md` — licence, seat-cap, session-expiry and permission-denial states removed; disk-budget, online-mode and clarification states added.
+- Issue templates and labels updated to the new constraint numbering.
+
+### Removed
+
+- Constraint C7-as-was (column-level access control per role) — it protected one role from another, and there are no roles.
+- Multi-node high availability, permanently (#4).
+
+## 0.1.0 — 2026-08-10 (initial)
 
 First versioned state. No application code — the repository is documentation only, Phase 0 not yet started.
 

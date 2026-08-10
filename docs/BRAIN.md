@@ -1,13 +1,13 @@
-# docs/BRAIN.md — VaultQ build state
+# BRAIN.md — VaultQ build state
 
-> Mutable. Claude Code updates this at the end of every session.
+> Mutable. Updated at the end of every session.
 > If this file is stale, the next session starts from confusion.
 
 ---
 
 ## Current phase
 
-**Phase 0 — Skeleton.** Nothing implemented yet. Repository is documentation only.
+**Phase 0 — Skeleton. Not started.** Repository is documentation only: no application code, no manifests, no tests, no CI.
 
 **Version:** `0.1.0` (see `VERSION`). Phase 0 landing takes it to `0.2.0`.
 **Tracker:** `Rumeasiyan/vaultq` (private). Working agreements in `AGENTS.md`.
@@ -17,76 +17,96 @@
 [#7](https://github.com/Rumeasiyan/vaultq/issues/7) — scaffold the Compose stack and the FastAPI skeleton:
 
 - `compose.yaml` with `api`, `web`, `postgres` (pgvector), `redis`
-- FastAPI app with `/health`, config loading via Pydantic Settings
-- Alembic initialised, first migration creating `organisations` and `users`
+- FastAPI app with `/health`, config via Pydantic Settings
+- Alembic initialised, first migration
 - CI: ruff + mypy + pytest on push
 
-Do **not** add the `llm`, `voice`, or `worker` services yet. They arrive in Phases 1 and 4.
+Do **not** add `llm`, `voice`, `worker` or the `sandbox` Postgres yet — they arrive in later phases (`build-plan.md`).
+
+**Blocked on [#9](https://github.com/Rumeasiyan/vaultq/issues/9)** for the `web/` half: PRD-era stack versions are stale and `create-next-app` would contradict them on the first commit.
+
+The first migration no longer creates `organisations` and `users` — those tables are gone with the repositioning. See `architecture.md` §7 for the current data model.
 
 ---
 
-## Decisions log
+## The repositioning — read this before anything else
 
-> Moved to `docs/decisions.md`, which carries the full reasoning for each. The table below is kept as an index.
+On **2026-08-10** the product was redefined. The previous documentation described a materially different product and much of it was wrong, not merely outdated.
 
-| Date       | Decision                                                                        | Rationale                                                                                                      |
-| ---------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| 2026-08-10 | All-Python backend (FastAPI), no second backend language                        | Entire AI toolchain is Python-native; a Go/Rust service would add integration surface for no gain              |
-| 2026-08-10 | Postgres + pgvector, no separate vector DB                                      | One system for relational, vector, and full-text; fewer containers for deployers to debug on customer sites    |
-| 2026-08-10 | llama.cpp server as the inference layer                                         | OpenAI-compatible, model-agnostic, identical interface for CPU and CUDA                                        |
-| 2026-08-10 | Hybrid retrieval (dense + lexical + RRF) from the start, not as an optimisation | Dense-only fails on circular numbers, form codes, and proper nouns — which is most real queries in this domain |
-| 2026-08-10 | Self-hosted licence model, not hosted SaaS                                      | Data sovereignty is the entire value proposition; a hosted plane holding customer data would destroy it        |
+| Was | Is |
+| --- | --- |
+| Sold to government ministries, hospitals, banks | Free download for one individual professional |
+| Organisations, four roles, RBAC, seat tiers, LKR pricing | **Single user, single machine.** No roles, no tenancy, no licence |
+| Quantum Plus product with a "Deployer" persona | Standalone venture by Suseenthiran Arulraj Rumeasiyan; users install it themselves |
+| Air-gapped, no network calls, ever | Local by default; **online AI is an explicit per-conversation opt-in**, and it is the only revenue line |
+| Documents + live database connections | Also **CSV and SQL dump import**, with a sandbox for dumps |
+| Ingest silently | **Clarification loop and memory** — the differentiator |
+| Multi-node HA for the top tier | Single machine only, permanently |
+
+If you find text about ministries, organisations, roles, licences or seats anywhere, it is leftover and wrong. Fix it.
+
+Note that "Quantum Plus" and the ministry framing were in the original `PRD.md` (commit `dcd12cf`), not introduced later.
+
+## Documentation map
+
+`PRD.md` is now **business only** — shareable with users and investors. Technical content moved out:
+
+| Doc | Holds |
+| --- | ----- |
+| `PRD.md` | Business case, positioning, pricing, roadmap |
+| `architecture.md` | Stack, topology, auth, data model, retrieval, security |
+| `data-sources.md` | Files, CSV, dumps + sandbox, live connections |
+| `memory-and-clarification.md` | The clarification loop and memory |
+| `audit-log.md` | Three stores, retention, hash chain |
+| `build-plan.md` | Phases, acceptance criteria, quality gate, repo layout |
 
 ## Open blockers
 
-Waiting on Rumeasiyan for PRD §11. Each is a tracked issue carrying the options and a recommendation — read the issue, not this list:
-
 | # | Question | Blocks |
 | - | -------- | ------ |
-| [#3](https://github.com/Rumeasiyan/vaultq/issues/3) | First pilot customer — government or commercial? | Phase 6; shapes which evals matter most |
-| [#4](https://github.com/Rumeasiyan/vaultq/issues/4) | Multi-node HA at launch — in or out? | **Phase 0 — the current task.** Proceeding with a single Postgres; connection config must not hardcode a single host. |
-| [#5](https://github.com/Rumeasiyan/vaultq/issues/5) | Brand relationship — Quantum Plus product or standalone entity? | Licence signing entity (Phase 5) and repo ownership |
-| [#10](https://github.com/Rumeasiyan/vaultq/issues/10) | Audit log write fails — fail the action, or proceed unlogged? | **Phase 5 schema** and the transaction boundary of every audited write |
-| [#11](https://github.com/Rumeasiyan/vaultq/issues/11) | Document deletion vs audit immutability | **Phase 5 schema** — `documents`/`chunks` shape |
-| [#12](https://github.com/Rumeasiyan/vaultq/issues/12) | Restricted columns — acknowledge or conceal? | Phase 2 prompt and SQL disclosure UI |
-| [#13](https://github.com/Rumeasiyan/vaultq/issues/13) | Voice barge-in in v1? | Phase 4 scope (currently 1.5 weeks) |
-| [#14](https://github.com/Rumeasiyan/vaultq/issues/14) | Generation on navigate-away — continue or abort? | Phase 3 agent loop, `edge` CPU headroom |
-| [#15](https://github.com/Rumeasiyan/vaultq/issues/15) | Voice latency-miss indicator? | Phase 4 UI |
+| [#9](https://github.com/Rumeasiyan/vaultq/issues/9) | Stack versions stale — Next 15→16, Tailwind 4, Postgres 18 | **Phase 0 `web/`** |
+| [#6](https://github.com/Rumeasiyan/vaultq/issues/6) | Pin Python 3.12; dev machine has 3.14, no `podman-compose` | Phase 0 |
 
-When one is answered: entry in `docs/decisions.md`, strike the `docs/PRD.md` §11 item, update this table, close the issue. All four, same change.
+All product decisions are currently answered. New ones raised in the rewrite and **not yet filed**:
 
-**Answered 2026-08-10:** #1 Tamil scope and #2 Sinhala. **v1 is English-only; both are v2.** Three hedges kept so Tamil is later work rather than a corpus migration — multilingual `bge-m3` embeddings, Tamil-aware Postgres FTS config, `tam` OCR traineddata bundled. See `docs/PRD.md` §1.2 and `docs/decisions.md`.
+- Per-source clarification cap and its ranking function (`memory-and-clarification.md` §8) — determines whether the differentiator is delightful or intolerable.
+- Default log budget and interaction retention window (`audit-log.md` §8).
+- MySQL / SQL Server dump support, which would need an eighth container or a translation layer (`data-sources.md` §7).
+- Whether opt-in telemetry ships at all — without it, none of `success-metrics.md` §1 is observable.
+- What online mode transmits (`audit-log.md` §6). Needed before Phase 7.
+
+## Build procedure
+
+Running the concept-to-build procedure over the existing docs. **Its phase numbers are not `build-plan.md` phase numbers.**
+
+| Step | State |
+| ---- | ----- |
+| P0/P1 — spec, metrics, states | **done**, then redone after the repositioning |
+| P2 — design the screens, in `docs/ux/` | next |
+| Review the data model against what the screens need | after P2 |
+| P6 — user-story backlog, vertical slices ≤ 3h | after that |
+| Scaffold (Phase 0, #7) | blocked on #9 |
+
+Screens before schema is deliberate: drawing a screen surfaces the missing button and the number with nowhere to come from.
 
 ## Eval baseline
 
-Not yet established. First run happens at the end of Phase 1, against `eval/suites/documents.jsonl`.
+Not yet established. First run at the end of Phase 1.
 
 | Model | Suite | Overall | Worst-case | Date |
 | ----- | ----- | ------- | ---------- | ---- |
 | —     | —     | —       | —          | —    |
 
-## Notes for the next session
-
-- The hardware specs for the target laptop have not yet been collected (`get-specs.ps1` not yet run). Deployment profile floors in PRD §5.3 are estimates and should be revised once real numbers exist.
-- `bench.py` exists in draft form outside this repo — port it to `eval/bench.py` during Phase 1 rather than rewriting it. PRD §7 assumes that path.
-- Dev machine runs Python **3.14.6**; the project targets **3.12**. `podman-compose` is not installed — use `podman compose`. Both tracked in [#6](https://github.com/Rumeasiyan/vaultq/issues/6); details in `AGENTS.md` §5.
-
-## Build procedure
-
-Running the concept-to-build procedure over the existing PRD rather than from scratch. **Its phase numbers are not `docs/PRD.md` §9 phase numbers.** Agreed order:
-
-| Step | State |
-| ---- | ----- |
-| Close P0/P1 gaps — success metrics, states and edge cases | **done** — `docs/success-metrics.md`, `docs/states-and-edge-cases.md` |
-| P2 — design the screens, in `docs/ux/` | next |
-| Revisit `docs/PRD.md` §6 against what the screens need | after P2 |
-| P6 — user-story backlog, vertical slices ≤ 3h | after §6 review |
-| Scaffold (§9 Phase 0, issue #7) | blocked on #4 and #9 |
-
-Screens come before schema deliberately: drawing a screen surfaces the missing button and the number with nowhere to come from. §6 was written first, so it is reviewed after, not treated as settled.
-
 ## Session log
 
-**2026-08-10 (later)** — Closed the P0/P1 gaps. Added `docs/success-metrics.md` and `docs/states-and-edge-cases.md`. The states document surfaced six product decisions with no answer in the PRD, filed as #10–#15; #10 and #11 block Phase 5 schema. Also filed #9: PRD §5.1 stack versions verified against registries and found stale — Next.js is at 16.3.0, not 15, and `create-next-app` would contradict a "locked" PRD section on the first commit. Next: P2 screens in `docs/ux/`.
+**2026-08-10 (rewrite)** — Product repositioned; see the table above. Rewrote `PRD.md` as a business-only document and split all technical content into `architecture.md`, `data-sources.md`, `memory-and-clarification.md`, `audit-log.md` and `build-plan.md`. Rewrote `success-metrics.md` (no pilot exists, so every number was re-derived) and `states-and-edge-cases.md` (licence, seat, RBAC and permission states deleted). `AGENTS.md` §1–§3 rewritten: constraints renumbered, old C7 (column access control) removed, new C3 (dump sandbox) added, C1 now allows explicit online opt-in, C6 restated as tamper-evident rather than immutable. Closed #3, #4, #5, #10, #11, #12, #13, #14, #15.
 
-**2026-08-10** — Set up agent working documentation. Created `AGENTS.md` (source of truth), `docs/decisions.md` (seeded with 8 entries), `VERSION` (`0.1.0`), `CHANGELOG.md`, issue templates, and 16 repo labels. `CLAUDE.md` reduced to a shim importing `AGENTS.md` — this reverses its own "static, do not edit" rule, deliberately and with agreement, because rules living only in the Claude-specific file were invisible to every other tool. Filed issues #1–#7. Also corrected factual errors in `docs/PRD.md` (container count, non-existent Qwen model names, owner name, eval harness path) — see `CHANGELOG.md`. Next: #7, Phase 0 scaffold.
+**2026-08-10 (earlier)** — Closed the P0/P1 gaps: added `success-metrics.md` and `states-and-edge-cases.md`. Filed #9 after verifying stack versions against registries.
+
+**2026-08-10** — Set up agent working documentation: `AGENTS.md`, decision log, versioning, tracker conventions, issue templates, labels.
+
+## Notes for the next session
+
+- Dev machine runs Python **3.14.6**; the project targets **3.12**. `podman-compose` is not installed — use `podman compose`. Tracked in [#6](https://github.com/Rumeasiyan/vaultq/issues/6).
+- `bench.py` exists in draft form outside this repo — port it to `eval/bench.py` in Phase 1 rather than rewriting it.
+- `decisions.md` is append-only. Entries written before 2026-08-10 describe the organisation-era product and are historically accurate for that time; the repositioning entry supersedes their framing rather than editing them.

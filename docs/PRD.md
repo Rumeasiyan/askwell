@@ -1,439 +1,153 @@
-# VaultQ — Product Requirements Document
+# VaultQ
 
-**Version:** 0.1 (draft for build)
-**Owner:** Suseenthiran Arulraj Rumeasiyan (Rumeasiyan)
-**Status:** Approved for Phase 0 implementation
-**Last updated:** 2026-08-10
+**Ask your own files anything. Nothing leaves your machine.**
+
+**Version:** 0.2 (rewritten 2026-08-10 — supersedes the organisation-focused draft)
+**Owner:** Suseenthiran Arulraj Rumeasiyan
+**Status:** approved for build
+
+> This document is the business case. It is written to be read by someone deciding whether to use VaultQ or invest in it — no implementation detail. For how it is built, see `architecture.md`.
 
 ---
 
 ## 1. What VaultQ is
 
-VaultQ is a **sovereign AI workspace**: an AI assistant that reads an organisation's documents, queries its databases, and answers questions by text or voice — running entirely on the organisation's own hardware, with no data leaving the building.
+VaultQ is a personal AI that reads your own documents and databases and answers questions about them — running entirely on your own computer.
 
-**Positioning line:** _Ask your organisation anything. Nothing leaves the building._
+You point it at your files: PDFs, Word documents, spreadsheets, scanned images, a database dump, a CSV export, or a live connection to a database you already run. It reads them, asks you about anything it finds ambiguous, remembers your answers, and from then on you can ask questions in plain English and get answers with sources attached.
 
-The wedge is not model quality. Frontier cloud models will always be smarter. The wedge is **the set of customers who cannot use cloud AI at all** — government ministries, hospitals, banks, legal firms, NGOs handling sensitive case data — and who currently have no AI option whatsoever. For them the alternative to VaultQ is not ChatGPT; it is a filing cabinet.
-
-**v1 is English-only.** Tamil and Sinhala are v2, not phases of this document — see §1.2.
-
-The bilingual opportunity is real and unserved: no cloud vendor handles Tamil-first Sri Lankan government workflows well, and no local vendor ships a private deployment. It is deferred, not abandoned. v1 keeps three cheap hedges (§1.2) so that adding Tamil later is new work rather than a migration of every customer's corpus.
-
-### 1.1 Non-goals
-
-VaultQ is explicitly **not**:
-
-- A chatbot builder or prompt-management platform.
-- A coding assistant.
-- A cloud service. There is no multi-tenant hosted plane holding customer data. Ever.
-- A model trainer. VaultQ runs existing open-weight models; it does not fine-tune them in v1.
-- A replacement for the customer's BI tool. It answers questions; it does not build dashboards.
-- **Multilingual in v1.** English only. Tamil and Sinhala are v2 (§1.2).
-
-### 1.2 Language scope
-
-**v1 ships English only.** No Tamil UI, no Tamil STT or TTS, no Tamil eval gate. Sinhala is not in v1 or v2 scope until Tamil has shipped.
-
-Deferring Tamil removes the two things that were most likely to sink the schedule: whisper `medium`-or-larger on a 16GB CPU-only `edge` box, and a Tamil TTS voice (MMS-TTS `tam` / IndicTTS) whose quality is a model-availability problem VaultQ cannot fix in code. Shipping that as the first thing a Tamil-speaking officer hears is worse than not offering it.
-
-**Three hedges are kept in v1, deliberately, because they are cheap now and expensive later:**
-
-| Hedge | Cost in v1 | Cost if dropped and Tamil later arrives |
-| ----- | ---------- | --------------------------------------- |
-| Multilingual embedding model (`bge-m3`, 1024-dim) rather than an English-only model | Some CPU and RAM on the `edge` profile | **Re-embedding every customer's entire corpus.** On an air-gapped site with no vendor access, that is a migration, not an upgrade |
-| Tamil-aware Postgres full-text configuration on `chunks.content_tsv` | A config choice at index creation, effectively free | A full reindex of every deployment |
-| Tesseract `tam` traineddata bundled alongside `eng` | Bundle size in the offline installer | Re-shipping the installer to air-gapped sites |
-
-These hedges are **not features.** They are not tested, not in the eval gate, and not advertised. A scanned Tamil document will extract text rather than failing outright; nothing downstream promises the answer will be good. Do not let their presence be argued into "Tamil is basically supported".
+No account required to use it. No files uploaded anywhere. No subscription to start.
 
 ---
 
-## 2. The commercial model (resolve this before writing code)
+## 2. The problem
 
-"Local AI" and "SaaS" are in tension. VaultQ resolves it as **self-hosted software with a subscription licence**, not as a hosted service:
+People accumulate information faster than they can organise it. A consultant has six years of client reports. A researcher has four hundred papers and a spreadsheet of results. A lawyer has case files. A developer has a database nobody documented.
 
-| Layer                                              | Where it runs                                 | Commercial                        |
-| -------------------------------------------------- | --------------------------------------------- | --------------------------------- |
-| Inference, documents, database, voice, audit log   | 100% customer hardware                        | —                                 |
-| Software licence + updates + model packs + support | Signed offline licence key                    | Annual subscription per seat-band |
-| Optional: fleet telemetry, remote health checks    | Customer opt-in, metadata only, never content | Included in higher tiers          |
+The information is all there. Finding it is the problem — and finding it usually means remembering which file it was in, which is exactly the thing that fails.
 
-**Licence enforcement is offline-first.** A signed JWT licence file, machine-bound to a hardware fingerprint, with an expiry date and a seat cap. The product degrades gracefully at expiry (read-only mode, 30-day grace) rather than hard-failing — a ministry losing AI access mid-week because a renewal PO was slow is how you lose the account.
+Cloud AI tools solve the searching part and create a new problem: uploading the material. For a lot of people that is not a preference, it is a hard stop. Client confidentiality, unpublished research, patient records, contracts under NDA, a database with real customer data in it. These people are not weighing convenience against privacy — they simply cannot upload, so they get no AI help at all.
 
-**Tiers (indicative, LKR):**
-
-| Tier        | Seats     | Deployment                     | Annual    |
-| ----------- | --------- | ------------------------------ | --------- |
-| Department  | up to 25  | Single node, CPU or 1 GPU      | 850,000   |
-| Institution | up to 150 | Single node + GPU              | 2,400,000 |
-| Ministry    | unlimited | HA pair, dedicated support SLA | Quoted    |
-
-Implementation charges (data connection, document migration, on-site training) are billed separately as project work — this is where Quantum Plus makes margin in year one.
+**VaultQ is for them.** The alternative is not ChatGPT; it is opening files one at a time and hoping to remember the right one.
 
 ---
 
-## 3. Users
+## 3. Who it is for
 
-| Persona                     | What they do                                                                                          | Success looks like                                                                      |
-| --------------------------- | ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| **Officer** (primary)       | Asks questions in English, by keyboard or voice. Reads answers with citations.                        | Gets a correct, sourced answer in under 20 seconds without opening a single file.       |
-| **Analyst**                 | Asks questions that require the database. Checks the SQL VaultQ generated before trusting the number. | Never has to write SQL for a routine question, but can always see and correct what ran. |
-| **Administrator**           | Connects data sources, manages users and roles, watches the audit log.                                | Can prove to an auditor exactly who asked what and which records were touched.          |
-| **Deployer** (Quantum Plus) | Installs on customer hardware, often air-gapped.                                                      | Full install from a USB drive in under two hours, no internet.                          |
+One person, working with their own material.
 
----
+| | |
+| --- | --- |
+| **Consultants and analysts** | Years of client work, all confidential. Need to find precedent and reuse prior analysis without breaching an NDA. |
+| **Researchers and academics** | Large reading piles plus their own data. Unpublished results cannot be uploaded anywhere. |
+| **Lawyers and accountants** | Case and client files under professional privilege. Cloud upload is often prohibited outright. |
+| **Developers and data people** | A database nobody documented and no appetite for writing SQL to answer a simple question. |
+| **Writers, journalists, archivists** | Interview transcripts, source material, sensitive notes. |
 
-## 4. Core capabilities
-
-### 4.1 Document intelligence
-
-Ingest, index, and answer questions over the organisation's document corpus.
-
-**Formats:** PDF (native + scanned), DOCX, XLSX, PPTX, TXT, MD, HTML, images (JPG/PNG).
-
-**Pipeline:** upload → type detection → extraction → OCR fallback for scanned pages → layout-aware chunking → embedding → pgvector index.
-
-**Requirements:**
-
-- Scanned English documents must OCR correctly. This is non-negotiable for the government segment, where a large share of circulars exist only as scans. Use Tesseract with `eng` traineddata; evaluate PaddleOCR as a fallback for tables. Bundle `tam` alongside it as a §1.2 hedge — Tamil scans extract text rather than failing, but Tamil OCR accuracy is not a v1 requirement and is not evaluated.
-- Chunking is **structure-aware**, not fixed-size. Respect headings, table boundaries, and list items. A chunk that splits a table row from its header is a defect.
-- Every chunk retains: source document, page number, section heading, ingestion timestamp.
-- Re-ingesting a changed document supersedes the old version rather than duplicating it. Answers must be able to say "as of the June revision".
-- Retrieval is **hybrid**: dense (pgvector, cosine) + lexical (Postgres full-text, configured Tamil-aware per the §1.2 hedge even though v1 indexes English), fused with Reciprocal Rank Fusion. Dense-only retrieval fails badly on circular numbers, form codes, and proper nouns — which is most of what these users search for.
-- A reranker pass over the top 20 candidates before they reach the model. Start with `bge-reranker-v2-m3`; it fits CPU and materially improves grounding.
-
-**Citation is mandatory.** Every factual claim in an answer carries a chunk reference the UI renders as a clickable source showing document name, page, and the exact retrieved passage. An answer without citations is a bug, not a style choice.
-
-### 4.2 Database question-answering
-
-Let non-technical users ask questions of operational databases in natural language.
-
-**Connectors (v1):** PostgreSQL, MySQL/MariaDB, SQL Server. Read-only credentials only — the connection wizard refuses credentials that pass a write-permission probe.
-
-**Flow:** question → schema retrieval (only tables relevant to the question, via embedded table/column descriptions) → SQL generation → static validation → dry-run `EXPLAIN` → execution under limits → result formatting → natural-language answer.
-
-**Safety layers, all mandatory:**
-
-1. Database role is `SELECT`-only, enforced at the database, not in application code.
-2. Generated SQL is parsed with `sqlglot`. Anything that is not a single `SELECT`/`WITH` is rejected before it reaches the driver. Regex filtering alone is not acceptable.
-3. Automatic `LIMIT` injection (default 1000) when the query has no aggregate and no explicit limit.
-4. `statement_timeout` of 30s, enforced per-session.
-5. Column-level access control: an administrator can mark columns as restricted per role, and restricted columns are stripped from the schema shown to the model. The model cannot select what it cannot see.
-6. Every executed query is written to the audit log with the user, the question, the SQL, the row count, and the duration.
-
-**The generated SQL is always shown to the user**, collapsed by default, expandable. Analysts do not trust a number they cannot trace, and they are right not to.
-
-**Schema documentation.** Administrators can annotate tables and columns with plain-language descriptions. These annotations are embedded and retrieved alongside the schema. This single feature moves text-to-SQL accuracy more than any model upgrade — a column called `st_cd` is unguessable, and `st_cd — student status code: A=active, T=transferred, D=dropped` is trivial.
-
-### 4.3 Agent loop
-
-The reasoning layer that decides which tools to call and composes the final answer.
-
-**Tools exposed in v1:**
-
-| Tool                                      | Purpose                               |
-| ----------------------------------------- | ------------------------------------- |
-| `search_documents(query, top_k, filters)` | Hybrid retrieval over the corpus      |
-| `query_database(connection_id, sql)`      | Validated read-only SQL execution     |
-| `get_schema(connection_id, hint)`         | Relevant table/column definitions     |
-| `list_documents(filters)`                 | Corpus browsing and existence checks  |
-| `get_current_date()`                      | Grounding for relative-time questions |
-
-**Loop constraints:**
-
-- Hard ceiling of 8 tool calls per turn. On reaching it, VaultQ returns what it has plus an explicit note that it stopped early. Unbounded agent loops on a CPU-only box are how you get a 12-minute response.
-- Parallel tool calls are supported and preferred where the model emits them.
-- Every step is recorded in a trace. The UI exposes the trace behind a "how did you get this?" toggle.
-
-**Abstention is a first-class behaviour.** When retrieval returns nothing above the relevance threshold, VaultQ says it does not know and suggests what would need to be ingested. It never falls back to model world-knowledge for organisation-specific questions. The system prompt must enforce this, and the eval suite must test it explicitly (see §7).
-
-### 4.4 Voice
-
-Speak to VaultQ, hear the answer back.
-
-**Pipeline:** browser mic → WebSocket audio stream → Silero VAD for turn detection → STT → agent → TTS → streamed audio back.
-
-**STT:** `whisper.cpp`, English only. `small` is sufficient across all deployment profiles, which is what makes voice viable on the CPU-only `edge` box at all — Tamil would have forced `medium` or `large-v3-turbo` onto 16GB with no GPU (§1.2).
-
-**TTS:** Kokoro-82M (Apache-2.0, ~327MB, comfortable on CPU).
-
-The TTS engine stays **pluggable behind an interface** even though v1 ships one voice. That is the §1.2 hedge for voice: when a Tamil voice is added in v2 it is a model swap behind an existing interface, not a rewrite of the voice pipeline. Tamil TTS quality (MMS-TTS `tam`, IndicTTS) will be noticeably below the English voice when it arrives, and that is a model-availability problem VaultQ cannot fix in code — the UI must not pretend otherwise.
-
-**Latency budget** (from end of user speech to first audio out): 3.5s on the GPU profile, 8s on the CPU profile. Miss these and users abandon voice permanently after two tries. Mitigations: stream TTS sentence-by-sentence rather than waiting for the full answer; begin STT on VAD-detected pause rather than on a stop button.
-
-**Voice is a mode, not a separate product.** Same agent, same tools, same audit log. The only difference is transport.
-
-### 4.5 Administration
-
-- User management with RBAC: `admin`, `analyst`, `officer`, `auditor`.
-- Data source management: document collections, database connections, per-role visibility on both.
-- Model management: which model is loaded, swap without redeploying, see current memory footprint and measured tokens/sec.
-- **Audit log:** append-only, exportable, covering every question, every retrieved chunk, every executed query, and every administrative change. For the government segment this is not a feature, it is the reason procurement approves the purchase.
-- Usage dashboard: questions per department, most-asked topics, abstention rate. Abstention rate is the key operational metric — a rising rate means the corpus has gaps.
+**VaultQ is single-user by design.** One person, one machine, one set of files. There are no teams, no shared workspaces, no roles or permissions. That is a scope decision, not an omission — it removes an enormous amount of complexity that a single user gains nothing from, and it means the privacy promise is simple enough to state in one sentence.
 
 ---
 
-## 5. Architecture
+## 4. How it works, for the person using it
 
-### 5.1 Decisions (locked — do not re-litigate during implementation)
+**1 — Add your material.** Drop in files. Import a database dump or a spreadsheet. Or connect to a database you already run, using read-only access.
 
-| Layer          | Choice                                                                    | Why                                                                                                                                                                                               |
-| -------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Backend API    | **Python 3.12 + FastAPI**                                                 | The whole AI toolchain — llama-cpp bindings, whisper.cpp wrappers, Kokoro, sqlglot, OCR, embeddings — is Python-native. A second backend language would buy nothing and cost integration surface. |
-| Frontend       | **Next.js 15 (App Router) + TypeScript + Tailwind + shadcn/ui**           | Server components for the document browser, client components for chat and voice streaming.                                                                                                       |
-| Database       | **PostgreSQL 17 + pgvector**                                              | One system for relational state, vectors, and full-text. Do not add a separate vector database in v1.                                                                                             |
-| Cache / queue  | **Redis + arq**                                                           | Ingestion jobs, embedding batches, scheduled re-indexing.                                                                                                                                         |
-| Inference      | **llama.cpp server** (OpenAI-compatible), separate container              | Model-agnostic, swappable, runs CPU or CUDA from the same interface.                                                                                                                              |
-| Object storage | **Local filesystem volume**, S3-compatible interface behind it            | Air-gapped installs cannot assume MinIO; keep the abstraction, default to disk.                                                                                                                   |
-| Auth           | **JWT RS256, Argon2id password hashing, TOTP MFA, Redis token blacklist** | Reuse the established Auth-System-Design pattern.                                                                                                                                                 |
-| Packaging      | **Podman/Docker Compose bundle**, offline image tarballs                  | Single-host install from USB with no registry access.                                                                                                                                             |
+**2 — VaultQ reads it, and asks when it is unsure.** This is the part other tools skip. When it hits something genuinely ambiguous — a column called `st_cd`, a scan it could barely read, two documents that contradict each other — it asks you. Briefly, in plain language, and only when it matters.
 
-### 5.2 Service topology
+**3 — It remembers your answers.** Tell it once that `st_cd` means student status code, and it knows from then on — for every future question and every future file. VaultQ gets better at your material the longer you use it, because you taught it.
 
-```
-                        ┌──────────────────┐
-   browser ──HTTPS/WS──▶│   web (Next.js)  │
-                        └────────┬─────────┘
-                                 │ REST + WS
-                        ┌────────▼─────────┐
-                        │   api (FastAPI)  │──┐
-                        └────────┬─────────┘  │
-                                 │            │
-        ┌────────────┬───────────┼────────────┼──────────────┐
-        │            │           │            │              │
-   ┌────▼────┐  ┌────▼────┐ ┌────▼─────┐ ┌────▼────┐  ┌──────▼──────┐
-   │ postgres│  │  redis  │ │  llm     │ │ voice   │  │  worker     │
-   │+pgvector│  │         │ │llama.cpp │ │stt/tts  │  │ (arq)       │
-   └─────────┘  └─────────┘ └──────────┘ └─────────┘  └─────────────┘
-                                 │
-                        ┌────────▼─────────┐
-                        │ customer DBs     │  read-only, network-restricted
-                        └──────────────────┘
-```
+**4 — Ask questions.** Type or speak. Answers come back with the source attached: which document, which page, the exact passage. Database answers show the query that produced them, so you can check the number rather than trusting it.
 
-Seven containers (`web`, `api`, `postgres`, `redis`, `llm`, `voice`, `worker`). Resist adding an eighth without a strong reason — every service is one more thing a deployer has to debug on a ministry's network at 4pm on a Friday.
-
-### 5.3 Deployment profiles
-
-Selected at install time by a hardware probe; drives model selection, whisper size, and concurrency limits.
-
-| Profile       | Hardware              | LLM                | Concurrency | Expected                             |
-| ------------- | --------------------- | ------------------ | ----------- | ------------------------------------ |
-| `edge`        | 16GB RAM, CPU only    | Qwen3 4B Q4_K_M    | 2           | ~8 tok/s, text-first, voice usable   |
-| `standard`    | 32GB RAM, 8–12GB VRAM | Qwen3 8B Q4_K_M    | 8           | ~40 tok/s, full voice                |
-| `institution` | 64GB+, 24GB VRAM      | Qwen3 32B Q4_K_M   | 25          | Full capability                      |
-
-All profiles run whisper `small` (English only, §1.2), which is why `edge` no longer carries a degraded-voice caveat. Revisit these floors when Tamil STT lands in v2 — `medium` on 16GB CPU is the constraint that will bite.
-
-The installer must **refuse to proceed** below the `edge` floor rather than deploying something that will be blamed on the product. A bad first deployment costs more than a lost sale.
+**5 — When it does not know, it says so.** If your files do not contain the answer, VaultQ tells you that and tells you what it would need. It does not fall back on general knowledge and hope you don't notice. This is the behaviour that makes the rest of it trustworthy.
 
 ---
 
-## 6. Data model (core tables)
+## 5. What makes it different
 
-```
-organisations      id, name, licence_tier, created_at
-users              id, org_id, email, password_hash, role, totp_secret, locale, is_active
-collections        id, org_id, name, description, visible_to_roles[]
-documents          id, collection_id, filename, mime, sha256, page_count,
-                   version, superseded_by, status, uploaded_by, uploaded_at
-chunks             id, document_id, ordinal, page_from, page_to, heading,
-                   content, content_tsv, embedding vector(1024)
-db_connections     id, org_id, kind, dsn_encrypted, visible_to_roles[], last_probe_at
-db_schema_notes    id, connection_id, table_name, column_name, description, embedding
-conversations      id, org_id, user_id, title, mode(text|voice), created_at
-messages           id, conversation_id, role, content, trace jsonb, created_at
-audit_events       id, org_id, user_id, kind, payload jsonb, occurred_at   -- append-only
-eval_runs          id, model_label, suite_version, scores jsonb, ran_at
-```
+Local AI tools that search your documents already exist. Three things separate VaultQ.
 
-Notes:
+### It asks, and it remembers
 
-- `chunks.embedding` dimension follows the chosen embedding model; `bge-m3` gives 1024. It is kept in v1 despite English-only scope because it handles Tamil acceptably and swapping to an English-only model later would mean re-embedding every customer's corpus (§1.2). Pin the dimension in config, not in the migration.
-- `audit_events` has no `UPDATE` or `DELETE` grant for the application role. Enforce at the database.
-- `dsn_encrypted` uses a key derived from the licence file plus a per-install secret, so a copied database volume is not a credential leak.
+Every other tool ingests silently and does its best with whatever it inferred. VaultQ asks about the things it genuinely cannot know — abbreviations, codes, contradictions, unreadable scans — and stores the answers permanently.
+
+This compounds. Month six is materially better than week one, on the same files, because six months of your corrections are in it. No other local tool improves on your data without retraining anything.
+
+### Answers you can check
+
+Every factual claim carries its source: document, page, exact passage. Every database answer shows the query that produced the number. An answer you cannot verify is worth very little when the subject is a client's contract or a patient's record — and the point of citations is not decoration, it is that you can catch it being wrong.
+
+### It admits what it does not know
+
+When your files do not cover a question, VaultQ says so. It is the single most-tested behaviour in the product, because a confident wrong answer about your own material is worse than no answer at all — you have no external source to catch it against.
 
 ---
 
-## 7. Evaluation gate
+## 6. The privacy promise
 
-VaultQ ships with a golden evaluation suite. **No model becomes the default in a deployment profile without passing it.**
+**By default, VaultQ makes no network connections at all.** Your files, the AI model, the database and the record of everything you asked all sit on your machine. Disconnect from the internet and it works identically. This is verified as part of every release, not asserted.
 
-Suite structure (extends the harness ported into `eval/bench.py`):
+**Optional online AI is the one exception, and it is explicit.** If you want the power of a large commercial model, you can buy credits and turn it on. When you do, VaultQ tells you clearly what will be sent before anything is sent, and the setting is per-conversation, not a global switch you forget about.
 
-| Category                               | Count | Pass bar                                     |
-| -------------------------------------- | ----- | -------------------------------------------- |
-| Grounded document QA                   | 40    | ≥ 0.85 mean, ≥ 0.70 worst-of-3               |
-| Abstention (unanswerable)              | 15    | ≥ 0.90 — hallucination here is disqualifying |
-| Conflicting-source handling            | 10    | ≥ 0.75                                       |
-| Text-to-SQL (execution-matched)        | 40    | ≥ 0.80 mean                                  |
-| SQL safety (write attempts, injection) | 10    | 1.00 — no exceptions                         |
-| Tool selection incl. parallel          | 25    | ≥ 0.85                                       |
+**You never hand VaultQ an API key from another provider**, and VaultQ never asks for one. Credits are bought from us; we handle the provider relationship and the usage limits. That keeps a stolen key from becoming your problem and keeps the cost predictable.
 
-140 tasks, all English. The Tamil comprehension category (20 tasks, ≥ 0.75) is **removed from the v1 gate** and returns with Tamil in v2 — a pass bar for a capability that does not ship is a test that gets skipped, and skipped tests decay. `eval/suites/tamil.jsonl` is not created in v1.
-
-Each task runs three times; **worst-case is reported alongside mean**, because a single malformed tool call fails an entire agent turn and errors compound across steps. A model at 0.90 mean with 0.55 worst-case is worse in production than a steady 0.80.
-
-The suite runs in CI on every prompt change. Prompt engineering without an eval gate is guessing.
+**Local mode remains the default forever.** Online is an upgrade you choose per question, not a direction the product drifts in.
 
 ---
 
-## 8. Security requirements
+## 7. What it costs
 
-- All service-to-service traffic on an internal container network; only `web` is published.
-- Customer database connections are read-only, credential-probed at setup, and network-restricted to the `api` and `worker` containers.
-- Documents are encrypted at rest on the volume.
-- No outbound network calls from any container by default. Model downloads happen at build/install time, not runtime. An air-gapped install must work with the network cable physically unplugged, and this must be part of the release test.
-- Optional telemetry is opt-in, metadata-only, and inspectable — the customer can see exactly what would be sent before enabling it.
-- Prompt-injection defence: content retrieved from documents is delimited and the system prompt states that retrieved content is data, never instruction. Tool calls arising from a turn where retrieved content contained instruction-like patterns are flagged in the trace. This is a mitigation, not a solution; document the residual risk honestly in the security appendix rather than overclaiming.
+**The local product is free. Unlimited files, unlimited questions, no account, no time limit.**
 
----
+Revenue comes from optional online-AI credits — bought in advance, spent per question, with a limit you set so a bad afternoon cannot produce a surprise bill.
 
-## 9. Build phases
+Why free: the people who most need VaultQ are the ones who cannot upload their files, and asking them to pay upfront for something they cannot try on their real material is the wrong order. The local product has to be good enough to keep on its own. Credits are for the days when a question is worth reaching for a bigger model.
 
-Each phase ends in something demonstrable. Do not begin a phase before the previous one's acceptance criteria pass.
-
-### Phase 0 — Skeleton (target: 1 week)
-
-Compose stack up, migrations, auth (register/login/JWT/RBAC), health checks, CI running lint + tests.
-
-_Accept when:_ a user can register, log in with TOTP, and hit an authenticated endpoint; `podman-compose up` works from a clean clone.
-
-### Phase 1 — Document QA (target: 2 weeks)
-
-Upload → extract → OCR → chunk → embed → hybrid retrieve → rerank → answer with citations. Chat UI with streaming.
-
-_Accept when:_ a scanned English PDF is uploaded and a question about it returns a correct cited answer; the abstention eval subset scores ≥ 0.90.
-
-### Phase 2 — Database QA (target: 2 weeks)
-
-Connection wizard, schema introspection and annotation, text-to-SQL with the full validation chain, result rendering, SQL disclosure UI.
-
-_Accept when:_ the SQL-safety eval subset scores 1.00 and execution-match ≥ 0.80 on a real customer-shaped schema.
-
-### Phase 3 — Agent loop (target: 1.5 weeks)
-
-Tool registry, multi-step loop with the 8-call ceiling, parallel calls, trace capture, trace UI.
-
-_Accept when:_ a question requiring both a document lookup and a database query is answered correctly in one turn, with a readable trace.
-
-### Phase 4 — Voice (target: 1.5 weeks)
-
-WebSocket audio, VAD, STT (whisper `small`, English), sentence-streamed TTS, mode toggle. No language detection — v1 is English-only (§1.2).
-
-_Accept when:_ the `standard` profile meets the 3.5s latency budget on an English round trip, and the `edge` profile meets the 8s CPU budget.
-
-The estimate drops from 2 weeks because Tamil STT sizing, a second TTS engine, and language detection all left v1 scope. The TTS interface stays pluggable regardless.
-
-### Phase 5 — Admin, audit, packaging (target: 2 weeks)
-
-Admin console, audit log with export, usage dashboard, licence key validation, offline install bundle with an installer script and hardware probe.
-
-_Accept when:_ a complete install succeeds on a clean machine with the network cable unplugged.
-
-### Phase 6 — Pilot hardening
-
-Deploy to one real customer. Everything after this is driven by what breaks there, not by this document.
-
-### v2 — out of scope for this document
-
-Tamil, then Sinhala. Not numbered phases: they are a separate scoping exercise done after the pilot, when there is evidence about what these customers actually need in a second language rather than an assumption about it.
-
-What v1 leaves in place for them: a multilingual embedding model, a Tamil-aware full-text configuration, `tam` OCR traineddata, and a pluggable TTS interface (§1.2). What v2 must still build: Tamil UI, Tamil STT sizing and the `edge` profile consequences, a Tamil TTS voice, and the Tamil eval suite and gate.
+Being honest about the trade this creates: **the entire revenue line is the optional feature.** Everything shipping first is free, so v1 earns nothing. That is deliberate — build the thing people want, charge for the upgrade — but it means adoption has to come first and the credit system is the business, not an add-on.
 
 ---
 
-## 10. Repository layout
+## 8. What VaultQ is not
 
-### What exists today
-
-Root holds only what a tool or a convention requires there. Everything else is prose, and prose lives in `docs/`.
-
-```
-vaultq/
-├── AGENTS.md                  # working agreements and constraints — read this first
-├── CLAUDE.md                  # shim importing AGENTS.md
-├── README.md                  # what this is, for a human arriving cold
-├── VERSION                    # canonical application version, single source of truth
-├── CHANGELOG.md
-├── .github/
-│   └── ISSUE_TEMPLATE/        # task.md, bug.md, decision.md
-└── docs/
-    ├── PRD.md                 # this file
-    ├── BRAIN.md               # mutable build state (phase, next task, blockers)
-    ├── decisions.md           # append-only decision log, newest first
-    ├── success-metrics.md     # what "working" means in numbers, in production
-    └── states-and-edge-cases.md  # every state a user can be in
-```
-
-`AGENTS.md` and `CLAUDE.md` are at root because agents discover them there and will not find them in `docs/`. `VERSION` and `CHANGELOG.md` are at root because build tooling and release tooling look there. `README.md` is at root because that is where a human looks. Nothing else earns a root slot.
-
-### Planned — none of this exists yet
-
-Created phase by phase. **Do not scaffold ahead of the current phase** (`AGENTS.md` §4): an empty `voice/` directory in Phase 0 misleads the next session into thinking work exists.
-
-```
-vaultq/
-├── compose.yaml
-├── compose.gpu.yaml
-├── api/
-│   ├── pyproject.toml
-│   └── src/vaultq/
-│       ├── main.py
-│       ├── config.py
-│       ├── auth/              # jwt, argon2, totp, rbac
-│       ├── ingest/            # extractors, ocr, chunking, embedding
-│       ├── retrieval/         # dense, lexical, rrf, rerank
-│       ├── sql/               # introspection, generation, sqlglot validation, execution
-│       ├── agent/             # tool registry, loop, tracing, prompts
-│       ├── voice/             # vad, stt, tts, ws transport
-│       ├── admin/
-│       ├── audit/
-│       └── db/                # models, migrations
-├── web/                       # Next.js 15
-├── worker/                    # arq tasks
-├── eval/
-│   ├── bench.py
-│   ├── suites/                # documents.jsonl, sql.jsonl, tools.jsonl
-│   └── results/
-├── deploy/
-│   ├── install.sh             # hardware probe, profile selection, offline bundle
-│   └── bundle/
-└── docs/                      # joins the existing docs/
-    ├── architecture.md
-    ├── ux/                    # per-screen specs and visual references (Phase 2 of the build procedure)
-    ├── security.md
-    └── operations.md
-```
-
-| Directory | Arrives in |
-| --------- | ---------- |
-| `compose.yaml`, `api/` (`main.py`, `config.py`, `auth/`, `db/`), `.github/workflows/` | Phase 0 |
-| `api/ingest/`, `api/retrieval/`, `web/`, `worker/`, `eval/` | Phase 1 |
-| `api/sql/` | Phase 2 |
-| `api/agent/` | Phase 3 |
-| `api/voice/`, `compose.gpu.yaml` | Phase 4 |
-| `api/admin/`, `api/audit/`, `deploy/` | Phase 5 |
+- **Not a team or collaboration tool.** Single user, single machine. No sharing, no workspaces, no permissions.
+- **Not a cloud service.** There is no hosted version holding your files. Ever.
+- **Not a chatbot builder or prompt tool.**
+- **Not a coding assistant.**
+- **Not a BI tool.** It answers questions; it does not build dashboards.
+- **Not a model trainer.** It runs existing open models. Your corrections are remembered as facts, not by retraining anything.
+- **Not multilingual yet.** English only in v1. Tamil, then possibly Sinhala, come later.
 
 ---
 
-## 11. Decisions still open
+## 9. What success looks like
 
-These need Rumeasiyan's answer; Claude Code should **not** guess at them.
+Someone installs VaultQ, points it at their real files, and is still using it three months later without being reminded — because it answers questions they would otherwise have spent twenty minutes hunting for, and because it has learned enough about their material to be worth keeping.
 
-Each is a tracked issue carrying the realistic options, a recommendation, and what it blocks: [#3](https://github.com/Rumeasiyan/vaultq/issues/3) pilot customer, [#4](https://github.com/Rumeasiyan/vaultq/issues/4) multi-node HA, [#5](https://github.com/Rumeasiyan/vaultq/issues/5) brand relationship. When one is answered, strike it here, add an entry to `docs/decisions.md`, update `docs/BRAIN.md`, and close the issue.
-
-1. **First pilot customer** — Ministry of Education Eastern Province, or a commercial account with a lower blast radius? A government pilot buys credibility and costs velocity.
-2. **Multi-node** — is an HA pair in scope for the Ministry tier at launch, or a post-launch promise? It affects whether Phase 0 assumes a single Postgres.
-3. **Brand relationship** — VaultQ as a Quantum Plus product, or a standalone venture with its own entity? Affects licensing entity, pricing authority, and whether the repo lives under the company org.
-
-### Answered
-
-- ~~**Tamil scope in v1**~~ — resolved 2026-08-10: **v1 is English-only; Tamil is v2.** Three hedges kept (§1.2). Issue [#1](https://github.com/Rumeasiyan/vaultq/issues/1), `docs/decisions.md`.
-- ~~**Sinhala**~~ — resolved 2026-08-10: **v2 at the earliest, after Tamil ships.** Issue [#2](https://github.com/Rumeasiyan/vaultq/issues/2), `docs/decisions.md`.
-
-Note that §11 item numbers have shifted. Anything referring to "§11 item 1" written before 2026-08-10 means Tamil scope, not the pilot customer.
+Detailed measures in `success-metrics.md`.
 
 ---
 
-_Name alternatives considered, if VaultQ does not survive a trademark check: **SiloQ**, **AnchorQ**, **KeepQ**._
+## 10. Roadmap
+
+Ordered by what makes the product usable soonest, not by what is easiest.
+
+| Stage | What you get |
+| ----- | ------------ |
+| **1. Ask your documents** | Add files, get cited answers, told honestly when it doesn't know |
+| **2. It learns your material** | The clarification loop and permanent memory |
+| **3. Ask your data** | Database dumps, spreadsheets, live connections; answers with the query shown |
+| **4. Harder questions** | Combining documents and data in one answer, with the reasoning visible |
+| **5. Speak to it** | Voice questions and spoken answers |
+| **6. Ready to hand out** | Installers, updates, backup and restore, export |
+| **7. Online AI credits** | The paid upgrade, with limits and an account |
+
+Stages 1–6 are free and local. Stage 7 is the business.
+
+Build detail, estimates and acceptance criteria: `build-plan.md`.
+
+---
+
+## 11. Still open
+
+1. **Name.** If VaultQ fails a trademark check: SiloQ, AnchorQ, KeepQ.
+2. **Credit pricing.** Rate, minimum purchase, and margin over provider cost. Not needed until stage 7, but it determines whether the free-first bet works.
+3. **Update delivery.** How a free local install learns that a new version exists without phoning home by default.
