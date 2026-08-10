@@ -22,6 +22,8 @@ Built for the customers who cannot use cloud AI at all — government ministries
 | Trying to understand the product | [`docs/PRD.md`](docs/PRD.md) |
 | Picking up where the last session stopped | [`docs/BRAIN.md`](docs/BRAIN.md) |
 | Asking "why is it like this?" | [`docs/decisions.md`](docs/decisions.md) |
+| Building or designing any screen | [`docs/states-and-edge-cases.md`](docs/states-and-edge-cases.md) — the states a happy path forgets |
+| Asking whether it is working | [`docs/success-metrics.md`](docs/success-metrics.md) |
 | Looking for what changed | [`CHANGELOG.md`](CHANGELOG.md) |
 
 ## Non-negotiables

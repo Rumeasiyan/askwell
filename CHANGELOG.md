@@ -16,6 +16,8 @@ First versioned state. No application code — the repository is documentation o
 - `CHANGELOG.md` — this file.
 - `.github/ISSUE_TEMPLATE/` — issue templates for tasks, bugs, and blocked decisions.
 - `README.md` — was missing; the repository had no entry point for a human arriving cold.
+- `docs/success-metrics.md` — what "working" means in numbers in production, distinct from the model eval gate. Abstention rate reframed as a 5–20% band with a citation-correctness counter-metric, because it is trivially gamed by lowering the retrieval threshold.
+- `docs/states-and-edge-cases.md` — every state a user can be in across chat, ingestion, database QA, voice, admin, plus collected empty states. Surfaced six product decisions with no PRD answer (issues #10–#15).
 - Repository labels for build phase (`phase:0`…`phase:6`) and hard constraints (`constraint:*`).
 
 ### Changed

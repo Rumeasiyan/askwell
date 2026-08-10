@@ -46,6 +46,12 @@ Waiting on Rumeasiyan for PRD §11. Each is a tracked issue carrying the options
 | [#3](https://github.com/Rumeasiyan/vaultq/issues/3) | First pilot customer — government or commercial? | Phase 6; shapes which evals matter most |
 | [#4](https://github.com/Rumeasiyan/vaultq/issues/4) | Multi-node HA at launch — in or out? | **Phase 0 — the current task.** Proceeding with a single Postgres; connection config must not hardcode a single host. |
 | [#5](https://github.com/Rumeasiyan/vaultq/issues/5) | Brand relationship — Quantum Plus product or standalone entity? | Licence signing entity (Phase 5) and repo ownership |
+| [#10](https://github.com/Rumeasiyan/vaultq/issues/10) | Audit log write fails — fail the action, or proceed unlogged? | **Phase 5 schema** and the transaction boundary of every audited write |
+| [#11](https://github.com/Rumeasiyan/vaultq/issues/11) | Document deletion vs audit immutability | **Phase 5 schema** — `documents`/`chunks` shape |
+| [#12](https://github.com/Rumeasiyan/vaultq/issues/12) | Restricted columns — acknowledge or conceal? | Phase 2 prompt and SQL disclosure UI |
+| [#13](https://github.com/Rumeasiyan/vaultq/issues/13) | Voice barge-in in v1? | Phase 4 scope (currently 1.5 weeks) |
+| [#14](https://github.com/Rumeasiyan/vaultq/issues/14) | Generation on navigate-away — continue or abort? | Phase 3 agent loop, `edge` CPU headroom |
+| [#15](https://github.com/Rumeasiyan/vaultq/issues/15) | Voice latency-miss indicator? | Phase 4 UI |
 
 When one is answered: entry in `docs/decisions.md`, strike the `docs/PRD.md` §11 item, update this table, close the issue. All four, same change.
 
@@ -65,6 +71,22 @@ Not yet established. First run happens at the end of Phase 1, against `eval/suit
 - `bench.py` exists in draft form outside this repo — port it to `eval/bench.py` during Phase 1 rather than rewriting it. PRD §7 assumes that path.
 - Dev machine runs Python **3.14.6**; the project targets **3.12**. `podman-compose` is not installed — use `podman compose`. Both tracked in [#6](https://github.com/Rumeasiyan/vaultq/issues/6); details in `AGENTS.md` §5.
 
+## Build procedure
+
+Running the concept-to-build procedure over the existing PRD rather than from scratch. **Its phase numbers are not `docs/PRD.md` §9 phase numbers.** Agreed order:
+
+| Step | State |
+| ---- | ----- |
+| Close P0/P1 gaps — success metrics, states and edge cases | **done** — `docs/success-metrics.md`, `docs/states-and-edge-cases.md` |
+| P2 — design the screens, in `docs/ux/` | next |
+| Revisit `docs/PRD.md` §6 against what the screens need | after P2 |
+| P6 — user-story backlog, vertical slices ≤ 3h | after §6 review |
+| Scaffold (§9 Phase 0, issue #7) | blocked on #4 and #9 |
+
+Screens come before schema deliberately: drawing a screen surfaces the missing button and the number with nowhere to come from. §6 was written first, so it is reviewed after, not treated as settled.
+
 ## Session log
+
+**2026-08-10 (later)** — Closed the P0/P1 gaps. Added `docs/success-metrics.md` and `docs/states-and-edge-cases.md`. The states document surfaced six product decisions with no answer in the PRD, filed as #10–#15; #10 and #11 block Phase 5 schema. Also filed #9: PRD §5.1 stack versions verified against registries and found stale — Next.js is at 16.3.0, not 15, and `create-next-app` would contradict a "locked" PRD section on the first commit. Next: P2 screens in `docs/ux/`.
 
 **2026-08-10** — Set up agent working documentation. Created `AGENTS.md` (source of truth), `docs/decisions.md` (seeded with 8 entries), `VERSION` (`0.1.0`), `CHANGELOG.md`, issue templates, and 16 repo labels. `CLAUDE.md` reduced to a shim importing `AGENTS.md` — this reverses its own "static, do not edit" rule, deliberately and with agreement, because rules living only in the Claude-specific file were invisible to every other tool. Filed issues #1–#7. Also corrected factual errors in `docs/PRD.md` (container count, non-existent Qwen model names, owner name, eval harness path) — see `CHANGELOG.md`. Next: #7, Phase 0 scaffold.
