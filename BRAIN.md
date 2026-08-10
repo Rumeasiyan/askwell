@@ -9,9 +9,12 @@
 
 **Phase 0 — Skeleton.** Nothing implemented yet. Repository is documentation only.
 
+**Version:** `0.1.0` (see `VERSION`). Phase 0 landing takes it to `0.2.0`.
+**Tracker:** `Rumeasiyan/vaultq` (private). Working agreements in `AGENTS.md`.
+
 ## Next task
 
-Scaffold the Compose stack and the FastAPI skeleton:
+[#7](https://github.com/Rumeasiyan/vaultq/issues/7) — scaffold the Compose stack and the FastAPI skeleton:
 
 - `compose.yaml` with `api`, `web`, `postgres` (pgvector), `redis`
 - FastAPI app with `/health`, config loading via Pydantic Settings
@@ -24,6 +27,8 @@ Do **not** add the `llm`, `voice`, or `worker` services yet. They arrive in Phas
 
 ## Decisions log
 
+> Moved to `docs/decisions.md`, which carries the full reasoning for each. The table below is kept as an index.
+
 | Date       | Decision                                                                        | Rationale                                                                                                      |
 | ---------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
 | 2026-08-10 | All-Python backend (FastAPI), no second backend language                        | Entire AI toolchain is Python-native; a Go/Rust service would add integration surface for no gain              |
@@ -34,15 +39,17 @@ Do **not** add the `llm`, `voice`, or `worker` services yet. They arrive in Phas
 
 ## Open blockers
 
-Waiting on Rumeasiyan for PRD §11:
+Waiting on Rumeasiyan for PRD §11. Each is a tracked issue carrying the options and a recommendation — read the issue, not this list:
 
-1. Tamil scope in v1 — full parity or comprehension-only? **Blocks Phase 4 estimation and the `edge` profile's STT model size.**
-2. Sinhala — v1, v2, or never?
-3. First pilot customer — government or commercial?
-4. Multi-node HA at launch — in or out? **Decides whether Phase 0 provisions a single Postgres or an HA pair (PRD §11.4).**
-5. Brand relationship — Quantum Plus product or standalone entity?
+| # | Question | Blocks |
+| - | -------- | ------ |
+| [#1](https://github.com/Rumeasiyan/vaultq/issues/1) | Tamil scope in v1 — full parity or comprehension-only? | Phase 4 estimate and the `edge` profile's STT model size |
+| [#2](https://github.com/Rumeasiyan/vaultq/issues/2) | Sinhala — v1, v2, or never? | Phase 1 embedding model choice (a late yes means re-embedding the corpus) |
+| [#3](https://github.com/Rumeasiyan/vaultq/issues/3) | First pilot customer — government or commercial? | Phase 6; shapes which evals matter most |
+| [#4](https://github.com/Rumeasiyan/vaultq/issues/4) | Multi-node HA at launch — in or out? | **Phase 0 — the current task.** Proceeding with a single Postgres; connection config must not hardcode a single host. |
+| [#5](https://github.com/Rumeasiyan/vaultq/issues/5) | Brand relationship — Quantum Plus product or standalone entity? | Licence signing entity (Phase 5) and repo ownership |
 
-Item 4 touches Phase 0 — the current task assumes a single Postgres; revisit if HA lands in scope. Item 1 must be resolved before Phase 4.
+When one is answered: entry in `docs/decisions.md`, strike the `PRD.md` §11 item, update this table, close the issue. All four, same change.
 
 ## Eval baseline
 
@@ -56,3 +63,8 @@ Not yet established. First run happens at the end of Phase 1, against `eval/suit
 
 - The hardware specs for the target laptop have not yet been collected (`get-specs.ps1` not yet run). Deployment profile floors in PRD §5.3 are estimates and should be revised once real numbers exist.
 - `bench.py` exists in draft form outside this repo — port it to `eval/bench.py` during Phase 1 rather than rewriting it. PRD §7 assumes that path.
+- Dev machine runs Python **3.14.6**; the project targets **3.12**. `podman-compose` is not installed — use `podman compose`. Both tracked in [#6](https://github.com/Rumeasiyan/vaultq/issues/6); details in `AGENTS.md` §5.
+
+## Session log
+
+**2026-08-10** — Set up agent working documentation. Created `AGENTS.md` (source of truth), `docs/decisions.md` (seeded with 8 entries), `VERSION` (`0.1.0`), `CHANGELOG.md`, issue templates, and 16 repo labels. `CLAUDE.md` reduced to a shim importing `AGENTS.md` — this reverses its own "static, do not edit" rule, deliberately and with agreement, because rules living only in the Claude-specific file were invisible to every other tool. Filed issues #1–#7. Also corrected factual errors in `PRD.md` (container count, non-existent Qwen model names, owner name, eval harness path) — see `CHANGELOG.md`. Next: #7, Phase 0 scaffold.

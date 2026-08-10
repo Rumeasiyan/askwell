@@ -318,9 +318,13 @@ Deploy to one real customer. Everything after this is driven by what breaks ther
 
 ```
 vaultq/
-├── CLAUDE.md                  # agent charter — read this first
+├── AGENTS.md                  # working agreements and constraints — read this first
+├── CLAUDE.md                  # shim importing AGENTS.md
 ├── PRD.md                     # this file
-├── BRAIN.md                   # mutable build state (phase, decisions, blockers)
+├── BRAIN.md                   # mutable build state (phase, next task, blockers)
+├── VERSION                    # canonical application version, single source of truth
+├── CHANGELOG.md
+├── .github/ISSUE_TEMPLATE/
 ├── compose.yaml
 ├── compose.gpu.yaml
 ├── api/
@@ -347,6 +351,7 @@ vaultq/
 │   ├── install.sh             # hardware probe, profile selection, offline bundle
 │   └── bundle/
 └── docs/
+    ├── decisions.md            # append-only decision log, newest first
     ├── architecture.md
     ├── security.md
     └── operations.md
@@ -357,6 +362,8 @@ vaultq/
 ## 11. Decisions still open
 
 These need Rumeasiyan's answer; Claude Code should **not** guess at them.
+
+Each is a tracked issue carrying the realistic options, a recommendation, and what it blocks: [#1](https://github.com/Rumeasiyan/vaultq/issues/1) Tamil scope, [#2](https://github.com/Rumeasiyan/vaultq/issues/2) Sinhala, [#3](https://github.com/Rumeasiyan/vaultq/issues/3) pilot customer, [#4](https://github.com/Rumeasiyan/vaultq/issues/4) multi-node HA, [#5](https://github.com/Rumeasiyan/vaultq/issues/5) brand relationship. When one is answered, strike it here, add an entry to `docs/decisions.md`, update `BRAIN.md`, and close the issue.
 
 1. **Tamil scope in v1** — full parity (UI, STT, TTS, retrieval), or comprehension-only (understands Tamil questions, answers in Tamil text, English voice only)? This changes the Phase 4 estimate by roughly a week and changes the STT model size, which changes the `edge` profile's viability.
 2. **Sinhala** — v1, v2, or never? Affects OCR traineddata, embedding model choice, and eval suite size.
