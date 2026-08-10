@@ -99,8 +99,16 @@ Rejected SQL is recorded deliberately. It is the signal that a prompt change has
 
 ---
 
-## 8. Open
+## 8. Settled defaults
 
-1. **Default log budget.** Needs a number. Too small and users lose history they wanted; too large and VaultQ is a bad guest on a laptop.
-2. **Default interaction retention window.** Same tension.
-3. **What online mode transmits** (§6). Needed before stage 7.
+**Log storage budget: 2 GB, or 5% of free disk, whichever is smaller.** User-adjustable.
+
+Two gigabytes holds a very large amount of text — years of interactions for a normal user — while staying a polite guest on a laptop that is not primarily VaultQ's. The 5% clause is what stops a 2 GB default being rude on an already-full 128 GB machine.
+
+**Interaction retention: 12 months**, then archived on export and pruned. Long enough that "what did I ask about this client last year" works; short enough that the store does not grow without limit.
+
+**Decisions and memory are never pruned**, at any budget. They are kilobytes and they are the product.
+
+## 9. Open
+
+1. **What online mode transmits** (§6). Deferred with Phase 7. Must be settled before that work starts — token counts, timestamps and model only, never content, but the precise shape needs writing down.

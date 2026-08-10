@@ -30,6 +30,14 @@ Product repositioned. The previous documentation described on-premise software s
 - `docs/states-and-edge-cases.md` — licence, seat-cap, session-expiry and permission-denial states removed; disk-budget, online-mode and clarification states added.
 - Issue templates and labels updated to the new constraint numbering.
 
+### Settled defaults
+
+- Clarification cap of 5 questions per source, with a documented ranking for what makes the cut.
+- Log budget 2 GB or 5% of free disk, whichever smaller; 12-month interaction retention; decisions never pruned.
+- Sandbox caps of 5 GB and 10 minutes per import.
+- v1 imports PostgreSQL dumps only — MySQL and SQL Server via live connection or CSV.
+- No telemetry through Phase 6, accepting that primary retention metrics become unobservable.
+
 ### Removed
 
 - Constraint C7-as-was (column-level access control per role) — it protected one role from another, and there are no roles.

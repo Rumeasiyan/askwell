@@ -130,8 +130,23 @@ At answer time, relevant memory is retrieved alongside document chunks and schem
 
 ---
 
-## 8. Open
+## 8. Settled defaults
 
-1. **The per-source question cap.** Needs a number, and the ranking function that decides which ambiguities matter most. Guessing here directly determines whether the feature is delightful or intolerable.
-2. **Does memory ever expire?** A fact from three years ago about a source since deleted may be stale. Current design says no automatic expiry — superseding is manual. Revisit with real usage.
-3. **Import/export of memory.** Users with multiple machines, or reinstalling, will want it. Not v1, but the storage shape should not make it hard.
+**Cap: 5 questions per source**, user-adjustable. Five is reviewable in under a minute and matches the ≤ 5 median target in `success-metrics.md` §3 — setting a cap looser than the target you are aiming for guarantees you miss it.
+
+**Ranking, when a source produces more than five candidates**, highest first:
+
+1. **Contradictions between sources.** Left unresolved these produce confidently wrong answers, and the user is the only one who can adjudicate.
+2. **Date-format ambiguity** where the data cannot disambiguate (`data-sources.md` §2). Wrong by up to eleven months, and invisible.
+3. **Unguessable columns weighted by how much data sits behind them.** A code column across 40,000 rows matters more than one across 12.
+4. **Abbreviations by frequency across the corpus.**
+5. **Low-confidence scans**, weighted by document size.
+
+Everything below the cap is inferred, recorded as low confidence, and left visible in the memory inspector so the user can correct it if they ever care.
+
+**Memory does not expire.** Superseding is manual. Automatic expiry would silently discard a fact the user supplied, which is worse than holding a stale one they can see and delete.
+
+## 9. Open
+
+1. **Memory import/export** for users with several machines or reinstalling. Not v1; the storage shape should not make it hard later.
+2. Whether the cap of 5 survives contact with real imports. It is the number most likely to be wrong, and `success-metrics.md` §3 tracks dismissal rate specifically to catch it.

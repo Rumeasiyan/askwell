@@ -67,13 +67,23 @@ Note that "Quantum Plus" and the ministry framing were in the original `PRD.md` 
 | [#9](https://github.com/Rumeasiyan/vaultq/issues/9) | Stack versions stale — Next 15→16, Tailwind 4, Postgres 18 | **Phase 0 `web/`** |
 | [#6](https://github.com/Rumeasiyan/vaultq/issues/6) | Pin Python 3.12; dev machine has 3.14, no `podman-compose` | Phase 0 |
 
-All product decisions are currently answered. New ones raised in the rewrite and **not yet filed**:
+**All product decisions are answered.** Every decision issue #1–#5 and #10–#15 is closed. The three open issues are engineering tasks, not questions.
 
-- Per-source clarification cap and its ranking function (`memory-and-clarification.md` §8) — determines whether the differentiator is delightful or intolerable.
-- Default log budget and interaction retention window (`audit-log.md` §8).
-- MySQL / SQL Server dump support, which would need an eighth container or a translation layer (`data-sources.md` §7).
-- Whether opt-in telemetry ships at all — without it, none of `success-metrics.md` §1 is observable.
-- What online mode transmits (`audit-log.md` §6). Needed before Phase 7.
+Questions raised by the rewrite were settled as defaults rather than handed back, since none needed a product call:
+
+| Settled | Value | Where |
+| ------- | ----- | ----- |
+| Clarification cap per source | **5**, adjustable, with a documented ranking for what makes the cut | `memory-and-clarification.md` §8 |
+| Log storage budget | **2 GB or 5% of free disk**, whichever smaller; 12-month interaction retention | `audit-log.md` §8 |
+| Dump engines in v1 | **PostgreSQL only.** MySQL/SQL Server via live connection or CSV | `data-sources.md` §7 |
+| Sandbox caps | 5 GB, 10 minutes per import | `data-sources.md` §7 |
+| Telemetry | **None, not even opt-in**, through Phase 6 | `success-metrics.md` §6 |
+
+Still genuinely open, and deferred rather than forgotten:
+
+- **What online mode transmits** (`audit-log.md` §9). Needed before Phase 7, which is where the revenue is.
+- **Excel multi-sheet and merged-cell handling** (`data-sources.md` §8). Common in real files.
+- **Memory import/export** across machines (`memory-and-clarification.md` §9). Not v1.
 
 ## Build procedure
 

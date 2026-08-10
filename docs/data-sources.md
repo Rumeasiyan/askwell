@@ -116,8 +116,16 @@ The previous design expected an administrator to write these voluntarily, which 
 
 ---
 
-## 7. Open
+## 7. Settled scope
 
-1. **MySQL and SQL Server dump support.** Postgres dumps load into a Postgres sandbox naturally. A MySQL dump does not, and needs either a MySQL sandbox container — an eighth service — or a translation layer. Neither is cheap; v1 may need to be Postgres-dumps-only with CSV as the universal fallback.
-2. **Sandbox size and time caps.** Need numbers.
-3. **Excel with multiple sheets and merged cells.** Whether each sheet becomes a table, and how merged headers are handled, is unresolved and common in real files.
+**v1 imports PostgreSQL dumps only.** MySQL and SQL Server dumps are not supported as dumps.
+
+A MySQL dump cannot load into a Postgres sandbox, so supporting it means either a second sandbox engine — a ninth container on someone's laptop — or a translation layer, which is a large and permanently leaky piece of work. Neither is worth it in v1 when two adequate paths already exist: **live connections already support MySQL and SQL Server** and need no dump at all, and **CSV export exists in every database tool ever made** and lands in the same sandbox with better clarification behaviour.
+
+The unsupported-format message must say this explicitly — "MySQL dumps are not supported; connect directly, or export the tables as CSV" — rather than a bare rejection. A dead end with no route out of it is how someone concludes the product does not handle their data.
+
+**Sandbox caps: 5 GB and 10 minutes per import.** Beyond either, the import aborts and the sandbox database is dropped. Both user-adjustable.
+
+## 8. Open
+
+1. **Excel with multiple sheets and merged cells.** Whether each sheet becomes a table, and how merged headers are handled. Common in real files and unresolved.

@@ -4,7 +4,7 @@ What "working" means in numbers. `build-plan.md` defines the **model** quality g
 
 Rewritten 2026-08-10. The previous version assumed a pilot deployment with officers at a named customer. There is no pilot — VaultQ is a free download for individuals, so every number had to be re-derived.
 
-Each is marked **derived** (traceable to a stated requirement) or **assumed** (proposal, needs confirmation — §5).
+Each is marked **derived** (traceable to a stated requirement) or **assumed** (reasoned, not measured — see §7).
 
 ---
 
@@ -91,23 +91,27 @@ Install-to-first-answer is the metric most likely to kill the product quietly. A
 
 ## 5. How these are measured, and the hard limit on that
 
-**Everything here must be computable from the user's own local data and visible to them in their own copy.** C1 forbids runtime network calls in local mode, and no telemetry ships without explicit opt-in.
+**Everything here must be computable from the user's own local data and visible to them in their own copy.** C1 forbids runtime network calls in local mode.
 
-Which means: **without opt-in telemetry, none of §1 is observable.** Retention, second-source rate, dismissal rate — all invisible. That is a genuine and uncomfortable consequence of the privacy promise, not something to design around quietly.
-
-The honest options, none free:
-
-1. **Opt-in anonymous telemetry**, off by default, showing exactly what would be sent. Only ethical version, and it self-selects toward engaged users, which biases every number optimistically.
-2. **Ask users directly** — interviews, a survey. Small samples, real signal, does not scale.
-3. **Infer from stage 7** — paying users are observable. Says nothing about the free majority.
+Which means **none of §1 is observable** — see §6, where that was decided rather than left hanging. Retention, second-source rate and dismissal rate cannot be measured without shipping telemetry, and VaultQ does not.
 
 **Deliberately not measured:** benchmark scores beyond the quality gate (invites optimising for them); time-saved or productivity (needs a baseline nobody has, produces numbers that cannot be defended); anything requiring content to leave the machine, at any sample rate, for any reason.
 
 ---
 
-## 6. Open
+## 6. Settled: no telemetry in v1
 
-1. **Retention targets** (§1) — 35% at week 12 and ≥ 5 questions/week are reasoned, not measured. First real data should replace them.
-2. **The 5–20% abstention band** — invented from failure-mode reasoning. Needs re-deriving from real traffic; exists now so there is something to alarm on.
-3. **Whether opt-in telemetry ships at all**, and what it contains. Blocks measuring §1 at all. Needs deciding before Phase 6.
-4. **Clarification caps** (§3) — the ≤ 5 median interacts directly with the per-source question cap in `memory-and-clarification.md` §8. Both are guesses and should be set together.
+**VaultQ ships no telemetry, not even opt-in, through Phase 6.**
+
+Shipping a telemetry toggle in a privacy-first free product costs trust at exactly the moment you are asking for it. "Off by default, here is precisely what would be sent" is honest and still reads to a suspicious user — the target user is a suspicious user — as the beginning of a slope. That is a bad trade for numbers that would be biased toward engaged users anyway.
+
+Accepted consequence, stated plainly: **none of §1 is observable.** Retention, second-source rate and dismissal rate cannot be measured. The product will be built on reasoning and direct user contact rather than on a dashboard, and that is a real handicap, not a neutral choice.
+
+What is used instead: direct contact with a small number of real users (small sample, high signal), and from Phase 7 the paying users, who are observable by necessity — with the caveat that they say nothing about the free majority.
+
+Revisit at Phase 6, once there are users to ask.
+
+## 7. Open
+
+1. **Retention targets** (§1) — 35% at week 12 and ≥ 5 questions/week are reasoned, not measured. First real evidence should replace them.
+2. **The 5–20% abstention band** — invented from failure-mode reasoning. Re-derive from real traffic; it exists now so there is something to alarm on.
