@@ -92,8 +92,8 @@ Running the concept-to-build procedure over the existing docs. **Its phase numbe
 | Step | State |
 | ---- | ----- |
 | P0/P1 — spec, metrics, states | **done**, then redone after the repositioning |
-| P2 — design the screens, in `docs/ux/` | **in progress** — design system + Ask + Clarifications done; 8 screens remain |
-| Review the data model against what the screens need | after P2 |
+| P2 — design the screens, in `docs/ux/` | **done** — design system + 10 screens |
+| Review the data model against what the screens need | **next** |
 | P6 — user-story backlog, vertical slices ≤ 3h | after that |
 | Scaffold (Phase 0, #7) | blocked on #9 |
 
@@ -108,6 +108,8 @@ Not yet established. First run at the end of Phase 1.
 | —     | —     | —       | —          | —    |
 
 ## Session log
+
+**2026-08-10 (P2 complete)** — Remaining 8 screens written: first-run, add-source, library, source-viewer, memory, trace, voice, settings. Decisions taken while specifying, each recorded in its screen doc: PDFs render **in-app** rather than handing off to the OS viewer, because handing off loses the highlight and the way back and the citation loop has to be cheap or people stop checking; the file-moved state is distinct from deleted, since indexing in place makes stale paths inevitable; the retrieval threshold is adjustable only **from an abstention trace, with the consequence stated**, never as a frictionless slider; memory sorts inferred facts first and shows "used in N answers", which is the number that makes a wrong belief noticeable; update checking is **off by default** with the payload stated, because a silent check contradicts C1. Next: review `architecture.md` §7 data model against what the screens actually need.
 
 **2026-08-10 (rename)** — VaultQ → **Askwell**, repo renamed to `Rumeasiyan/askwell`. Apache-2.0 for the application, proprietary credit service. Marginalis was more coherent with the design signature but lost on four syllables that need spelling aloud; Gleanly lost on brand adjacency to Glean. Every dictionary word was taken on npm and PyPI. Surveyed the field before choosing a discovery strategy: open-webui 148k stars, AnythingLLM 64k, private-gpt 57k, Quivr 39k, Khoj 36k, Onyx 31k — **the name will not win search against these and should not try**; none of them asks about your data or remembers the answers, and that phrase is unclaimed.
 
