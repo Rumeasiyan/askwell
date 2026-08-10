@@ -2,7 +2,7 @@
 
 What "working" means in numbers. `build-plan.md` defines the **model** quality gate; this is whether the **product** is succeeding once real people use it.
 
-Rewritten 2026-08-10. The previous version assumed a pilot deployment with officers at a named customer. There is no pilot — VaultQ is a free download for individuals, so every number had to be re-derived.
+Rewritten 2026-08-10. The previous version assumed a pilot deployment with officers at a named customer. There is no pilot — Askwell is a free download for individuals, so every number had to be re-derived.
 
 Each is marked **derived** (traceable to a stated requirement) or **assumed** (reasoned, not measured — see §7).
 
@@ -10,7 +10,7 @@ Each is marked **derived** (traceable to a stated requirement) or **assumed** (r
 
 ## 1. The one that matters most
 
-**Does someone still use VaultQ three months after installing it, without being reminded?**
+**Does someone still use Askwell three months after installing it, without being reminded?**
 
 Everything else is diagnostic. A free tool that gets installed, used enthusiastically for two weeks and then forgotten has failed, whatever its eval scores say.
 
@@ -60,7 +60,7 @@ Falling abstention with falling citation correctness is the failure signature. E
 
 ## 3. Is the differentiator working
 
-The clarification loop is the reason to choose VaultQ (`PRD.md` §5), so it needs its own measures. It also has an obvious failure mode — asking too much — that only shows up here.
+The clarification loop is the reason to choose Askwell (`PRD.md` §5), so it needs its own measures. It also has an obvious failure mode — asking too much — that only shows up here.
 
 | Metric | Target | Why | Source |
 | ------ | ------ | --- | ------ |
@@ -93,7 +93,7 @@ Install-to-first-answer is the metric most likely to kill the product quietly. A
 
 **Everything here must be computable from the user's own local data and visible to them in their own copy.** C1 forbids runtime network calls in local mode.
 
-Which means **none of §1 is observable** — see §6, where that was decided rather than left hanging. Retention, second-source rate and dismissal rate cannot be measured without shipping telemetry, and VaultQ does not.
+Which means **none of §1 is observable** — see §6, where that was decided rather than left hanging. Retention, second-source rate and dismissal rate cannot be measured without shipping telemetry, and Askwell does not.
 
 **Deliberately not measured:** benchmark scores beyond the quality gate (invites optimising for them); time-saved or productivity (needs a baseline nobody has, produces numbers that cannot be defended); anything requiring content to leave the machine, at any sample rate, for any reason.
 
@@ -101,7 +101,7 @@ Which means **none of §1 is observable** — see §6, where that was decided ra
 
 ## 6. Settled: no telemetry in v1
 
-**VaultQ ships no telemetry, not even opt-in, through Phase 6.**
+**Askwell ships no telemetry, not even opt-in, through Phase 6.**
 
 Shipping a telemetry toggle in a privacy-first free product costs trust at exactly the moment you are asking for it. "Off by default, here is precisely what would be sent" is honest and still reads to a suspicious user — the target user is a suspicious user — as the beginning of a slope. That is a bad trade for numbers that would be biased toward engaged users anyway.
 

@@ -6,7 +6,7 @@ Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
 ## 0.1.0 — 2026-08-10 (rewrite)
 
-Product repositioned. The previous documentation described on-premise software sold to government ministries; VaultQ is a free local install for one individual professional. Version unchanged — no code exists, so no user-visible behaviour changed.
+Product repositioned. The previous documentation described on-premise software sold to government ministries; Askwell is a free local install for one individual professional. Version unchanged — no code exists, so no user-visible behaviour changed.
 
 ### Added
 

@@ -1,6 +1,6 @@
 # Design system
 
-Tokens and rules for every VaultQ surface. Values carry their reasoning, because a deliberate choice with no recorded reason gets "tidied" by the next person.
+Tokens and rules for every Askwell surface. Values carry their reasoning, because a deliberate choice with no recorded reason gets "tidied" by the next person.
 
 **Read `../states-and-edge-cases.md` before designing any screen.** A screen with only a happy path is not finished.
 
@@ -8,7 +8,7 @@ Tokens and rules for every VaultQ surface. Values carry their reasoning, because
 
 ## 1. Direction
 
-**VaultQ is an instrument, not a chatbot.**
+**Askwell is an instrument, not a chatbot.**
 
 The templated answer for an AI product is a centred chat column, grey bubbles, a violet accent, sources as small numbered pills behind a "Sources" toggle. Rejected deliberately: it makes citations a disclosure you click, and this product's central claim is that every answer is traceable. A design where the evidence is hidden by default contradicts the thing being sold.
 
@@ -20,19 +20,19 @@ Answers render in a text column with a permanent right-hand margin carrying sour
 
 Not a popover, not a drawer, not a toggle. **The margin is always there.** Its consequence is that an uncited claim is visibly wrong — it sits in the column with nothing beside it and nothing pointing at it. The layout enforces C4 rather than trusting the model to.
 
-When VaultQ abstains, the margin is empty *and says so*. Emptiness is the honest signal, so it is shown rather than collapsed away.
+When Askwell abstains, the margin is empty *and says so*. Emptiness is the honest signal, so it is shown rather than collapsed away.
 
 ---
 
 ## 2. Colour encodes epistemics
 
-The palette's job is to say **how VaultQ knows a thing**. This is the rule that makes the system coherent, and it is a hard rule, not a guideline.
+The palette's job is to say **how Askwell knows a thing**. This is the rule that makes the system coherent, and it is a hard rule, not a guideline.
 
 | Token | Light | Dark | Means |
 | ----- | ----- | ---- | ----- |
 | `--provenance` | `#2F6B62` | `#5FA99B` | **Traceable to a source.** Citations, source cards, leaders, quoted passages, the SQL that produced a number |
-| `--inferred` | `#8A6A22` | `#C9A34E` | **VaultQ guessed.** Low-confidence memory, inferred CSV types, uninspected OCR, anything the user has not confirmed |
-| `--ink` | `#232722` | `#E4E7E1` | VaultQ's own words and all primary text |
+| `--inferred` | `#8A6A22` | `#C9A34E` | **Askwell guessed.** Low-confidence memory, inferred CSV types, uninspected OCR, anything the user has not confirmed |
+| `--ink` | `#232722` | `#E4E7E1` | Askwell's own words and all primary text |
 | `--paper` | `#E9EBE7` | `#191C1A` | Ground. Cool grey-green, blotting paper — not the warm cream every AI tool uses |
 | `--surface` | `#F3F4F1` | `#222623` | Raised: cards, inputs, the margin rail |
 | `--rule` | `#C9CDC6` | `#333833` | Hairlines, leaders, dividers |
@@ -41,7 +41,7 @@ The palette's job is to say **how VaultQ knows a thing**. This is the rule that 
 
 **`--provenance` is reserved.** It appears on nothing that is not traceable to a source. Buttons are not this colour. Links in the chrome are not this colour. Because it is spent nowhere else, the colour itself comes to mean "you can check this" — and a user learns that in about a day without being told.
 
-**`--inferred` is the honesty colour.** Any fact VaultQ derived rather than being told carries it. An ochre-marked column description means "I guessed this — correct me", which is what drives the clarification loop from the answer surface.
+**`--inferred` is the honesty colour.** Any fact Askwell derived rather than being told carries it. An ochre-marked column description means "I guessed this — correct me", which is what drives the clarification loop from the answer surface.
 
 **Abstention is not `--alarm`.** Not knowing is correct behaviour, not a failure. It renders in `--ink` and `--muted` with more space than an answer would get. Colouring it red teaches users that the most trustworthy thing the product does is a problem.
 
@@ -127,9 +127,9 @@ Sparing. This is a tool someone uses for hours.
 
 ## 6. Voice
 
-Sentence case. Plain verbs. Second person for the user's own things ("your files"), first person for VaultQ's state ("I could not find this in your files").
+Sentence case. Plain verbs. Second person for the user's own things ("your files"), first person for Askwell's state ("I could not find this in your files").
 
-First person is deliberate and narrow: VaultQ says "I" **only** when reporting the limits of its own knowledge. Everywhere else the interface is impersonal. A tool that says "I'm sorry!" constantly is grating; one that says "I don't know" precisely is trustworthy.
+First person is deliberate and narrow: Askwell says "I" **only** when reporting the limits of its own knowledge. Everywhere else the interface is impersonal. A tool that says "I'm sorry!" constantly is grating; one that says "I don't know" precisely is trustworthy.
 
 - Abstention: *"Nothing in your files answers this. Add the source you'd expect it in, and ask again."* — states the situation, gives the action. Never apologises.
 - Failure: what happened, then what to do. No apology, no blame, no exclamation mark.
@@ -148,7 +148,7 @@ Three are not generic and must not be reskinned into standard patterns.
 
 **Claim leader** — a hairline from a cited claim to its card. `--rule` at rest, `--provenance` on hover of either end.
 
-**Confidence marker** — a 6px square before any memory fact. Filled `--provenance` if the user supplied it, hollow `--inferred` if VaultQ guessed. Small, everywhere, and it is how a user learns at a glance which facts they own.
+**Confidence marker** — a 6px square before any memory fact. Filled `--provenance` if the user supplied it, hollow `--inferred` if Askwell guessed. Small, everywhere, and it is how a user learns at a glance which facts they own.
 
 ---
 

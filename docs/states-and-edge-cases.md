@@ -1,6 +1,6 @@
 # States and edge cases
 
-The behaviours `docs/PRD.md` specifies, expressed as **states a user can actually be in**. The PRD says what VaultQ does when things work and states several rules about what it must not do. This document covers the rest: empty, loading, partial, denied, expired, degraded, and failed.
+The behaviours `docs/PRD.md` specifies, expressed as **states a user can actually be in**. The PRD says what Askwell does when things work and states several rules about what it must not do. This document covers the rest: empty, loading, partial, denied, expired, degraded, and failed.
 
 This is the document that separates a demo from a product. It exists because "the system abstains when retrieval is below threshold" (C5) is a rule, and "the user sees a screen saying their files do not cover this, naming what to add" is a product.
 
@@ -36,7 +36,7 @@ The core loop. Most of these states are reachable in the first five minutes of u
 
 | State | What the user sees | Why it matters |
 | ----- | ------------------ | -------------- |
-| **First run, empty corpus** | Not an empty chat box. A first-run state that says no documents are ingested yet, what VaultQ will be able to answer once they are, and — for admins — a direct path to upload | An empty chat box invites a question that will abstain, which teaches the user in their first 30 seconds that the product does not work |
+| **First run, empty corpus** | Not an empty chat box. A first-run state that says no documents are ingested yet, what Askwell will be able to answer once they are, and — for admins — a direct path to upload | An empty chat box invites a question that will abstain, which teaches the user in their first 30 seconds that the product does not work |
 | **Thinking / retrieving** | Streamed progress naming the step: searching documents, reading N sources, querying the database | On the `edge` profile at ~8 tok/s a question can take 20s+. A silent spinner for 20 seconds reads as broken |
 | **Answering** | Token streaming. Citations render as they are emitted, not appended at the end | — |
 | **Abstention — nothing above threshold** | An explicit "I don't know" state, visually distinct from an answer. States what was searched, and what would need to be ingested to answer it. For admins, a path to upload it. **Never a hedged half-answer** | C4. This is a first-class product state, not an error. It is the state most likely to be quietly degraded later by lowering the threshold — see `docs/success-metrics.md` §2 |
@@ -77,7 +77,7 @@ Highest-risk surface. The customer's production database is on the other side.
 | ----- | ------------------ | -------------------- |
 | **No connections configured** | Empty state; database questions say so rather than abstaining generically | Abstaining as if the corpus lacks it is misleading — the data exists, it just is not connected |
 | **Connection wizard: credentials pass the write probe** | Refused, naming which permission was detected | `data-sources.md` §4 — the wizard refuses write-capable credentials. Not a warning, a refusal |
-| **Connection dead at query time** | "The database is unreachable", not a generic failure. Admins see the connection error | Customer DBs go down independently of VaultQ |
+| **Connection dead at query time** | "The database is unreachable", not a generic failure. Admins see the connection error | Customer DBs go down independently of Askwell |
 | **Generated SQL rejected by `sqlglot`** | The user sees a normal "I could not answer that safely" and the SQL is **shown**, since disclosure is unconditional | C2. The rejection is logged with the offending SQL — this is the signal that a prompt change has degraded generation, and it must be visible |
 | **`EXPLAIN` dry-run fails** | Same as above; the query is not executed | `data-sources.md` §4 |
 | **Query exceeds `statement_timeout` (30s)** | "The query took too long", with the SQL and a suggestion to narrow it | `data-sources.md` §4 layer 4 |
@@ -92,7 +92,7 @@ Highest-risk surface. The customer's production database is on the other side.
 
 | State | What the user sees / hears | Notes |
 | ----- | -------------------------- | ----- |
-| **Microphone permission denied** | Voice mode disabled with an explanation and a path to re-enable in the browser | Browser permission, not something VaultQ can fix |
+| **Microphone permission denied** | Voice mode disabled with an explanation and a path to re-enable in the browser | Browser permission, not something Askwell can fix |
 | **No speech detected** | Silent timeout back to idle. No error sound | Silero VAD (`build-plan.md` Phase 5) |
 | **STT confidence low** | Show the transcription and ask for confirmation before answering | Answering the wrong question confidently is worse than one extra tap |
 | **TTS unavailable** | Answer is delivered as text with a note that the voice is unavailable | Voice is a mode, not a separate product (`build-plan.md` Phase 5) — falling back to text is correct |
@@ -110,7 +110,7 @@ There is no administrator. These are the user's own settings.
 | ----- | ------------------ | ----- |
 | **Pending clarifications waiting** | A count, not a modal. Reviewable whenever they choose | Never block on questions (`memory-and-clarification.md` §2) |
 | **Clarification answered** | Confirmation of what changed, and that affected material is being re-processed | The user must see that answering did something, or they stop answering |
-| **Memory inspection** | Every fact VaultQ believes, with origin, date and an edit or delete control | A memory the user cannot inspect is a system that gets mysteriously worse and cannot be debugged |
+| **Memory inspection** | Every fact Askwell believes, with origin, date and an edit or delete control | A memory the user cannot inspect is a system that gets mysteriously worse and cannot be debugged |
 | **Memory fact superseded** | Old value visible in history, not erased | Corrections supersede; they never overwrite |
 | **Log export, large range** | Background job with progress and a download when ready | A year of interactions is not a synchronous operation |
 | **Log verification finds a broken hash chain** | Reported plainly, naming where the chain breaks | C6 is tamper-*evident*. This is that evidence, and it must be surfaced, not swallowed |
@@ -139,11 +139,11 @@ Every one of these is a real screen someone will see on day one, and each is an 
 
 | Was | Answer | Issue |
 | --- | ------ | ----- |
-| Audit write failure — proceed unlogged or fail? | Fail the action, but only the tiny decisions store carries that guarantee; traces fail open (`audit-log.md`) | [#10](https://github.com/Rumeasiyan/vaultq/issues/10) |
-| Document deletion vs audit immutability | Tombstone | [#11](https://github.com/Rumeasiyan/vaultq/issues/11) |
-| Restricted columns — acknowledge or conceal? | Moot. Single-user removed roles entirely | [#12](https://github.com/Rumeasiyan/vaultq/issues/12) |
-| Voice barge-in in v1? | No. Stop control instead | [#13](https://github.com/Rumeasiyan/vaultq/issues/13) |
-| Generation on navigate-away | Continue server-side | [#14](https://github.com/Rumeasiyan/vaultq/issues/14) |
-| Voice latency-miss indicator | Yes, past budget only | [#15](https://github.com/Rumeasiyan/vaultq/issues/15) |
+| Audit write failure — proceed unlogged or fail? | Fail the action, but only the tiny decisions store carries that guarantee; traces fail open (`audit-log.md`) | [#10](https://github.com/Rumeasiyan/askwell/issues/10) |
+| Document deletion vs audit immutability | Tombstone | [#11](https://github.com/Rumeasiyan/askwell/issues/11) |
+| Restricted columns — acknowledge or conceal? | Moot. Single-user removed roles entirely | [#12](https://github.com/Rumeasiyan/askwell/issues/12) |
+| Voice barge-in in v1? | No. Stop control instead | [#13](https://github.com/Rumeasiyan/askwell/issues/13) |
+| Generation on navigate-away | Continue server-side | [#14](https://github.com/Rumeasiyan/askwell/issues/14) |
+| Voice latency-miss indicator | Yes, past budget only | [#15](https://github.com/Rumeasiyan/askwell/issues/15) |
 
 **When you find a new state this document does not list, add it here in the same change** — and if it needs a product decision, file it rather than picking a default.

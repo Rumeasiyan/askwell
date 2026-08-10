@@ -58,7 +58,7 @@ Authoritative list with reasoning lives in `AGENTS.md` §3. Summarised here for 
 | # | Rule | Enforced at |
 | - | ---- | ----------- |
 | C1 | Local by default; online AI is explicit, per-conversation opt-in | Egress blocked at the container network unless online mode is active |
-| C2 | Model-generated SQL parsed with `sqlglot`, single `SELECT`/`WITH` only | `api/src/vaultq/sql/` + read-only database role |
+| C2 | Model-generated SQL parsed with `sqlglot`, single `SELECT`/`WITH` only | `api/src/askwell/sql/` + read-only database role |
 | C3 | Imported dumps are untrusted code, loaded only into an isolated sandbox database | §5, `data-sources.md` |
 | C4 | Every factual claim carries a citation | Answer composition + eval suite |
 | C5 | Abstention over invention | System prompt + abstention eval subset |
@@ -74,7 +74,7 @@ Full detail in `data-sources.md`. The architectural point:
 
 **A `.sql` dump is a program, not data.** Importing one means executing arbitrary DDL and DML from a file the user supplied. `sqlglot` validation governs *querying* and cannot govern *loading* — a dump that cannot write is a dump that cannot import.
 
-So imports never touch VaultQ's own database. They load into a **separate sandbox Postgres instance**, one database per imported source, owned by a role with no access to VaultQ's tables and no superuser rights. A malicious or broken dump destroys its own sandbox and nothing else.
+So imports never touch Askwell's own database. They load into a **separate sandbox Postgres instance**, one database per imported source, owned by a role with no access to Askwell's tables and no superuser rights. A malicious or broken dump destroys its own sandbox and nothing else.
 
 Retrofitting this after imports exist would be a migration on users' machines, so it is in from the start.
 
@@ -154,4 +154,4 @@ The agent exposes: document search, database query, schema lookup, document list
 
 Every step is recorded in a trace, exposed behind a "how did you get this?" toggle.
 
-All prompts live in `api/src/vaultq/agent/prompts/` as versioned files, never inline in application logic. Any prompt change requires an eval run (`build-plan.md`).
+All prompts live in `api/src/askwell/agent/prompts/` as versioned files, never inline in application logic. Any prompt change requires an eval run (`build-plan.md`).

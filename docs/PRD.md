@@ -1,4 +1,4 @@
-# VaultQ
+# Askwell
 
 **Ask your own files anything. Nothing leaves your machine.**
 
@@ -6,17 +6,17 @@
 **Owner:** Suseenthiran Arulraj Rumeasiyan
 **Status:** approved for build
 
-> This document is the business case. It is written to be read by someone deciding whether to use VaultQ or invest in it — no implementation detail. For how it is built, see `architecture.md`.
+> This document is the business case. It is written to be read by someone deciding whether to use Askwell or invest in it — no implementation detail. For how it is built, see `architecture.md`.
 
 ---
 
-## 1. What VaultQ is
+## 1. What Askwell is
 
-VaultQ is a personal AI that reads your own documents and databases and answers questions about them — running entirely on your own computer.
+Askwell is a personal AI that reads your own documents and databases and answers questions about them — running entirely on your own computer.
 
 You point it at your files: PDFs, Word documents, spreadsheets, scanned images, a database dump, a CSV export, or a live connection to a database you already run. It reads them, asks you about anything it finds ambiguous, remembers your answers, and from then on you can ask questions in plain English and get answers with sources attached.
 
-No account required to use it. No files uploaded anywhere. No subscription to start.
+No account required to use it. No files uploaded anywhere. No subscription to start. Open source, so you can check that all of that is true.
 
 ---
 
@@ -28,7 +28,7 @@ The information is all there. Finding it is the problem — and finding it usual
 
 Cloud AI tools solve the searching part and create a new problem: uploading the material. For a lot of people that is not a preference, it is a hard stop. Client confidentiality, unpublished research, patient records, contracts under NDA, a database with real customer data in it. These people are not weighing convenience against privacy — they simply cannot upload, so they get no AI help at all.
 
-**VaultQ is for them.** The alternative is not ChatGPT; it is opening files one at a time and hoping to remember the right one.
+**Askwell is for them.** The alternative is not ChatGPT; it is opening files one at a time and hoping to remember the right one.
 
 ---
 
@@ -44,7 +44,7 @@ One person, working with their own material.
 | **Developers and data people** | A database nobody documented and no appetite for writing SQL to answer a simple question. |
 | **Writers, journalists, archivists** | Interview transcripts, source material, sensitive notes. |
 
-**VaultQ is single-user by design.** One person, one machine, one set of files. There are no teams, no shared workspaces, no roles or permissions. That is a scope decision, not an omission — it removes an enormous amount of complexity that a single user gains nothing from, and it means the privacy promise is simple enough to state in one sentence.
+**Askwell is single-user by design.** One person, one machine, one set of files. There are no teams, no shared workspaces, no roles or permissions. That is a scope decision, not an omission — it removes an enormous amount of complexity that a single user gains nothing from, and it means the privacy promise is simple enough to state in one sentence.
 
 ---
 
@@ -52,23 +52,23 @@ One person, working with their own material.
 
 **1 — Add your material.** Drop in files. Import a database dump or a spreadsheet. Or connect to a database you already run, using read-only access.
 
-**2 — VaultQ reads it, and asks when it is unsure.** This is the part other tools skip. When it hits something genuinely ambiguous — a column called `st_cd`, a scan it could barely read, two documents that contradict each other — it asks you. Briefly, in plain language, and only when it matters.
+**2 — Askwell reads it, and asks when it is unsure.** This is the part other tools skip. When it hits something genuinely ambiguous — a column called `st_cd`, a scan it could barely read, two documents that contradict each other — it asks you. Briefly, in plain language, and only when it matters.
 
-**3 — It remembers your answers.** Tell it once that `st_cd` means student status code, and it knows from then on — for every future question and every future file. VaultQ gets better at your material the longer you use it, because you taught it.
+**3 — It remembers your answers.** Tell it once that `st_cd` means student status code, and it knows from then on — for every future question and every future file. Askwell gets better at your material the longer you use it, because you taught it.
 
 **4 — Ask questions.** Type or speak. Answers come back with the source attached: which document, which page, the exact passage. Database answers show the query that produced them, so you can check the number rather than trusting it.
 
-**5 — When it does not know, it says so.** If your files do not contain the answer, VaultQ tells you that and tells you what it would need. It does not fall back on general knowledge and hope you don't notice. This is the behaviour that makes the rest of it trustworthy.
+**5 — When it does not know, it says so.** If your files do not contain the answer, Askwell tells you that and tells you what it would need. It does not fall back on general knowledge and hope you don't notice. This is the behaviour that makes the rest of it trustworthy.
 
 ---
 
 ## 5. What makes it different
 
-Local AI tools that search your documents already exist. Three things separate VaultQ.
+Local AI tools that search your documents already exist. Three things separate Askwell.
 
 ### It asks, and it remembers
 
-Every other tool ingests silently and does its best with whatever it inferred. VaultQ asks about the things it genuinely cannot know — abbreviations, codes, contradictions, unreadable scans — and stores the answers permanently.
+Every other tool ingests silently and does its best with whatever it inferred. Askwell asks about the things it genuinely cannot know — abbreviations, codes, contradictions, unreadable scans — and stores the answers permanently.
 
 This compounds. Month six is materially better than week one, on the same files, because six months of your corrections are in it. No other local tool improves on your data without retraining anything.
 
@@ -78,35 +78,41 @@ Every factual claim carries its source: document, page, exact passage. Every dat
 
 ### It admits what it does not know
 
-When your files do not cover a question, VaultQ says so. It is the single most-tested behaviour in the product, because a confident wrong answer about your own material is worse than no answer at all — you have no external source to catch it against.
+When your files do not cover a question, Askwell says so. It is the single most-tested behaviour in the product, because a confident wrong answer about your own material is worse than no answer at all — you have no external source to catch it against.
 
 ---
 
 ## 6. The privacy promise
 
-**By default, VaultQ makes no network connections at all.** Your files, the AI model, the database and the record of everything you asked all sit on your machine. Disconnect from the internet and it works identically. This is verified as part of every release, not asserted.
+**By default, Askwell makes no network connections at all.** Your files, the AI model, the database and the record of everything you asked all sit on your machine. Disconnect from the internet and it works identically. This is verified as part of every release, not asserted.
 
-**Optional online AI is the one exception, and it is explicit.** If you want the power of a large commercial model, you can buy credits and turn it on. When you do, VaultQ tells you clearly what will be sent before anything is sent, and the setting is per-conversation, not a global switch you forget about.
+**Optional online AI is the one exception, and it is explicit.** If you want the power of a large commercial model, you can buy credits and turn it on. When you do, Askwell tells you clearly what will be sent before anything is sent, and the setting is per-conversation, not a global switch you forget about.
 
-**You never hand VaultQ an API key from another provider**, and VaultQ never asks for one. Credits are bought from us; we handle the provider relationship and the usage limits. That keeps a stolen key from becoming your problem and keeps the cost predictable.
+**You never hand Askwell an API key from another provider**, and Askwell never asks for one. Credits are bought from us; we handle the provider relationship and the usage limits. That keeps a stolen key from becoming your problem and keeps the cost predictable.
 
 **Local mode remains the default forever.** Online is an upgrade you choose per question, not a direction the product drifts in.
 
 ---
 
-## 7. What it costs
+## 7. What it costs, and who owns it
 
-**The local product is free. Unlimited files, unlimited questions, no account, no time limit.**
+**Askwell is open source under Apache-2.0, and free to install.** Unlimited files, unlimited questions, no account, no time limit. Read the code, audit it, fork it, run it forever without paying anyone.
 
-Revenue comes from optional online-AI credits — bought in advance, spent per question, with a limit you set so a bad afternoon cannot produce a surprise bill.
+Revenue comes from optional online-AI credits — bought in advance, spent per question, with a limit you set so a bad afternoon cannot produce a surprise bill. That service is the one part that is not open.
 
-Why free: the people who most need VaultQ are the ones who cannot upload their files, and asking them to pay upfront for something they cannot try on their real material is the wrong order. The local product has to be good enough to keep on its own. Credits are for the days when a question is worth reaching for a bigger model.
+### Why open source is not a giveaway here
 
-Being honest about the trade this creates: **the entire revenue line is the optional feature.** Everything shipping first is free, so v1 earns nothing. That is deliberate — build the thing people want, charge for the upgrade — but it means adoption has to come first and the credit system is the business, not an add-on.
+For a product whose entire claim is *nothing leaves your machine*, **the source is the proof.** A closed-source local AI asking to be trusted is strictly weaker — the user has only a promise. An open one can be audited by anyone, and the people this product is for are exactly the people who will want that, or who know someone who will check for them.
 
----
+The business is not the code. It is the credit service: the provider contracts, the metering, the billing relationship. Forking the client gives none of that. Someone who wants to run a competing credit business has to go and build a credit business, and the code was never the hard part of that.
 
-## 8. What VaultQ is not
+### The honest risks
+
+- **Someone forks it and points it at their own credit service.** Nothing prevents this. What protects the position is the trademark, the brand, and the fact that operating a paid inference service means provider contracts, compliance and support — not a weekend's work.
+- **The entire revenue line is the optional feature**, and it is built last. Everything shipping first is free and open, so v1 earns nothing. That is deliberate — build the thing people want, charge for the upgrade — but it means adoption has to come first, and the credit system is the business rather than an add-on.
+- **Free and open sets a support expectation** that a single maintainer cannot meet. Issue triage and a stated support boundary need to exist before the first release, not after.
+
+## 8. What Askwell is not
 
 - **Not a team or collaboration tool.** Single user, single machine. No sharing, no workspaces, no permissions.
 - **Not a cloud service.** There is no hosted version holding your files. Ever.
@@ -120,7 +126,7 @@ Being honest about the trade this creates: **the entire revenue line is the opti
 
 ## 9. What success looks like
 
-Someone installs VaultQ, points it at their real files, and is still using it three months later without being reminded — because it answers questions they would otherwise have spent twenty minutes hunting for, and because it has learned enough about their material to be worth keeping.
+Someone installs Askwell, points it at their real files, and is still using it three months later without being reminded — because it answers questions they would otherwise have spent twenty minutes hunting for, and because it has learned enough about their material to be worth keeping.
 
 Detailed measures in `success-metrics.md`.
 
@@ -148,6 +154,5 @@ Build detail, estimates and acceptance criteria: `build-plan.md`.
 
 ## 11. Still open
 
-1. **Name.** If VaultQ fails a trademark check: SiloQ, AnchorQ, KeepQ.
-2. **Credit pricing.** Rate, minimum purchase, and margin over provider cost. Not needed until stage 7, but it determines whether the free-first bet works.
+1. **Credit pricing.** Rate, minimum purchase, and margin over provider cost. Not needed until stage 7, but it determines whether the free-first bet works.
 3. **Update delivery.** How a free local install learns that a new version exists without phoning home by default.
