@@ -1,7 +1,7 @@
 # VaultQ — Product Requirements Document
 
 **Version:** 0.1 (draft for build)
-**Owner:** Rumeasiyan Rajendran
+**Owner:** Suseenthiran Arulraj Rumeasiyan (Rumeasiyan)
 **Status:** Approved for Phase 0 implementation
 **Last updated:** 2026-08-10
 
@@ -193,7 +193,7 @@ Speak to VaultQ, hear the answer back.
                         └──────────────────┘
 ```
 
-Six containers. Resist adding a seventh without a strong reason — every service is one more thing a deployer has to debug on a ministry's network at 4pm on a Friday.
+Seven containers (`web`, `api`, `postgres`, `redis`, `llm`, `voice`, `worker`). Resist adding an eighth without a strong reason — every service is one more thing a deployer has to debug on a ministry's network at 4pm on a Friday.
 
 ### 5.3 Deployment profiles
 
@@ -201,9 +201,9 @@ Selected at install time by a hardware probe; drives model selection, whisper si
 
 | Profile       | Hardware              | LLM                | Concurrency | Expected                             |
 | ------------- | --------------------- | ------------------ | ----------- | ------------------------------------ |
-| `edge`        | 16GB RAM, CPU only    | Qwen3.5 4B Q4_K_M  | 2           | ~8 tok/s, text-first, voice degraded |
+| `edge`        | 16GB RAM, CPU only    | Qwen3 4B Q4_K_M    | 2           | ~8 tok/s, text-first, voice degraded |
 | `standard`    | 32GB RAM, 8–12GB VRAM | Qwen3 8B Q4_K_M    | 8           | ~40 tok/s, full voice                |
-| `institution` | 64GB+, 24GB VRAM      | Qwen3.6 27B Q4_K_M | 25          | Full capability                      |
+| `institution` | 64GB+, 24GB VRAM      | Qwen3 32B Q4_K_M   | 25          | Full capability                      |
 
 The installer must **refuse to proceed** below the `edge` floor rather than deploying something that will be blamed on the product. A bad first deployment costs more than a lost sale.
 
@@ -239,7 +239,7 @@ Notes:
 
 VaultQ ships with a golden evaluation suite. **No model becomes the default in a deployment profile without passing it.**
 
-Suite structure (extends the harness in `bench/`):
+Suite structure (extends the harness ported into `eval/bench.py`):
 
 | Category                               | Count | Pass bar                                     |
 | -------------------------------------- | ----- | -------------------------------------------- |
@@ -356,7 +356,7 @@ vaultq/
 
 ## 11. Decisions still open
 
-These need Rumesh's answer; Claude Code should **not** guess at them.
+These need Rumeasiyan's answer; Claude Code should **not** guess at them.
 
 1. **Tamil scope in v1** — full parity (UI, STT, TTS, retrieval), or comprehension-only (understands Tamil questions, answers in Tamil text, English voice only)? This changes the Phase 4 estimate by roughly a week and changes the STT model size, which changes the `edge` profile's viability.
 2. **Sinhala** — v1, v2, or never? Affects OCR traineddata, embedding model choice, and eval suite size.

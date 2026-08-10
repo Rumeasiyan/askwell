@@ -34,15 +34,15 @@ Do **not** add the `llm`, `voice`, or `worker` services yet. They arrive in Phas
 
 ## Open blockers
 
-Waiting on Rumesh for PRD §11:
+Waiting on Rumeasiyan for PRD §11:
 
 1. Tamil scope in v1 — full parity or comprehension-only? **Blocks Phase 4 estimation and the `edge` profile's STT model size.**
 2. Sinhala — v1, v2, or never?
 3. First pilot customer — government or commercial?
-4. Multi-node HA at launch — in or out? **Blocks nothing in Phase 0 but affects the Postgres setup if in.**
+4. Multi-node HA at launch — in or out? **Decides whether Phase 0 provisions a single Postgres or an HA pair (PRD §11.4).**
 5. Brand relationship — Quantum Plus product or standalone entity?
 
-None of these block Phase 0. Items 1 and 4 must be resolved before Phase 4 and Phase 5 respectively.
+Item 4 touches Phase 0 — the current task assumes a single Postgres; revisit if HA lands in scope. Item 1 must be resolved before Phase 4.
 
 ## Eval baseline
 
@@ -55,4 +55,4 @@ Not yet established. First run happens at the end of Phase 1, against `eval/suit
 ## Notes for the next session
 
 - The hardware specs for the target laptop have not yet been collected (`get-specs.ps1` not yet run). Deployment profile floors in PRD §5.3 are estimates and should be revised once real numbers exist.
-- `eval/bench.py` exists in draft form outside this repo — port it into `eval/` during Phase 1 rather than rewriting it.
+- `bench.py` exists in draft form outside this repo — port it to `eval/bench.py` during Phase 1 rather than rewriting it. PRD §7 assumes that path.
