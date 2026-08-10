@@ -1,4 +1,4 @@
-# BRAIN.md — VaultQ build state
+# docs/BRAIN.md — VaultQ build state
 
 > Mutable. Claude Code updates this at the end of every session.
 > If this file is stale, the next session starts from confusion.
@@ -49,7 +49,7 @@ Waiting on Rumeasiyan for PRD §11. Each is a tracked issue carrying the options
 | [#4](https://github.com/Rumeasiyan/vaultq/issues/4) | Multi-node HA at launch — in or out? | **Phase 0 — the current task.** Proceeding with a single Postgres; connection config must not hardcode a single host. |
 | [#5](https://github.com/Rumeasiyan/vaultq/issues/5) | Brand relationship — Quantum Plus product or standalone entity? | Licence signing entity (Phase 5) and repo ownership |
 
-When one is answered: entry in `docs/decisions.md`, strike the `PRD.md` §11 item, update this table, close the issue. All four, same change.
+When one is answered: entry in `docs/decisions.md`, strike the `docs/PRD.md` §11 item, update this table, close the issue. All four, same change.
 
 ## Eval baseline
 
@@ -67,4 +67,4 @@ Not yet established. First run happens at the end of Phase 1, against `eval/suit
 
 ## Session log
 
-**2026-08-10** — Set up agent working documentation. Created `AGENTS.md` (source of truth), `docs/decisions.md` (seeded with 8 entries), `VERSION` (`0.1.0`), `CHANGELOG.md`, issue templates, and 16 repo labels. `CLAUDE.md` reduced to a shim importing `AGENTS.md` — this reverses its own "static, do not edit" rule, deliberately and with agreement, because rules living only in the Claude-specific file were invisible to every other tool. Filed issues #1–#7. Also corrected factual errors in `PRD.md` (container count, non-existent Qwen model names, owner name, eval harness path) — see `CHANGELOG.md`. Next: #7, Phase 0 scaffold.
+**2026-08-10** — Set up agent working documentation. Created `AGENTS.md` (source of truth), `docs/decisions.md` (seeded with 8 entries), `VERSION` (`0.1.0`), `CHANGELOG.md`, issue templates, and 16 repo labels. `CLAUDE.md` reduced to a shim importing `AGENTS.md` — this reverses its own "static, do not edit" rule, deliberately and with agreement, because rules living only in the Claude-specific file were invisible to every other tool. Filed issues #1–#7. Also corrected factual errors in `docs/PRD.md` (container count, non-existent Qwen model names, owner name, eval harness path) — see `CHANGELOG.md`. Next: #7, Phase 0 scaffold.

@@ -14,4 +14,4 @@ A subagent that has not been told these will happily write a regex SQL filter or
 
 **Do not use subagents or workflows unless asked.** This is a documentation-heavy repository where the main thread's accumulated context is the useful thing; fanning out loses it.
 
-**`PRD.md` §11 is a hard stop, not a prompt for a reasonable default.** Five product questions are unanswered. If a task depends on one, ask — the cost of a wrong guess here is a phase of work built against the wrong assumption.
+**`docs/PRD.md` §11 is a hard stop, not a prompt for a reasonable default.** Five product questions are unanswered. If a task depends on one, ask — the cost of a wrong guess here is a phase of work built against the wrong assumption.

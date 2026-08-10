@@ -316,15 +316,33 @@ Deploy to one real customer. Everything after this is driven by what breaks ther
 
 ## 10. Repository layout
 
+### What exists today
+
+Root holds only what a tool or a convention requires there. Everything else is prose, and prose lives in `docs/`.
+
 ```
 vaultq/
 ├── AGENTS.md                  # working agreements and constraints — read this first
 ├── CLAUDE.md                  # shim importing AGENTS.md
-├── PRD.md                     # this file
-├── BRAIN.md                   # mutable build state (phase, next task, blockers)
+├── README.md                  # what this is, for a human arriving cold
 ├── VERSION                    # canonical application version, single source of truth
 ├── CHANGELOG.md
-├── .github/ISSUE_TEMPLATE/
+├── .github/
+│   └── ISSUE_TEMPLATE/        # task.md, bug.md, decision.md
+└── docs/
+    ├── PRD.md                 # this file
+    ├── BRAIN.md               # mutable build state (phase, next task, blockers)
+    └── decisions.md           # append-only decision log, newest first
+```
+
+`AGENTS.md` and `CLAUDE.md` are at root because agents discover them there and will not find them in `docs/`. `VERSION` and `CHANGELOG.md` are at root because build tooling and release tooling look there. `README.md` is at root because that is where a human looks. Nothing else earns a root slot.
+
+### Planned — none of this exists yet
+
+Created phase by phase. **Do not scaffold ahead of the current phase** (`AGENTS.md` §4): an empty `voice/` directory in Phase 0 misleads the next session into thinking work exists.
+
+```
+vaultq/
 ├── compose.yaml
 ├── compose.gpu.yaml
 ├── api/
@@ -350,12 +368,20 @@ vaultq/
 ├── deploy/
 │   ├── install.sh             # hardware probe, profile selection, offline bundle
 │   └── bundle/
-└── docs/
-    ├── decisions.md            # append-only decision log, newest first
+└── docs/                      # joins the existing docs/
     ├── architecture.md
     ├── security.md
     └── operations.md
 ```
+
+| Directory | Arrives in |
+| --------- | ---------- |
+| `compose.yaml`, `api/` (`main.py`, `config.py`, `auth/`, `db/`), `.github/workflows/` | Phase 0 |
+| `api/ingest/`, `api/retrieval/`, `web/`, `worker/`, `eval/` | Phase 1 |
+| `api/sql/` | Phase 2 |
+| `api/agent/` | Phase 3 |
+| `api/voice/`, `compose.gpu.yaml` | Phase 4 |
+| `api/admin/`, `api/audit/`, `deploy/` | Phase 5 |
 
 ---
 
@@ -363,7 +389,7 @@ vaultq/
 
 These need Rumeasiyan's answer; Claude Code should **not** guess at them.
 
-Each is a tracked issue carrying the realistic options, a recommendation, and what it blocks: [#1](https://github.com/Rumeasiyan/vaultq/issues/1) Tamil scope, [#2](https://github.com/Rumeasiyan/vaultq/issues/2) Sinhala, [#3](https://github.com/Rumeasiyan/vaultq/issues/3) pilot customer, [#4](https://github.com/Rumeasiyan/vaultq/issues/4) multi-node HA, [#5](https://github.com/Rumeasiyan/vaultq/issues/5) brand relationship. When one is answered, strike it here, add an entry to `docs/decisions.md`, update `BRAIN.md`, and close the issue.
+Each is a tracked issue carrying the realistic options, a recommendation, and what it blocks: [#1](https://github.com/Rumeasiyan/vaultq/issues/1) Tamil scope, [#2](https://github.com/Rumeasiyan/vaultq/issues/2) Sinhala, [#3](https://github.com/Rumeasiyan/vaultq/issues/3) pilot customer, [#4](https://github.com/Rumeasiyan/vaultq/issues/4) multi-node HA, [#5](https://github.com/Rumeasiyan/vaultq/issues/5) brand relationship. When one is answered, strike it here, add an entry to `docs/decisions.md`, update `docs/BRAIN.md`, and close the issue.
 
 1. **Tamil scope in v1** — full parity (UI, STT, TTS, retrieval), or comprehension-only (understands Tamil questions, answers in Tamil text, English voice only)? This changes the Phase 4 estimate by roughly a week and changes the STT model size, which changes the `edge` profile's viability.
 2. **Sinhala** — v1, v2, or never? Affects OCR traineddata, embedding model choice, and eval suite size.

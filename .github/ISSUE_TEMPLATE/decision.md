@@ -34,9 +34,9 @@ assignees: Rumeasiyan
 
 ## Where it surfaced
 
-- PRD section (if this is a `PRD.md` §11 item, say which number):
+- PRD section (if this is a `docs/PRD.md` §11 item, say which number):
 - Files:
 
 ---
 
-**When answered:** the answer goes in `docs/decisions.md` as an entry, the `PRD.md` §11 item is struck, and `BRAIN.md`'s blocker list is updated — all three in the same change, or the next session reads a different answer depending on which file it opens.
+**When answered:** the answer goes in `docs/decisions.md` as an entry, the `docs/PRD.md` §11 item is struck, and `docs/BRAIN.md`'s blocker list is updated — all three in the same change, or the next session reads a different answer depending on which file it opens.

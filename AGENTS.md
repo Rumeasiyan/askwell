@@ -7,10 +7,13 @@ Companion files:
 | File | What it holds | Mutable? |
 | ---- | ------------- | -------- |
 | `AGENTS.md` (this file) | How to work here: constraints, commands, workflow, versioning, tracker | Yes, but changes are decisions — log them |
-| `PRD.md` | What the product is: capabilities, architecture, phases, open questions | Yes, it is a draft and parts will prove wrong |
-| `BRAIN.md` | Where the build stands right now: phase, next task, blockers, eval scores | Yes — update every session |
+| `docs/PRD.md` | What the product is: capabilities, architecture, phases, open questions | Yes, it is a draft and parts will prove wrong |
+| `docs/BRAIN.md` | Where the build stands right now: phase, next task, blockers, eval scores | Yes — update every session |
 | `docs/decisions.md` | Why things are the way they are | Append-only, newest first |
+| `README.md` | What the product is, for a human arriving cold | Yes |
 | `CLAUDE.md` | Shim that imports this file | Do not add rules here |
+
+**Where things live:** root holds only what a tool or convention requires there — `AGENTS.md` and `CLAUDE.md` (agents discover them at root and will not find them in `docs/`), `README.md`, `VERSION`, `CHANGELOG.md`, `.github/`. All prose lives in `docs/`. See `docs/PRD.md` §10 for the full layout, including which directories arrive in which phase.
 
 ---
 
@@ -25,7 +28,7 @@ Two facts shape almost every technical decision here:
 
 Secondary wedge: bilingual English/Tamil. No cloud vendor serves Tamil-first Sri Lankan government workflows well.
 
-Commercially it is self-hosted software with an offline signed licence, not SaaS. See `PRD.md` §2.
+Commercially it is self-hosted software with an offline signed licence, not SaaS. See `docs/PRD.md` §2.
 
 **Current state: Phase 0, not started.** The repository is documentation only — no application code, no manifests, no tests, no CI. Section 5 reflects that honestly.
 
@@ -35,20 +38,21 @@ Commercially it is self-hosted software with an offline signed licence, not SaaS
 
 | You need | Go to |
 | -------- | ----- |
-| What a capability is supposed to do | `PRD.md` §4 (documents, database QA, agent loop, voice, admin) |
-| Locked architecture choices | `PRD.md` §5.1 — do not re-litigate these during implementation |
-| Database tables | `PRD.md` §6 |
-| Eval categories and pass bars | `PRD.md` §7 |
-| Security requirements | `PRD.md` §8 |
-| Phase scope and acceptance criteria | `PRD.md` §9 |
-| Planned repository layout | `PRD.md` §10 |
-| Questions nobody has answered yet | `PRD.md` §11 — **stop and ask; do not pick a default** |
-| Current phase, next task, blockers | `BRAIN.md` |
+| What a capability is supposed to do | `docs/PRD.md` §4 (documents, database QA, agent loop, voice, admin) |
+| Locked architecture choices | `docs/PRD.md` §5.1 — do not re-litigate these during implementation |
+| Database tables | `docs/PRD.md` §6 |
+| Eval categories and pass bars | `docs/PRD.md` §7 |
+| Security requirements | `docs/PRD.md` §8 |
+| Phase scope and acceptance criteria | `docs/PRD.md` §9 |
+| Planned repository layout | `docs/PRD.md` §10 |
+| Questions nobody has answered yet | `docs/PRD.md` §11 — **stop and ask; do not pick a default** |
+| Current phase, next task, blockers | `docs/BRAIN.md` |
 | Why a choice was made | `docs/decisions.md` |
 | Current application version | `VERSION` |
 | What shipped in each version | `CHANGELOG.md` |
+| A cold introduction to the product | `README.md` |
 
-Paths under `api/`, `web/`, `eval/`, `deploy/` appear in `PRD.md` §10 but **do not exist yet**. Do not link to them as if they do.
+Paths under `api/`, `web/`, `eval/`, `deploy/` appear in `docs/PRD.md` §10 under **Planned** and **do not exist yet**. Do not link to them as if they do. When you create one, move it out of the planned tree in the same change, or §10 stops being trustworthy and gets ignored.
 
 ---
 
@@ -58,13 +62,13 @@ Each is load-bearing for the product's reason to exist. Where enforcement lives 
 
 | # | Rule | Why | Enforced at |
 | - | ---- | --- | ----------- |
-| C1 | **No outbound network calls at runtime.** Not models, fonts, telemetry, or CDNs. Everything bundled at build time. | An air-gapped install with the cable unplugged must behave identically. A single runtime URL turns a working ministry install into a support call nobody can debug on site. | Container network policy; release test with the cable physically unplugged (`PRD.md` §8) |
+| C1 | **No outbound network calls at runtime.** Not models, fonts, telemetry, or CDNs. Everything bundled at build time. | An air-gapped install with the cable unplugged must behave identically. A single runtime URL turns a working ministry install into a support call nobody can debug on site. | Container network policy; release test with the cable physically unplugged (`docs/PRD.md` §8) |
 | C2 | **Model-generated SQL is never trusted.** Parse with `sqlglot`; reject anything that is not a single `SELECT`/`WITH`. Regex filtering is not sufficient and is not acceptable even temporarily, even in a branch. | Regex misses nested statements, comment tricks, and dialect quirks. The customer's production database is on the other side of this check. | `api/src/vaultq/sql/` (Phase 2) **plus** a `SELECT`-only database role, independently |
-| C3 | **Every factual claim from the corpus carries a citation** — document, page, and the exact retrieved passage, rendered clickable. | Officers and auditors cannot act on a number they cannot trace. An uncited claim is a bug to fix, not a limitation to document. | Answer composition + eval suite (`PRD.md` §7) |
+| C3 | **Every factual claim from the corpus carries a citation** — document, page, and the exact retrieved passage, rendered clickable. | Officers and auditors cannot act on a number they cannot trace. An uncited claim is a bug to fix, not a limitation to document. | Answer composition + eval suite (`docs/PRD.md` §7) |
 | C4 | **Abstention over invention.** When retrieval returns nothing above threshold, say so and name what would need ingesting. Never fall back to model world-knowledge for organisation-specific questions. | One confident fabrication about a circular ends the pilot. Abstention rate is also the operational signal that the corpus has gaps. | System prompt + abstention eval subset, pass bar ≥ 0.90. **Do not weaken those tests to make a change pass.** |
-| C5 | **The audit log is append-only.** No `UPDATE` or `DELETE` grant for the application role, ever. | For the government segment the audit log is why procurement approves the purchase. A mutable log is worth nothing to an auditor. | Database grants on `audit_events` (`PRD.md` §6) |
-| C6 | **Retrieved content is data, never instruction.** Keep it delimited and keep the system prompt's statement to that effect intact. | Prompt injection via an ingested document otherwise drives real tool calls against real customer databases. | Prompt templates in `api/src/vaultq/agent/prompts/` + trace flagging (`PRD.md` §8) |
-| C7 | **Restricted columns are stripped from the schema shown to the model.** | The model cannot select what it cannot see. Filtering results after generation leaks the column's existence and is bypassable. | `PRD.md` §4.2 safety layer 5 |
+| C5 | **The audit log is append-only.** No `UPDATE` or `DELETE` grant for the application role, ever. | For the government segment the audit log is why procurement approves the purchase. A mutable log is worth nothing to an auditor. | Database grants on `audit_events` (`docs/PRD.md` §6) |
+| C6 | **Retrieved content is data, never instruction.** Keep it delimited and keep the system prompt's statement to that effect intact. | Prompt injection via an ingested document otherwise drives real tool calls against real customer databases. | Prompt templates in `api/src/vaultq/agent/prompts/` + trace flagging (`docs/PRD.md` §8) |
+| C7 | **Restricted columns are stripped from the schema shown to the model.** | The model cannot select what it cannot see. Filtering results after generation leaks the column's existence and is bypassable. | `docs/PRD.md` §4.2 safety layer 5 |
 | C8 | **Secrets are environment variables, never committed.** `.env.example` updated in the same change that introduces a variable. | A committed DSN in a repo shipped to customers is a breach, not a bug. | `.gitignore` + review |
 
 ---
@@ -75,14 +79,14 @@ Each is load-bearing for the product's reason to exist. Where enforcement lives 
 - **Edit surgically.** Targeted string replacement over file rewrites. If a change touches more than three files, describe the plan and get agreement first. Full-file regeneration silently destroys prior decisions.
 - **Run the thing.** A task is not complete because the code looks right. Start the stack, hit the endpoint, read the response. `podman compose up -d && curl ...` is the definition of done.
 - **Tests accompany the code, not the phase.** Retrieval, SQL validation, and the agent loop get tests *first* — they are where correctness is hardest to eyeball.
-- **One task at a time.** Finish, verify, update `BRAIN.md`, then take the next. Batching four features means discovering which broke by bisection.
+- **One task at a time.** Finish, verify, update `docs/BRAIN.md`, then take the next. Batching four features means discovering which broke by bisection.
 - **Never hardcode a model name in application code.** Models come from configuration, selected by deployment profile.
 - **All prompts live in `api/src/vaultq/agent/prompts/` as versioned files.** Never inline a system prompt in application logic.
-- **Any prompt change requires an eval run.** Run `eval/bench.py` against the affected suite and record before/after in `BRAIN.md`. Prompt engineering without measurement is guessing, and small models are exactly where guessing fails.
+- **Any prompt change requires an eval run.** Run `eval/bench.py` against the affected suite and record before/after in `docs/BRAIN.md`. Prompt engineering without measurement is guessing, and small models are exactly where guessing fails.
 
 ### When to stop and ask
 
-- A `PRD.md` §11 open decision blocks the task → **stop and ask.** Do not pick a default.
+- A `docs/PRD.md` §11 open decision blocks the task → **stop and ask.** Do not pick a default.
 - Two reasonable architectures exist and the PRD does not choose → present both briefly with a recommendation, then ask.
 - A requirement seems wrong or contradicts another → say so directly. The PRD was written before implementation; parts of it are wrong, and finding that out during the build is the point. Do not silently work around a bad requirement.
 - A shortcut would save real time but violates a constraint in §3 → propose it explicitly rather than taking it.
@@ -97,7 +101,7 @@ What not to do: guess, note the guess in a comment, keep going. That is how a bu
 
 Phase 0 creates the toolchain. When it does, replace this section with verified commands — do not pre-populate it with commands that fail.
 
-Planned, per `PRD.md` §5.1 and §9:
+Planned, per `docs/PRD.md` §5.1 and §9:
 
 | Purpose | Command | Status |
 | ------- | ------- | ------ |
@@ -115,7 +119,7 @@ Verified on this machine, 2026-08-10:
 | Thing | Reality | Consequence |
 | ----- | ------- | ----------- |
 | System `python3` | **3.14.6** | The project targets **3.12**. Do not build against system Python — pin 3.12 in the container image and in any local virtualenv, or you will hit dependency wheels (llama-cpp bindings, OCR, embeddings) that have no 3.14 build and fail at install time with an unhelpful error. |
-| `podman-compose` | **not installed** | `podman compose` works, routed through an external `docker-compose` provider (v5.1.1). Use `podman compose`. `PRD.md` §9 Phase 0 acceptance says `podman-compose up`; treat that as meaning "the Compose stack comes up", not as a literal binary requirement. |
+| `podman-compose` | **not installed** | `podman compose` works, routed through an external `docker-compose` provider (v5.1.1). Use `podman compose`. `docs/PRD.md` §9 Phase 0 acceptance says `podman-compose up`; treat that as meaning "the Compose stack comes up", not as a literal binary requirement. |
 | `docker` | not installed | Podman only. Do not write instructions that assume a Docker daemon or Docker socket mount. |
 | `ruff`, `mypy`, `uv` | not installed | Phase 0 must install them, ideally inside the api container so the deployer's machine needs nothing. |
 | Node / pnpm | node 22.22.2, pnpm 11.5.2, npm 10.9.7 | pnpm available; pick one and record it in `docs/decisions.md`. |
@@ -125,7 +129,7 @@ Verified on this machine, 2026-08-10:
 
 ## 6. Conventions
 
-Derived from `PRD.md` §5.1 and the two commits in history. Where the repo has no precedent yet, that is stated rather than invented.
+Derived from `docs/PRD.md` §5.1 and the two commits in history. Where the repo has no precedent yet, that is stated rather than invented.
 
 **Python** — 3.12. `ruff` for lint and format. `mypy --strict` on `api/src/`. Pydantic v2 at every boundary. Async throughout; no blocking calls in request handlers. `structlog`, JSON output, never `print`.
 
@@ -162,7 +166,7 @@ Format: `MAJOR.MINOR.PATCH`. No fourth component. A hotfix is a `PATCH` release,
 
 **Build number:** none. This is a server-side Compose deployment with no app-store build counter. If the offline install bundle in Phase 5 needs a unique build identifier, add it then as an always-increasing integer and represent it as `1.4.2+57` — the semantic version identifies the release, the build number identifies the exact generated build. Never reset or decrease it.
 
-**Cadence: bump on every completed change**, in the same commit as the work. Not batched at release time — the point is that a `BRAIN.md` entry, a closing issue comment, and a version all line up.
+**Cadence: bump on every completed change**, in the same commit as the work. Not batched at release time — the point is that a `docs/BRAIN.md` entry, a closing issue comment, and a version all line up.
 
 | Change | Action |
 | ------ | ------ |
@@ -223,8 +227,8 @@ Typos, formatting, renaming a local variable, a one-line correction to a documen
 
 | Label | Use for |
 | ----- | ------- |
-| `phase:0` … `phase:6` | Which build phase the work belongs to (`PRD.md` §9) |
-| `blocked:decision` | Waiting on a `PRD.md` §11 answer. Do not start work on these. |
+| `phase:0` … `phase:6` | Which build phase the work belongs to (`docs/PRD.md` §9) |
+| `blocked:decision` | Waiting on a `docs/PRD.md` §11 answer. Do not start work on these. |
 | `constraint:sovereignty` | Touches C1 — runtime network access, bundling, air-gap behaviour |
 | `constraint:sql-safety` | Touches C2/C7 — SQL validation, database roles, column access control |
 | `constraint:grounding` | Touches C3/C4 — citations, abstention, retrieval thresholds |
@@ -245,16 +249,16 @@ Bar for an entry: **something a competent person would later ask "why is it like
 
 Each entry: date, title, **Decision**, **Why**, **Consequences**, **Refs**. The *why* should be longer than the *what*, and must include what was rejected and the trade-off accepted. The what is visible in the code; the why is not, and is exactly what gets lost.
 
-When a `PRD.md` §11 question is answered, the answer becomes a decision-log entry **and** the §11 item is struck from the PRD **and** `BRAIN.md`'s blocker list is updated. All three, same change, or the next session gets a different answer depending on which file it reads.
+When a `docs/PRD.md` §11 question is answered, the answer becomes a decision-log entry **and** the §11 item is struck from the PRD **and** `docs/BRAIN.md`'s blocker list is updated. All three, same change, or the next session gets a different answer depending on which file it reads.
 
 ---
 
 ## 9. Session workflow
 
-1. Read `BRAIN.md` — current phase, last completed task, open blockers, decisions since the PRD.
-2. Read the relevant `PRD.md` section for the current phase. The section, not the whole PRD.
+1. Read `docs/BRAIN.md` — current phase, last completed task, open blockers, decisions since the PRD.
+2. Read the relevant `docs/PRD.md` section for the current phase. The section, not the whole PRD.
 3. State the one task you are about to do. If it is larger than roughly two hours, decompose it and do the first piece.
-4. If the task is blocked on a `PRD.md` §11 item → **stop and ask.**
+4. If the task is blocked on a `docs/PRD.md` §11 item → **stop and ask.**
 5. Find or create the GitHub issue (§8). Branch off `main`.
 6. Do the work. Tests alongside the code.
 7. **Run it.** Start the stack, hit the endpoint, read the response.
@@ -262,4 +266,4 @@ When a `PRD.md` §11 question is answered, the answer becomes a decision-log ent
 9. If a decision was made, append to `docs/decisions.md`.
 10. Commit (Conventional Commits, `Refs #N`), push, open a PR.
 11. Comment the outcome on the issue and close it.
-12. Update `BRAIN.md`: what completed, what was decided and why, what broke, what is next. **A stale `BRAIN.md` makes the next session start from confusion.**
+12. Update `docs/BRAIN.md`: what completed, what was decided and why, what broke, what is next. **A stale `docs/BRAIN.md` makes the next session start from confusion.**
