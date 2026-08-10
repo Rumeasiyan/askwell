@@ -93,8 +93,8 @@ Running the concept-to-build procedure over the existing docs. **Its phase numbe
 | ---- | ----- |
 | P0/P1 — spec, metrics, states | **done**, then redone after the repositioning |
 | P2 — design the screens, in `docs/ux/` | **done** — design system + 10 screens |
-| Review the data model against what the screens need | **next** |
-| P6 — user-story backlog, vertical slices ≤ 3h | after that |
+| Review the data model against what the screens need | **done** — #20 closed |
+| P6 — user-story backlog, vertical slices ≤ 3h | **next** |
 | Scaffold (Phase 0, #7) | blocked on #9 |
 
 Screens before schema is deliberate: drawing a screen surfaces the missing button and the number with nowhere to come from.
@@ -108,6 +108,8 @@ Not yet established. First run at the end of Phase 1.
 | —     | —     | —       | —          | —    |
 
 ## Session log
+
+**2026-08-10 (data model)** — Reviewed `architecture.md` §7 against all ten screens and rewrote it. Four changes: `documents.path`/`missing_since` so a moved file is distinguishable from a deleted one (indexing in place makes stale paths normal, not exceptional); **`citations` promoted to a real table** because C4 cannot be enforced or measured while citations live in a jsonb blob — `success-metrics.md` tracks uncited claims at 100% and that query has to be possible; `fact_usage` join table for "used in N answers"; `clarifications.rank`/`evidence` for the cap and the value distributions. Dropped `collections` — a flat list is right until someone needs grouping, and documents hang off `sources` now. Specified the shape of `messages.trace`, with scores and the threshold **stored not recomputed**, since recomputing gives a different number after any threshold change and breaks the explanation exactly when someone is investigating an old answer. Listed the constraints the ORM will not express, to go in the same migration that creates the tables. Closed #20.
 
 **2026-08-10 (P2 complete)** — Remaining 8 screens written: first-run, add-source, library, source-viewer, memory, trace, voice, settings. Decisions taken while specifying, each recorded in its screen doc: PDFs render **in-app** rather than handing off to the OS viewer, because handing off loses the highlight and the way back and the citation loop has to be cheap or people stop checking; the file-moved state is distinct from deleted, since indexing in place makes stale paths inevitable; the retrieval threshold is adjustable only **from an abstention trace, with the consequence stated**, never as a frictionless slider; memory sorts inferred facts first and shows "used in N answers", which is the number that makes a wrong belief noticeable; update checking is **off by default** with the payload stated, because a silent check contradicts C1. Next: review `architecture.md` §7 data model against what the screens actually need.
 
