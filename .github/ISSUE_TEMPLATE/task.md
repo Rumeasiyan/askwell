@@ -34,11 +34,12 @@ assignees: Rumeasiyan
 
 Tick every one this work touches, and add the matching `constraint:*` label. **An issue with a `constraint:*` label cannot be closed without a comment stating how the constraint was preserved.**
 
-- [ ] **C1 sovereignty** — could this introduce a runtime network call, or something not bundled at build time?
-- [ ] **C2 / C7 SQL safety** — does this touch SQL generation, validation, database roles, or column visibility?
-- [ ] **C3 / C4 grounding** — does this touch citations, retrieval thresholds, or abstention behaviour?
-- [ ] **C5 audit** — does this touch the audit log or its grants?
-- [ ] **C6 injection** — does this touch how retrieved content reaches the model?
+- [ ] **C1 local-first** — could this introduce a network call in local mode, or send anything without explicit online opt-in?
+- [ ] **C2 SQL safety** — does this touch SQL generation, validation, or the read-only role?
+- [ ] **C3 dump sandbox** — does this touch importing a dump, or what the sandbox may reach?
+- [ ] **C4 / C5 grounding** — does this touch citations, retrieval thresholds, or abstention?
+- [ ] **C6 audit** — does this touch the audit stores, retention, or the hash chain?
+- [ ] **C7 injection** — does this touch how retrieved content reaches the model?
 - [ ] None of the above.
 
 ## Version impact

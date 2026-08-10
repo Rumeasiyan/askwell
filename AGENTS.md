@@ -7,30 +7,39 @@ Companion files:
 | File | What it holds | Mutable? |
 | ---- | ------------- | -------- |
 | `AGENTS.md` (this file) | How to work here: constraints, commands, workflow, versioning, tracker | Yes, but changes are decisions — log them |
-| `docs/PRD.md` | What the product is: capabilities, architecture, phases, open questions | Yes, it is a draft and parts will prove wrong |
-| `docs/BRAIN.md` | Where the build stands right now: phase, next task, blockers, eval scores | Yes — update every session |
+| `docs/PRD.md` | **Business case only.** What the product is, who for, what it costs. Pitch-ready, no technical detail | Yes |
+| `docs/architecture.md` | Technical decisions, topology, data model, security | Yes — changes are decisions, log them |
+| `docs/data-sources.md` | Files, CSV, SQL dumps and the sandbox, live connections | Yes |
+| `docs/memory-and-clarification.md` | The clarification loop and memory — the differentiator | Yes |
+| `docs/audit-log.md` | The three stores, retention, tamper-evidence | Yes |
+| `docs/build-plan.md` | Phases, acceptance criteria, quality gate, repo layout | Yes |
+| `docs/BRAIN.md` | Where the build stands right now: phase, next task, blockers | Yes — update every session |
 | `docs/decisions.md` | Why things are the way they are | Append-only, newest first |
-| `docs/states-and-edge-cases.md` | Every state a user can be in: empty, loading, partial, denied, expired, failed | Yes — grows as states are found |
-| `docs/success-metrics.md` | What "working" means in numbers, in production | Yes |
+| `docs/states-and-edge-cases.md` | Every state a user can be in: empty, loading, partial, failed | Yes — grows as states are found |
+| `docs/success-metrics.md` | What "working" means in numbers | Yes |
 | `README.md` | What the product is, for a human arriving cold | Yes |
 | `CLAUDE.md` | Shim that imports this file | Do not add rules here |
 
-**Where things live:** root holds only what a tool or convention requires there — `AGENTS.md` and `CLAUDE.md` (agents discover them at root and will not find them in `docs/`), `README.md`, `VERSION`, `CHANGELOG.md`, `.github/`. All prose lives in `docs/`. See `docs/PRD.md` §10 for the full layout, including which directories arrive in which phase.
+**Where things live:** root holds only what a tool or convention requires there — `AGENTS.md` and `CLAUDE.md` (agents discover them at root and will not find them in `docs/`), `README.md`, `VERSION`, `CHANGELOG.md`, `.github/`. All prose lives in `docs/`. Full layout and what arrives in which phase: `docs/build-plan.md`.
+
+**`docs/PRD.md` is shared with users and investors.** Keep implementation detail out of it. If you find yourself writing a table name or a library in there, it belongs in `docs/architecture.md`.
 
 ---
 
 ## 1. What this project is
 
-VaultQ is a **sovereign AI workspace** for organisations that cannot use cloud AI at all — Sri Lankan government ministries, hospitals, banks, legal firms, NGOs holding sensitive case data. It ingests their documents, queries their operational databases in natural language, and answers by text or voice, entirely on their own hardware.
+VaultQ is a **personal AI over your own files and databases**, running entirely on one person's own machine. Add documents, spreadsheets, database dumps or live connections; ask questions in English; get answers with sources attached.
 
-Two facts shape almost every technical decision here:
+Four facts shape almost every decision here:
 
-1. **The competitor is a filing cabinet, not ChatGPT.** These customers have no AI option today. So model quality is not the wedge — the fact that data never leaves the building is. Anything that weakens that guarantee destroys the product's reason to exist.
-2. **The deployer installs it from a USB drive on a ministry network with no internet.** That is why there are no runtime network calls, no CDNs, no hosted control plane, and why the container count is treated as a cost.
+1. **One user, one machine.** No teams, no roles, no tenancy, no server, no high availability. The hardware is somebody's laptop, which is also running their browser. Anything assuming an operator, an administrator or a second machine is wrong.
+2. **The competitor is opening files one at a time**, not ChatGPT. The target user cannot upload their material — client confidentiality, unpublished research, privilege. Local execution is not a feature, it is why the product can exist for them at all.
+3. **It asks and remembers.** The clarification loop (`docs/memory-and-clarification.md`) is the differentiator. Local RAG tools exist; one that gets better at *your* data because it asked you does not. Protect this in scope discussions.
+4. **It is free.** Revenue comes only from optional online-AI credits, which is the last thing built. No licence key, no seat cap, no trial. A free download has no sunk cost holding anyone — the first ten minutes decide everything.
 
-**v1 is English-only.** Tamil and Sinhala are v2 and are not phases of the current plan. Three hedges are kept so Tamil is later work rather than a migration of every customer's corpus — multilingual `bge-m3` embeddings, a Tamil-aware Postgres full-text config, and `tam` OCR traineddata in the bundle. They are hedges, not features: not tested, not in the eval gate, not advertised. See `docs/PRD.md` §1.2.
+**v1 is English-only.** Tamil, then possibly Sinhala, come later. Three hedges are kept so Tamil is later work rather than a re-index of everyone's corpus — multilingual `bge-m3` embeddings, a Tamil-aware Postgres full-text config, `tam` OCR traineddata bundled. Hedges, not features: not tested, not in the quality gate, not advertised.
 
-Commercially it is self-hosted software with an offline signed licence, not SaaS. See `docs/PRD.md` §2.
+> **History worth knowing.** Until 2026-08-10 this repository described a different product: an on-premise system sold to government ministries, with seat tiers, four user roles, an offline licence and a "Deployer" persona. It was repositioned to the above. Text about ministries, organisations, roles, licences or seats is leftover from that draft and is **wrong** — fix it rather than working around it.
 
 **Current state: Phase 0, not started.** The repository is documentation only — no application code, no manifests, no tests, no CI. Section 5 reflects that honestly.
 
@@ -40,40 +49,40 @@ Commercially it is self-hosted software with an offline signed licence, not SaaS
 
 | You need | Go to |
 | -------- | ----- |
-| What a capability is supposed to do | `docs/PRD.md` §4 (documents, database QA, agent loop, voice, admin) |
-| Locked architecture choices | `docs/PRD.md` §5.1 — do not re-litigate these during implementation |
-| Database tables | `docs/PRD.md` §6 |
-| Eval categories and pass bars | `docs/PRD.md` §7 |
+| What the product is, for a user or investor | `docs/PRD.md` — **business only, keep it that way** |
+| Technical decisions, topology, data model | `docs/architecture.md` |
+| How files, CSV, dumps and connections are ingested | `docs/data-sources.md` |
+| The clarification loop and memory | `docs/memory-and-clarification.md` |
+| What is logged, retention, tamper-evidence | `docs/audit-log.md` |
+| Phase scope, acceptance criteria, quality gate, repo layout | `docs/build-plan.md` |
 | What a screen must handle beyond the happy path | `docs/states-and-edge-cases.md` — **read before designing or building any surface** |
 | Whether the product is succeeding, in numbers | `docs/success-metrics.md` |
-| Security requirements | `docs/PRD.md` §8 |
-| Phase scope and acceptance criteria | `docs/PRD.md` §9 |
-| Planned repository layout | `docs/PRD.md` §10 |
-| Questions nobody has answered yet | `docs/PRD.md` §11 — **stop and ask; do not pick a default** |
 | Current phase, next task, blockers | `docs/BRAIN.md` |
 | Why a choice was made | `docs/decisions.md` |
 | Current application version | `VERSION` |
 | What shipped in each version | `CHANGELOG.md` |
-| A cold introduction to the product | `README.md` |
+| A cold introduction | `README.md` |
 
-Paths under `api/`, `web/`, `eval/`, `deploy/` appear in `docs/PRD.md` §10 under **Planned** and **do not exist yet**. Do not link to them as if they do. When you create one, move it out of the planned tree in the same change, or §10 stops being trustworthy and gets ignored.
+Paths under `api/`, `web/`, `eval/`, `deploy/` appear in `docs/build-plan.md` as **planned** and **do not exist yet**. Do not link to them as if they do. When you create one, move it out of the planned list in the same change, or that section stops being trustworthy and gets ignored.
 
 ---
 
 ## 3. Constraints — never violate
 
-Each is load-bearing for the product's reason to exist. Where enforcement lives is listed because a rule with no enforcement point is a wish.
+Each is load-bearing. Enforcement points are listed because a rule with no enforcement point is a wish.
+
+Rewritten 2026-08-10 with the repositioning. The old C7 (column-level access control per role) is **gone** — it protected one role from another, and there are no roles.
 
 | # | Rule | Why | Enforced at |
 | - | ---- | --- | ----------- |
-| C1 | **No outbound network calls at runtime.** Not models, fonts, telemetry, or CDNs. Everything bundled at build time. | An air-gapped install with the cable unplugged must behave identically. A single runtime URL turns a working ministry install into a support call nobody can debug on site. | Container network policy; release test with the cable physically unplugged (`docs/PRD.md` §8) |
-| C2 | **Model-generated SQL is never trusted.** Parse with `sqlglot`; reject anything that is not a single `SELECT`/`WITH`. Regex filtering is not sufficient and is not acceptable even temporarily, even in a branch. | Regex misses nested statements, comment tricks, and dialect quirks. The customer's production database is on the other side of this check. | `api/src/vaultq/sql/` (Phase 2) **plus** a `SELECT`-only database role, independently |
-| C3 | **Every factual claim from the corpus carries a citation** — document, page, and the exact retrieved passage, rendered clickable. | Officers and auditors cannot act on a number they cannot trace. An uncited claim is a bug to fix, not a limitation to document. | Answer composition + eval suite (`docs/PRD.md` §7) |
-| C4 | **Abstention over invention.** When retrieval returns nothing above threshold, say so and name what would need ingesting. Never fall back to model world-knowledge for organisation-specific questions. | One confident fabrication about a circular ends the pilot. Abstention rate is also the operational signal that the corpus has gaps. | System prompt + abstention eval subset, pass bar ≥ 0.90. **Do not weaken those tests to make a change pass.** |
-| C5 | **The audit log is append-only.** No `UPDATE` or `DELETE` grant for the application role, ever. | For the government segment the audit log is why procurement approves the purchase. A mutable log is worth nothing to an auditor. | Database grants on `audit_events` (`docs/PRD.md` §6) |
-| C6 | **Retrieved content is data, never instruction.** Keep it delimited and keep the system prompt's statement to that effect intact. | Prompt injection via an ingested document otherwise drives real tool calls against real customer databases. | Prompt templates in `api/src/vaultq/agent/prompts/` + trace flagging (`docs/PRD.md` §8) |
-| C7 | **Restricted columns are stripped from the schema shown to the model.** | The model cannot select what it cannot see. Filtering results after generation leaks the column's existence and is bypassable. | `docs/PRD.md` §4.2 safety layer 5 |
-| C8 | **Secrets are environment variables, never committed.** `.env.example` updated in the same change that introduces a variable. | A committed DSN in a repo shipped to customers is a breach, not a bug. | `.gitignore` + review |
+| C1 | **Local by default. No outbound network calls** — not models, fonts, telemetry or CDNs — unless the user has explicitly enabled online AI for that conversation. | Disconnect the machine and it must work identically. The target user cannot upload their material at all; a single unexpected runtime URL breaks the only promise that makes the product usable to them. Online mode is a per-conversation choice the user makes knowingly, never a default and never a drift. | Container egress policy; release test with the cable unplugged (`docs/architecture.md` §9) |
+| C2 | **Model-generated SQL is never trusted.** Parse with `sqlglot`; reject anything that is not a single `SELECT`/`WITH`. Regex filtering is not sufficient and is not acceptable even temporarily, even in a branch. | Regex misses nested statements, comment tricks and dialect quirks. The user's real database is on the other side of this check. | `api/src/vaultq/sql/` (Phase 3) **plus** a read-only database role, independently |
+| C3 | **An imported dump is untrusted code.** It loads only into the isolated sandbox Postgres, one database per source, under a restricted non-superuser role. Never into VaultQ's own database. | A `.sql` dump is a program. Importing means executing arbitrary DDL/DML from a file the user probably did not read. C2 governs querying and cannot govern loading — a dump that cannot write cannot import. | `docs/data-sources.md` §3; sandbox container with no egress |
+| C4 | **Every factual claim carries a citation** — document and page, or the memory fact it came from. | The user has no external source to catch a wrong answer against; the citation is the only check they have. An uncited claim is a bug to fix, not a limitation to document. | Answer composition + quality gate (`docs/build-plan.md`) |
+| C5 | **Abstention over invention.** When retrieval returns nothing above threshold, say so and name what would need adding. Never fall back on general knowledge for questions about the user's own material. | One confident fabrication about their own contract and the product is uninstalled. Abstention rate is also the signal that the corpus has gaps. | System prompt + abstention subset, pass bar ≥ 0.90. **Do not weaken those tests to make a change pass** — and do not lower the retrieval threshold to improve the abstention number (`docs/success-metrics.md` §2) |
+| C6 | **The audit log is append-only and tamper-evident.** No `UPDATE`/`DELETE` grant for the app role; hash-chained records. **Do not call it immutable.** | The user owns the machine and can always delete a file. The honest guarantee is that the application never rewrites history and that manual tampering is detectable — which is genuinely useful and is all that is available. Overclaiming here is the same error the prompt-injection section warns about. | `docs/audit-log.md` §4 |
+| C7 | **Retrieved content is data, never instruction.** Keep it delimited and keep the system prompt's statement to that effect intact. | Prompt injection via an ingested document otherwise drives real tool calls against the user's real database. | Prompt templates in `api/src/vaultq/agent/prompts/` + trace flagging |
+| C8 | **Secrets are environment variables, never committed.** `.env.example` updated in the same change that introduces a variable. | A committed connection string is a breach, not a bug. | `.gitignore` + review |
 
 ---
 
@@ -147,7 +156,7 @@ Derived from `docs/PRD.md` §5.1 and the two commits in history. Where the repo 
 ```
 feat(ingest): add scanned-pdf OCR fallback [P1]
 fix(sql): reject CTE with trailing DELETE [P2]
-docs: correct container count in PRD §5.2
+docs: correct container count in architecture §2
 chore(release): 0.2.0
 ```
 
@@ -232,13 +241,14 @@ Typos, formatting, renaming a local variable, a one-line correction to a documen
 
 | Label | Use for |
 | ----- | ------- |
-| `phase:0` … `phase:6` | Which build phase the work belongs to (`docs/PRD.md` §9) |
+| `phase:0` … `phase:8` | Which build phase the work belongs to (`docs/build-plan.md`) |
 | `blocked:decision` | Waiting on a `docs/PRD.md` §11 answer. Do not start work on these. |
-| `constraint:sovereignty` | Touches C1 — runtime network access, bundling, air-gap behaviour |
-| `constraint:sql-safety` | Touches C2/C7 — SQL validation, database roles, column access control |
-| `constraint:grounding` | Touches C3/C4 — citations, abstention, retrieval thresholds |
-| `constraint:audit` | Touches C5 — audit log immutability |
-| `constraint:injection` | Touches C6 — retrieved-content-as-data boundary |
+| `constraint:local-first` | Touches C1 — network access, bundling, online opt-in |
+| `constraint:sql-safety` | Touches C2 — SQL validation, read-only roles |
+| `constraint:sandbox` | Touches C3 — dump import isolation |
+| `constraint:grounding` | Touches C4/C5 — citations, abstention, retrieval thresholds |
+| `constraint:audit` | Touches C6 — audit stores, retention, hash chain |
+| `constraint:injection` | Touches C7 — retrieved-content-as-data boundary |
 | `eval` | Changes eval suites, pass bars, or requires an eval run to land |
 | `v2:language` | Tamil or Sinhala work. Out of v1 scope — do not start without a scope decision. |
 | `deploy` | Install bundle, hardware probe, deployment profiles, licensing |

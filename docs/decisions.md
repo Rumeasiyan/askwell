@@ -22,6 +22,64 @@ Template:
 
 ---
 
+## 2026-08-10 — No telemetry in v1, and the metrics cost is accepted
+
+**Decision:** VaultQ ships no telemetry through Phase 6 — not anonymous, not opt-in, not off-by-default. Product understanding comes from direct contact with a small number of users, and from Phase 7 onward from paying users who are observable by necessity.
+
+**Why:** The obvious answer was opt-in, off by default, with a screen showing exactly what would be sent. That is the ethical version and it was rejected anyway, because the target user is by definition someone who cannot upload their material and has already decided cloud tools are not for them. To that person a telemetry toggle is not a reassurance, it is the first paragraph of a story they have read before. Trust is the entire reason they installed a local product, and spending some of it on numbers is a bad trade — particularly since opt-in telemetry self-selects toward engaged users and biases every retention figure optimistically.
+
+**Consequences, stated rather than buried:** none of `success-metrics.md` §1 is observable. Retention, second-source rate and clarification dismissal rate cannot be measured. The product is built on reasoning and a handful of real conversations instead of a dashboard, and that is a genuine handicap. The dismissal-rate ceiling in §3 exists to catch the clarification loop being annoying, and it now has no instrument — so that risk is carried by the per-source cap being conservative instead.
+
+Revisit at Phase 6, when there are users to ask.
+
+**Refs:** `success-metrics.md` §5, §6; constraint C1.
+
+---
+
+## 2026-08-10 — v1 imports PostgreSQL dumps only
+
+**Decision:** SQL dump import supports PostgreSQL. MySQL and SQL Server dumps are not supported as dumps; those users connect live or export CSV.
+
+**Why:** A MySQL dump cannot load into a Postgres sandbox. Supporting it means either a second sandbox engine — a ninth container on somebody's laptop, for a free product — or a dialect translation layer, which is large, permanently leaky, and fails on exactly the vendor-specific constructs that make dumps worth importing.
+
+Neither is justified when two adequate paths already exist. Live connections already cover MySQL and SQL Server and need no dump. CSV export exists in every database tool ever written, lands in the same sandbox, and actually produces *better* results because the ambiguity of an untyped CSV is what the clarification loop is best at.
+
+The cost is a real dead end for someone holding a `.sql` file from MySQL, which is why the rejection message must name both alternatives rather than simply refusing. A dead end with no route out is how someone concludes the product does not handle their data.
+
+**Consequences:** the sandbox container is Postgres-only, which keeps it identical to the main database image and saves bundle size in the offline installer. Revisit if real users turn out to arrive holding MySQL dumps and nothing else.
+
+**Refs:** `data-sources.md` §7; constraint C3.
+
+---
+
+## 2026-08-10 — Repositioned: single-user personal product, free, local-first
+
+**Decision:** VaultQ is a free local install for **one individual professional**, not on-premise software sold to organisations. No teams, roles, tenancy, seats, licence keys or high availability. Revenue comes only from optional online-AI credits, which is the last thing built. `PRD.md` becomes a business-only document; all technical content moves to `architecture.md`, `data-sources.md`, `memory-and-clarification.md`, `audit-log.md` and `build-plan.md`.
+
+Two capabilities are added: **CSV and SQL dump import**, and a **clarification loop with permanent memory**.
+
+**Why:** The previous documentation described a product the owner did not intend to build. It targeted Sri Lankan government ministries with seat-banded LKR pricing, an offline signed licence, four RBAC roles and a "Deployer" persona flying to customer sites — none of which was wanted. That framing originated in the initial `PRD.md` (commit `dcd12cf`) and every later document inherited it, including two written during this work.
+
+The new positioning is narrower and more defensible. The people who genuinely cannot upload their material — client confidentiality, unpublished research, legal privilege — are reachable as individuals without a procurement cycle, and free removes the last obstacle for someone who cannot evaluate the product on anything but their own real files.
+
+Rejected alternatives: **self-hosted subscription** keeps the pricing question that made the old design heavy, and charging upfront for something the user cannot trial on their real data is the wrong order. **One-time purchase** gives no recurring line at all. Free-plus-credits was chosen knowing the trade: v1 earns nothing, so adoption must come first and the credit system stops being a nice-to-have and becomes the business.
+
+The clarification loop is the reason to prefer VaultQ over the local RAG tools that already exist. It also fixes something the old design asserted and never solved — that schema annotations matter more than a model upgrade, while relying on an administrator volunteering to write hundreds of them, which nobody does. Asking at the moment of ambiguity, about one thing, with the file open, is the only version that gets populated.
+
+**Consequences:**
+
+- **Constraints renumbered** (`AGENTS.md` §3). C1 now permits an explicit per-conversation online opt-in rather than forbidding all egress — the tagline "nothing leaves the building" no longer holds unconditionally and the honest version is stated instead. Old C7 (column-level access control per role) is **deleted**: it protected one role from another and there are no roles. New C3 covers dump sandboxing. C6 is restated as **tamper-evident, not immutable**, because the user owns the disk and any stronger claim is false.
+- **Authentication collapses.** JWT RS256, Argon2id, TOTP MFA and a Redis blacklist across four roles become a local session plus an optional at-rest passphrase. MFA on a single-user desktop app protects against nothing and guarantees that losing a phone loses your own files.
+- **Data model loses `organisations`, `users`, roles and `visible_to_roles[]`**, and gains `memory`, `clarifications`, `sources` and two separate audit tables.
+- **A dump is executable code**, so imports need an isolated sandbox Postgres — an eighth service, accepted deliberately because retrofitting isolation would mean migrating data on users' machines.
+- **Every metric in `success-metrics.md` was re-derived.** There is no pilot, so retention targets are lower and, uncomfortably, **none of the primary metrics are observable without opt-in telemetry** — which is a real cost of the privacy promise, not something to design around quietly.
+- Deployment profile floor drops to 8GB and the installer **warns instead of refusing** below it. Refusing suited a paid deployment that could be blamed on the vendor; for a free download it is a lost user.
+- Voice survives. It was proposed for deferral in favour of memory and the owner kept both, so the plan is longer rather than one displacing the other.
+
+**Refs:** `PRD.md`, `architecture.md`, `data-sources.md`, `memory-and-clarification.md`, `audit-log.md`, `build-plan.md`; issues #3, #4, #5, #10, #11, #12, #13, #14, #15; commit `dcd12cf`.
+
+---
+
 ## 2026-08-10 — Abstention rate is a band with a counter-metric, not a target
 
 **Decision:** `docs/success-metrics.md` treats abstention rate as a **5–20% band**, always reported alongside a citation-correctness counter-metric. Not as a number to minimise.

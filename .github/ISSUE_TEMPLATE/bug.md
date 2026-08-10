@@ -22,16 +22,17 @@ assignees: Rumeasiyan
 - Phase / PRD section:
 - Files:
 - Version (`cat VERSION`):
-- Deployment profile (`edge` / `standard` / `institution`), if relevant:
+- Deployment profile (`light` / `standard` / `accelerated` / `workstation`), if relevant:
 
 ## Constraint impact
 
 Does this bug break one of the hard constraints in `AGENTS.md` §3? If yes, add the matching `constraint:*` label — these are not ordinary bugs.
 
-- [ ] **C1** — the system made a network call at runtime, or an air-gapped install behaved differently.
-- [ ] **C2 / C7** — non-`SELECT` SQL reached the driver, or a restricted column was visible to the model.
-- [ ] **C3** — an answer contained a factual claim with no citation.
-- [ ] **C4** — the system answered from world-knowledge instead of abstaining.
-- [ ] **C5** — an audit event was modified or deleted.
-- [ ] **C6** — retrieved content was treated as instruction.
+- [ ] **C1** — a network call happened in local mode, or content left without explicit online opt-in.
+- [ ] **C2** — non-`SELECT` SQL reached the driver.
+- [ ] **C3** — an imported dump reached outside its sandbox database.
+- [ ] **C4** — an answer contained a factual claim with no citation.
+- [ ] **C5** — the system answered from general knowledge instead of abstaining.
+- [ ] **C6** — an audit record was modified, lost, or the hash chain broke.
+- [ ] **C7** — retrieved content was treated as instruction.
 - [ ] None of the above.
