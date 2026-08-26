@@ -44,6 +44,10 @@ export const directions: Direction[] = [
       s('ask-partial', 'Ask · partial & conflict', () => import('../directions/instrument/screens/ask-partial')),
       s('ask-clarify-inline', 'Ask · asks you first', () => import('../directions/instrument/screens/ask-clarify-inline')),
       s('ask-empty', 'Ask · nothing yet', () => import('../directions/instrument/screens/ask-empty')),
+      // — looking outside your own material
+      s('ask-escalate', 'Web · offered', () => import('../directions/instrument/screens/ask-escalate')),
+      s('ask-web-answer', 'Web · answered', () => import('../directions/instrument/screens/ask-web-answer')),
+      s('web-mixed', 'Web · mixed with yours', () => import('../directions/instrument/screens/web-mixed')),
       // — asking your data
       s('sql-answer', 'Data · answered', () => import('../directions/instrument/screens/sql-answer')),
       s('sql-rejected', 'Data · refused', () => import('../directions/instrument/screens/sql-rejected')),

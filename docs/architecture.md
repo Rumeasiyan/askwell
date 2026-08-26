@@ -22,19 +22,23 @@ Technical decisions and structure. `PRD.md` is the business case and deliberatel
 | Streaming | **Server-sent streaming** for answers, step labels and ingestion progress; **WebSocket only for voice** | One-way streaming reconnects on its own and covers everything up to Phase 5. A bidirectional channel in Phase 0 is complexity carried for five phases before anything needs it. |
 | Egress | **Default-deny egress proxy container** | See §5.1. Every service routes through it. |
 | Package manager | **pnpm** | Lockfile determinism and disk behaviour on a laptop. |
-| Packaging | **Container bundle + desktop installer** | See §6. |
+| Packaging | **Tauri desktop shell + container bundle** | Rust shell around the system webview, ~10 MB against Electron's ~150. Chosen for the **native file picker**: Askwell indexes in place, so nominating root directories and relocating a moved file are core flows and both are poor in a browser tab. It does not remove the container stack. |
+| Web search | **Provider behind an interface**, called only on explicit request | Per question, never per conversation. See §5.2. |
 
 ## 2. Topology
 
-One machine. Most services are containers; **inference runs natively on the host** so it can reach the GPU. Only the API is reachable, bound to localhost, never to the network interface.
+One machine. A **Tauri desktop shell** owns the window and the native file dialogs; most services are containers; **inference runs natively on the host** so it can reach the GPU. Only the API is reachable, bound to localhost, never to the network interface.
 
 ```
-   browser (localhost) ──▶ api (FastAPI, serves the built web assets)
+   Tauri shell (window, native file dialogs)
+        │  localhost only
+        ▼
+   api (FastAPI, serves the built web assets)
                              │
         ┌────────────┬───────┼─────────┬──────────────┐
         │            │       │         │              │
-   postgres      redis    voice     worker      egress-proxy ──▶ (online AI only,
-   +pgvector             stt/tts    (arq)       default-deny        when enabled)
+   postgres      redis    voice     worker      egress-proxy ──▶ online AI (per conversation)
+   +pgvector             stt/tts    (arq)       default-deny    └─▶ web search (per question)
         │
    sandbox postgres  (imported dumps, restricted role, no egress)
 
@@ -92,7 +96,13 @@ C1 is the reason the product can exist for its users, so it is enforced structur
 
 **Every container routes outbound traffic through a default-deny egress proxy.** Nothing else has a route out. In local mode the proxy permits nothing and counts the requests it refused — which is what makes the live outbound-request count in `ux/settings.md` §4 a *measured* zero rather than an assertion the application makes about itself.
 
-Enabling online AI for a conversation authorises exactly one destination, for that conversation's traffic only.
+**Two paths may be opened, both narrowly and both on request.**
+
+*Online AI* authorises exactly one destination, for one conversation's traffic.
+
+*Web search* authorises the search provider for **one question**. It closes immediately afterwards. The proxy is what makes "per question" enforceable rather than an intention in application code — and it is what lets the settings screen keep showing a real count of what was refused.
+
+Neither is sticky, and the proxy is the thing that guarantees it.
 
 This costs a container on someone's laptop, which the topology rule otherwise resists. It earns its place because the alternatives make the product's central claim something the user has to take on trust:
 
@@ -100,6 +110,18 @@ This costs a container on someone's laptop, which the topology rule otherwise re
 - **Application-level enforcement** is defeated by one dependency making an unexpected call — which is the realistic threat, not deliberate code.
 
 The sandbox Postgres has no route to the proxy at all (C3).
+
+## 5.2 Web search
+
+Full behaviour in `web-search.md`. The architectural points:
+
+**It is an escalation, never a fallback.** Retrieval runs against the user's own material and abstains when nothing clears the threshold. Only then, and only if the user asks, does a search happen. Nothing in the answer path may reach the web because retrieval came back thin (C10) — that rule is what keeps abstention meaningful (C5).
+
+**Web content is the most untrusted input Askwell handles.** C7 governs it as it governs a document, but the user chose their documents and did not choose a page written to contain instructions. Fetched content is delimited identically, the trace flags instruction-like patterns, and the retrieval is capped in count and size.
+
+**Results are structurally separate from the corpus.** Web results are not chunked into `chunks`, not embedded, and never enter the provenance margin. They live on the turn that fetched them and are cited with their URL and retrieval date, because a page can change after the answer and a document on disk cannot.
+
+The provider sits behind an interface, like the TTS engine, so it can be swapped without touching the answer path.
 
 ## 5.1 Data source isolation
 

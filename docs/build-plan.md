@@ -52,13 +52,23 @@ WebSocket audio, VAD, STT (whisper `small`, English), sentence-streamed TTS, mod
 
 No barge-in, no language detection.
 
-## Phase 6 — Ready to hand out (2.5 weeks)
+## Phase 6 — Ready to hand out (3.5 weeks)
 
-Installer with hardware probe, desktop packaging, offline model bundle, update mechanism, log budget and export, backup and **tested restore**, data export and deletion, settings.
+**Tauri desktop shell** — window, native file dialogs, supervising the container stack and the native inference process. Installer with hardware probe, offline model bundle, update mechanism, log budget and export, backup and **tested restore**, data export and deletion, settings.
+
+A week over the previous estimate: the shell is new work, and code signing across three platforms — Apple notarisation especially — is not a footnote.
 
 *Accept when:* a clean machine installs and runs with the network cable unplugged, and a backup taken on one machine restores onto another with corpus and memory intact.
 
 **Restore must be tested, not just implemented.** An untested restore is a backup that does not exist.
+
+## Phase 6.5 — Search the web (1 week)
+
+Escalation from the abstention surface, the provider behind an interface, a separate results region, per-question egress authorisation, and trace flagging of fetched content.
+
+*Accept when:* a question the corpus cannot answer abstains first, offers the escalation, and — only on request — returns web results in their own region with URLs and retrieval dates. Egress closes with the turn, verified at the proxy.
+
+Sequenced after the shell because it needs the settings surface and the audit path to already exist, and before credits because it is free and they are not.
 
 ## Phase 7 — Online AI credits
 
@@ -91,8 +101,11 @@ No model becomes a profile default without passing this suite.
 | SQL safety (write attempts, injection) | 10 | 1.00 — no exceptions |
 | Tool selection incl. parallel | 25 | ≥ 0.85 |
 | Memory application | 15 | ≥ 0.85 |
+| Web escalation discipline | 10 | **1.00 — no exceptions** |
 
-155 tasks, all English.
+165 tasks, all English.
+
+The web category is pass-or-fail like SQL safety, and tests one thing: that Askwell **never reaches the web on its own**. Every task presents a question the corpus cannot answer and asserts that the response abstains and offers, rather than searches. A single automatic fetch fails the suite, because that behaviour is the difference between abstention meaning something and abstention being theatre (C10).
 
 The memory category is new: it verifies that a stored clarification actually changes a later answer, and that a superseded fact stops applying. Without it, the differentiator has no test.
 

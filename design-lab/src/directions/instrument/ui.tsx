@@ -231,6 +231,35 @@ export function EmptyMargin({ children }: { children: ReactNode }) {
   )
 }
 
+/* Web results get their own component rather than a variant of SourceCard. They are not the
+   user's material and must never be mistaken for it (C10) — a shared component with a flag is
+   exactly how that distinction erodes. */
+export function WebResult({ site, title, quote, fetched }: { site: string; title: string; quote: string; fetched: string }) {
+  return (
+    <button className="group flex w-full cursor-pointer flex-col gap-1.5 rounded-[var(--ask-radius)] border border-dashed border-[var(--ask-rule-strong)] bg-transparent p-3 text-left transition-colors hover:border-[var(--ask-ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ask-provenance)]">
+      <div className="flex items-baseline gap-2">
+        <span className="text-[10px] uppercase tracking-[0.08em] text-[var(--ask-inferred)]">web</span>
+        <span className="text-[11px] text-[var(--ask-muted)]">{site}</span>
+      </div>
+      <div className={`${serif} text-[14px] leading-snug`}>{title}</div>
+      <div className={`${serif} border-t border-[var(--ask-rule)] pt-1.5 text-[13px] leading-snug text-[var(--ask-muted)]`}>{quote}</div>
+      <div className="text-[10px] text-[var(--ask-muted)]">retrieved {fetched}</div>
+    </button>
+  )
+}
+
+export function NotYourMaterial({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex flex-col gap-3 rounded-[var(--ask-radius)] border border-dashed border-[var(--ask-inferred)] p-4">
+      <div className="flex items-baseline gap-2">
+        <span className="h-1.5 w-1.5 shrink-0 border border-[var(--ask-inferred)]" />
+        <span className="text-[11px] uppercase tracking-[0.08em] text-[var(--ask-inferred)]">from the web — not your files</span>
+      </div>
+      {children}
+    </div>
+  )
+}
+
 /* ---------- confidence marker: fill differs as well as hue (a11y §8) ---------- */
 
 export function Mark({ known }: { known?: boolean }) {

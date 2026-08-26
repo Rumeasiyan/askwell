@@ -12,6 +12,7 @@ Companion files:
 | `docs/data-sources.md` | Files, CSV, SQL dumps and the sandbox, live connections | Yes |
 | `docs/memory-and-clarification.md` | The clarification loop and memory — the differentiator | Yes |
 | `docs/audit-log.md` | The three stores, retention, tamper-evidence | Yes |
+| `docs/web-search.md` | Web search: escalation not fallback, and how results stay separate | Yes |
 | `docs/build-plan.md` | Phases, acceptance criteria, quality gate, repo layout | Yes |
 | `docs/BRAIN.md` | Where the build stands right now: phase, next task, blockers | Yes — update every session |
 | `docs/decisions.md` | Why things are the way they are | Append-only, newest first |
@@ -54,6 +55,7 @@ Four facts shape almost every decision here:
 | How files, CSV, dumps and connections are ingested | `docs/data-sources.md` |
 | The clarification loop and memory | `docs/memory-and-clarification.md` |
 | What is logged, retention, tamper-evidence | `docs/audit-log.md` |
+| How web search works and why it never auto-fires | `docs/web-search.md` |
 | Phase scope, acceptance criteria, quality gate, repo layout | `docs/build-plan.md` |
 | What a screen must handle beyond the happy path | `docs/states-and-edge-cases.md` — **read before designing or building any surface** |
 | Whether the product is succeeding, in numbers | `docs/success-metrics.md` |
@@ -76,7 +78,7 @@ Rewritten 2026-08-10 with the repositioning. The old C7 (column-level access con
 
 | # | Rule | Why | Enforced at |
 | - | ---- | --- | ----------- |
-| C1 | **Local by default. No outbound network calls** — not models, fonts, telemetry or CDNs — unless the user has explicitly enabled online AI for that conversation. | Disconnect the machine and it must work identically. The target user cannot upload their material at all; a single unexpected runtime URL breaks the only promise that makes the product usable to them. Online mode is a per-conversation choice the user makes knowingly, never a default and never a drift. | Container egress policy; release test with the cable unplugged (`docs/architecture.md` §9) |
+| C1 | **Local by default. No outbound network calls** — not models, fonts, telemetry or CDNs — unless the user has explicitly enabled online AI **for that conversation**, or asked for a web search **for that question**. Both are deliberate acts, per-unit, and never sticky. | Disconnect the machine and it must work identically. The target user cannot upload their material at all; a single unexpected runtime URL breaks the only promise that makes the product usable to them. Two egress paths now exist, so the rule names both — an unnamed exception is how a constraint quietly stops being one. | Default-deny egress proxy; release test with the cable unplugged (`docs/architecture.md` §5) |
 | C2 | **Model-generated SQL is never trusted.** Parse with `sqlglot`; reject anything that is not a single `SELECT`/`WITH`. Regex filtering is not sufficient and is not acceptable even temporarily, even in a branch. | Regex misses nested statements, comment tricks and dialect quirks. The user's real database is on the other side of this check. | `api/src/askwell/sql/` (Phase 3) **plus** a read-only database role, independently |
 | C3 | **An imported dump is untrusted code.** It loads only into the isolated sandbox Postgres, one database per source, under a restricted non-superuser role. Never into Askwell's own database. | A `.sql` dump is a program. Importing means executing arbitrary DDL/DML from a file the user probably did not read. C2 governs querying and cannot govern loading — a dump that cannot write cannot import. | `docs/data-sources.md` §3; sandbox container with no egress |
 | C4 | **Every factual claim carries a citation** — document and page, or the memory fact it came from. | The user has no external source to catch a wrong answer against; the citation is the only check they have. An uncited claim is a bug to fix, not a limitation to document. | Answer composition + quality gate (`docs/build-plan.md`) |
@@ -85,6 +87,7 @@ Rewritten 2026-08-10 with the repositioning. The old C7 (column-level access con
 | C7 | **Retrieved content is data, never instruction.** Keep it delimited and keep the system prompt's statement to that effect intact. | Prompt injection via an ingested document otherwise drives real tool calls against the user's real database. | Prompt templates in `api/src/askwell/agent/prompts/` + trace flagging |
 | C8 | **Secrets are environment variables, never committed.** `.env.example` updated in the same change that introduces a variable. | A committed connection string is a breach, not a bug. | `.gitignore` + review |
 | C9 | **A bundled model's licence must permit redistribution and commercial use, and must not be access-gated.** Verified against the registry before the name is written into configuration. | Askwell ships weights inside a redistributable offline installer under Apache-2.0. A model under restrictive or manually-gated terms cannot ship however well it performs — and an installer cannot click through an access agreement. Discovering this at packaging time in Phase 7 would be phase-blocking. | Model selection; the offline bundle build (`docs/build-plan.md` Phase 7) |
+| C10 | **Web results are never your material.** A web-sourced claim never enters the provenance margin, is always marked as not-your-material with its retrieval date, and web search is offered only *after* Askwell has abstained — never as an automatic fallback when retrieval comes back thin. | The margin is for documents the user owns and can open; a URL can change or vanish after the answer. And if the web is reachable automatically, "nothing in your files answers this" stops being true, which removes the behaviour the whole product is built to protect (C5). Escalation the user asks for keeps abstention meaningful; a fallback destroys it. | Answer composition; the abstention surface (`docs/ux/ask.md`); trace flagging |
 
 ---
 
@@ -253,6 +256,7 @@ Typos, formatting, renaming a local variable, a one-line correction to a documen
 | `constraint:grounding` | Touches C4/C5 — citations, abstention, retrieval thresholds |
 | `constraint:audit` | Touches C6 — audit stores, retention, hash chain |
 | `constraint:injection` | Touches C7 — retrieved-content-as-data boundary |
+| `constraint:web` | Touches C10 — web search, its separation from your own material, and its escalation-not-fallback rule |
 | `eval` | Changes eval suites, pass bars, or requires an eval run to land |
 | `v2:language` | Tamil or Sinhala work. Out of v1 scope — do not start without a scope decision. |
 | `deploy` | Install bundle, hardware probe, deployment profiles, licensing |

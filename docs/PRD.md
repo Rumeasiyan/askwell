@@ -16,7 +16,9 @@ Askwell is a personal AI that reads your own documents and databases and answers
 
 You point it at your files: PDFs, Word documents, spreadsheets, scanned images, a database dump, a CSV export, or a live connection to a database you already run. It reads them, asks you about anything it finds ambiguous, remembers your answers, and from then on you can ask questions in plain English and get answers with sources attached.
 
-No account required to use it. No files uploaded anywhere. No subscription to start. Open source, so you can check that all of that is true.
+It installs as a desktop application and runs on your own machine. No account required. No files uploaded anywhere. No subscription to start. Open source, so you can check that all of that is true.
+
+When your own files do not have the answer, Askwell says so — and can search the web if you ask it to, in that moment, for that question.
 
 ---
 
@@ -60,6 +62,8 @@ One person, working with their own material.
 
 **5 — When it does not know, it says so.** If your files do not contain the answer, Askwell tells you that and tells you what it would need. It does not fall back on general knowledge and hope you don't notice. This is the behaviour that makes the rest of it trustworthy.
 
+**6 — Then, if you want, it can look outside.** From that same screen you can send the question to the web, or to a larger cloud model. Both are things you ask for, one question at a time. Askwell never reaches out on its own because it came up short, and anything it finds outside your files is shown separately and labelled as such — never mixed in with your own documents.
+
 ---
 
 ## 5. What makes it different
@@ -80,13 +84,21 @@ Every factual claim carries its source: document, page, exact passage. Every dat
 
 When your files do not cover a question, Askwell says so. It is the single most-tested behaviour in the product, because a confident wrong answer about your own material is worse than no answer at all — you have no external source to catch it against.
 
+That stays true now that Askwell can search the web. **Searching is something you ask for, never something it does because it came up short.** Askwell tells you your files do not answer the question, and then offers to look further. The difference matters: a tool that quietly reaches outside stops being able to tell you what you actually have.
+
 ---
 
 ## 6. The privacy promise
 
 **By default, Askwell makes no network connections at all.** Your files, the AI model, the database and the record of everything you asked all sit on your machine. Disconnect from the internet and it works identically. This is verified as part of every release, not asserted.
 
-**Optional online AI is the one exception, and it is explicit.** If you want the power of a large commercial model, you can buy credits and turn it on. When you do, Askwell tells you clearly what will be sent before anything is sent, and the setting is per-conversation, not a global switch you forget about.
+**Two things can reach outside, and both are deliberate acts.**
+
+*Online AI* — a larger cloud model for a hard question. Bought with credits, enabled per conversation, and Askwell tells you exactly what will be sent before it sends anything.
+
+*Web search* — asked for per question, from the screen where Askwell has just told you your files do not cover it. What goes out is your question. What comes back is shown separately from your own material, labelled, and dated, because a web page can change after the answer and a document on your disk cannot.
+
+Neither is sticky. Neither happens on its own. Turning one on for a question does not turn it on for the next.
 
 **You never hand Askwell an API key from another provider**, and Askwell never asks for one. Credits are bought from us; we handle the provider relationship and the usage limits. That keeps a stolen key from becoming your problem and keeps the cost predictable.
 
@@ -115,7 +127,7 @@ The business is not the code. It is the credit service: the provider contracts, 
 ## 8. What Askwell is not
 
 - **Not a team or collaboration tool.** Single user, single machine. No sharing, no workspaces, no permissions.
-- **Not a cloud service.** There is no hosted version holding your files. Ever.
+- **Not a cloud service.** There is no hosted version holding your files. Ever. It is an application you install.
 - **Not a chatbot builder or prompt tool.**
 - **Not a coding assistant.**
 - **Not a BI tool.** It answers questions; it does not build dashboards.
