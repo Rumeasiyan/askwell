@@ -74,5 +74,4 @@ Deleting a source removes its schema notes. **General memory learned from it sur
 
 ## 6. Open
 
-1. **Collections.** The data model has them; whether v1 exposes grouping or ships a flat list is unresolved. A flat list is simpler and probably right until someone has enough sources to need otherwise.
-2. **Per-source storage** — showing how much index each source costs, which matters once the log and index budgets bite.
+1. **Per-source storage** — showing how much index each source costs, which matters once the log and index budgets bite.

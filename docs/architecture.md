@@ -97,37 +97,107 @@ Model names are never hardcoded in application code. They come from configuratio
 
 ## 7. Data model
 
-Single-user. No `organisations`, no `users` table, no roles, no `visible_to_roles[]`.
+Single-user. No `organisations`, no `users`, no roles, no `visible_to_roles[]`.
+
+Revised 2026-08-10 after specifying the screens (`ux/`). Designing screens before schema is deliberate, and it found four things this model could not store — issue #20 plus citations. They are folded in below and marked **new**.
 
 ```
-settings           key, value                          -- single-user config incl. active profile
-collections        id, name, description, created_at
-documents          id, collection_id, filename, mime, sha256, page_count,
+settings           key, value                              -- profile, log budget, retention,
+                                                              threshold, passphrase state
+
+sources            id, kind(file|csv|dump|connection), name,
+                   root_path, config_encrypted, sandbox_db,
+                   status(indexing|ready|attention|deleted), last_error,
+                   last_indexed_at, added_at
+
+documents          id, source_id, filename, path, mime, sha256, page_count,
                    version, superseded_by, deleted_at, deleted_reason,
-                   status, added_at
+                   status, ocr_confidence, missing_since, added_at        -- path/missing_since NEW
+
 chunks             id, document_id, ordinal, page_from, page_to, heading,
                    content, content_tsv, embedding vector(1024)
-sources            id, kind(file|csv|dump|connection), name, config_encrypted,
-                   sandbox_db, last_indexed_at, status
+
 schema_notes       id, source_id, table_name, column_name, description,
-                   origin(user|inferred), embedding
-memory             id, subject, fact, origin(clarification|correction),
+                   origin(user|inferred), confidence, superseded_by, embedding
+
+memory             id, subject, fact, origin(clarification|correction|manual),
                    confidence, superseded_by, created_at
-clarifications     id, source_id, question, options jsonb, answer,
-                   asked_at, answered_at, status
+
+clarifications     id, source_id, subject, question, options jsonb, evidence jsonb,
+                   rank, answer, status(pending|answered|skipped|dismissed),
+                   asked_at, answered_at                                   -- rank/evidence NEW
+
 conversations      id, title, mode(text|voice), ai_backend(local|online), created_at
 messages           id, conversation_id, role, content, trace jsonb, created_at
+
+citations          id, message_id, chunk_id, claim_ordinal, quoted_span     -- NEW TABLE
+fact_usage         id, message_id, fact_kind(memory|schema_note), fact_id   -- NEW TABLE
+
 audit_decisions    id, kind, payload jsonb, prev_hash, hash, occurred_at
 audit_interactions id, kind, payload jsonb, prev_hash, hash, occurred_at
 ```
 
-Notes:
+### What the screens changed
 
-- `documents.deleted_at` / `deleted_reason` implement the tombstone (issue #11, Option A). **Deletion and supersession are different states** — `superseded_by` already exists for the latter and must not be reused. On delete, chunk content and embedding are cleared so the document stops influencing retrieval, while the row survives so old citations resolve to "deleted on <date>".
-- `chunks.embedding` dimension follows the embedding model. `bge-m3` gives 1024 and is retained for the reasons in `decisions.md`. Pin in config, not in the migration.
-- `memory` and `schema_notes` are the clarification loop's output. See `memory-and-clarification.md`.
-- The two audit tables are separate on purpose, with different retention and different failure behaviour. See `audit-log.md`. Debug traces are not a table — they are a capped file ring buffer.
+**`documents.path` and `missing_since`** (#20). Askwell indexes files **in place** rather than copying them, so a moved or renamed file is not an edge case — it is the normal consequence of that choice. Without the original path there is no way to distinguish moved from deleted, and `ux/source-viewer.md` §4 requires that distinction because treating a moved file as deleted is both wrong and alarming.
+
+**`citations` as a real table, not a field in `trace` jsonb.** C4 says every factual claim carries a citation. A constraint that cannot be queried cannot be enforced or measured — with citations buried in a JSON blob, "did any answer contain an uncited claim?" is unanswerable, and `success-metrics.md` §2 makes exactly that a tracked counter-metric at 100%. It also gives `ux/source-viewer.md` its next/previous-citation navigation without parsing JSON.
+
+**`fact_usage`** (#20). Feeds the "used in N answers" count that makes `ux/memory.md` worth opening — a wrong belief used once is a nuisance, used in forty answers it has been corrupting results for weeks. A counter on `memory` would have been cheaper and would not survive a deletion or answer a "which answers used this?" question, so it is a join table.
+
+**`clarifications.rank` and `evidence`**. The cap is 5 per source with a documented ranking (`memory-and-clarification.md` §8), so the rank has to be stored to know which questions made the cut and which were inferred instead. `evidence` holds the value distribution shown beside each question — the thing that makes it answerable in seconds rather than an exam (`ux/clarifications.md` §3).
+
+**`collections` removed.** `ux/library.md` §6 concluded a flat list is right until someone has enough sources to need grouping, and documents now hang off `sources` directly. Grouping can be added later without moving data; a table nobody uses cannot.
+
+**`documents.ocr_confidence`**, so a poor scan is flagged in the library, surfaced in the source viewer beside the image, and can raise a clarification.
+
+**`sources.status` and `last_error`**, so `ux/library.md`'s single "needs attention" status can expand to a specific cause and a specific fix.
+
+### 7.1 The shape of `messages.trace`
+
+Left unspecified, this becomes a dumping ground that every screen parses differently. It holds the **step sequence** — what `ux/trace.md` renders — and nothing that belongs in a real table.
+
+```jsonc
+{
+  "steps": [
+    { "kind": "retrieve", "ms": 340, "query": "…",
+      "threshold": 0.65,                    // in force at the time, not recomputed
+      "hits": [ { "chunk_id": "…", "score": 0.81 } ] },
+    { "kind": "schema",   "ms": 40,  "source_id": "…" },
+    { "kind": "sql",      "ms": 240, "generated": "SELECT …",
+      "validated": true, "rejection_reason": null,
+      "limit_injected": 1000, "rows": 7 },
+    { "kind": "compose",  "ms": 8200, "claims": 3 }
+  ],
+  "backend": { "mode": "local", "model": "qwen3-8b-q4km" },
+  "stopped_early": false,
+  "injection_flagged": false
+}
+```
+
+**Scores and the threshold are stored, never recomputed.** The abstention trace is the most useful trace there is, and its value is showing the near-miss — "the right passage scored 0.61 under a 0.65 threshold". Recomputing later gives a different number after any model or threshold change, which makes the explanation wrong precisely when someone is trying to understand an old answer.
+
+**Rejected SQL is stored with its reason.** It is the signal that a prompt change has degraded generation, and it is invisible unless recorded (`audit-log.md` §7).
+
+Traces rotate — they are a capped file ring buffer, and `messages.trace` is trimmed with them. Citations and fact usage are in real tables and **do not rotate**, so an old answer keeps its sources long after its debugging detail is gone.
+
+### Standing notes
+
+- **Deletion and supersession are different states.** `superseded_by` is for versions; `deleted_at` is the tombstone (#11). Never reuse one for the other. On delete, chunk content and embedding are cleared so the document stops influencing retrieval, while the row survives so old citations resolve to "deleted on <date>".
+- `chunks.embedding` dimension follows the embedding model — `bge-m3` gives 1024. Pin in config, not in the migration.
+- User-supplied `schema_notes` and `memory` outrank inferred ones and are never silently overwritten. Correction supersedes; it does not update in place.
+- The two audit tables are separate on purpose, with different retention and different write-failure behaviour (`audit-log.md`). Debug traces are not a table.
 - `config_encrypted` uses a key derived from the optional passphrase plus a per-install secret, so a copied disk is not a credential leak.
+
+### Constraints the ORM will not express
+
+Add as raw SQL **in the same migration that creates the tables**, or there is a window where the invariant is unenforced:
+
+- No `UPDATE`/`DELETE` grant on either audit table for the application role (C6).
+- Partial unique index: one live version per `(source_id, sha256)` where `deleted_at IS NULL AND superseded_by IS NULL`.
+- `CHECK`: a chunk with cleared content has a null embedding — a tombstoned document must not keep influencing retrieval.
+- `CHECK`: `clarifications.answer` is non-null when `status = 'answered'`.
+- Foreign key from `citations.chunk_id` is **not** cascade-delete. A deleted document's chunk row survives precisely so the citation resolves.
 
 ## 8. Retrieval
 
