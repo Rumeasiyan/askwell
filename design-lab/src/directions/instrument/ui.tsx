@@ -67,7 +67,7 @@ export function Rail({ groups }: { groups: { title: string; items: RailItem[] }[
       )}
       <nav
         className={`w-[180px] shrink-0 flex-col gap-6 overflow-y-auto border-r border-[var(--ask-rule)] bg-[var(--ask-sunk)] px-3 py-4 @2xl:flex ${
-          open ? 'absolute inset-y-0 left-0 z-40 flex shadow-[2px_0_8px_rgb(0_0_0/0.15)] @2xl:static @2xl:shadow-none' : 'hidden'
+          open ? 'absolute inset-y-0 left-0 z-40 flex shadow-[2px_0_8px_var(--ask-drop)] @2xl:static @2xl:shadow-none' : 'hidden'
         }`}
       >
       {groups.map((g) => (
@@ -279,7 +279,7 @@ export function Btn({
 
 export function Field({ children }: { children: ReactNode }) {
   return (
-    <div className="rounded-[var(--ask-radius)] border border-[var(--ask-rule)] bg-[var(--ask-paper)] px-2.5 py-2 text-[13px] text-[var(--ask-muted)] shadow-[inset_0_1px_2px_rgb(0_0_0/0.06)]">
+    <div className="rounded-[var(--ask-radius)] border border-[var(--ask-rule)] bg-[var(--ask-paper)] px-2.5 py-2 text-[13px] text-[var(--ask-muted)] shadow-[inset_0_1px_2px_var(--ask-inset)]">
       {children}
     </div>
   )

@@ -57,6 +57,11 @@ body {
   --ask-ink:        #232722;
   --ask-rule:       #C9CDC6;   /* decorative hairlines only */
   --ask-rule-strong:#7A8078;   /* lines that carry meaning — the claim leader, the inline card edge */
+
+  /* Depth cues are tokens too. A shadow hardcoded as black at 6% is invisible on a dark
+     ground, which silently removes the affordance it was added for. */
+  --ask-inset: rgb(0 0 0 / 0.07);
+  --ask-drop:  rgb(0 0 0 / 0.15);
   --ask-muted:      #5F655E;
   --ask-provenance: #2F6B62;
   --ask-inferred:   #7D601F;
@@ -85,6 +90,8 @@ body {
   --ask-ink:        #E4E7E1;
   --ask-rule:       #333833;
   --ask-rule-strong:#6A7268;
+  --ask-inset: rgb(0 0 0 / 0.45);
+  --ask-drop:  rgb(0 0 0 / 0.55);
   --ask-muted:      #9AA096;
   --ask-provenance: #5FA99B;
   --ask-inferred:   #C9A34E;

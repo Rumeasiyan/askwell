@@ -86,6 +86,7 @@ Answer prose sets at a **68–75 character measure**. Wider is measurably harder
 
 - **Radius: 3px**, everywhere. Near-square reads as instrument; pill shapes read as consumer chat. One exception: circular avatars/status dots.
 - **Borders over shadows.** A 1px `--rule` is the default separator. Shadow only for genuinely floating things (menus, dialogs) — an interface that is mostly flat makes the few raised things mean something.
+- **Depth cues are tokens, never literals.** `--inset` and `--drop` carry the shadow colour and differ per theme. Black at 7% reads as depth on paper and is invisible on a dark ground, so a hardcoded shadow silently removes the affordance it was added for in exactly one of the two themes.
 - **Controls: 32px** standard height, 24px compact, **44px minimum for any primary action.** Desktop-first, but a trackpad on a laptop is not a mouse on a desk.
 - **Focus: 2px `--provenance` outline, 2px offset**, never removed. Keyboard navigation is not optional.
 
