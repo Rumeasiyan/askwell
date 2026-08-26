@@ -10,7 +10,7 @@ export default function Conversations() {
           <div className="flex flex-wrap items-baseline gap-3">
             <H>Everything you've asked</H>
             <Micro>184 questions · since 3 June</Micro>
-            <div className="ml-auto w-[220px]"><Field>Search your questions…</Field></div>
+            <div className="ml-auto w-full min-w-0 @2xl:w-[220px]"><Field>Search your questions…</Field></div>
           </div>
 
           <Table

@@ -37,8 +37,8 @@ export default function FirstRun() {
           </Prose>
 
           <div className="flex flex-wrap gap-3 pt-2">
-            <Btn primary>Continue</Btn>
-            <Btn>Skip setup</Btn>
+            <Btn primary to="first-run-probe">Continue</Btn>
+            <Btn to="ask-empty">Skip setup</Btn>
           </div>
           <Micro>everything here is reachable later from Settings</Micro>
         </Main>

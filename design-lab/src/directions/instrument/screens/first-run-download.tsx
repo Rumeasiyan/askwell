@@ -25,7 +25,7 @@ export default function FirstRunDownload() {
             <Prose className="text-[15px]">
               Add your files now and Askwell will start reading them while the model downloads — indexing doesn't need it.
             </Prose>
-            <div className="mt-3 flex gap-3"><Btn primary sm>Add files now</Btn></div>
+            <div className="mt-3 flex gap-3"><Btn primary sm to="add-source">Add files now</Btn></div>
           </Panel>
 
           <div className="flex flex-col gap-2 border-t border-[var(--ask-rule)] pt-4">

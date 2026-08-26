@@ -20,7 +20,7 @@ export default function ModelUnavailable() {
             </Prose>
             <div className="mt-3 flex flex-wrap gap-3">
               <Btn primary sm>Start it again</Btn>
-              <Btn sm>Switch to a smaller model</Btn>
+              <Btn sm to="settings-model">Switch to a smaller model</Btn>
               <Btn sm>See the details</Btn>
             </div>
           </Panel>

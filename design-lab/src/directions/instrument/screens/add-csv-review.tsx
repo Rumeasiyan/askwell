@@ -40,8 +40,8 @@ export default function AddCsvReview() {
           </div>
 
           <div className="flex gap-3">
-            <Btn primary>Index it</Btn>
-            <Btn>Ask me the rest later</Btn>
+            <Btn primary to="add-indexing">Index it</Btn>
+            <Btn to="clarifications">Ask me the rest later</Btn>
           </div>
           <Micro>3 more questions will wait in Clarifications — the source is queryable meanwhile</Micro>
         </Main>

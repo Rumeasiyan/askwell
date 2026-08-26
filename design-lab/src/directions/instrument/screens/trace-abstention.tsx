@@ -42,7 +42,7 @@ export default function TraceAbstention() {
             </Prose>
             <div className="mt-3 flex flex-wrap gap-3">
               <Btn sm>Lower the threshold to 0.60</Btn>
-              <Btn primary sm>Add the policy document instead</Btn>
+              <Btn primary sm to="add-source">Add the policy document instead</Btn>
             </div>
           </Panel>
 

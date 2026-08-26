@@ -37,6 +37,7 @@ export const directions: Direction[] = [
     sub: 'Provenance margin · epistemic colour',
     screens: [
       // — asking, the core loop
+      s('ask-conversation', 'Ask · conversation', () => import('../directions/instrument/screens/ask-conversation')),
       s('ask-answered', 'Ask · answered', () => import('../directions/instrument/Page')),
       s('ask-thinking', 'Ask · working', () => import('../directions/instrument/screens/ask-thinking')),
       s('ask-abstained', 'Ask · didn’t know', () => import('../directions/instrument/screens/ask-abstained')),

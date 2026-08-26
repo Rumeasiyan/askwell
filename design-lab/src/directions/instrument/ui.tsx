@@ -2,6 +2,7 @@
    Every visual value binds to a token in src/tokens.css — no hardcoded hex, radius or font.
    See ../../../docs/ux/design-system.md; that document is the source of truth. */
 import type { ReactNode } from 'react'
+import { go } from '../../lib/nav'
 
 export const paper = 'bg-[var(--ask-paper)] text-[var(--ask-ink)]'
 export const mono = 'font-[var(--ask-font-app)]'
@@ -38,7 +39,7 @@ export function Badge({ children, tone }: { children: ReactNode; tone?: 'prov' |
 
 /* ---------- left rail ---------- */
 
-export type RailItem = { label: string; count?: string; live?: boolean; on?: boolean }
+export type RailItem = { label: string; count?: string; live?: boolean; on?: boolean; to?: string }
 
 export function Rail({ groups }: { groups: { title: string; items: RailItem[] }[] }) {
   return (
@@ -47,19 +48,22 @@ export function Rail({ groups }: { groups: { title: string; items: RailItem[] }[
         <div key={g.title} className="flex flex-col gap-1">
           <div className="mb-1 text-[11px] uppercase tracking-[0.08em] text-[var(--ask-muted)]">{g.title}</div>
           {g.items.map((it) => (
-            <div
+            <button
               key={it.label}
-              className={`flex items-center gap-2 rounded-[var(--ask-radius)] px-1 py-[3px] text-[13px] ${
-                it.on ? 'bg-[var(--ask-surface)] outline outline-1 outline-[var(--ask-rule)]' : ''
+              onClick={() => it.to && go(it.to)}
+              className={`flex w-full items-center gap-2 rounded-[var(--ask-radius)] px-2 py-[5px] text-left text-[13px] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ask-provenance)] ${
+                it.on
+                  ? 'bg-[var(--ask-paper)] font-medium shadow-[inset_2px_0_0_var(--ask-provenance)]'
+                  : 'hover:bg-[var(--ask-paper)]/60'
               }`}
             >
               {it.label}
               {it.count && (
-                <span className={`ml-auto text-[11px] ${it.live ? 'text-[var(--ask-inferred)]' : 'text-[var(--ask-muted)]'}`}>
+                <span className={`ml-auto text-[11px] tabular-nums ${it.live ? 'text-[var(--ask-inferred)]' : 'text-[var(--ask-muted)]'}`}>
                   {it.count}
                 </span>
               )}
-            </div>
+            </button>
           ))}
         </div>
       ))}
@@ -67,9 +71,26 @@ export function Rail({ groups }: { groups: { title: string; items: RailItem[] }[
   )
 }
 
-export const railStd = [
-  { title: 'Sources', items: [{ label: 'Contracts', count: '14' }, { label: 'Policies', count: '6' }, { label: 'sales-2024', count: 'db' }] },
-  { title: 'Library', items: [{ label: 'Ask', on: true }, { label: 'Clarifications', count: '5', live: true }, { label: 'Memory', count: '23' }, { label: 'Settings' }] },
+export const railStd: { title: string; items: RailItem[] }[] = [
+  {
+    title: 'Sources',
+    items: [
+      { label: 'Contracts', count: '14', to: 'library' },
+      { label: 'Policies', count: '6', to: 'library' },
+      { label: 'sales-2024', count: 'db', to: 'library' },
+      { label: '+ Add a source', to: 'add-source' },
+    ],
+  },
+  {
+    title: 'Library',
+    items: [
+      { label: 'Ask', on: true, to: 'ask-answered' },
+      { label: 'History', to: 'conversations' },
+      { label: 'Clarifications', count: '5', live: true, to: 'clarifications' },
+      { label: 'Memory', count: '23', to: 'memory' },
+      { label: 'Settings', to: 'settings-model' },
+    ],
+  },
 ]
 export function railWith(active: string) {
   return [
@@ -79,6 +100,34 @@ export function railWith(active: string) {
 }
 
 /* ---------- type ---------- */
+
+/* A past turn: collapsed to its question and a one-line summary of what answered it, so a
+   long conversation stays scannable. Expanding restores the full answer with its margin. */
+export function PastTurn({ q, summary, sources }: { q: string; summary: string; sources: string }) {
+  return (
+    <button className="group flex w-full cursor-pointer flex-col gap-1 rounded-[var(--ask-radius)] border border-[var(--ask-rule)] bg-[var(--ask-surface)]/60 px-3 py-2 text-left transition-colors hover:bg-[var(--ask-surface)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ask-provenance)]">
+      <div className="flex items-baseline gap-2">
+        <span className="text-[10px] uppercase tracking-[0.08em] text-[var(--ask-muted)]">asked</span>
+        <span className={`${serif} min-w-0 flex-1 truncate text-[14px]`}>{q}</span>
+        <span className="text-[11px] text-[var(--ask-muted)] opacity-0 transition-opacity group-hover:opacity-100">expand ▾</span>
+      </div>
+      <div className="flex items-baseline gap-2 pl-1">
+        <span className={`${serif} min-w-0 flex-1 truncate text-[13px] text-[var(--ask-muted)]`}>{summary}</span>
+        <span className="shrink-0 text-[11px] text-[var(--ask-provenance)]">{sources}</span>
+      </div>
+    </button>
+  )
+}
+
+export function TurnDivider({ label }: { label: string }) {
+  return (
+    <div className="flex items-center gap-3 py-1">
+      <span className="h-px flex-1 bg-[var(--ask-rule)]" />
+      <span className="text-[10px] uppercase tracking-[0.08em] text-[var(--ask-muted)]">{label}</span>
+      <span className="h-px flex-1 bg-[var(--ask-rule)]" />
+    </div>
+  )
+}
 
 export function Q({ children }: { children: ReactNode }) {
   return (
@@ -123,15 +172,24 @@ export function SourceCard({
   file, loc, quote, dead,
 }: { file: string; loc: string; quote: string; dead?: boolean }) {
   return (
-    <div
-      className={`flex flex-col gap-1.5 rounded-[var(--ask-radius)] border border-[var(--ask-rule)] bg-[var(--ask-surface)] p-3 shadow-[0_1px_0_var(--ask-rule)] transition-colors ${
-        dead ? 'border-l-2 border-l-[var(--ask-rule)] opacity-60' : 'border-l-2 border-l-[var(--ask-provenance)] group-hover:border-[var(--ask-provenance)]'
+    <button
+      onClick={() => !dead && go(dead ? 'source-missing' : 'source-viewer')}
+      disabled={dead}
+      className={`flex w-full flex-col gap-1.5 rounded-[var(--ask-radius)] border border-[var(--ask-rule)] bg-[var(--ask-surface)] p-3 text-left shadow-[0_1px_0_var(--ask-rule)] transition-all focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ask-provenance)] ${
+        dead
+          ? 'cursor-not-allowed border-l-2 border-l-[var(--ask-rule)] opacity-60'
+          : 'cursor-pointer border-l-2 border-l-[var(--ask-provenance)] hover:-translate-y-px hover:border-[var(--ask-provenance)] hover:shadow-[0_2px_0_var(--ask-rule)] group-hover:border-[var(--ask-provenance)]'
       }`}
     >
-      <div className={`break-all text-[12px] ${dead ? 'text-[var(--ask-muted)] line-through' : 'text-[var(--ask-provenance)]'}`}>{file}</div>
+      <div className={`break-words text-[12px] ${dead ? 'text-[var(--ask-muted)] line-through' : 'text-[var(--ask-provenance)]'}`}>{file}</div>
       <div className="text-[11px] uppercase tracking-[0.06em] text-[var(--ask-muted)]">{loc}</div>
       <div className={`${serif} border-t border-[var(--ask-rule)] pt-1.5 text-[13px] leading-snug`}>{quote}</div>
-    </div>
+      {!dead && (
+        <div className="text-[10px] uppercase tracking-[0.08em] text-[var(--ask-muted)] opacity-0 transition-opacity group-hover:opacity-100">
+          open at this page ▸
+        </div>
+      )}
+    </button>
   )
 }
 
@@ -167,15 +225,20 @@ export function Chip({ children, known }: { children: ReactNode; known?: boolean
 /* ---------- controls ---------- */
 
 export function Btn({
-  children, primary, alarm, sm,
-}: { children: ReactNode; primary?: boolean; alarm?: boolean; sm?: boolean }) {
+  children, primary, alarm, sm, to, onClick,
+}: {
+  children: ReactNode; primary?: boolean; alarm?: boolean; sm?: boolean
+  to?: string; onClick?: () => void
+}) {
   const tone = primary
-    ? 'border-[var(--ask-provenance)] text-[var(--ask-provenance)]'
-    : alarm ? 'border-[var(--ask-alarm)] text-[var(--ask-alarm)]'
-    : 'border-[var(--ask-ink)] text-[var(--ask-ink)]'
+    ? 'border-[var(--ask-provenance)] bg-[var(--ask-provenance)] text-[var(--ask-paper)] hover:brightness-110'
+    : alarm
+      ? 'border-[var(--ask-alarm)] bg-transparent text-[var(--ask-alarm)] hover:bg-[var(--ask-alarm)]/10'
+      : 'border-[var(--ask-rule)] bg-[var(--ask-paper)] text-[var(--ask-ink)] hover:border-[var(--ask-ink)] hover:bg-[var(--ask-surface)]'
   return (
     <button
-      className={`${mono} rounded-[var(--ask-radius)] border bg-transparent ${tone} ${
+      onClick={() => { onClick?.(); if (to) go(to) }}
+      className={`${mono} cursor-pointer rounded-[var(--ask-radius)] border transition-all active:translate-y-px ${tone} ${
         sm ? 'min-h-[32px] px-3 py-1.5 text-[12.5px]' : 'min-h-[36px] px-3.5 py-2 text-[13px]'
       } focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ask-provenance)]`}
     >
@@ -186,17 +249,40 @@ export function Btn({
 
 export function Field({ children }: { children: ReactNode }) {
   return (
-    <div className="rounded-[var(--ask-radius)] border border-[var(--ask-rule)] bg-[var(--ask-surface)] px-2.5 py-2 text-[13px] text-[var(--ask-muted)]">
+    <div className="rounded-[var(--ask-radius)] border border-[var(--ask-rule)] bg-[var(--ask-paper)] px-2.5 py-2 text-[13px] text-[var(--ask-muted)] shadow-[inset_0_1px_2px_rgb(0_0_0/0.06)]">
       {children}
     </div>
   )
 }
 
-export function Composer() {
+/* Simple glyphs rather than an icon font — nothing is fetched at runtime (C1). */
+export function MicIcon({ on }: { on?: boolean }) {
   return (
-    <div className="flex shrink-0 items-center gap-3 border-t border-[var(--ask-rule)] bg-[var(--ask-sunk)] px-4 py-3 @2xl:px-6">
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden fill="none"
+      stroke={on ? 'var(--ask-paper)' : 'currentColor'} strokeWidth="1.4" strokeLinecap="round">
+      <rect x="6" y="2" width="4" height="7" rx="2" />
+      <path d="M3.5 7.5a4.5 4.5 0 0 0 9 0M8 12v2" />
+    </svg>
+  )
+}
+
+export function Composer({ voice }: { voice?: boolean }) {
+  return (
+    <div className="flex shrink-0 items-center gap-2 border-t border-[var(--ask-rule)] bg-[var(--ask-sunk)] px-4 py-3 @2xl:px-6">
+      <button
+        onClick={() => go('voice')}
+        title="Ask out loud"
+        aria-label="Ask out loud"
+        className={`flex h-[34px] w-[34px] shrink-0 cursor-pointer items-center justify-center rounded-[var(--ask-radius)] border transition-all active:translate-y-px focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ask-provenance)] ${
+          voice
+            ? 'border-[var(--ask-provenance)] bg-[var(--ask-provenance)] text-[var(--ask-paper)]'
+            : 'border-[var(--ask-rule)] bg-[var(--ask-paper)] text-[var(--ask-muted)] hover:border-[var(--ask-ink)] hover:text-[var(--ask-ink)]'
+        }`}
+      >
+        <MicIcon on={voice} />
+      </button>
       <div className="flex-1"><Field>Ask about your files…</Field></div>
-      <Btn sm>Ask</Btn>
+      <Btn primary sm>Ask</Btn>
     </div>
   )
 }
@@ -209,7 +295,7 @@ export function Split({ children }: { children: ReactNode }) {
 
 export function Main({ children, className = '' }: { children: ReactNode; className?: string }) {
   return (
-    <div className={`flex min-w-0 flex-1 flex-col gap-5 overflow-y-auto p-4 @2xl:gap-6 @2xl:p-6 ${className}`}>
+    <div className={`flex min-w-0 flex-1 flex-col gap-5 overflow-x-hidden overflow-y-auto p-4 @2xl:gap-6 @2xl:p-6 ${className}`}>
       {children}
     </div>
   )
@@ -280,7 +366,9 @@ export function Table({ head, rows }: { head: string[]; rows: ReactNode[][] }) {
 export function Sql({ children, note }: { children: ReactNode; note?: string }) {
   return (
     <div className="rounded-[var(--ask-radius)] border border-[var(--ask-rule)] bg-[var(--ask-sunk)]">
-      <div className="px-3 py-2 text-[12px] text-[var(--ask-provenance)]">▾ the query that produced this</div>
+      <button onClick={() => go('trace')} className="w-full cursor-pointer px-3 py-2 text-left text-[12px] text-[var(--ask-provenance)] hover:underline">
+        ▾ the query that produced this
+      </button>
       <pre className="m-0 overflow-x-auto px-3 pb-3 text-[12.5px] leading-[1.6]">{children}
         {note && <span className="text-[var(--ask-inferred)]">{'\n'}{note}</span>}
       </pre>

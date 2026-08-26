@@ -10,7 +10,7 @@ export default function Library() {
           <div className="flex items-baseline gap-3">
             <H>Sources</H>
             <Micro>38 documents · 2 databases · 1 needs attention</Micro>
-            <div className="ml-auto"><Btn sm>Add a source</Btn></div>
+            <div className="ml-auto"><Btn primary sm to="add-source">Add a source</Btn></div>
           </div>
 
           <Table

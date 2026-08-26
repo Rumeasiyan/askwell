@@ -1,5 +1,6 @@
-import { Suspense, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import { directions } from './lib/directions'
+import { onNavigate } from './lib/nav'
 import { DirectionToggle } from './components/DirectionToggle'
 import { ScreenNav } from './components/ScreenNav'
 import { DeviceFrame, DeviceModeSwitch, type DeviceMode } from './components/DeviceFrame'
@@ -11,6 +12,12 @@ export default function App() {
   const [showAll, setShowAll] = useState(false)
   const [device, setDevice] = useState<DeviceMode>('desktop')
   const [askTheme, setAskTheme] = useState<'light' | 'dark'>('light')
+
+  // screens can navigate to each other, so a direction is click-through rather than a gallery
+  useEffect(() => onNavigate((screenId) => {
+    setShowAll(false)
+    setActiveScreenId(screenId)
+  }), [])
 
   const active = directions.find((d) => d.id === activeId)
   const activeScreen = active?.screens.find((s) => s.id === activeScreenId) ?? active?.screens[0]

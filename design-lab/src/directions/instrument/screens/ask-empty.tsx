@@ -20,7 +20,7 @@ export default function AskEmpty() {
             <Prose className="text-[15px] text-[var(--ask-muted)]">
               It indexes them where they are. Nothing is copied, nothing is uploaded.
             </Prose>
-            <div className="pt-1"><Btn primary>Add your first source</Btn></div>
+            <div className="pt-1"><Btn primary to="add-source">Add your first source</Btn></div>
             <Micro>an empty box invites a question that cannot be answered — so there isn't one</Micro>
           </div>
         </Main>

@@ -20,7 +20,7 @@ export default function AskAbstained() {
               <Prose className="text-[15px] text-[var(--ask-muted)]">
                 Add the policy document you'd expect this in, and ask again.
               </Prose>
-              <div className="pt-1"><Btn>Add a source</Btn></div>
+              <div className="pt-1"><Btn primary to="add-source">Add a source</Btn></div>
             </div>
             <div />
             <EmptyMargin>No sources —<br />nothing matched</EmptyMargin>

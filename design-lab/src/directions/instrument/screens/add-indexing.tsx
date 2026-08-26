@@ -38,7 +38,7 @@ export default function AddIndexing() {
             ))}
           </div>
 
-          <div className="flex gap-3"><Btn sm>Ask about what's ready</Btn><Btn sm>Add more</Btn></div>
+          <div className="flex gap-3"><Btn primary sm to="ask-answered">Ask about what&rsquo;s ready</Btn><Btn sm to="add-source">Add more</Btn></div>
         </Main>
       </Split>
     </Shell>

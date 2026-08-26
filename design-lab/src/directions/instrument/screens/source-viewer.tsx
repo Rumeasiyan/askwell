@@ -6,7 +6,7 @@ export default function SourceViewer() {
       <Chrome right={<Badge>local</Badge>} />
       <Split>
         <Rail groups={railWith('Ask')} />
-        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_260px]">
+        <div className="grid min-w-0 grid-cols-1 overflow-y-auto @3xl:grid-cols-[minmax(0,1fr)_260px] @3xl:overflow-visible">
           <Main className="gap-4">
             <div className="flex items-baseline gap-3">
               <span className="text-[12.5px] text-[var(--ask-provenance)]">supplier-agreement-2024.pdf</span>
@@ -29,7 +29,7 @@ export default function SourceViewer() {
             </div>
           </Main>
 
-          <aside className="flex flex-col gap-4 border-l border-[var(--ask-rule)] bg-[var(--ask-sunk)] p-4">
+          <aside className="flex flex-col gap-4 border-t border-[var(--ask-rule)] bg-[var(--ask-sunk)] p-4 @3xl:border-l @3xl:border-t-0">
             <div>
               <Micro>you came from</Micro>
               <Prose className="mt-2 text-[14px]">

@@ -24,7 +24,7 @@ export default function FirstRunProbe() {
             You can change the model later if you want to trade speed for quality in either direction.
           </Prose>
 
-          <div className="flex gap-3 pt-1"><Btn primary>Get the model</Btn><Btn>Check again</Btn></div>
+          <div className="flex gap-3 pt-1"><Btn primary to="first-run-download">Get the model</Btn><Btn>Check again</Btn></div>
         </Main>
       </div>
     </Shell>

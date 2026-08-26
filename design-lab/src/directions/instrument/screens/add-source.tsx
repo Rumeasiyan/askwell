@@ -24,7 +24,7 @@ export default function AddSource() {
           <div className="flex min-h-[140px] flex-col items-center justify-center gap-2 rounded-[var(--ask-radius)] border border-dashed border-[var(--ask-rule)] bg-[var(--ask-surface)] py-8">
             <div className="text-[13px]">Drop files anywhere in Askwell</div>
             <Micro>or</Micro>
-            <Btn sm>Browse…</Btn>
+            <Btn primary sm to="add-indexing">Browse…</Btn>
           </div>
 
           <div className="grid gap-3 @2xl:grid-cols-2">

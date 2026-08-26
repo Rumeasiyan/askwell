@@ -2,10 +2,10 @@ import { Shell, Chrome, Split, Rail, Main, H, Micro, Badge, Prose, Btn, railWith
 
 function Step({ n, title, ms, detail, expand }: any) {
   return (
-    <div className="grid grid-cols-[22px_minmax(0,1fr)_auto] items-baseline gap-x-3 border-b border-[var(--ask-rule)] py-3 last:border-0">
+    <div className="grid grid-cols-[22px_minmax(0,1fr)] items-baseline gap-x-3 border-b border-[var(--ask-rule)] py-3 last:border-0 @2xl:grid-cols-[22px_minmax(0,1fr)_auto]">
       <span className="text-[12px] tabular-nums text-[var(--ask-muted)]">{n}</span>
       <span className="text-[13px]">{title}</span>
-      <span className="text-[12px] tabular-nums text-[var(--ask-muted)]">{ms}</span>
+      <span className="justify-self-end text-[12px] tabular-nums text-[var(--ask-muted)]">{ms}</span>
       <span />
       <div className="col-span-2 mt-1 flex flex-col gap-1">
         <span className="text-[12.5px] text-[var(--ask-muted)]">{detail}</span>
