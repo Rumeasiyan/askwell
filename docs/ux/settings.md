@@ -89,7 +89,9 @@ Export must be genuinely complete and genuinely open. A free, open-source, local
 
 Version, licence, link to the source, and how to report a problem.
 
-**Update checking is off by default.** Checking for updates is a network call, and C1 says local means local. Offered as an opt-in with the honest trade: *"Askwell can check for updates once a week. That is one request to our server, containing your version number. Off by default."*
+**Update checking is off by default.** Checking for updates is a network call, and C1 says local means local. Offered as an opt-in with the honest trade: *"Askwell can check for updates once a week. That is one request for a static file, carrying your version number and nothing else. Off by default."*
+
+It reads a **static version file**, not an endpoint — there is no server that could log who asked, which is a stronger statement than a promise not to log.
 
 An open-source product whose users never learn about a security fix is a real problem, and the honest resolution is an explicit opt-in with the payload stated — not a silent check because it is "only metadata".
 
@@ -112,7 +114,7 @@ An open-source product whose users never learn about a security fix is a real pr
 
 ## 9. Open
 
-1. **Update mechanism** — [#44](https://github.com/Rumeasiyan/askwell/issues/44). The shape in §7 is a proposal, not a settled answer.
+1. **Settled: an opt-in weekly check against a static version file.** Off by default; the request carries the version number and nothing else. Recorded in `../decisions.md`.
 2. **Settled: a backup taken from a passphrase-protected install is encrypted with that passphrase, and restore refuses clearly without it.** The alternative — writing an unencrypted backup from an encrypted install — would silently produce the one artefact that defeats the passphrase entirely, and it would do so at the moment the user was being careful. Restore states plainly that the passphrase from the source machine is required and that there is no recovery path, which is the same honesty the passphrase screen already uses.
 
    The tested restore in Phase 6 must cover **both** cases: passphrase set and not set. A restore path tested only in the easy direction is not tested.

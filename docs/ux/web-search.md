@@ -74,5 +74,5 @@ Claims from the user's documents render normally, with the margin. Claims from t
 
 ## 6. Open
 
-1. **Provider, and whether the user supplies a key or it is metered** — [#43](https://github.com/Rumeasiyan/askwell/issues/43). Note that a user-supplied key contradicts `../PRD.md` §6.
+1. **Settled: `ddgs`, keyless** (`../web-search.md` §6). No key means `../PRD.md` §6 needs no amendment.
 2. **Not in v1: re-asking an escalated question locally** once the user adds a relevant document (`../web-search.md` §8).

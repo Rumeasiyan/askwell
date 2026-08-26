@@ -287,7 +287,9 @@ Conditions that must print **unmissably**:
 
 Several tickets specify exact user-facing wording — refusal messages, the abstention statement, the dump-sandbox warning. **Detect this from the ticket body, never from a list in the script.** A list is a second source of truth that drifts the moment someone adds another ticket.
 
-**No marker exists today.** This is a gap, and the recommendation is a single line in the ticket header — for example `**Human review:** copy` — added by whoever writes the runner, to the tickets that need it. Until that exists, the runner cannot detect this condition and must say so in its summary rather than implying it checked.
+**The marker exists.** `**Human review:** copy` sits directly under the `**Type:**` line of **26 tickets** — every one that renders wording specified in `docs/ux/` and read by a user. The format is recorded in `backlog/README.md`, and `ticket_needs_copy_review()` reads it from the ticket body.
+
+Note what the sweep that added it found: the exact copy does **not** live in the tickets. It lives in the `docs/ux/` specifications, and tickets reference those by section. A detector looking for quoted text inside ticket bodies would have found exactly one ticket and reported the other twenty-five as clean.
 
 **Quote the copy into the runner's own output.** A gate that requires opening a file is a gate that gets skipped on the twentieth ticket.
 
@@ -344,9 +346,10 @@ Both live in `scripts/guards.sh`, separate from the runner and testable before i
 | # | Decision | Considerations | Where the answer goes |
 | --- | --- | --- | --- |
 | ~~1~~ | ~~How the runner marks a ticket done~~ | **Resolved:** a state file at `.build-runner/done/<ID>`. A ticket-body edit would make every run produce a diff in `backlog/`, and the durable record of a finished ticket is its merged PR, not a marker | `decisions.md` |
-| 2 | Whether the audit lineage resets per milestone | A single lineage across 198 tickets accumulates context that may stop being relevant; per-milestone loses cross-milestone memory | `decisions.md` |
+| ~~2~~ | ~~Whether the audit lineage resets per milestone~~ | **Resolved: reset per milestone.** A single lineage across 198 tickets carries context from work three milestones old, and a stale auditor is worse than a forgetful one — the property that matters is that it did not write the code, and that survives a reset. Cross-milestone memory is the cheap thing to lose | `decisions.md` |
 | 3 | Where the copy-review marker lives in the ticket header, and who back-fills it | §9 — required before any ticket with user-facing wording can be run unattended | The ticket format in `backlog/README.md` |
 | ~~4~~ | ~~Whether the runner may create the branch~~ | **Resolved:** preflight refuses to run on `main` and the runner creates its own branch at PR time. `main` is unprotected here, so the runner is the only thing standing between an unattended session and the default branch | `decisions.md` |
+| ~~3~~ | ~~Where the copy-review marker lives, and who back-fills it~~ | **Resolved:** `**Human review:** copy` under the `**Type:**` line; back-filled across 26 tickets. The copy itself lives in `docs/ux/`, not in the tickets — which is why detection reads a marker rather than looking for quoted text | `backlog/README.md` |
 | ~~5~~ | ~~What "estimate" the budget guard reads~~ | **Resolved:** the **high end** of the ticket's hour range, and the ceiling is in **hours, not currency**. Every ticket carries hours; converting to money needs a rate this repo does not have, and a guard built on an invented rate reports a precision it does not possess | `decisions.md` |
 
 **These are also filed as issues**, per `AGENTS.md` §8 — a question raised only in a document is a question with no owner.
@@ -359,7 +362,7 @@ Both live in `scripts/guards.sh`, separate from the runner and testable before i
 | --- | --- | --- |
 | M0 exists, so the gate exists | The first tickets, built manually or with a reduced gate (§7.1) | Everything |
 | §7.3 filled from real command output | Whoever lands M0 | Every gate check |
-| Copy-review marker decided and back-filled | Owner | Any ticket with user-facing wording |
+| ~~Copy-review marker decided and back-filled~~ | Done — 26 tickets | — |
 | `SPEND_CEILING` set | Owner | The runner refuses to start without it |
 
 **First ticket: `M0-FOUND-DEPLOY-001`.** It has no dependencies, it creates the toolchain every later gate needs, and it is small enough that a broken runner is obvious rather than subtle.

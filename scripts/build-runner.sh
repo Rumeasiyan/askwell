@@ -399,7 +399,11 @@ assert_prompt_intact() {
 # --- agent invocation --------------------------------------------------------
 run_agent() {   # run_agent <lineage> <prompt-file> <log-file> [model] [effort]
   local lineage="$1" prompt="$2" log="$3" model="$4" effort="$5"
-  local sid="$RUNNER_STATE/session/${lineage}.id"
+  # Audit and doc lineages reset per milestone: a single session across 198
+  # tickets carries context from work three milestones old, and a stale auditor
+  # is worse than a forgetful one. The property that matters — it did not write
+  # the code — survives a reset.
+  local sid="$RUNNER_STATE/session/${lineage}.${MILESTONE:-none}.id"
   local args; args="--print"
   [ -n "$model" ]  && args="$args --model $model"
   [ -n "$effort" ] && args="$args --effort $effort"
@@ -472,6 +476,7 @@ main() {
     die "$TICKET is already done. Re-run with FORCE=1 to rebuild."
   fi
 
+  MILESTONE="$(printf '%s' "$TICKET" | sed 's/-.*//')"
   local est; est="$(ticket_estimate_hours "$TICKET")"
   [ -n "$est" ] || die "$TICKET has no parseable estimate; the budget guard cannot run."
   guard_budget_allows "$est" || exit 1

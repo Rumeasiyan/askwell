@@ -73,9 +73,25 @@ This is a mitigation, not a solution, and the residual risk is documented rather
 
 ## 6. Provider
 
-Behind an interface, like the TTS engine, so it can be swapped without touching the answer path.
+**`ddgs` — a keyless metasearch library.** MIT, actively maintained. No API key, no account, no cost, and no additional container.
 
-**Open:** which provider, and whether the user supplies their own key or it is metered through credits like online AI. Metered is more consistent with the "you never hand Askwell an API key" promise in `PRD.md` §6; the user's own key is cheaper to ship. Needs a decision before the work starts.
+It sits behind an interface, like the TTS engine, so SearXNG or a keyed provider can replace it without touching the answer path.
+
+### Why keyless works here and would not for most products
+
+Commercial products buy search API keys because they serve many users from shared infrastructure, and that traffic is what gets rate-limited and blocked. **Askwell is the opposite case**: one person, on their own connection, escalating a handful of questions a week. That traffic is shaped like someone browsing, because it is.
+
+The constraint that shaped the earlier thinking — an open-source application cannot ship a shared API key, because it would be extracted from the binary and the quota drained by everyone — is real, and it stops applying entirely when there is no key.
+
+This also means **`PRD.md` §6 needs no amendment.** No key is handed to anyone, so the promise holds exactly as written.
+
+### The cost, stated
+
+**It will sometimes fail.** A keyless metasearch depends on engines whose markup changes, and the library breaks until it is updated. That is a real dependency on somebody else's maintenance.
+
+It is survivable because of where it sits: `ux/web-search.md` §4 already specifies the unavailable state, and **the abstention still stands as the answer**. Failing to escalate is not failing to answer — the honest answer was already given before the offer appeared.
+
+Do not paper over a failed search by falling back to the model's own knowledge. That is C5, and it does not relax because a network call failed.
 
 ---
 
@@ -89,6 +105,6 @@ Behind an interface, like the TTS engine, so it can be swapped without touching 
 
 ## 8. Open
 
-1. **Provider and billing model** (§6) — [#43](https://github.com/Rumeasiyan/askwell/issues/43).
+
 2. **Settled: no escalation from voice in v1.** Sending a question out is a deliberate act, and a spoken command is the weakest possible confirmation of deliberateness — a misheard phrase would leak a question off the machine, which is the one failure this product cannot afford. Voice abstains and says the escalation is available on screen.
 3. **Not in v1: noticing that an escalated question became locally answerable.** Genuinely attractive, and it needs a mechanism for re-testing old questions against a changed corpus that does not exist yet. Deferred with the memory re-ask work.

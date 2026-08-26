@@ -72,6 +72,12 @@ Yes. Models come from configuration and are never hardcoded. Note that the model
 **Can I use it today?**
 Not yet. There is no application code — the repository is a complete specification and a 177-ticket backlog. Watch the repo if you want to know when that changes.
 
+## Installing
+
+Not yet — there is no release. When there is: **[`docs/installing.md`](docs/installing.md)**.
+
+Askwell is unsigned, so macOS and Windows will warn on first launch. That page explains the warning, how to get past it, and — more importantly — how to verify the download is the file we published. **Verify the checksum.** That is the check that protects you; the bypass only stops your computer asking.
+
 ## Non-negotiables
 
 Full list with reasoning in [`AGENTS.md`](AGENTS.md) §3.
@@ -83,6 +89,17 @@ Full list with reasoning in [`AGENTS.md`](AGENTS.md) §3.
 - When the answer is not in your files, it says so rather than inventing one.
 - The audit log is append-only and tamper-evident — not immutable, and not described as such.
 - Retrieved content is data, never instruction.
+
+## Helping
+
+There is no code yet, which makes some kinds of help unusually valuable — the plan is thorough and it is still a set of guesses.
+
+- **[#49](https://github.com/Rumeasiyan/askwell/issues/49)** — got an 8 GB laptop? The riskiest number in the project needs measuring on a machine we do not have.
+- **[#50](https://github.com/Rumeasiyan/askwell/issues/50)** — work with confidential files for a living? Tell us whether this would actually help.
+- **[#51](https://github.com/Rumeasiyan/askwell/issues/51)** — 40 designed screens, two commands to run, tell us what is wrong.
+- **[#52](https://github.com/Rumeasiyan/askwell/issues/52)** — a small, self-contained `shellcheck` pass.
+
+[`CONTRIBUTING.md`](CONTRIBUTING.md) has the rest. [Discussions](https://github.com/Rumeasiyan/askwell/discussions) is open if you would rather talk than file.
 
 ## Licence
 

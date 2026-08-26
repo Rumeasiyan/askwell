@@ -56,7 +56,7 @@ No barge-in, no language detection.
 
 **Tauri desktop shell** — window, native file dialogs, supervising the container stack and the native inference process. Installer with hardware probe, offline model bundle, update mechanism, log budget and export, backup and **tested restore**, data export and deletion, settings.
 
-A week over the previous estimate: the shell is new work, and code signing across three platforms — Apple notarisation especially — is not a footnote.
+A week over the previous estimate for the shell itself. **Signing is deferred on cost** (`M7-TAURI-DEPLOY-184a`), so Phase 6 ships unsigned with published checksums and the bypass instructions in `installing.md`.
 
 *Accept when:* a clean machine installs and runs with the network cable unplugged, and a backup taken on one machine restores onto another with corpus and memory intact.
 

@@ -22,6 +22,92 @@ Template:
 
 ---
 
+## 2026-08-26 — No trademark, unsigned distribution, and Apache-2.0 stays
+
+**Decision:** Askwell will **not register a trademark**, and ships **unsigned** with published checksums and written bypass instructions. The licence **stays Apache-2.0**; moving to MIT was considered and rejected.
+
+**Why MIT would not have helped, since it was the reason MIT came up.** Apache-2.0 §6 explicitly reserves trademark rights; MIT is silent on them. Silence is not a grant, so neither licence gives a trademark away and neither creates one — **the trademark question is entirely orthogonal to which permissive licence is chosen.** Switching would have cost the explicit patent grant in §3, which protects the project and its contributors from a contributor later asserting a patent, in exchange for nothing at all. Apache-2.0 stays.
+
+**Why no trademark, and what that actually costs.** Registration is a few hundred pounds and enforcement is far more, against a project with no revenue. Most small open-source projects rely on unregistered rights arising from use, and are fine.
+
+The real cost is that a previously-recorded claim was wrong and had to be corrected. The Apache-2.0 entry said the position against a hostile fork is protected by "the trademark and the brand" — with no registration, that sentence asserted a protection that does not exist. **A document claiming a safeguard you do not have is worse than one admitting you have none**, because the first stops anyone looking for a real one.
+
+What actually protects the position is narrower and worth stating plainly: whoever runs the credit service holds the provider contracts, the billing relationship and the support burden. That is a business to build, not a repository to copy. Being the maintained original counts too — and counts for nothing if the original stops being maintained.
+
+**Why unsigned, and where the honesty has to sit.** Certificates cost money every year — an Apple Developer enrolment and a Windows code-signing certificate — against no revenue. Linux is unaffected. macOS refuses first launch until the user goes through System Settings, and Windows shows SmartScreen with *Don't run* as the default button.
+
+That is a conversion cost, not a distribution problem: `success-metrics.md` §4 targets fewer than 20% of installs never reaching a first answer, and a security warning on a free tool nobody has invested in is exactly where that number goes bad. It was accepted knowingly.
+
+The part that must not be got wrong: **an unsigned build from a careful developer and an unsigned build from a hostile one are indistinguishable to Gatekeeper.** So a bypass instruction on its own is teaching people to click past security warnings, with nothing offered in exchange. `installing.md` therefore puts **checksum verification above the bypass**, and says why — the bypass tells the machine to stop asking, the checksum is the check that actually protects the reader. Any future edit that reorders those two sections has removed the only real safeguard in the page.
+
+**Consequences:** `M7-TAURI-DEPLOY-184` becomes unsigned distribution with checksums; signing survives as `M7-TAURI-DEPLOY-184a`, deferred and explicitly blocked on a purchase rather than on engineering, so it is tracked rather than forgotten. `docs/installing.md` is new and is linked from the README. Phase 6's estimate no longer carries signing. Nothing in the product changes — signing was always build-time, and C1 was never involved.
+
+**Refs:** `PRD.md` §7, §11; `installing.md`; `architecture.md` §1; `build-plan.md` Phase 6; `LICENSE`; issues #42, #47.
+
+---
+
+## 2026-08-26 — Web search uses a keyless library; no key means no contradiction
+
+**Decision:** Web search uses **`ddgs`**, an MIT-licensed keyless metasearch library, behind the provider interface. No API key, no account, no cost, no additional container. `PRD.md` §6 stands unamended, and web search stays at Phase 6.5 rather than moving behind the credit service.
+
+**Why the earlier framing was wrong.** I put three options forward — the user's own key, metering through credits, or a self-hosted SearXNG container — built on the constraint that *an open-source application cannot ship a shared API key*, because it would be lifted from the binary and the quota drained by everyone. That constraint is real. It is also irrelevant, because it presumes a key exists.
+
+Commercial products buy search API keys because they serve many users from shared infrastructure, and that traffic is what gets rate-limited and blocked. **Askwell is the opposite case in every dimension**: one person, on their own connection, escalating a handful of questions a week. That traffic is shaped like someone browsing, because it is. The thing that breaks keyless search is volume from one address, and there is no volume here.
+
+**What was rejected.** *CoexistAI* was raised and inspected: 521 stars, last pushed five months ago, and licensed `NOASSERTION` — not a standard OSI licence. It is a research framework that wraps SearXNG rather than a search backend, so it is a larger dependency than the problem needs, with the same class of licence question that removed PyMuPDF. *SearXNG itself* is a genuine option and remains the swap-in if `ddgs` stops being maintained; it was not chosen because it is a container on someone's laptop, and `architecture.md` §2 treats container count as a real cost.
+
+*The user's own key* was the tempting one, and would have required narrowing §6 to say "AI provider key" — defensible, since a search key is low-cost and low-blast-radius unlike an inference key. It is unnecessary now, and a promise not narrowed is worth more than a promise narrowed with good reason.
+
+**The cost, accepted knowingly:** a keyless metasearch depends on engines whose markup changes, so it will break and stay broken until the library is updated. That is a real dependency on someone else's maintenance, mitigated by where it sits — the unavailable state is already specified, and **the abstention still stands as the answer**. Failing to escalate is not failing to answer. The rule that must not bend when this fails: C5 does not relax because a network call did.
+
+**Consequences:** `M6.5-WEB-BLOCKED-195` is unblocked and **no ticket in the backlog carries a `[BLOCKED]` marker any more**. The provider interface earns its place — it exists precisely so this choice can be revisited without touching the answer path.
+
+**Refs:** `web-search.md` §6; `ux/web-search.md`; `architecture.md` §1; `PRD.md` §6, §11; issue #43.
+
+---
+
+## 2026-08-26 — Updates, the online payload, and credits priced per question
+
+**Decision:** Three answers, each closing a `PRD.md` §11 item or a blocked ticket.
+
+**Update delivery: an opt-in weekly check against a static version file.** Off by default. The request carries the version number and nothing else.
+
+**What online mode transmits: a default-deny list of exactly four fields** — token counts, timestamp, model, and an opaque account identifier.
+
+**Credits are priced per question, flat within a model tier**, not per token.
+
+**Why a static file rather than an endpoint:** an endpoint could log who asked, and the only thing standing between that capability and its use is a promise. A static file has no such capability — the difference between *we do not log this* and *there is nothing here that could* is the difference between a policy and a property. C1 stays intact because the check is off unless the user turns it on, and the payload is small enough to state truthfully in one sentence rather than approximately.
+
+The alternative — no check at all, the repository as the channel — was rejected because nobody watches a repository they installed software from. This product handles other people's confidential material, so a security fix that reaches almost nobody is not an acceptable outcome of constraint purity.
+
+**Why default-deny on the payload:** the boundary in `audit-log.md` §6 was the right shape and was not a specification. Billing needs enough to bill; anti-abuse needs enough to detect abuse; each argues for one more field, and every one of those arguments is reasonable in isolation. Left informal, the list gets settled by whoever implements billing on the day — which is exactly how a privacy-first product ends up transmitting more than it promised. A field not on the list is now refused rather than reviewed, matching the egress proxy. Adding one is a decision recorded here first.
+
+IP address was considered and left off. It is a genuine anti-abuse signal and it is an identifier the product promised not to collect; collecting it before an abuse problem exists trades a real promise for a hypothetical benefit.
+
+**Why questions rather than tokens:** the spending limit in `ux/settings.md` §3 is only meaningful if the unit is one the user can picture. *About forty questions left* is a number someone can plan around; *five hundred thousand tokens* is not. The cost is that we absorb the variance when a question retrieves a lot of context — and that is the correct side to put the variance on, because a meter that only makes sense in arrears contradicts everything else in this product about not springing surprises.
+
+**Consequences:** `M7-UPDATE-BLOCKED-161/162` and `M8-CREDIT-BLOCKED-173/174` and `M8-ONLINE-OBS-172` are unblocked and the `[BLOCKED]` markers come off. Balance is displayed in questions remaining, which the credit service must therefore compute rather than exposing a token count. The update check needs a static file hosted somewhere — trivial, and it belongs in the Phase 7 packaging work rather than being discovered there.
+
+**Refs:** `PRD.md` §7, §11; `ux/settings.md` §3, §7; `audit-log.md` §9; issues #44, #45, #46.
+
+---
+
+## 2026-08-26 — Copy-review marker, and the audit lineage resets per milestone
+
+**Decision:** Tickets that render wording a user reads carry `**Human review:** copy` under their `**Type:**` line — 26 of them. The build runner's audit and manual-test lineages reset at each milestone boundary rather than running as one session across all 198 tickets.
+
+**Why the marker is in the ticket and not in the runner:** a list of ticket ids held in a script is a second source of truth. It drifts the moment somebody adds a ticket with the same property and does not know the list exists, and the failure is silent — the gate runs, finds nothing, and reports clean.
+
+**What finding the right 26 actually taught, which is the part worth keeping:** the exact copy is not in the tickets. It lives in the `docs/ux/` specifications as quoted blocks, and tickets reference those by section. A detector written the obvious way — look for quoted text inside the ticket body — finds **exactly one** ticket and reports the other twenty-five as clean. That is worse than no detector, because it produces a green result for a check that never ran. The marker exists precisely because the property being detected is not visible in the thing being scanned.
+
+**Why the audit lineage resets per milestone:** the reason for a resumed audit session was to keep the auditor from relearning conventions on every ticket, while preserving the one property that matters — that it did not write the code. Both survive a reset at a milestone boundary. What does not survive is context from work three milestones old, and that is the thing worth losing: an auditor carrying stale assumptions about a subsystem that has since changed reviews against a codebase that no longer exists. A forgetful auditor asks; a stale one is confidently wrong.
+
+**Consequences:** session ids are keyed by milestone, so deleting one file restarts one milestone's lineage rather than all of them. The runner prints `copy review required` for the marked tickets and, per `build-runner.md` §9, must quote the wording into its own output — a gate that requires opening a file is a gate that gets skipped on the twentieth ticket.
+
+**Refs:** `build-runner.md` §9, §13; `backlog/README.md`; `scripts/build-runner.sh`; issue #40.
+
+---
+
 ## 2026-08-26 — Every open item resolved, deferred with a reason, or given an owner
 
 **Decision:** A sweep of all fourteen documents found roughly thirty items sitting in "Open" sections. Each is now decided and recorded where it belongs, deferred with a stated reason, or filed as a tracked issue with an owner. **No open item lives only in a document.**
@@ -206,7 +292,7 @@ Rejected alternatives. **AGPL** looks protective and mostly is not here: its net
 
 **Consequences:**
 
-- Someone can fork Askwell and point it at their own credit service. Nothing prevents that. The position is protected by the trademark, the brand and the operational reality of running paid inference — so **the trademark now needs registering**, which is a new open item.
+- Someone can fork Askwell and point it at their own credit service. Nothing prevents that. **Superseded 2026-08-26: no trademark will be registered** — see that day's entry. The protection is narrower than this line claimed.
 - Free and open sets a support expectation a single maintainer cannot meet. A stated support boundary and issue triage must exist before the first public release, not after it.
 - Everything shipping before Phase 7 is free and open, so v1 earns nothing. Adoption has to come first and the credit system stops being an add-on — it is the business.
 - The competitive field is large and established: AnythingLLM (64k stars), private-gpt (57k), Quivr (39k), Khoj (36k), Onyx (31k), open-webui (148k). Askwell will not win generic search terms against these and should not try. **None of them asks the user about their data or remembers the answers** — that phrase is unclaimed, and discovery strategy should own it rather than compete on "local AI for documents".

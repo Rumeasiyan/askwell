@@ -229,6 +229,8 @@
 
 **Type:** Story
 
+**Human review:** copy — this ticket renders wording a user reads, specified in `docs/ux/`. The runner stops and quotes it before the pull request is merged.
+
 **User Story**
 - **Actor:** someone opening the clarification queue for the first time.
 - **User Need:** to see how much there is before starting.
@@ -279,6 +281,8 @@
 ### M3-REVIEW-FE-073 — One question's anatomy with its evidence
 
 **Type:** Story
+
+**Human review:** copy — this ticket renders wording a user reads, specified in `docs/ux/`. The runner stops and quotes it before the pull request is merged.
 
 **User Story**
 - **Actor:** someone reading a question about their own data.
@@ -380,6 +384,8 @@
 ### M3-REVIEW-FE-075 — Clarification screen states: none pending, capped, re-processing
 
 **Type:** Story
+
+**Human review:** copy — this ticket renders wording a user reads, specified in `docs/ux/`. The runner stops and quotes it before the pull request is merged.
 
 **User Story**
 - **Actor:** someone who has never met the clarification feature.
@@ -785,6 +791,8 @@
 ### M3-MEM-FE-083 — Memory screen: the list, confidence markers and the usage count
 
 **Type:** Story
+
+**Human review:** copy — this ticket renders wording a user reads, specified in `docs/ux/`. The runner stops and quotes it before the pull request is merged.
 
 **User Story**
 - **Actor:** someone whose answers have started feeling subtly wrong.

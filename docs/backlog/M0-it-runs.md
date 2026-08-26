@@ -855,6 +855,8 @@ The token set is **not** a colour palette alone. `../ux/design-system.md` §2 di
 
 **Type:** Story
 
+**Human review:** copy — this ticket renders wording a user reads, specified in `docs/ux/`. The runner stops and quotes it before the pull request is merged.
+
 **User Story**
 - **Actor:** someone who has just started Askwell and wants to see something.
 - **User Need:** a window that shows the product exists and reports honestly whether it is ready.
