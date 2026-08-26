@@ -120,7 +120,7 @@ The business is not the code. It is the credit service: the provider contracts, 
 - **Not a coding assistant.**
 - **Not a BI tool.** It answers questions; it does not build dashboards.
 - **Not a model trainer.** It runs existing open models. Your corrections are remembered as facts, not by retraining anything.
-- **Not multilingual yet.** English only in v1. Tamil, then possibly Sinhala, come later.
+- **Not multilingual yet.** English only in v1. Tamil, then possibly Sinhala, come later — and the components for both need re-sourcing, see `architecture.md`.
 
 ---
 
@@ -155,4 +155,6 @@ Build detail, estimates and acceptance criteria: `build-plan.md`.
 ## 11. Still open
 
 1. **Credit pricing.** Rate, minimum purchase, and margin over provider cost. Not needed until stage 7, but it determines whether the free-first bet works.
-3. **Update delivery.** How a free local install learns that a new version exists without phoning home by default.
+2. **Update delivery.** How a free local install learns that a new version exists without phoning home by default.
+3. **Trademark.** "Askwell" needs registering if the brand is what protects the position against a fork.
+4. **Support boundary.** What a single maintainer promises to answer, stated before release rather than discovered afterwards.

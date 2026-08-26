@@ -22,6 +22,85 @@ Template:
 
 ---
 
+## 2026-08-26 — C9: bundled models must be redistributable; a swapped model is marked unverified
+
+**Decision:** Two related calls. **C9** is added to `AGENTS.md` §3: a bundled model's licence must permit redistribution and commercial use, and the weights must not be access-gated. Separately, **swapping to a user-supplied model is permitted and marked** — settings distinguishes validated defaults from unverified models, and every answer produced by one carries a persistent marker.
+
+**Why C9:** Askwell bundles weights into a redistributable offline installer under Apache-2.0. Every model currently in the stack happens to be Apache-2.0 and ungated, which was luck rather than a requirement — nothing would have stopped a future change picking a better-performing model with terms that cannot ship, and the discovery would have come during Phase 7 packaging, which is phase-blocking.
+
+Two near-misses had already happened before the rule existed. Gemma 3 is manually access-gated and carries Google's own terms rather than an OSI licence; an installer cannot click through an access agreement. MMS-TTS Tamil is CC-BY-NC, non-commercial, against a product with a paid credit tier. Both were caught by checking rather than by any rule.
+
+A working rule in `architecture.md` was rejected over a constraint: constraints get enforcement points, working rules get forgotten, and the two near-misses happened precisely because there was nothing with teeth. Permitting gated models via user-initiated download was rejected because it breaks the offline install story that is central for the target user and would need an explicit C1 exception.
+
+The accepted cost is real and permanent: Gemma is excluded, and any future model under similar terms is excluded with it, however well it performs.
+
+**Why the marker rather than a list:** shipped defaults pass 155 eval tasks including abstention at ≥ 0.90 and SQL safety at 1.00. A user-supplied model has passed none of it and can fabricate citations or refuse to abstain while the provenance margin renders exactly as it always does. As specified before this decision, swapping silently opted the user out of both central guarantees with nothing saying so.
+
+Restricting swaps to a validated list was rejected outright: a local, open-source product that dictates which models may run is fighting its own audience, and model choice is a legitimate reason people choose a tool like this. Running the abstention subset locally against a user-supplied model is the better answer and is deferred — it needs the eval harness to run against an arbitrary model, which is its own body of work, and it is the same mechanism `success-metrics.md` §2 already wants for citation sampling.
+
+This follows the precedent set for the retrieval threshold in `ux/trace.md` §4: permit the dangerous change, state the consequence, never make it frictionless. A one-time warning in settings was judged insufficient because the decision is made once and its consequence persists for months — so the marker sits on the answer, where the consequence actually lands.
+
+**Consequences:**
+
+- Gemma 3 and any gated or non-commercial model are permanently out of the bundle. This narrows the field.
+- `M7-DOC-DOC-163` (licence and notices) becomes the place C9 is **evidenced**, not merely asserted.
+- New ticket `M7-SET-FE-146a` for the answer-surface marker; `M7-SET-FE-146` gains the validated/unverified distinction and a rule that the statement cannot be suppressed.
+- `ux/ask.md` gains an unvalidated-model state; `ux/settings.md` §2 carries the wording.
+- Running evals against a user-supplied model is now a named deferral rather than an unconsidered gap.
+
+**Refs:** `AGENTS.md` §3 (C9), `architecture.md` §6, `ux/settings.md` §2, `ux/ask.md` §5; issues #26, #28.
+
+---
+
+## 2026-08-26 — Model names corrected; registry verification is now a rule
+
+**Decision:** Supersedes the 2026-08-10 entry "`institution` profile is Qwen3 32B, not a 'Qwen3.6 27B'". That entry was **wrong**. Profiles now use Qwen3.5 4B, Qwen3.5 9B and Qwen3.6 27B. Speech synthesis reverts to **Kokoro-82M**, replacing Piper. `AGENTS.md` §4 gains a rule requiring registry verification of every model, weight and traineddata name.
+
+**Why:** The original pre-repositioning PRD specified `Qwen3.5 4B` and `Qwen3.6 27B`, and Kokoro-82M for English speech. All three were correct. On 2026-08-10 the Qwen names were "corrected" to older releases on the stated grounds that neither existed and that 27B was "a Gemma parameter count, not a Qwen one"; in MODE A on 2026-08-26 Kokoro was swapped for Piper without adequate justification.
+
+Verified against the model registry on 2026-08-26: `Qwen/Qwen3.5-4B` (7.7M downloads), `Qwen/Qwen3.5-9B` (13.4M), `Qwen/Qwen3.6-27B` (6.2M), `Qwen/Qwen3.6-35B-A3B` (5.4M), all Apache-2.0 and ungated. `hexgrad/Kokoro-82M` is Apache-2.0 with 12.3M downloads and a maintained ONNX build; Piper's voices are licensed individually, several are CC-BY-NC, and many carry no licence field at all — which is a distribution problem for weights bundled into a redistributable installer.
+
+The cause is the same in both cases and is what actually needed fixing: **model availability and licensing were asserted from training-time memory rather than checked against a registry.** The identical failure was anticipated and avoided two days earlier for frontend package versions, where checking caught that the documented Next.js version was two majors stale. Models had no equivalent rule, so the same mistake ran unchecked twice.
+
+**Consequences:**
+
+- `AGENTS.md` §4 now requires name, current version, licence and gating status to be verified before any model name is written down. It sits alongside the existing package-version discipline rather than being a special case.
+- The profile table states explicitly that all four models being Apache-2.0 and ungated is a **requirement, not a coincidence** — see the redistribution-licence constraint under discussion in #26.
+- `Qwen3.6 35B-A3B` is flagged for evaluation on high-RAM CPU machines. A mixture-of-experts model with roughly 3B active parameters behaves far better on CPU than its total size implies, and no profile currently exploits that.
+- The `workstation` VRAM floor against a 27B at Q4_K_M is tight and unmeasured. Profile floors remain estimates, and the eval gate rather than the table decides what ships.
+- Backlog tickets naming Piper were updated in the same change.
+
+**What this does not change:** the architecture, the profile structure, or the sizing logic. A 4B is still a 4B. Only the version line and the synthesis engine were wrong.
+
+**Refs:** `architecture.md` §6, `AGENTS.md` §4; issues #24, #25, #26; supersedes the 2026-08-10 model entry.
+
+---
+
+## 2026-08-26 — Stack confirmed: all three platforms, native inference, egress proxy, no web container
+
+**Decision:** v1 targets **Linux, Windows and macOS**. The llama.cpp server runs as a **native host process** rather than a container. The frontend is **built to static assets served by the API**, removing the `web` container. A **default-deny egress proxy** container enforces C1. PDF work uses **pypdfium2**, not PyMuPDF. Twelve further recommendations were accepted as-is: Next.js 16 / React 19 / Tailwind 4 / shadcn/ui pinned as one set, pnpm, Python 3.12 with tooling inside the API image, SQLAlchemy 2.0 async with Alembic, PostgreSQL 18 sharing its image with the sandbox, server-sent streaming with WebSocket reserved for voice, embeddings and reranking served by the same inference process, Tesseract with the Office-format libraries, locally bundled pdf.js, Piper for speech synthesis, the host-side hardware probe, GitHub Actions CI with the eval gate on a self-hosted or dispatched runner, and backups excluding weights, traces and the vector index.
+
+**Why native inference:** containerised inference was the documented choice and it quietly excluded macOS. A Linux container on Apple Silicon runs inside a VM with no Metal passthrough, so the `accelerated` and `workstation` profiles would have been unreachable on the platform most consultants and lawyers actually carry — the product would have been worst where its target users are. Running inference natively costs the installer managing a process alongside a container stack, and gives *"the assistant is unavailable"* two distinct causes that must be diagnosed and reported separately. That was judged cheaper than shipping a product that is quietly degraded for a large share of its audience.
+
+The alternative of Linux-first with macOS deferred was rejected for the same reason: it ships where the architecture already works rather than where the users are.
+
+**Why the egress proxy, despite the container rule:** `ux/settings.md` promises a live count of outbound requests as the visible proof of C1, and the previous design specified only "egress blocked at the container network". Nothing in that path can count a request that was never made, so the number would have been the application asserting something about itself — precisely the "trust us" the audit-log design refuses to accept elsewhere. Network policy alone also makes per-conversation authorisation coarse, and application-level enforcement is defeated by a single dependency making an unexpected call, which is the realistic threat rather than malicious code.
+
+**Why no web container:** there is no server, no session to protect and no SEO, so a permanent Node process on a single user's laptop bought nothing. This reverses a decision `architecture.md` had marked as locked; it was reversed deliberately rather than worked around.
+
+**Why pypdfium2 over PyMuPDF:** PyMuPDF is the better library here — one dependency covering text extraction, page rendering for OCR, and the coordinates that citation highlighting needs. It is AGPL, and shipping it in a distributed application would have forced Askwell off Apache-2.0, which was chosen deliberately for contribution and adoption. The commercial licence was rejected as a paid dependency for a product with no revenue before Phase 7. The cost is real: passage-level highlighting and OCR coordinate mapping get harder, and scanned pages start at page-level highlighting.
+
+**Consequences:**
+
+- **Seven containers plus one native process**, down from eight containers despite adding the proxy.
+- The installer now provisions and supervises a native process on three platforms. That is the single largest addition to the packaging milestone.
+- **Open, before Phase 5:** whether speech-to-text also needs to run natively for GPU access on accelerated profiles, or stays containerised on CPU. Untested, and the answer changes the installer.
+- Indexing in place means the user nominates root directories at add-time which become known mounts, rather than the container having open filesystem access. Safer, and the only thing that works with a VM in the path — but the installer and the add-source flow must handle path registration, which no screen specification currently covers.
+
+**Refs:** `architecture.md` §1, §2, §2.1, §5, §6; issues #6, #9; MODE A analysis 2026-08-26.
+
+---
+
 ## 2026-08-10 — Renamed to Askwell; Apache-2.0 with a proprietary credit service
 
 **Decision:** VaultQ becomes **Askwell**. The application is open source under **Apache-2.0**; the online-AI credit service stays proprietary. Repository renamed to `Rumeasiyan/askwell`.

@@ -62,7 +62,7 @@ Installer with hardware probe, desktop packaging, offline model bundle, update m
 
 ## Phase 7 — Online AI credits
 
-Account, credit purchase, usage limits, the provider abstraction, admin. Requires decisions deferred throughout (`audit-log.md` §6, `PRD.md` §11.2).
+Account, credit purchase, usage limits, the provider abstraction, admin. Requires decisions deferred throughout (`audit-log.md` §6; `PRD.md` §11 items 1 and 2).
 
 The revenue line. Everything before it is free.
 
