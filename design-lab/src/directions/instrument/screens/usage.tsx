@@ -15,10 +15,10 @@ export default function Usage() {
           <div className="grid gap-3 md:grid-cols-2">
             <Panel title="didn’t know — 12%">
               <div className="mb-2"><Bar pct={12} /></div>
-              <div className="flex justify-between text-[11px] text-[var(--muted)]">
-                <span>0%</span><span className="text-[var(--provenance)]">healthy band 5–20%</span><span>40%</span>
+              <div className="flex justify-between text-[11px] text-[var(--ask-muted)]">
+                <span>0%</span><span className="text-[var(--ask-provenance)]">healthy band 5–20%</span><span>40%</span>
               </div>
-              <Prose className="mt-3 text-[14px] text-[var(--muted)]">
+              <Prose className="mt-3 text-[14px] text-[var(--ask-muted)]">
                 Inside the healthy band. Below 5% would be suspicious rather than good — it usually means the threshold
                 has been lowered and Askwell has started guessing.
               </Prose>
@@ -26,10 +26,10 @@ export default function Usage() {
 
             <Panel title="claims traced to a source — 100%">
               <div className="mb-2"><Bar pct={100} /></div>
-              <div className="flex justify-between text-[11px] text-[var(--muted)]">
-                <span>sampled 40 answers</span><span className="text-[var(--provenance)]">target 100%</span>
+              <div className="flex justify-between text-[11px] text-[var(--ask-muted)]">
+                <span>sampled 40 answers</span><span className="text-[var(--ask-provenance)]">target 100%</span>
               </div>
-              <Prose className="mt-3 text-[14px] text-[var(--muted)]">
+              <Prose className="mt-3 text-[14px] text-[var(--ask-muted)]">
                 Read alongside the number on the left, never on its own. Both falling together is the pattern that
                 matters, and either one alone looks fine.
               </Prose>

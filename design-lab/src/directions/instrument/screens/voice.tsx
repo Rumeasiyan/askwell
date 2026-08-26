@@ -17,10 +17,10 @@ export default function Voice() {
               <div className="flex flex-col gap-2">
                 <Prose>Meridian Foods is on <strong>45-day payment terms</strong> from date of invoice.</Prose>
                 <div className="flex items-center gap-2">
-                  <span className="text-[11px] uppercase tracking-[0.08em] text-[var(--provenance)]">speaking</span>
+                  <span className="text-[11px] uppercase tracking-[0.08em] text-[var(--ask-provenance)]">speaking</span>
                   <div className="flex h-3 items-end gap-[2px]">
                     {[6, 11, 4, 9, 12, 5, 8].map((h, i) => (
-                      <span key={i} className="w-[3px] bg-[var(--provenance)]" style={{ height: h }} />
+                      <span key={i} className="w-[3px] bg-[var(--ask-provenance)]" style={{ height: h }} />
                     ))}
                   </div>
                   <span className="ml-2"><Btn sm>Stop</Btn></span>
@@ -30,15 +30,15 @@ export default function Voice() {
             card={<SourceCard file="supplier-agreement-2024.pdf" loc="page 14 · §7.2" quote="“Payment shall fall due forty-five (45) days…”" />}
           />
 
-          <Prose className="text-[14px] text-[var(--muted)]">
+          <Prose className="text-[14px] text-[var(--ask-muted)]">
             Citations are not read aloud — “supplier-agreement-2024.pdf, page fourteen” is unbearable to listen to.
             They stay on screen, and the spoken answer says “from the 2024 supply agreement” where it matters.
           </Prose>
 
-          <div className="flex items-center gap-3 border-t border-[var(--rule)] bg-[var(--sunk)] px-4 py-3">
+          <div className="flex items-center gap-3 border-t border-[var(--ask-rule)] bg-[var(--ask-sunk)] px-4 py-3">
             <div className="flex h-4 items-end gap-[3px]">
               {[3, 7, 12, 16, 9, 5, 11, 14, 6, 3].map((h, i) => (
-                <span key={i} className="w-[3px] bg-[var(--muted)]" style={{ height: h }} />
+                <span key={i} className="w-[3px] bg-[var(--ask-muted)]" style={{ height: h }} />
               ))}
             </div>
             <Micro>hold to speak · release when done</Micro>

@@ -18,17 +18,17 @@ export default function SettingsModel() {
           </Panel>
 
           <Panel title="model">
-            <div className="flex items-baseline gap-2 border-b border-[var(--rule)] py-2">
+            <div className="flex items-baseline gap-2 border-b border-[var(--ask-rule)] py-2">
               <Mark known />
               <span className="text-[13px]">Qwen3.5 4B</span>
-              <span className="ml-auto text-[12px] text-[var(--provenance)]">checked · shipped with Askwell</span>
+              <span className="ml-auto text-[12px] text-[var(--ask-provenance)]">checked · shipped with Askwell</span>
             </div>
             <div className="flex items-baseline gap-2 py-2">
               <Mark />
-              <span className="text-[13px] text-[var(--muted)]">a model you place yourself</span>
-              <span className="ml-auto text-[12px] text-[var(--inferred)]">not checked</span>
+              <span className="text-[13px] text-[var(--ask-muted)]">a model you place yourself</span>
+              <span className="ml-auto text-[12px] text-[var(--ask-inferred)]">not checked</span>
             </div>
-            <Prose className="mt-3 text-[14px] text-[var(--muted)]">
+            <Prose className="mt-3 text-[14px] text-[var(--ask-muted)]">
               Askwell tests the models it ships — that they cite their sources, and that they say “I don’t know” rather
               than inventing an answer. A model you supply has not been through that, and Askwell cannot promise either
               behaviour for it. You can still use one; answers from it are marked.
@@ -39,7 +39,7 @@ export default function SettingsModel() {
 
           <Panel title="how sure it has to be before answering">
             <Row k="Current threshold" v="0.65" />
-            <Prose className="mt-2 text-[14px] text-[var(--muted)]">
+            <Prose className="mt-2 text-[14px] text-[var(--ask-muted)]">
               Lower this and Askwell answers from weaker matches — more answers, more of them wrong. Raise it and it says
               “I don’t know” more often. Changes are recorded in your log.
             </Prose>

@@ -21,7 +21,7 @@ export default function VoiceStates() {
             <Prose className="text-[15px]">
               Still working — about four seconds so far.
             </Prose>
-            <Prose className="mt-1 text-[14px] text-[var(--muted)]">
+            <Prose className="mt-1 text-[14px] text-[var(--ask-muted)]">
               This appears only once an answer passes its budget. On a healthy turn you never see it, and its whole job is
               to stop you concluding it has hung and trying again.
             </Prose>
@@ -29,7 +29,7 @@ export default function VoiceStates() {
 
           <Panel title="I heard you, but not clearly">
             <Prose className="text-[16px] font-semibold">“What payment terms did we agree with Meridian?”</Prose>
-            <Prose className="mt-1 text-[14px] text-[var(--muted)]">
+            <Prose className="mt-1 text-[14px] text-[var(--ask-muted)]">
               Confidence was low on this one. Answering the wrong question confidently is worse than one extra tap.
             </Prose>
             <div className="mt-3 flex gap-3"><Btn primary sm>Yes, ask that</Btn><Btn sm>Let me say it again</Btn></div>

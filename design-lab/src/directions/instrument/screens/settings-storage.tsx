@@ -15,7 +15,7 @@ export default function SettingsStorage() {
               You are near the limit you set. Export and prune the older half, or raise the limit — Askwell keeps working
               either way.
             </Prose>
-            <Prose className="mt-2 text-[14px] text-[var(--muted)]">
+            <Prose className="mt-2 text-[14px] text-[var(--ask-muted)]">
               At the limit, adding new sources stops first and asking questions keeps working. Reading is what you opened
               Askwell for; indexing is what fills the disk.
             </Prose>

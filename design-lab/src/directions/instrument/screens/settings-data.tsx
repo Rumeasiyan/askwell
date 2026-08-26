@@ -8,7 +8,7 @@ export default function SettingsData() {
         <Rail groups={railWith('Settings')} />
         <Main>
           <H>Your data</H>
-          <Prose className="text-[15px] text-[var(--muted)]">
+          <Prose className="text-[15px] text-[var(--ask-muted)]">
             All of it is yours and none of it is locked in. Everything below writes open formats you can read without
             Askwell.
           </Prose>
@@ -28,7 +28,7 @@ export default function SettingsData() {
               Each entry is sealed against the one before it. If anything outside Askwell has edited or removed a record,
               this check finds exactly where.
             </Prose>
-            <Prose className="mt-2 text-[14px] text-[var(--muted)]">
+            <Prose className="mt-2 text-[14px] text-[var(--ask-muted)]">
               Askwell never rewrites its own history, and tampering is detectable. It is not immutable — you own this
               machine and can always delete a file. That is the honest version.
             </Prose>
@@ -39,7 +39,7 @@ export default function SettingsData() {
             <Row k="Delete a source" v="contents forgotten, old answers still say where they came from" />
             <Row k="Delete all memory" v="23 facts · cannot be undone" />
             <Row k="Reset Askwell" v="everything Askwell holds" />
-            <Prose className="mt-2 text-[14px] text-[var(--muted)]">
+            <Prose className="mt-2 text-[14px] text-[var(--ask-muted)]">
               None of this touches your original files. Askwell only ever forgets its own copy of what it read.
             </Prose>
             <div className="mt-3 flex flex-wrap gap-3">

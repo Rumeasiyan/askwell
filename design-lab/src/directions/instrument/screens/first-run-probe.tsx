@@ -20,7 +20,7 @@ export default function FirstRunProbe() {
             Expect answers in about <strong>fifteen seconds</strong>. Voice will work. A machine with a graphics card
             would be roughly four times faster, but nothing here is degraded.
           </Prose>
-          <Prose className="text-[15px] text-[var(--muted)]">
+          <Prose className="text-[15px] text-[var(--ask-muted)]">
             You can change the model later if you want to trade speed for quality in either direction.
           </Prose>
 

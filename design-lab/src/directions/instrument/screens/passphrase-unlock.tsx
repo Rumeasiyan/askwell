@@ -12,7 +12,7 @@ export default function PassphraseUnlock() {
           </Prose>
           <div className="pt-1"><Field>passphrase</Field></div>
           <div className="flex gap-3"><Btn primary>Unlock</Btn></div>
-          <Prose className="text-[14px] text-[var(--muted)]">
+          <Prose className="text-[14px] text-[var(--ask-muted)]">
             There is no recovery. Askwell cannot reset this for you — if it could, the encryption would be worth nothing.
             Without the passphrase the only way forward is to start again from your original files, which are untouched.
           </Prose>

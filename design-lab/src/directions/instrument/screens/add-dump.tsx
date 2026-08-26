@@ -23,7 +23,7 @@ export default function AddDump() {
           <div className="flex flex-col gap-2">
             <div className="flex items-baseline justify-between">
               <span className="text-[13px]">Loading into a sealed copy</span>
-              <span className="text-[12px] tabular-nums text-[var(--muted)]">312 MB of 840 MB · 2m 10s elapsed</span>
+              <span className="text-[12px] tabular-nums text-[var(--ask-muted)]">312 MB of 840 MB · 2m 10s elapsed</span>
             </div>
             <Bar pct={37} />
           </div>

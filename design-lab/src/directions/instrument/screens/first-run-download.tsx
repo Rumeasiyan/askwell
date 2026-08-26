@@ -12,12 +12,12 @@ export default function FirstRunDownload() {
           <div className="flex flex-col gap-2">
             <div className="flex items-baseline justify-between">
               <span className="text-[13px]">Qwen3.5 4B</span>
-              <span className="text-[12px] tabular-nums text-[var(--muted)]">1.4 GB of 2.4 GB · 4.1 MB/s</span>
+              <span className="text-[12px] tabular-nums text-[var(--ask-muted)]">1.4 GB of 2.4 GB · 4.1 MB/s</span>
             </div>
             <Bar pct={58} />
           </div>
 
-          <Prose className="text-[15px] text-[var(--muted)]">
+          <Prose className="text-[15px] text-[var(--ask-muted)]">
             This is the only wait. Once it is here, Askwell never needs the internet again unless you ask it to.
           </Prose>
 
@@ -28,9 +28,9 @@ export default function FirstRunDownload() {
             <div className="mt-3 flex gap-3"><Btn primary sm>Add files now</Btn></div>
           </Panel>
 
-          <div className="flex flex-col gap-2 border-t border-[var(--rule)] pt-4">
+          <div className="flex flex-col gap-2 border-t border-[var(--ask-rule)] pt-4">
             <Micro>on a slow or metered connection</Micro>
-            <Prose className="text-[14px] text-[var(--muted)]">
+            <Prose className="text-[14px] text-[var(--ask-muted)]">
               You can download the model file separately and put it in place by hand — useful if this machine has no
               internet at all.
             </Prose>

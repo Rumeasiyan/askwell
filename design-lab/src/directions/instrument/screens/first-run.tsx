@@ -13,11 +13,11 @@ export default function FirstRun() {
       <Chrome right={<Badge>first run</Badge>} />
       <div className="mx-auto flex max-w-[720px] flex-col">
         <Main>
-          <div className="flex gap-6 border-b border-[var(--rule)] pb-4">
+          <div className="flex gap-6 border-b border-[var(--ask-rule)] pb-4">
             {steps.map((s) => (
               <div key={s.n} className="flex items-baseline gap-2">
-                <span className={`text-[11px] tabular-nums ${s.s === 'now' ? 'text-[var(--provenance)]' : 'text-[var(--muted)]'}`}>{s.n}</span>
-                <span className={`text-[12.5px] ${s.s === 'next' ? 'text-[var(--muted)]' : s.s === 'now' ? '' : 'text-[var(--muted)] line-through'}`}>{s.t}</span>
+                <span className={`text-[11px] tabular-nums ${s.s === 'now' ? 'text-[var(--ask-provenance)]' : 'text-[var(--ask-muted)]'}`}>{s.n}</span>
+                <span className={`text-[12.5px] ${s.s === 'next' ? 'text-[var(--ask-muted)]' : s.s === 'now' ? '' : 'text-[var(--ask-muted)] line-through'}`}>{s.t}</span>
               </div>
             ))}
           </div>
@@ -31,7 +31,7 @@ export default function FirstRun() {
             When it finds something it genuinely cannot work out — an unlabelled column, a date that could go two ways,
             two documents that disagree — it asks you, and remembers what you say.
           </Prose>
-          <Prose className="text-[15px] text-[var(--muted)]">
+          <Prose className="text-[15px] text-[var(--ask-muted)]">
             Two things worth knowing now: it works with no internet connection, and it reads your files where they are
             rather than copying them into a library of its own.
           </Prose>

@@ -19,7 +19,7 @@ export default function AddIndexing() {
             <H>Reading 4 files</H>
             <Micro>about 6 minutes left</Micro>
           </div>
-          <Prose className="text-[15px] text-[var(--muted)]">
+          <Prose className="text-[15px] text-[var(--ask-muted)]">
             You can ask about what is already indexed. Leaving this screen does not stop it.
           </Prose>
 
@@ -27,11 +27,11 @@ export default function AddIndexing() {
             {files.map((f) => (
               <Panel key={f.n}>
                 <div className="flex items-baseline justify-between gap-3">
-                  <span className={`text-[12.5px] ${f.bad ? 'text-[var(--alarm)]' : ''}`}>{f.n}</span>
-                  <span className={`text-[11px] uppercase tracking-[0.06em] ${f.bad ? 'text-[var(--alarm)]' : 'text-[var(--muted)]'}`}>{f.s}</span>
+                  <span className={`text-[12.5px] ${f.bad ? 'text-[var(--ask-alarm)]' : ''}`}>{f.n}</span>
+                  <span className={`text-[11px] uppercase tracking-[0.06em] ${f.bad ? 'text-[var(--ask-alarm)]' : 'text-[var(--ask-muted)]'}`}>{f.s}</span>
                 </div>
                 {!f.bad && <div className="mt-2"><Bar pct={f.p} /></div>}
-                <div className="mt-1.5 text-[11px] text-[var(--muted)]">
+                <div className="mt-1.5 text-[11px] text-[var(--ask-muted)]">
                   {f.bad ? 'Askwell reads PDF, Word, Excel, PowerPoint, text, HTML and images. Unzip it and add the contents.' : f.d}
                 </div>
               </Panel>

@@ -14,7 +14,7 @@ export default function SettingsAbout() {
             <Row k="Licence" v="Apache-2.0 · free to use, fork and audit" tone="prov" />
             <Row k="Source" v="github.com/Rumeasiyan/askwell" tone="prov" />
             <Row k="Models in use" v="Qwen3.5 4B · bge-m3 · whisper small · Kokoro" />
-            <Prose className="mt-3 text-[14px] text-[var(--muted)]">
+            <Prose className="mt-3 text-[14px] text-[var(--ask-muted)]">
               Every model Askwell ships can be redistributed freely. That is a requirement, not a coincidence — it is why
               some otherwise better models are not here.
             </Prose>
@@ -26,7 +26,7 @@ export default function SettingsAbout() {
               Askwell can check weekly for a new version. That is one request carrying your version number and nothing
               else — no identifier, no usage, no files.
             </Prose>
-            <Prose className="mt-2 text-[14px] text-[var(--muted)]">
+            <Prose className="mt-2 text-[14px] text-[var(--ask-muted)]">
               It is off because “no network connections” should mean exactly that. If you leave it off, watch the
               repository instead — security fixes are worth knowing about.
             </Prose>

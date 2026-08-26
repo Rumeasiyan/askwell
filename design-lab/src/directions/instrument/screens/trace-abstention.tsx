@@ -15,18 +15,18 @@ export default function TraceAbstention() {
           <Panel title="what was searched">
             <div className="flex flex-col gap-1.5 text-[13px]">
               <span>1,240 passages · 38 documents · 2 databases</span>
-              <span className="text-[var(--muted)]">threshold in force: 0.65</span>
+              <span className="text-[var(--ask-muted)]">threshold in force: 0.65</span>
             </div>
           </Panel>
 
-          <div className="rounded-[var(--radius)] border border-[var(--inferred)] bg-[var(--surface)] p-4">
+          <div className="rounded-[var(--ask-radius)] border border-[var(--ask-inferred)] bg-[var(--ask-surface)] p-4">
             <Micro>the closest match, and it missed</Micro>
             <div className="mt-2 flex items-baseline gap-3">
-              <span className="w-10 tabular-nums text-[var(--inferred)] text-[13px]">0.61</span>
+              <span className="w-10 tabular-nums text-[var(--ask-inferred)] text-[13px]">0.61</span>
               <span className="text-[12.5px]">insurance-schedule-2023.pdf p.2</span>
-              <span className="ml-auto text-[11px] text-[var(--muted)]">0.04 under the threshold</span>
+              <span className="ml-auto text-[11px] text-[var(--ask-muted)]">0.04 under the threshold</span>
             </div>
-            <Prose className="mt-2 text-[14px] text-[var(--muted)]">
+            <Prose className="mt-2 text-[14px] text-[var(--ask-muted)]">
               “Public liability cover is maintained at £5,000,000 per claim…” — related, but it does not mention
               professional indemnity at all.
             </Prose>
@@ -36,7 +36,7 @@ export default function TraceAbstention() {
             <Prose className="text-[15px]">
               You can lower the threshold so Askwell answers from weaker matches like this one.
             </Prose>
-            <Prose className="mt-2 text-[14px] text-[var(--muted)]">
+            <Prose className="mt-2 text-[14px] text-[var(--ask-muted)]">
               It will answer more often and be wrong more often. The passage above is a near miss for a reason — it is
               about a different kind of insurance. Lowering the threshold is recorded in your log.
             </Prose>

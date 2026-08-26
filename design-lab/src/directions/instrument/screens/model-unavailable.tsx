@@ -25,10 +25,10 @@ export default function ModelUnavailable() {
             </div>
           </Panel>
 
-          <div className="flex flex-col gap-2 border-t border-[var(--rule)] pt-4">
+          <div className="flex flex-col gap-2 border-t border-[var(--ask-rule)] pt-4">
             <Micro>meanwhile — search your sources directly</Micro>
             <div className="max-w-[420px]"><Field>Search 38 documents and 2 databases…</Field></div>
-            <Prose className="text-[14px] text-[var(--muted)]">
+            <Prose className="text-[14px] text-[var(--ask-muted)]">
               Plain search, no assistant. It finds passages rather than writing an answer, and every result still points
               at its source.
             </Prose>

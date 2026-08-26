@@ -9,7 +9,7 @@ export default function ConnectDb() {
         <Main>
           <div className="flex flex-col gap-2">
             <H>Connect a database</H>
-            <Prose className="text-[15px] text-[var(--muted)]">
+            <Prose className="text-[15px] text-[var(--ask-muted)]">
               Askwell only connects with read-only access, and checks before it saves anything.
             </Prose>
           </div>
@@ -23,14 +23,14 @@ export default function ConnectDb() {
 
           <Panel>
             <div className="flex items-baseline gap-2">
-              <span className="h-1.5 w-1.5 shrink-0 bg-[var(--alarm)]" />
-              <span className="text-[13px] text-[var(--alarm)]">These credentials can modify your database</span>
+              <span className="h-1.5 w-1.5 shrink-0 bg-[var(--ask-alarm)]" />
+              <span className="text-[13px] text-[var(--ask-alarm)]">These credentials can modify your database</span>
             </div>
             <Prose className="mt-2 text-[14px]">
               The account <strong>postgres</strong> can write to <strong>orders</strong>, <strong>invoices</strong> and 11 other tables.
               Askwell will not hold credentials that can damage your data, so this connection was not saved.
             </Prose>
-            <Prose className="mt-2 text-[14px] text-[var(--muted)]">
+            <Prose className="mt-2 text-[14px] text-[var(--ask-muted)]">
               Create a read-only account and try again. Askwell can show you exactly what to run.
             </Prose>
             <div className="mt-3 flex gap-3">

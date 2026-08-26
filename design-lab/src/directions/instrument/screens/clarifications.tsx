@@ -2,18 +2,18 @@ import { Shell, Chrome, Split, Rail, Main, H, Micro, Btn, Badge, Prose, Mark, ra
 
 function Card({ n, subject, q, evidence, guess, children }: any) {
   return (
-    <div className="flex flex-col gap-3 rounded-[var(--radius)] border border-[var(--rule)] bg-[var(--surface)] p-4">
+    <div className="flex flex-col gap-3 rounded-[var(--ask-radius)] border border-[var(--ask-rule)] bg-[var(--ask-surface)] p-4">
       <div className="flex items-baseline justify-between gap-3">
         <span className="text-[12.5px]">{subject}</span>
         <Micro>{n} of 5</Micro>
       </div>
       <Prose className="text-[16px] font-semibold">{q}</Prose>
-      <div className="flex flex-wrap items-center gap-2 text-[12.5px] tabular-nums text-[var(--muted)]">{evidence}</div>
+      <div className="flex flex-wrap items-center gap-2 text-[12.5px] tabular-nums text-[var(--ask-muted)]">{evidence}</div>
       {children}
       <div className="flex flex-wrap items-center gap-3">
         <Btn primary sm>Save</Btn>
         <Btn sm>Skip</Btn>
-        <span className="ml-auto inline-flex items-center gap-1.5 text-[12px] text-[var(--muted)]">
+        <span className="ml-auto inline-flex items-center gap-1.5 text-[12px] text-[var(--ask-muted)]">
           {guess ? <><Mark />{guess}</> : 'no guess — I won’t infer this one'}
         </span>
       </div>
@@ -38,9 +38,9 @@ export default function Clarifications() {
             subject="invoices.st_cd"
             q="What does st_cd mean?"
             guess="I guessed: status code"
-            evidence={<><span><b className="font-normal text-[var(--ink)]">40,112</b> rows</span><span>·</span><span>O <b className="font-normal text-[var(--ink)]">31,204</b></span><span>P <b className="font-normal text-[var(--ink)]">6,890</b></span><span>W <b className="font-normal text-[var(--ink)]">2,018</b></span></>}
+            evidence={<><span><b className="font-normal text-[var(--ask-ink)]">40,112</b> rows</span><span>·</span><span>O <b className="font-normal text-[var(--ask-ink)]">31,204</b></span><span>P <b className="font-normal text-[var(--ask-ink)]">6,890</b></span><span>W <b className="font-normal text-[var(--ask-ink)]">2,018</b></span></>}
           >
-            <div className="rounded-[var(--radius)] border border-[var(--provenance)] bg-[var(--paper)] px-2.5 py-2 font-[var(--font-text)] text-[14.5px]">
+            <div className="rounded-[var(--ask-radius)] border border-[var(--ask-provenance)] bg-[var(--ask-paper)] px-2.5 py-2 font-[var(--ask-font-text)] text-[14.5px]">
               Invoice status: O=open, P=paid, W=written off
             </div>
           </Card>

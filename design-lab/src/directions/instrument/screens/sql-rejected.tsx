@@ -16,7 +16,7 @@ export default function SqlRejected() {
                 Askwell only ever runs read queries. It connected with an account that cannot write, and it checks every
                 query before running it — this one was stopped by both.
               </Prose>
-              <Prose className="text-[15px] text-[var(--muted)]">
+              <Prose className="text-[15px] text-[var(--ask-muted)]">
                 Nothing ran. Your data is unchanged. If you want to see which invoices were written off, ask for that
                 instead and Askwell will show you.
               </Prose>
@@ -27,12 +27,12 @@ export default function SqlRejected() {
           </div>
 
           <Panel title="what was refused">
-            <pre className="m-0 overflow-x-auto text-[12.5px] leading-[1.6] text-[var(--muted)]">{`DELETE FROM invoices
+            <pre className="m-0 overflow-x-auto text-[12.5px] leading-[1.6] text-[var(--ask-muted)]">{`DELETE FROM invoices
 WHERE  st_cd = 'W'
   AND  issued_on < '2026-01-01'`}</pre>
             <div className="mt-3 flex flex-col gap-1.5 text-[12.5px]">
-              <span className="text-[var(--alarm)]">▪ rejected — not a read query</span>
-              <span className="text-[var(--muted)]">the account Askwell uses has no permission to write regardless</span>
+              <span className="text-[var(--ask-alarm)]">▪ rejected — not a read query</span>
+              <span className="text-[var(--ask-muted)]">the account Askwell uses has no permission to write regardless</span>
             </div>
           </Panel>
           <Micro>refused queries are kept in your log — they are how you notice if answers start degrading</Micro>

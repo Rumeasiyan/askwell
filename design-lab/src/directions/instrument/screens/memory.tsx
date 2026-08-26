@@ -2,14 +2,14 @@ import { Shell, Chrome, Split, Rail, Main, H, Micro, Btn, Badge, Mark, Prose, ra
 
 function Fact({ known, subject, source, body, origin, used }: any) {
   return (
-    <div className="flex flex-col gap-1.5 border-b border-[var(--rule)] py-3 last:border-0">
+    <div className="flex flex-col gap-1.5 border-b border-[var(--ask-rule)] py-3 last:border-0">
       <div className="flex items-baseline gap-2">
         <Mark known={known} />
         <span className="text-[12.5px]">{subject}</span>
-        <span className="ml-auto text-[11px] text-[var(--muted)]">{source}</span>
+        <span className="ml-auto text-[11px] text-[var(--ask-muted)]">{source}</span>
       </div>
       <Prose className="text-[14.5px]">{body}</Prose>
-      <div className="flex flex-wrap items-center gap-3 text-[11px] text-[var(--muted)]">
+      <div className="flex flex-wrap items-center gap-3 text-[11px] text-[var(--ask-muted)]">
         <span>{origin}</span><span>·</span><span>used in {used} answers</span>
         <span className="ml-auto flex gap-2">
           {!known && <Btn sm>Confirm</Btn>}
@@ -33,7 +33,7 @@ export default function Memory() {
           </div>
           <Micro>guesses first — those are the ones worth correcting</Micro>
 
-          <div className="rounded-[var(--radius)] border border-[var(--rule)] bg-[var(--surface)] px-4">
+          <div className="rounded-[var(--ask-radius)] border border-[var(--ask-rule)] bg-[var(--ask-surface)] px-4">
             <Fact subject="invoices.amount_gbp" source="sales-2024" origin="I guessed · from the column name" used={4}
               body="Amounts are in pounds sterling." />
             <Fact subject="contracts · “RFQ”" source="Contracts" origin="I guessed · from surrounding text" used={11}

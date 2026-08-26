@@ -30,6 +30,12 @@ const FIELDS: Field[] = [
   { key: '--reveal-distance', label: 'Reveal Distance', type: 'slider', min: 0, max: 80, step: 1, unit: 'px', group: 'Motion' },
 ]
 
+/* Tokens are stored with their unit (e.g. "8px") but the field appends `unit` for display.
+   Without stripping first, a px token renders as "8pxpx". */
+function stripUnit(value: string): string {
+  return value.replace(/px$/, '')
+}
+
 function readVar(key: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(key).trim()
 }
@@ -88,7 +94,7 @@ export function TweakBar() {
                         ? values[f.key] === '1'
                           ? 'ON'
                           : 'OFF'
-                        : `${values[f.key] ?? ''}${f.unit ?? ''}`}
+                        : `${stripUnit(values[f.key] ?? '')}${f.unit ?? ''}`}
                     </span>
                   </div>
                   {f.type === 'toggle' ? (

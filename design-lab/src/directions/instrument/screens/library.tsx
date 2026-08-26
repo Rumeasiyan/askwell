@@ -18,16 +18,16 @@ export default function Library() {
             rows={[
               ['Contracts', '14 files', '3 Jun', <span key="st" className="inline-flex items-center gap-1.5"><Mark known />indexed</span>, '—'],
               ['Policies', '6 files', '3 Jun', <span key="st" className="inline-flex items-center gap-1.5"><Mark known />indexed</span>, '—'],
-              ['sales-2024', 'imported dump', '4 Jun', <span key="st" className="inline-flex items-center gap-1.5"><Mark known />indexed</span>, <span key="q" className="text-[var(--inferred)]">5 open</span>],
+              ['sales-2024', 'imported dump', '4 Jun', <span key="st" className="inline-flex items-center gap-1.5"><Mark known />indexed</span>, <span key="q" className="text-[var(--ask-inferred)]">5 open</span>],
               ['billing_prod', 'live connection', '4 Jun', <span key="st" className="inline-flex items-center gap-1.5"><Mark known />connected</span>, '—'],
-              ['scanned-invoices', '12 files', '5 Jun', <span key="st" className="inline-flex items-center gap-1.5 text-[var(--alarm)]"><span className="h-1.5 w-1.5 bg-[var(--alarm)]" />needs attention</span>, '—'],
-              [<span key="n" className="text-[var(--muted)] line-through">old-handbook.pdf</span>, '1 file', '1 Jun', <span key="st" className="text-[var(--muted)]">deleted 6 Jun</span>, '—'],
+              ['scanned-invoices', '12 files', '5 Jun', <span key="st" className="inline-flex items-center gap-1.5 text-[var(--ask-alarm)]"><span className="h-1.5 w-1.5 bg-[var(--ask-alarm)]" />needs attention</span>, '—'],
+              [<span key="n" className="text-[var(--ask-muted)] line-through">old-handbook.pdf</span>, '1 file', '1 Jun', <span key="st" className="text-[var(--ask-muted)]">deleted 6 Jun</span>, '—'],
             ]}
           />
 
-          <div className="rounded-[var(--radius)] border border-[var(--alarm)] bg-[var(--surface)] p-4">
-            <div className="text-[13px] text-[var(--alarm)]">scanned-invoices — 3 of 12 files barely readable</div>
-            <div className="mt-2 max-w-[var(--measure)] text-[14px] leading-relaxed">
+          <div className="rounded-[var(--ask-radius)] border border-[var(--ask-alarm)] bg-[var(--ask-surface)] p-4">
+            <div className="text-[13px] text-[var(--ask-alarm)]">scanned-invoices — 3 of 12 files barely readable</div>
+            <div className="mt-2 max-w-[var(--ask-measure)] text-[14px] leading-relaxed">
               Optical character recognition found almost no text on these pages. They are indexed but will retrieve
               badly, so answers may miss them entirely.
             </div>

@@ -12,6 +12,19 @@ Vendored from [ui-design-lab](https://github.com/Rumeasiyan/ui-design-lab) (MIT)
 
 **It is not the design system.** [`../docs/ux/design-system.md`](../docs/ux/design-system.md) is the source of truth. `src/tokens.css` is seeded from it so directions render in Askwell's real palette, type and spacing rather than in invented values.
 
+### Two token sets, deliberately separate
+
+`src/tokens.css` holds both, and they must not be mixed:
+
+| Set | Scope | Owns |
+| --- | ----- | ---- |
+| `--color-*`, `--font-display`, `--gap`, `--motion-*` | `:root` | **The lab's own chrome** — tab bar, screen nav, TweakBar, device frame. Upstream's set. The TweakBar reads and writes these. |
+| `--ask-*` | `.askwell` | **Askwell's design.** Scoped to the `Shell` wrapper so a direction can never break the harness it is being viewed in. |
+
+Do not repurpose a `--color-*` token inside a direction, and do not move an `--ask-*` token to `:root`. Overwriting the `:root` set leaves the lab's own interface unreadable — grey text on grey — which is exactly what happened the first time this was set up.
+
+**Askwell's theme is controlled inside the frame, not by your OS.** Light is the default; the small toggle top-right of each screen switches it, so both can be judged without changing system settings.
+
 **Screen specifications live in [`../docs/ux/`](../docs/ux/), and they win.** Ten screens are already specified in writing. A direction explored here that contradicts a spec means either the spec changes deliberately — with a note in `../docs/decisions.md` — or the direction is wrong. Images acquire authority they have not earned; the written spec is the specification.
 
 ## Constraints that do and do not apply

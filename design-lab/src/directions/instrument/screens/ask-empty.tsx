@@ -11,13 +11,13 @@ export default function AskEmpty() {
       <Split>
         <Rail groups={rails} />
         <Main className="justify-center">
-          <div className="flex max-w-[var(--measure)] flex-col gap-4 py-10">
+          <div className="flex max-w-[var(--ask-measure)] flex-col gap-4 py-10">
             <H>Nothing to ask about yet.</H>
             <Prose>
               Add your files and Askwell reads them here on this machine — PDFs including scanned ones, Word,
               spreadsheets, a database dump, or a read-only connection to a database you already run.
             </Prose>
-            <Prose className="text-[15px] text-[var(--muted)]">
+            <Prose className="text-[15px] text-[var(--ask-muted)]">
               It indexes them where they are. Nothing is copied, nothing is uploaded.
             </Prose>
             <div className="pt-1"><Btn primary>Add your first source</Btn></div>

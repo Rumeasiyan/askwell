@@ -17,7 +17,7 @@ export default function AskAbstained() {
                 <strong>public liability cover</strong> in <em>insurance-schedule-2023.pdf</em>, which does not mention
                 professional indemnity.
               </Prose>
-              <Prose className="text-[15px] text-[var(--muted)]">
+              <Prose className="text-[15px] text-[var(--ask-muted)]">
                 Add the policy document you'd expect this in, and ask again.
               </Prose>
               <div className="pt-1"><Btn>Add a source</Btn></div>

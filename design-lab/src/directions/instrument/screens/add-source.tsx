@@ -16,12 +16,12 @@ export default function AddSource() {
         <Main>
           <div className="flex flex-col gap-2">
             <H>Add a source</H>
-            <Prose className="text-[15px] text-[var(--muted)]">
+            <Prose className="text-[15px] text-[var(--ask-muted)]">
               Askwell reads your files where they are. Nothing is copied into a library and nothing leaves this machine.
             </Prose>
           </div>
 
-          <div className="flex min-h-[140px] flex-col items-center justify-center gap-2 rounded-[var(--radius)] border border-dashed border-[var(--rule)] bg-[var(--surface)] py-8">
+          <div className="flex min-h-[140px] flex-col items-center justify-center gap-2 rounded-[var(--ask-radius)] border border-dashed border-[var(--ask-rule)] bg-[var(--ask-surface)] py-8">
             <div className="text-[13px]">Drop files anywhere in Askwell</div>
             <Micro>or</Micro>
             <Btn sm>Browse…</Btn>
@@ -31,7 +31,7 @@ export default function AddSource() {
             {routes.map((r) => (
               <Panel key={r.t}>
                 <div className="text-[13px]">{r.t}</div>
-                <Prose className="mt-1 text-[13.5px] text-[var(--muted)]">{r.d}</Prose>
+                <Prose className="mt-1 text-[13.5px] text-[var(--ask-muted)]">{r.d}</Prose>
               </Panel>
             ))}
           </div>

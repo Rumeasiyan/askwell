@@ -32,8 +32,8 @@ WHERE  customer = 'Meridian Foods'
 ORDER  BY issued_on`}</Sql>
 
           <div className="flex flex-wrap items-center gap-2">
-            <Chip known>st_cd <span className="text-[var(--muted)]">= invoice status code · you told me, 3 Jun</span></Chip>
-            <Chip>amount_gbp <span className="text-[var(--muted)]">= pounds sterling · I guessed</span></Chip>
+            <Chip known>st_cd <span className="text-[var(--ask-muted)]">= invoice status code · you told me, 3 Jun</span></Chip>
+            <Chip>amount_gbp <span className="text-[var(--ask-muted)]">= pounds sterling · I guessed</span></Chip>
           </div>
         </Main>
       </Split>

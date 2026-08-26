@@ -16,18 +16,18 @@ export default function AskThinking() {
           <Q>Which suppliers are past their agreed payment terms right now?</Q>
 
           <div className="grid grid-cols-[minmax(0,1fr)_28px_268px] items-start">
-            <div className="flex max-w-[var(--measure)] flex-col gap-3">
+            <div className="flex max-w-[var(--ask-measure)] flex-col gap-3">
               {steps.map((s) => (
                 <div key={s.label} className="flex items-baseline gap-3">
-                  <span className={`w-1.5 shrink-0 text-[11px] ${s.done ? 'text-[var(--provenance)]' : 'text-[var(--rule)]'}`}>
+                  <span className={`w-1.5 shrink-0 text-[11px] ${s.done ? 'text-[var(--ask-provenance)]' : 'text-[var(--ask-rule)]'}`}>
                     {s.done ? '▪' : '▫'}
                   </span>
-                  <span className={`text-[13px] ${s.done ? '' : 'text-[var(--muted)]'}`}>{s.label}</span>
-                  <span className="ml-auto text-[12px] text-[var(--muted)]">{s.detail}</span>
+                  <span className={`text-[13px] ${s.done ? '' : 'text-[var(--ask-muted)]'}`}>{s.label}</span>
+                  <span className="ml-auto text-[12px] text-[var(--ask-muted)]">{s.detail}</span>
                 </div>
               ))}
               <div className="mt-1"><Bar pct={62} /></div>
-              <Prose className="text-[var(--muted)] text-[15px]">
+              <Prose className="text-[var(--ask-muted)] text-[15px]">
                 Answers take about fifteen seconds on this machine. The steps keep moving so you can tell working from hung.
               </Prose>
             </div>

@@ -1,17 +1,30 @@
 /* Shared primitives for the "instrument" direction.
    Every visual value binds to a token in src/tokens.css — no hardcoded hex, radius or font.
    See ../../../docs/ux/design-system.md; that document is the source of truth. */
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 
-export const paper = 'bg-[var(--paper)] text-[var(--ink)]'
-export const mono = 'font-[var(--font-app)]'
-export const serif = 'font-[var(--font-text)]'
+export const paper = 'bg-[var(--ask-paper)] text-[var(--ask-ink)]'
+export const mono = 'font-[var(--ask-font-app)]'
+export const serif = 'font-[var(--ask-font-text)]'
 
 /* ---------- shell ---------- */
 
+/* Askwell's theme is controlled inside the frame, not by the OS, so a direction can be
+   judged in both without changing system settings. Light is the default. */
 export function Shell({ children }: { children: ReactNode }) {
+  const [dark, setDark] = useState(false)
   return (
-    <div className={`${paper} ${mono} h-full w-full overflow-auto text-[13px] leading-normal`}>
+    <div
+      className={`askwell ${paper} ${mono} relative h-full w-full overflow-auto text-[13px] leading-normal`}
+      data-theme={dark ? 'dark' : 'light'}
+    >
+      <button
+        onClick={() => setDark((v) => !v)}
+        title="Askwell light / dark — not the lab's own theme"
+        className="absolute right-2 top-2 z-50 rounded-[var(--ask-radius)] border border-[var(--ask-rule)] bg-[var(--ask-surface)] px-2 py-1 text-[10px] uppercase tracking-[0.08em] text-[var(--ask-muted)] opacity-40 transition-opacity hover:opacity-100 focus-visible:opacity-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ask-provenance)]"
+      >
+        {dark ? 'dark' : 'light'}
+      </button>
       {children}
     </div>
   )
@@ -19,9 +32,9 @@ export function Shell({ children }: { children: ReactNode }) {
 
 export function Chrome({ right, label = 'Askwell' }: { right?: ReactNode; label?: string }) {
   return (
-    <div className="flex items-center gap-3 border-b border-[var(--rule)] bg-[var(--sunk)] px-3 py-2">
-      <span className="h-2 w-2 rounded-full bg-[var(--rule)]" />
-      <span className="text-[11px] uppercase tracking-[0.08em] text-[var(--muted)]">{label}</span>
+    <div className="flex items-center gap-3 border-b border-[var(--ask-rule)] bg-[var(--ask-sunk)] px-3 py-2">
+      <span className="h-2 w-2 rounded-full bg-[var(--ask-rule)]" />
+      <span className="text-[11px] uppercase tracking-[0.08em] text-[var(--ask-muted)]">{label}</span>
       <div className="ml-auto flex items-center gap-3">{right}</div>
     </div>
   )
@@ -29,11 +42,11 @@ export function Chrome({ right, label = 'Askwell' }: { right?: ReactNode; label?
 
 export function Badge({ children, tone }: { children: ReactNode; tone?: 'prov' | 'inf' | 'alarm' }) {
   const c =
-    tone === 'prov' ? 'text-[var(--provenance)] border-[var(--provenance)]'
-    : tone === 'inf' ? 'text-[var(--inferred)] border-[var(--inferred)]'
-    : tone === 'alarm' ? 'text-[var(--alarm)] border-[var(--alarm)]'
-    : 'text-[var(--muted)] border-[var(--rule)]'
-  return <span className={`rounded-[var(--radius)] border px-1.5 py-0.5 text-[11px] ${c}`}>{children}</span>
+    tone === 'prov' ? 'text-[var(--ask-provenance)] border-[var(--ask-provenance)]'
+    : tone === 'inf' ? 'text-[var(--ask-inferred)] border-[var(--ask-inferred)]'
+    : tone === 'alarm' ? 'text-[var(--ask-alarm)] border-[var(--ask-alarm)]'
+    : 'text-[var(--ask-muted)] border-[var(--ask-rule)]'
+  return <span className={`rounded-[var(--ask-radius)] border px-1.5 py-0.5 text-[11px] ${c}`}>{children}</span>
 }
 
 /* ---------- left rail ---------- */
@@ -42,20 +55,20 @@ export type RailItem = { label: string; count?: string; live?: boolean; on?: boo
 
 export function Rail({ groups }: { groups: { title: string; items: RailItem[] }[] }) {
   return (
-    <nav className="flex w-[180px] shrink-0 flex-col gap-6 border-r border-[var(--rule)] bg-[var(--sunk)] px-3 py-4">
+    <nav className="flex w-[180px] shrink-0 flex-col gap-6 border-r border-[var(--ask-rule)] bg-[var(--ask-sunk)] px-3 py-4">
       {groups.map((g) => (
         <div key={g.title} className="flex flex-col gap-1">
-          <div className="mb-1 text-[11px] uppercase tracking-[0.08em] text-[var(--muted)]">{g.title}</div>
+          <div className="mb-1 text-[11px] uppercase tracking-[0.08em] text-[var(--ask-muted)]">{g.title}</div>
           {g.items.map((it) => (
             <div
               key={it.label}
-              className={`flex items-center gap-2 rounded-[var(--radius)] px-1 py-[3px] text-[13px] ${
-                it.on ? 'bg-[var(--surface)] outline outline-1 outline-[var(--rule)]' : ''
+              className={`flex items-center gap-2 rounded-[var(--ask-radius)] px-1 py-[3px] text-[13px] ${
+                it.on ? 'bg-[var(--ask-surface)] outline outline-1 outline-[var(--ask-rule)]' : ''
               }`}
             >
               {it.label}
               {it.count && (
-                <span className={`ml-auto text-[11px] ${it.live ? 'text-[var(--inferred)]' : 'text-[var(--muted)]'}`}>
+                <span className={`ml-auto text-[11px] ${it.live ? 'text-[var(--ask-inferred)]' : 'text-[var(--ask-muted)]'}`}>
                   {it.count}
                 </span>
               )}
@@ -83,14 +96,14 @@ export function railWith(active: string) {
 export function Q({ children }: { children: ReactNode }) {
   return (
     <div>
-      <div className="mb-2 text-[11px] uppercase tracking-[0.08em] text-[var(--muted)]">you asked</div>
+      <div className="mb-2 text-[11px] uppercase tracking-[0.08em] text-[var(--ask-muted)]">you asked</div>
       <div className={`${serif} max-w-[70ch] text-[17px] font-semibold leading-snug`}>{children}</div>
     </div>
   )
 }
 
 export function Prose({ children, className = '' }: { children: ReactNode; className?: string }) {
-  return <p className={`${serif} m-0 max-w-[var(--measure)] text-[16px] leading-[1.62] ${className}`}>{children}</p>
+  return <p className={`${serif} m-0 max-w-[var(--ask-measure)] text-[16px] leading-[1.62] ${className}`}>{children}</p>
 }
 
 export function H({ children }: { children: ReactNode }) {
@@ -98,11 +111,11 @@ export function H({ children }: { children: ReactNode }) {
 }
 
 export function Meta({ children }: { children: ReactNode }) {
-  return <div className="text-[12px] text-[var(--muted)]">{children}</div>
+  return <div className="text-[12px] text-[var(--ask-muted)]">{children}</div>
 }
 
 export function Micro({ children }: { children: ReactNode }) {
-  return <div className="text-[11px] uppercase tracking-[0.08em] text-[var(--muted)]">{children}</div>
+  return <div className="text-[11px] uppercase tracking-[0.08em] text-[var(--ask-muted)]">{children}</div>
 }
 
 /* ---------- the signature: claim / leader / source card ---------- */
@@ -111,7 +124,7 @@ export function ClaimRow({ claim, card }: { claim: ReactNode; card: ReactNode })
   return (
     <div className="group grid grid-cols-[minmax(0,1fr)_28px_268px] items-start">
       <div>{claim}</div>
-      <div className="mt-[13px] h-px bg-[var(--rule)] transition-colors group-hover:bg-[var(--provenance)]" />
+      <div className="mt-[13px] h-px bg-[var(--ask-rule)] transition-colors group-hover:bg-[var(--ask-provenance)]" />
       {card}
     </div>
   )
@@ -122,20 +135,20 @@ export function SourceCard({
 }: { file: string; loc: string; quote: string; dead?: boolean }) {
   return (
     <div
-      className={`flex flex-col gap-1.5 rounded-[var(--radius)] border border-[var(--rule)] bg-[var(--surface)] p-3 transition-colors ${
-        dead ? 'border-l-2 border-l-[var(--rule)] opacity-60' : 'border-l-2 border-l-[var(--provenance)] group-hover:border-[var(--provenance)]'
+      className={`flex flex-col gap-1.5 rounded-[var(--ask-radius)] border border-[var(--ask-rule)] bg-[var(--ask-surface)] p-3 transition-colors ${
+        dead ? 'border-l-2 border-l-[var(--ask-rule)] opacity-60' : 'border-l-2 border-l-[var(--ask-provenance)] group-hover:border-[var(--ask-provenance)]'
       }`}
     >
-      <div className={`break-all text-[12px] ${dead ? 'text-[var(--muted)] line-through' : 'text-[var(--provenance)]'}`}>{file}</div>
-      <div className="text-[11px] uppercase tracking-[0.06em] text-[var(--muted)]">{loc}</div>
-      <div className={`${serif} border-t border-[var(--rule)] pt-1.5 text-[13px] leading-snug`}>{quote}</div>
+      <div className={`break-all text-[12px] ${dead ? 'text-[var(--ask-muted)] line-through' : 'text-[var(--ask-provenance)]'}`}>{file}</div>
+      <div className="text-[11px] uppercase tracking-[0.06em] text-[var(--ask-muted)]">{loc}</div>
+      <div className={`${serif} border-t border-[var(--ask-rule)] pt-1.5 text-[13px] leading-snug`}>{quote}</div>
     </div>
   )
 }
 
 export function EmptyMargin({ children }: { children: ReactNode }) {
   return (
-    <div className="rounded-[var(--radius)] border border-dashed border-[var(--rule)] p-3 text-center text-[12px] text-[var(--muted)]">
+    <div className="rounded-[var(--ask-radius)] border border-dashed border-[var(--ask-rule)] p-3 text-center text-[12px] text-[var(--ask-muted)]">
       {children}
     </div>
   )
@@ -147,7 +160,7 @@ export function Mark({ known }: { known?: boolean }) {
   return (
     <span
       className={`inline-block h-1.5 w-1.5 shrink-0 ${
-        known ? 'bg-[var(--provenance)]' : 'border border-[var(--inferred)] bg-transparent'
+        known ? 'bg-[var(--ask-provenance)]' : 'border border-[var(--ask-inferred)] bg-transparent'
       }`}
     />
   )
@@ -155,7 +168,7 @@ export function Mark({ known }: { known?: boolean }) {
 
 export function Chip({ children, known }: { children: ReactNode; known?: boolean }) {
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-[var(--radius)] border border-[var(--rule)] bg-[var(--surface)] px-2 py-[3px] text-[12px]">
+    <span className="inline-flex items-center gap-1.5 rounded-[var(--ask-radius)] border border-[var(--ask-rule)] bg-[var(--ask-surface)] px-2 py-[3px] text-[12px]">
       <Mark known={known} />
       {children}
     </span>
@@ -168,14 +181,14 @@ export function Btn({
   children, primary, alarm, sm,
 }: { children: ReactNode; primary?: boolean; alarm?: boolean; sm?: boolean }) {
   const tone = primary
-    ? 'border-[var(--provenance)] text-[var(--provenance)]'
-    : alarm ? 'border-[var(--alarm)] text-[var(--alarm)]'
-    : 'border-[var(--ink)] text-[var(--ink)]'
+    ? 'border-[var(--ask-provenance)] text-[var(--ask-provenance)]'
+    : alarm ? 'border-[var(--ask-alarm)] text-[var(--ask-alarm)]'
+    : 'border-[var(--ask-ink)] text-[var(--ask-ink)]'
   return (
     <button
-      className={`${mono} rounded-[var(--radius)] border bg-transparent ${tone} ${
+      className={`${mono} rounded-[var(--ask-radius)] border bg-transparent ${tone} ${
         sm ? 'min-h-[32px] px-3 py-1.5 text-[12.5px]' : 'min-h-[36px] px-3.5 py-2 text-[13px]'
-      } focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--provenance)]`}
+      } focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ask-provenance)]`}
     >
       {children}
     </button>
@@ -184,7 +197,7 @@ export function Btn({
 
 export function Field({ children }: { children: ReactNode }) {
   return (
-    <div className="rounded-[var(--radius)] border border-[var(--rule)] bg-[var(--surface)] px-2.5 py-2 text-[13px] text-[var(--muted)]">
+    <div className="rounded-[var(--ask-radius)] border border-[var(--ask-rule)] bg-[var(--ask-surface)] px-2.5 py-2 text-[13px] text-[var(--ask-muted)]">
       {children}
     </div>
   )
@@ -192,7 +205,7 @@ export function Field({ children }: { children: ReactNode }) {
 
 export function Composer() {
   return (
-    <div className="flex items-center gap-3 border-t border-[var(--rule)] bg-[var(--sunk)] px-6 py-3">
+    <div className="flex items-center gap-3 border-t border-[var(--ask-rule)] bg-[var(--ask-sunk)] px-6 py-3">
       <div className="flex-1"><Field>Ask about your files…</Field></div>
       <Btn sm>Ask</Btn>
     </div>
@@ -211,10 +224,10 @@ export function Main({ children, className = '' }: { children: ReactNode; classN
 
 export function Steps({ items }: { items: string[] }) {
   return (
-    <div className="flex flex-wrap gap-2 text-[12px] text-[var(--muted)]">
+    <div className="flex flex-wrap gap-2 text-[12px] text-[var(--ask-muted)]">
       {items.map((s, i) => (
         <span key={s} className="inline-flex items-center gap-1.5">
-          {i > 0 && <span className="text-[var(--rule)]">·</span>}
+          {i > 0 && <span className="text-[var(--ask-rule)]">·</span>}
           {s}
         </span>
       ))}
@@ -224,27 +237,27 @@ export function Steps({ items }: { items: string[] }) {
 
 export function Panel({ title, children }: { title?: string; children: ReactNode }) {
   return (
-    <div className="rounded-[var(--radius)] border border-[var(--rule)] bg-[var(--surface)] p-4">
-      {title && <div className="mb-3 text-[11px] uppercase tracking-[0.08em] text-[var(--muted)]">{title}</div>}
+    <div className="rounded-[var(--ask-radius)] border border-[var(--ask-rule)] bg-[var(--ask-surface)] p-4">
+      {title && <div className="mb-3 text-[11px] uppercase tracking-[0.08em] text-[var(--ask-muted)]">{title}</div>}
       {children}
     </div>
   )
 }
 
 export function Row({ k, v, tone }: { k: ReactNode; v: ReactNode; tone?: 'prov' | 'inf' | 'alarm' }) {
-  const c = tone === 'prov' ? 'text-[var(--provenance)]' : tone === 'inf' ? 'text-[var(--inferred)]' : tone === 'alarm' ? 'text-[var(--alarm)]' : ''
+  const c = tone === 'prov' ? 'text-[var(--ask-provenance)]' : tone === 'inf' ? 'text-[var(--ask-inferred)]' : tone === 'alarm' ? 'text-[var(--ask-alarm)]' : ''
   return (
-    <div className="flex items-baseline justify-between gap-4 border-b border-[var(--rule)] py-2 last:border-0">
+    <div className="flex items-baseline justify-between gap-4 border-b border-[var(--ask-rule)] py-2 last:border-0">
       <span className="text-[13px]">{k}</span>
-      <span className={`text-right text-[12.5px] ${c || 'text-[var(--muted)]'}`}>{v}</span>
+      <span className={`text-right text-[12.5px] ${c || 'text-[var(--ask-muted)]'}`}>{v}</span>
     </div>
   )
 }
 
 export function Bar({ pct, tone }: { pct: number; tone?: 'inf' | 'alarm' }) {
-  const c = tone === 'inf' ? 'bg-[var(--inferred)]' : tone === 'alarm' ? 'bg-[var(--alarm)]' : 'bg-[var(--provenance)]'
+  const c = tone === 'inf' ? 'bg-[var(--ask-inferred)]' : tone === 'alarm' ? 'bg-[var(--ask-alarm)]' : 'bg-[var(--ask-provenance)]'
   return (
-    <div className="h-1 w-full overflow-hidden rounded-[var(--radius)] bg-[var(--rule)]">
+    <div className="h-1 w-full overflow-hidden rounded-[var(--ask-radius)] bg-[var(--ask-rule)]">
       <div className={`h-full ${c}`} style={{ width: `${pct}%` }} />
     </div>
   )
@@ -256,13 +269,13 @@ export function Table({ head, rows }: { head: string[]; rows: ReactNode[][] }) {
       <table className="w-full border-collapse text-[12.5px]">
         <thead>
           <tr>{head.map((h) => (
-            <th key={h} className="border-b border-[var(--rule)] px-2 py-1.5 text-left text-[11px] uppercase tracking-[0.06em] font-normal text-[var(--muted)]">{h}</th>
+            <th key={h} className="border-b border-[var(--ask-rule)] px-2 py-1.5 text-left text-[11px] uppercase tracking-[0.06em] font-normal text-[var(--ask-muted)]">{h}</th>
           ))}</tr>
         </thead>
         <tbody>
           {rows.map((r, i) => (
             <tr key={i}>{r.map((c, j) => (
-              <td key={j} className="border-b border-[var(--rule)] px-2 py-1.5 align-top tabular-nums">{c}</td>
+              <td key={j} className="border-b border-[var(--ask-rule)] px-2 py-1.5 align-top tabular-nums">{c}</td>
             ))}</tr>
           ))}
         </tbody>
@@ -273,10 +286,10 @@ export function Table({ head, rows }: { head: string[]; rows: ReactNode[][] }) {
 
 export function Sql({ children, note }: { children: ReactNode; note?: string }) {
   return (
-    <div className="rounded-[var(--radius)] border border-[var(--rule)] bg-[var(--sunk)]">
-      <div className="px-3 py-2 text-[12px] text-[var(--provenance)]">▾ the query that produced this</div>
+    <div className="rounded-[var(--ask-radius)] border border-[var(--ask-rule)] bg-[var(--ask-sunk)]">
+      <div className="px-3 py-2 text-[12px] text-[var(--ask-provenance)]">▾ the query that produced this</div>
       <pre className="m-0 overflow-x-auto px-3 pb-3 text-[12.5px] leading-[1.6]">{children}
-        {note && <span className="text-[var(--inferred)]">{'\n'}{note}</span>}
+        {note && <span className="text-[var(--ask-inferred)]">{'\n'}{note}</span>}
       </pre>
     </div>
   )
