@@ -1,0 +1,36 @@
+# Askwell
+
+> A personal AI that reads your own documents and databases and answers questions about them, running entirely on your own computer. It asks you about anything genuinely ambiguous during ingestion, remembers your answers permanently, and attaches a source to every factual claim. Free, open source (Apache-2.0), single-user, English-only in v1.
+
+Askwell is for people who cannot upload their material to a cloud AI — consultants under NDA, lawyers with privileged files, researchers with unpublished data, analysts with a database nobody documented. For them the alternative is not ChatGPT; it is opening files one at a time.
+
+**Status: pre-release.** The repository is a complete specification and a 177-ticket engineering backlog. No application code exists yet.
+
+## What makes it different from other local AI document tools
+
+Local tools that search your documents already exist — AnythingLLM, PrivateGPT, Khoj, Quivr, Onyx, Open WebUI. Three things separate Askwell:
+
+1. **It asks, and it remembers.** During ingestion it identifies what it genuinely cannot know — an unguessable column code like `st_cd`, an ambiguous date format, two documents that contradict each other, a scan that OCR'd badly — and asks the user, capped at five questions per source. Answers become permanent, inspectable, editable facts that improve every future answer. No other local tool improves on your own data without retraining anything.
+2. **Answers you can check.** Every factual claim carries its source — document, page, exact passage — rendered in a permanent margin rather than behind a "sources" toggle. Database answers show the query that produced the number.
+3. **It admits what it does not know.** When retrieval finds nothing above threshold, Askwell says so and names what would need adding, rather than answering from general knowledge. This is the single most-tested behaviour in the product.
+
+## Key facts
+
+- **Privacy model:** no outbound network calls by default, enforced by a default-deny egress proxy rather than by convention. Optional online AI is an explicit per-conversation choice that states what will be sent before sending it.
+- **Licence:** Apache-2.0. The local product is free and unlimited; revenue comes only from optional online-AI credits.
+- **Scope:** single user, single machine. No teams, roles, permissions or multi-tenancy.
+- **Platforms:** Linux, Windows and macOS.
+- **Languages:** English only in v1. Tamil and Sinhala are v2.
+- **Data sources:** PDF, Word, Excel, PowerPoint, text, HTML, images; CSV and spreadsheets; PostgreSQL dumps imported into an isolated sandbox; read-only live connections to PostgreSQL, MySQL/MariaDB and SQL Server.
+
+## Documentation
+
+- [Product overview](docs/PRD.md): what Askwell is, who it is for, what it costs
+- [Architecture](docs/architecture.md): stack, topology, data model, security
+- [Clarification and memory](docs/memory-and-clarification.md): the differentiating subsystem
+- [Data sources](docs/data-sources.md): ingestion, the dump sandbox, live connections
+- [Audit log](docs/audit-log.md): what is recorded, retention, tamper-evidence
+- [Build plan](docs/build-plan.md): phases, acceptance criteria, quality gate
+- [Backlog](docs/backlog/README.md): 177 tickets across 9 milestones
+- [Decisions](docs/decisions.md): why things are as they are, and what was rejected
+- [Working agreements](AGENTS.md): constraints, conventions, workflow
