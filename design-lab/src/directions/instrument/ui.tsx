@@ -3,6 +3,7 @@
    See ../../../docs/ux/design-system.md; that document is the source of truth. */
 import type { ReactNode } from 'react'
 import { go } from '../../lib/nav'
+import { usePanelOpen, setPanelOpen, togglePanel } from '../../lib/panel'
 
 export const paper = 'bg-[var(--ask-paper)] text-[var(--ask-ink)]'
 export const mono = 'font-[var(--ask-font-app)]'
@@ -21,7 +22,17 @@ export function Shell({ children }: { children: ReactNode }) {
 export function Chrome({ right, label = 'Askwell' }: { right?: ReactNode; label?: string }) {
   return (
     <div className="flex shrink-0 items-center gap-3 border-b border-[var(--ask-rule)] bg-[var(--ask-sunk)] px-3 py-2">
-      <span className="h-2 w-2 rounded-full bg-[var(--ask-rule)]" />
+      <button
+        onClick={togglePanel}
+        aria-label="Open sources and library"
+        title="Sources and library"
+        className="-ml-1 flex h-7 w-7 cursor-pointer items-center justify-center rounded-[var(--ask-radius)] text-[var(--ask-muted)] hover:bg-[var(--ask-paper)] hover:text-[var(--ask-ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ask-provenance)] @2xl:hidden"
+      >
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+          <path d="M2 4h12M2 8h12M2 12h12" />
+        </svg>
+      </button>
+      <span className="h-2 w-2 rounded-full bg-[var(--ask-rule)] max-@2xl:hidden" />
       <span className="text-[11px] uppercase tracking-[0.08em] text-[var(--ask-muted)]">{label}</span>
       <div className="ml-auto flex items-center gap-3">{right}</div>
     </div>
@@ -42,15 +53,30 @@ export function Badge({ children, tone }: { children: ReactNode; tone?: 'prov' |
 export type RailItem = { label: string; count?: string; live?: boolean; on?: boolean; to?: string }
 
 export function Rail({ groups }: { groups: { title: string; items: RailItem[] }[] }) {
+  const open = usePanelOpen()
   return (
-    <nav className="hidden w-[180px] shrink-0 flex-col gap-6 overflow-y-auto border-r border-[var(--ask-rule)] bg-[var(--ask-sunk)] px-3 py-4 @2xl:flex">
+    <>
+      {/* below the breakpoint the rail becomes a drawer. It is reachable, not removed —
+          the library is the only route to sources, memory and settings. */}
+      {open && (
+        <button
+          aria-label="Close panel"
+          onClick={() => setPanelOpen(false)}
+          className="absolute inset-0 z-30 cursor-default bg-[var(--ask-ink)]/25 @2xl:hidden"
+        />
+      )}
+      <nav
+        className={`w-[180px] shrink-0 flex-col gap-6 overflow-y-auto border-r border-[var(--ask-rule)] bg-[var(--ask-sunk)] px-3 py-4 @2xl:flex ${
+          open ? 'absolute inset-y-0 left-0 z-40 flex shadow-[2px_0_8px_rgb(0_0_0/0.15)] @2xl:static @2xl:shadow-none' : 'hidden'
+        }`}
+      >
       {groups.map((g) => (
         <div key={g.title} className="flex flex-col gap-1">
           <div className="mb-1 text-[11px] uppercase tracking-[0.08em] text-[var(--ask-muted)]">{g.title}</div>
           {g.items.map((it) => (
             <button
               key={it.label}
-              onClick={() => it.to && go(it.to)}
+              onClick={() => { setPanelOpen(false); if (it.to) go(it.to) }}
               className={`flex w-full items-center gap-2 rounded-[var(--ask-radius)] px-2 py-[5px] text-left text-[13px] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ask-provenance)] ${
                 it.on
                   ? 'bg-[var(--ask-paper)] font-medium shadow-[inset_2px_0_0_var(--ask-provenance)]'
@@ -67,7 +93,8 @@ export function Rail({ groups }: { groups: { title: string; items: RailItem[] }[
           ))}
         </div>
       ))}
-    </nav>
+      </nav>
+    </>
   )
 }
 
@@ -290,7 +317,7 @@ export function Composer({ voice }: { voice?: boolean }) {
 /* ---------- layout helpers ---------- */
 
 export function Split({ children }: { children: ReactNode }) {
-  return <div className="flex min-h-0 flex-1">{children}</div>
+  return <div className="relative flex min-h-0 flex-1">{children}</div>
 }
 
 export function Main({ children, className = '' }: { children: ReactNode; className?: string }) {
