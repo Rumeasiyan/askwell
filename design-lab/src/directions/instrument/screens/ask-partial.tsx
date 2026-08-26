@@ -30,7 +30,7 @@ export default function AskPartial() {
 
           <div className="rounded-[var(--ask-radius)] border border-[var(--ask-rule)] bg-[var(--ask-surface)] p-4">
             <Micro>two sources disagree</Micro>
-            <div className="mt-2 grid gap-3 md:grid-cols-2">
+            <div className="mt-2 grid gap-3 @2xl:grid-cols-2">
               <div className="border-l-2 border-l-[var(--ask-provenance)] pl-3">
                 <div className="text-[12px] text-[var(--ask-provenance)]">procurement-policy-v3.docx</div>
                 <Micro>revised June 2026</Micro>

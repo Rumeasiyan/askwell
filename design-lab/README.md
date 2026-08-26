@@ -23,7 +23,13 @@ Vendored from [ui-design-lab](https://github.com/Rumeasiyan/ui-design-lab) (MIT)
 
 Do not repurpose a `--color-*` token inside a direction, and do not move an `--ask-*` token to `:root`. Overwriting the `:root` set leaves the lab's own interface unreadable — grey text on grey — which is exactly what happened the first time this was set up.
 
-**Askwell's theme is controlled inside the frame, not by your OS.** Light is the default; the small toggle top-right of each screen switches it, so both can be judged without changing system settings.
+**Askwell's theme is controlled from the lab chrome, not by your OS.** Light/dark sits next to the device switcher at the top right. It is deliberately not inside the screen — a control that belongs to the harness has no business colliding with the app's own interface.
+
+### Screens respond to the frame, not the browser
+
+The device frame is a **container query root**. Screens use `@2xl:` / `@3xl:` variants rather than `md:` / `lg:`, because viewport breakpoints ignore the device switcher entirely — a screen would look identical at 390px and full width, which makes the switcher a lie.
+
+Below `@3xl` the provenance margin moves **inline, beneath the claim it supports**, with a rule down its left edge. It is never removed. Citations are not conditional on window width (`../docs/ux/design-system.md` §4).
 
 **Screen specifications live in [`../docs/ux/`](../docs/ux/), and they win.** Ten screens are already specified in writing. A direction explored here that contradicts a spec means either the spec changes deliberately — with a note in `../docs/decisions.md` — or the direction is wrong. Images acquire authority they have not earned; the written spec is the specification.
 

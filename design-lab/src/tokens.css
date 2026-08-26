@@ -77,7 +77,7 @@ body {
   color-scheme: light;
 }
 
-.askwell[data-theme='dark'] {
+[data-ask-theme='dark'] .askwell {
   --ask-paper:      #191C1A;
   --ask-surface:    #222623;
   --ask-sunk:       #141715;

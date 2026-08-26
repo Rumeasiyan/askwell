@@ -9,7 +9,7 @@ export default function AskAbstained() {
         <Main>
           <Q>What is our current professional indemnity excess?</Q>
 
-          <div className="grid grid-cols-[minmax(0,1fr)_28px_268px] items-start">
+          <div className="grid grid-cols-1 items-start gap-3 @3xl:grid-cols-[minmax(0,1fr)_28px_268px] @3xl:gap-0">
             <div className="flex flex-col gap-3 py-6">
               <H>Nothing in your files answers this.</H>
               <Prose>

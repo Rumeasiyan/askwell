@@ -10,6 +10,7 @@ export default function App() {
   const [activeScreenId, setActiveScreenId] = useState(directions[0]?.screens[0]?.id ?? '')
   const [showAll, setShowAll] = useState(false)
   const [device, setDevice] = useState<DeviceMode>('desktop')
+  const [askTheme, setAskTheme] = useState<'light' | 'dark'>('light')
 
   const active = directions.find((d) => d.id === activeId)
   const activeScreen = active?.screens.find((s) => s.id === activeScreenId) ?? active?.screens[0]
@@ -34,15 +35,31 @@ export default function App() {
         <span className="text-xs uppercase tracking-wide text-white/40">
           {showAll ? 'All directions' : active?.label ?? 'No direction'}
         </span>
-        <DeviceModeSwitch mode={device} onChange={setDevice} />
+        <div className="flex items-center gap-3">
+          {/* The design's own light/dark, not the lab's. It belongs here in the harness —
+              inside the screen it collides with the app's own chrome. */}
+          <div className="flex gap-1 rounded-md bg-white/5 p-1 text-xs">
+            {(['light', 'dark'] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => setAskTheme(m)}
+                className={`rounded px-2 py-1 uppercase tracking-wide ${
+                  askTheme === m ? 'bg-white/15 text-white' : 'text-white/50 hover:text-white/80'
+                }`}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+          <DeviceModeSwitch mode={device} onChange={setDevice} />
+        </div>
       </div>
 
-      {!showAll && active && (
-        <ScreenNav screens={active.screens} activeId={activeScreenId} onSelect={setActiveScreenId} />
-      )}
-
       <div className="flex min-h-0 flex-1">
-        <div className="min-w-0 flex-1">
+        {!showAll && active && (
+          <ScreenNav screens={active.screens} activeId={activeScreenId} onSelect={setActiveScreenId} />
+        )}
+        <div className="min-w-0 flex-1" data-ask-theme={askTheme}>
           <Suspense fallback={<div className="p-12 text-white/40">Loading...</div>}>
             {showAll ? (
               <div className="grid h-full grid-cols-2 gap-4 overflow-auto p-4 lg:grid-cols-3">

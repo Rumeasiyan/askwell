@@ -1,7 +1,7 @@
 /* Shared primitives for the "instrument" direction.
    Every visual value binds to a token in src/tokens.css — no hardcoded hex, radius or font.
    See ../../../docs/ux/design-system.md; that document is the source of truth. */
-import { useState, type ReactNode } from 'react'
+import type { ReactNode } from 'react'
 
 export const paper = 'bg-[var(--ask-paper)] text-[var(--ask-ink)]'
 export const mono = 'font-[var(--ask-font-app)]'
@@ -9,22 +9,9 @@ export const serif = 'font-[var(--ask-font-text)]'
 
 /* ---------- shell ---------- */
 
-/* Askwell's theme is controlled inside the frame, not by the OS, so a direction can be
-   judged in both without changing system settings. Light is the default. */
 export function Shell({ children }: { children: ReactNode }) {
-  const [dark, setDark] = useState(false)
   return (
-    <div
-      className={`askwell ${paper} ${mono} relative h-full w-full overflow-auto text-[13px] leading-normal`}
-      data-theme={dark ? 'dark' : 'light'}
-    >
-      <button
-        onClick={() => setDark((v) => !v)}
-        title="Askwell light / dark — not the lab's own theme"
-        className="absolute right-2 top-2 z-50 rounded-[var(--ask-radius)] border border-[var(--ask-rule)] bg-[var(--ask-surface)] px-2 py-1 text-[10px] uppercase tracking-[0.08em] text-[var(--ask-muted)] opacity-40 transition-opacity hover:opacity-100 focus-visible:opacity-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ask-provenance)]"
-      >
-        {dark ? 'dark' : 'light'}
-      </button>
+    <div className={`askwell ${paper} ${mono} flex h-full w-full flex-col overflow-hidden text-[13px] leading-normal`}>
       {children}
     </div>
   )
@@ -32,7 +19,7 @@ export function Shell({ children }: { children: ReactNode }) {
 
 export function Chrome({ right, label = 'Askwell' }: { right?: ReactNode; label?: string }) {
   return (
-    <div className="flex items-center gap-3 border-b border-[var(--ask-rule)] bg-[var(--ask-sunk)] px-3 py-2">
+    <div className="flex shrink-0 items-center gap-3 border-b border-[var(--ask-rule)] bg-[var(--ask-sunk)] px-3 py-2">
       <span className="h-2 w-2 rounded-full bg-[var(--ask-rule)]" />
       <span className="text-[11px] uppercase tracking-[0.08em] text-[var(--ask-muted)]">{label}</span>
       <div className="ml-auto flex items-center gap-3">{right}</div>
@@ -55,7 +42,7 @@ export type RailItem = { label: string; count?: string; live?: boolean; on?: boo
 
 export function Rail({ groups }: { groups: { title: string; items: RailItem[] }[] }) {
   return (
-    <nav className="flex w-[180px] shrink-0 flex-col gap-6 border-r border-[var(--ask-rule)] bg-[var(--ask-sunk)] px-3 py-4">
+    <nav className="hidden w-[180px] shrink-0 flex-col gap-6 overflow-y-auto border-r border-[var(--ask-rule)] bg-[var(--ask-sunk)] px-3 py-4 @2xl:flex">
       {groups.map((g) => (
         <div key={g.title} className="flex flex-col gap-1">
           <div className="mb-1 text-[11px] uppercase tracking-[0.08em] text-[var(--ask-muted)]">{g.title}</div>
@@ -122,10 +109,12 @@ export function Micro({ children }: { children: ReactNode }) {
 
 export function ClaimRow({ claim, card }: { claim: ReactNode; card: ReactNode }) {
   return (
-    <div className="group grid grid-cols-[minmax(0,1fr)_28px_268px] items-start">
+    <div className="group grid grid-cols-1 items-start gap-3 @3xl:grid-cols-[minmax(0,1fr)_28px_268px] @3xl:gap-0">
       <div>{claim}</div>
-      <div className="mt-[13px] h-px bg-[var(--ask-rule)] transition-colors group-hover:bg-[var(--ask-provenance)]" />
-      {card}
+      {/* leader is the desktop affordance; below the breakpoint the card sits inline under
+          the claim it supports. It is never removed — citations are not conditional on width. */}
+      <div className="mt-[13px] hidden h-px bg-[var(--ask-rule)] transition-colors group-hover:bg-[var(--ask-provenance)] @3xl:block" />
+      <div className="border-l-2 border-l-[var(--ask-rule)] pl-3 @3xl:border-l-0 @3xl:pl-0">{card}</div>
     </div>
   )
 }
@@ -135,7 +124,7 @@ export function SourceCard({
 }: { file: string; loc: string; quote: string; dead?: boolean }) {
   return (
     <div
-      className={`flex flex-col gap-1.5 rounded-[var(--ask-radius)] border border-[var(--ask-rule)] bg-[var(--ask-surface)] p-3 transition-colors ${
+      className={`flex flex-col gap-1.5 rounded-[var(--ask-radius)] border border-[var(--ask-rule)] bg-[var(--ask-surface)] p-3 shadow-[0_1px_0_var(--ask-rule)] transition-colors ${
         dead ? 'border-l-2 border-l-[var(--ask-rule)] opacity-60' : 'border-l-2 border-l-[var(--ask-provenance)] group-hover:border-[var(--ask-provenance)]'
       }`}
     >
@@ -205,7 +194,7 @@ export function Field({ children }: { children: ReactNode }) {
 
 export function Composer() {
   return (
-    <div className="flex items-center gap-3 border-t border-[var(--ask-rule)] bg-[var(--ask-sunk)] px-6 py-3">
+    <div className="flex shrink-0 items-center gap-3 border-t border-[var(--ask-rule)] bg-[var(--ask-sunk)] px-4 py-3 @2xl:px-6">
       <div className="flex-1"><Field>Ask about your files…</Field></div>
       <Btn sm>Ask</Btn>
     </div>
@@ -215,11 +204,15 @@ export function Composer() {
 /* ---------- layout helpers ---------- */
 
 export function Split({ children }: { children: ReactNode }) {
-  return <div className="grid min-h-0 flex-1 grid-cols-[180px_1fr]">{children}</div>
+  return <div className="flex min-h-0 flex-1">{children}</div>
 }
 
 export function Main({ children, className = '' }: { children: ReactNode; className?: string }) {
-  return <div className={`flex min-w-0 flex-col gap-6 p-6 ${className}`}>{children}</div>
+  return (
+    <div className={`flex min-w-0 flex-1 flex-col gap-5 overflow-y-auto p-4 @2xl:gap-6 @2xl:p-6 ${className}`}>
+      {children}
+    </div>
+  )
 }
 
 export function Steps({ items }: { items: string[] }) {
@@ -237,7 +230,7 @@ export function Steps({ items }: { items: string[] }) {
 
 export function Panel({ title, children }: { title?: string; children: ReactNode }) {
   return (
-    <div className="rounded-[var(--ask-radius)] border border-[var(--ask-rule)] bg-[var(--ask-surface)] p-4">
+    <div className="rounded-[var(--ask-radius)] border border-[var(--ask-rule)] bg-[var(--ask-surface)] p-3 @2xl:p-4">
       {title && <div className="mb-3 text-[11px] uppercase tracking-[0.08em] text-[var(--ask-muted)]">{title}</div>}
       {children}
     </div>
@@ -265,8 +258,8 @@ export function Bar({ pct, tone }: { pct: number; tone?: 'inf' | 'alarm' }) {
 
 export function Table({ head, rows }: { head: string[]; rows: ReactNode[][] }) {
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full border-collapse text-[12.5px]">
+    <div className="overflow-x-auto rounded-[var(--ask-radius)] border border-[var(--ask-rule)]">
+      <table className="w-full min-w-[520px] border-collapse text-[12.5px]">
         <thead>
           <tr>{head.map((h) => (
             <th key={h} className="border-b border-[var(--ask-rule)] px-2 py-1.5 text-left text-[11px] uppercase tracking-[0.06em] font-normal text-[var(--ask-muted)]">{h}</th>

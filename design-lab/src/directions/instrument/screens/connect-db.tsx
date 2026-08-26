@@ -14,7 +14,7 @@ export default function ConnectDb() {
             </Prose>
           </div>
 
-          <div className="grid max-w-[520px] gap-3 md:grid-cols-2">
+          <div className="grid max-w-[520px] gap-3 @2xl:grid-cols-2">
             <div><Micro>host</Micro><div className="mt-1"><Field>localhost</Field></div></div>
             <div><Micro>port</Micro><div className="mt-1"><Field>5432</Field></div></div>
             <div><Micro>database</Micro><div className="mt-1"><Field>billing_prod</Field></div></div>

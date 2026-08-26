@@ -27,7 +27,7 @@ export default function AddSource() {
             <Btn sm>Browse…</Btn>
           </div>
 
-          <div className="grid gap-3 md:grid-cols-2">
+          <div className="grid gap-3 @2xl:grid-cols-2">
             {routes.map((r) => (
               <Panel key={r.t}>
                 <div className="text-[13px]">{r.t}</div>

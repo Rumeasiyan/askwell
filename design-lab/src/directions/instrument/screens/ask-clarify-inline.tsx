@@ -9,7 +9,7 @@ export default function AskClarifyInline() {
         <Main>
           <Q>How many invoices were raised in March?</Q>
 
-          <div className="grid grid-cols-[minmax(0,1fr)_28px_268px] items-start">
+          <div className="grid grid-cols-1 items-start gap-3 @3xl:grid-cols-[minmax(0,1fr)_28px_268px] @3xl:gap-0">
             <div className="flex max-w-[var(--ask-measure)] flex-col gap-3 rounded-[var(--ask-radius)] border border-[var(--ask-inferred)] bg-[var(--ask-surface)] p-4">
               <Micro>I need one thing before I can answer</Micro>
               <Prose className="text-[17px] font-semibold">

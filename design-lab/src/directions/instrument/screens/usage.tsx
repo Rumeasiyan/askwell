@@ -12,7 +12,7 @@ export default function Usage() {
             <Micro>computed here, on this machine · nothing is sent anywhere</Micro>
           </div>
 
-          <div className="grid gap-3 md:grid-cols-2">
+          <div className="grid gap-3 @2xl:grid-cols-2">
             <Panel title="didn’t know — 12%">
               <div className="mb-2"><Bar pct={12} /></div>
               <div className="flex justify-between text-[11px] text-[var(--ask-muted)]">
@@ -48,7 +48,7 @@ export default function Usage() {
             <div className="mt-3"><Btn sm>Add a source</Btn></div>
           </Panel>
 
-          <div className="grid gap-3 md:grid-cols-3">
+          <div className="grid gap-3 @2xl:grid-cols-3">
             <Panel title="questions this week"><div className="text-[20px] tabular-nums">37</div></Panel>
             <Panel title="typical answer"><div className="text-[20px] tabular-nums">14s</div></Panel>
             <Panel title="facts remembered"><div className="text-[20px] tabular-nums">23</div></Panel>

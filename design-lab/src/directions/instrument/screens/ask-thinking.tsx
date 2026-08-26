@@ -15,7 +15,7 @@ export default function AskThinking() {
         <Main>
           <Q>Which suppliers are past their agreed payment terms right now?</Q>
 
-          <div className="grid grid-cols-[minmax(0,1fr)_28px_268px] items-start">
+          <div className="grid grid-cols-1 items-start gap-3 @3xl:grid-cols-[minmax(0,1fr)_28px_268px] @3xl:gap-0">
             <div className="flex max-w-[var(--ask-measure)] flex-col gap-3">
               {steps.map((s) => (
                 <div key={s.label} className="flex items-baseline gap-3">
