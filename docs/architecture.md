@@ -11,30 +11,48 @@ Technical decisions and structure. `PRD.md` is the business case and deliberatel
 | Layer | Choice | Why |
 | ----- | ------ | --- |
 | Backend | **Python 3.12 + FastAPI** | The whole AI toolchain — llama-cpp bindings, whisper.cpp wrappers, TTS, `sqlglot`, OCR, embeddings — is Python-native. A second backend language buys nothing and costs integration surface. |
-| Frontend | **Next.js + TypeScript + Tailwind + shadcn/ui** | Versions pending issue #9 — the previously stated "Next.js 15" is stale. Verify against the registry before scaffolding. |
+| Frontend | **Next.js 16 + React 19 + TypeScript + Tailwind 4 + shadcn/ui**, built to **static assets served by the API container** | Pinned as one verified set at scaffold — shadcn/ui tracks a React and Tailwind pairing, not a version range. Built rather than served: there is no server, no session to protect and no SEO, so a permanent Node process on the user's laptop buys nothing. |
 | Database | **PostgreSQL + pgvector**, single instance | One system for relational state, vectors and full-text. No separate vector database. |
 | Cache / queue | **Redis + arq** | Ingestion, embedding batches, clarification jobs. |
-| Inference | **llama.cpp server** (OpenAI-compatible), separate container | Same interface for CPU and GPU, so the deployment profile changes configuration rather than code. Model swapping without a redeploy. |
+| Inference | **llama.cpp server** (OpenAI-compatible), **native host process**, not a container | GPU acceleration is the reason. A Linux container on Apple Silicon runs inside a VM with no Metal passthrough, so containerised inference would make the accelerated profiles unreachable on the platform most target users carry. Also serves embeddings and the reranker. |
 | Object storage | **Local filesystem volume** | No cloud storage, no MinIO. There is one machine. |
 | Auth | **Local single-user session** | See §3 — this is a large departure from the previous design. |
+| Data access | **SQLAlchemy 2.0 async + Alembic + pgvector** | The only mature option that handles the vector column, autogenerates migrations, and lets the raw invariants ride along in the creating migration. |
+| Database | **PostgreSQL 18 + pgvector** (17 if a maintained 18 image is not available at scaffold) | Sandbox uses the same image — one thing to bundle, update and learn. |
+| Streaming | **Server-sent streaming** for answers, step labels and ingestion progress; **WebSocket only for voice** | One-way streaming reconnects on its own and covers everything up to Phase 5. A bidirectional channel in Phase 0 is complexity carried for five phases before anything needs it. |
+| Egress | **Default-deny egress proxy container** | See §5.1. Every service routes through it. |
+| Package manager | **pnpm** | Lockfile determinism and disk behaviour on a laptop. |
 | Packaging | **Container bundle + desktop installer** | See §6. |
 
 ## 2. Topology
 
-One machine. Every service is a container on it, and only the web UI is reachable — bound to localhost, not to the network interface.
+One machine. Most services are containers; **inference runs natively on the host** so it can reach the GPU. Only the API is reachable, bound to localhost, never to the network interface.
 
 ```
-   browser (localhost) ──▶ web ──▶ api ──┬──▶ postgres + pgvector
-                                          ├──▶ redis
-                                          ├──▶ llm (llama.cpp)
-                                          ├──▶ voice (stt/tts)
-                                          ├──▶ worker (arq)
-                                          └──▶ sandbox postgres  (imported dumps — §5)
-                                                    │
-                                    user's own databases (read-only, optional)
+   browser (localhost) ──▶ api (FastAPI, serves the built web assets)
+                             │
+        ┌────────────┬───────┼─────────┬──────────────┐
+        │            │       │         │              │
+   postgres      redis    voice     worker      egress-proxy ──▶ (online AI only,
+   +pgvector             stt/tts    (arq)       default-deny        when enabled)
+        │
+   sandbox postgres  (imported dumps, restricted role, no egress)
+
+   llama.cpp server  ── native host process, GPU-capable, serves
+                        generation + embeddings + reranking
 ```
 
-Eight containers, counting the sandbox Postgres. Every one is something the user has to have working on their own laptop with no help, so the count is a real cost — resist a ninth, and if one is added, say here why it earned its place.
+**Seven containers plus one native process.** `api`, `postgres`, `redis`, `voice`, `worker`, `sandbox`, `egress-proxy`. The web container is gone (assets are built and served by `api`) and inference left the container set to reach the GPU.
+
+The count went down by one despite adding the egress proxy. Every container is still something a non-technical user must have working unaided, so the rule stands: **resist an eighth, and if one is added, say here why it earned its place.**
+
+### 2.1 Platform support
+
+**Linux, Windows and macOS from v1.** Native inference is what makes that possible — the alternative, containerised inference everywhere, would have left the `accelerated` and `workstation` profiles unreachable on Apple Silicon, where a Linux container runs inside a VM with no Metal passthrough.
+
+The cost is accepted deliberately: the installer manages a native process alongside a container stack, and *"the assistant is unavailable"* now has two distinct causes to diagnose and report separately.
+
+**Open, and needed before Phase 5:** whether speech-to-text should also run natively for GPU access on the accelerated profiles, or stay containerised on CPU. Whisper `small` on CPU is likely adequate, which would keep `voice` in a container — but it is untested and the answer changes the installer.
 
 **No high availability, ever.** Single machine, single Postgres, no replication or failover (issue #4, closed as out of scope). A second machine is meaningless for one person.
 
@@ -68,7 +86,22 @@ Authoritative list with reasoning lives in `AGENTS.md` §3. Summarised here for 
 
 The removed C7-as-was (column-level access control per role) went with RBAC — there are no roles to restrict against.
 
-## 5. Data source isolation
+## 5. Egress control — how C1 is actually enforced
+
+C1 is the reason the product can exist for its users, so it is enforced structurally rather than by convention.
+
+**Every container routes outbound traffic through a default-deny egress proxy.** Nothing else has a route out. In local mode the proxy permits nothing and counts the requests it refused — which is what makes the live outbound-request count in `ux/settings.md` §4 a *measured* zero rather than an assertion the application makes about itself.
+
+Enabling online AI for a conversation authorises exactly one destination, for that conversation's traffic only.
+
+This costs a container on someone's laptop, which the topology rule otherwise resists. It earns its place because the alternatives make the product's central claim something the user has to take on trust:
+
+- **Container network policy alone** leaves nothing in the path to produce the count, and makes per-conversation authorisation coarse.
+- **Application-level enforcement** is defeated by one dependency making an unexpected call — which is the realistic threat, not deliberate code.
+
+The sandbox Postgres has no route to the proxy at all (C3).
+
+## 5.1 Data source isolation
 
 Full detail in `data-sources.md`. The architectural point:
 
@@ -80,7 +113,9 @@ Retrofitting this after imports exist would be a migration on users' machines, s
 
 ## 6. Deployment profiles
 
-Selected at install by a hardware probe. Drives model selection and concurrency.
+Selected at install by a hardware probe **run on the host**, not inside a container — a container sees the cgroup's or the VM's view of memory, and a wrong profile is worse than a missing one. Where detection fails, default to `standard` and say so.
+
+Because inference is a native process (§2.1), GPU acceleration is available on all three platforms.
 
 | Profile | Hardware | LLM | Expected |
 | ------- | -------- | --- | -------- |

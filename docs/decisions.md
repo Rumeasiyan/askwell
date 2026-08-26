@@ -22,6 +22,31 @@ Template:
 
 ---
 
+## 2026-08-26 — Stack confirmed: all three platforms, native inference, egress proxy, no web container
+
+**Decision:** v1 targets **Linux, Windows and macOS**. The llama.cpp server runs as a **native host process** rather than a container. The frontend is **built to static assets served by the API**, removing the `web` container. A **default-deny egress proxy** container enforces C1. PDF work uses **pypdfium2**, not PyMuPDF. Twelve further recommendations were accepted as-is: Next.js 16 / React 19 / Tailwind 4 / shadcn/ui pinned as one set, pnpm, Python 3.12 with tooling inside the API image, SQLAlchemy 2.0 async with Alembic, PostgreSQL 18 sharing its image with the sandbox, server-sent streaming with WebSocket reserved for voice, embeddings and reranking served by the same inference process, Tesseract with the Office-format libraries, locally bundled pdf.js, Piper for speech synthesis, the host-side hardware probe, GitHub Actions CI with the eval gate on a self-hosted or dispatched runner, and backups excluding weights, traces and the vector index.
+
+**Why native inference:** containerised inference was the documented choice and it quietly excluded macOS. A Linux container on Apple Silicon runs inside a VM with no Metal passthrough, so the `accelerated` and `workstation` profiles would have been unreachable on the platform most consultants and lawyers actually carry — the product would have been worst where its target users are. Running inference natively costs the installer managing a process alongside a container stack, and gives *"the assistant is unavailable"* two distinct causes that must be diagnosed and reported separately. That was judged cheaper than shipping a product that is quietly degraded for a large share of its audience.
+
+The alternative of Linux-first with macOS deferred was rejected for the same reason: it ships where the architecture already works rather than where the users are.
+
+**Why the egress proxy, despite the container rule:** `ux/settings.md` promises a live count of outbound requests as the visible proof of C1, and the previous design specified only "egress blocked at the container network". Nothing in that path can count a request that was never made, so the number would have been the application asserting something about itself — precisely the "trust us" the audit-log design refuses to accept elsewhere. Network policy alone also makes per-conversation authorisation coarse, and application-level enforcement is defeated by a single dependency making an unexpected call, which is the realistic threat rather than malicious code.
+
+**Why no web container:** there is no server, no session to protect and no SEO, so a permanent Node process on a single user's laptop bought nothing. This reverses a decision `architecture.md` had marked as locked; it was reversed deliberately rather than worked around.
+
+**Why pypdfium2 over PyMuPDF:** PyMuPDF is the better library here — one dependency covering text extraction, page rendering for OCR, and the coordinates that citation highlighting needs. It is AGPL, and shipping it in a distributed application would have forced Askwell off Apache-2.0, which was chosen deliberately for contribution and adoption. The commercial licence was rejected as a paid dependency for a product with no revenue before Phase 7. The cost is real: passage-level highlighting and OCR coordinate mapping get harder, and scanned pages start at page-level highlighting.
+
+**Consequences:**
+
+- **Seven containers plus one native process**, down from eight containers despite adding the proxy.
+- The installer now provisions and supervises a native process on three platforms. That is the single largest addition to the packaging milestone.
+- **Open, before Phase 5:** whether speech-to-text also needs to run natively for GPU access on accelerated profiles, or stays containerised on CPU. Untested, and the answer changes the installer.
+- Indexing in place means the user nominates root directories at add-time which become known mounts, rather than the container having open filesystem access. Safer, and the only thing that works with a VM in the path — but the installer and the add-source flow must handle path registration, which no screen specification currently covers.
+
+**Refs:** `architecture.md` §1, §2, §2.1, §5, §6; issues #6, #9; MODE A analysis 2026-08-26.
+
+---
+
 ## 2026-08-10 — Renamed to Askwell; Apache-2.0 with a proprietary credit service
 
 **Decision:** VaultQ becomes **Askwell**. The application is open source under **Apache-2.0**; the online-AI credit service stays proprietary. Repository renamed to `Rumeasiyan/askwell`.

@@ -158,4 +158,3 @@ Build detail, estimates and acceptance criteria: `build-plan.md`.
 2. **Update delivery.** How a free local install learns that a new version exists without phoning home by default.
 3. **Trademark.** "Askwell" needs registering if the brand is what protects the position against a fork.
 4. **Support boundary.** What a single maintainer promises to answer, stated before release rather than discovered afterwards.
-5. **Target platforms.** Which operating systems v1 supports. Undocumented until now, and it changes packaging, GPU profiles, file access and the whole install milestone.
