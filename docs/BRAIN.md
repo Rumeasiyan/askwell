@@ -94,8 +94,8 @@ Running the concept-to-build procedure over the existing docs. **Its phase numbe
 | P0/P1 — spec, metrics, states | **done**, then redone after the repositioning |
 | P2 — design the screens, in `docs/ux/` | **done** — design system + 10 screens |
 | Review the data model against what the screens need | **done** — #20 closed |
-| P6 — user-story backlog, vertical slices ≤ 3h | **format drafted** — M1.1–M1.5 written as samples, awaiting sign-off before the rest |
-| Scaffold (Phase 0, #7) | blocked on #9 |
+| P6 — full ticket backlog | **done** — 177 tickets in `docs/backlog/`, superseding the `docs/stories/` sample format |
+| Build M0 | **unblocked** — awaiting explicit go-ahead |
 
 Screens before schema is deliberate: drawing a screen surfaces the missing button and the number with nowhere to come from.
 
