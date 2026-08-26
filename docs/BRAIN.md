@@ -7,40 +7,43 @@
 
 ## Current phase
 
-**M0 — It runs. In progress: 4 of 21 tickets done.**
+**M0 — It runs. In progress: 5 of 21 tickets done.**
 
-The repository is no longer documentation only. `api/` exists: an image, manifests, the application, and 54 tests. The API starts, refuses bad configuration by name, and serves `GET /health` reporting five components separately. `web/` builds to static assets with the design tokens in place, and the API serves them — the `web` container is gone from the topology. The Compose stack, the database schema and the inference process do not exist yet — so all five health components correctly report `unreachable`.
+The repository is no longer documentation only. `api/` exists: an image, manifests, the application, and 54 tests. The API starts, refuses bad configuration by name, and serves `GET /health` reporting five components separately. `podman compose up -d` brings up four services and the interface loads at `http://127.0.0.1:8000`. `web/` builds to static assets and the API serves them — the `web` container is gone from the topology. The Compose stack, the database schema and the inference process do not exist yet — so all five health components correctly report `unreachable`.
 
-**Version:** `0.1.4` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
+**Version:** `0.1.5` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
 **Tracker:** `Rumeasiyan/askwell`. Working agreements in `AGENTS.md`. Backlog in `docs/backlog/`.
 
 ## Last completed
 
-**`M0-FOUND-DEPLOY-004`** — [#59](https://github.com/Rumeasiyan/askwell/issues/59). The API serves the built interface. One process, one address.
+**`M0-STACK-DEPLOY-009`** — [#61](https://github.com/Rumeasiyan/askwell/issues/61). The Compose stack: api, postgres, redis, worker.
 
-Verified against a running container:
+Verified against the running stack:
 
 | | |
 | --- | --- |
-| `/` | 200, `<title>Askwell</title>`, `cache-control: no-cache` |
-| `/health` | 200 — not shadowed by the catch-all |
-| `/_not-found/` and `/_not-found` | 200 both ways — a bookmarked deep route loads directly |
-| `/typo/` | 404 with the product's own page, not the shell |
-| `/../../etc/passwd` | 404 |
-| `/_next/static/chunks/*.js` | 200, `max-age=31536000, immutable` |
-| no build at all | 503 naming the directory and `scripts/dev.sh web-build`; `/health` still 200 |
+| `podman compose up -d` | four services, all healthy, from a clean start |
+| `GET /health` | database, queue and worker all `reachable`; inference and egress correctly not |
+| `GET /` | the interface loads at `http://127.0.0.1:8000` |
+| enqueue `ping` from the API | worker returns `{'pong': 'from-the-api', 'worker_version': '0.1.4'}` |
+| write a row, `compose down`, `compose up` | the row is still there |
+| port 8000 occupied | `rootlessport listen tcp 127.0.0.1:8000: bind: address already in use` |
+| published ports | only `127.0.0.1:8000`. Postgres and Redis are not published at all |
+| versions logged | PostgreSQL 18.6, Redis 8.10.1, Askwell 0.1.5 |
 
-**The registration order in `create_app` is load-bearing.** `register_interface` installs a `/{path:path}` catch-all, so anything registered after it is unreachable. A test found this by adding a route post-hoc and getting a 404 where it expected a 500.
+**A real defect, found only because a real worker was running beside it.** The health surface probed the worker by opening a TCP socket. An arq worker consumes a queue and listens on nothing, so a perfectly healthy worker was reported as down — a false alarm pointing at the wrong container, on the surface a confused user reads first. It now reads the health record arq publishes into Redis, which also separates "the queue is down" from "the queue is up and the worker has not checked in". Those need different actions.
 
-**Two weak tests, found and strengthened.** One asserted the not-found response was not the shell by checking for a `<title>`; the real export gives every page the same title, so it would have passed while missing the defect in production. It now compares against the shell's actual body. The other forced an exception before startup rather than during a request, so it exercised a different code path than it claimed.
+`health_check_interval` is 10s, not arq's default of an hour: a stopped worker that still looks fine for an hour is long enough for someone to conclude their ingest is merely slow.
 
-**Next's default 404 is hardcoded black-on-white** and drops the user out of the product. Replaced with `web/app/not-found.tsx`, built from tokens like everything else. The shell makes it navigable in `M0-SHELL-FE-017`.
+**The unknown-variable check caught a stale `ASKWELL_WORKER_HOST` in my own `compose.yaml`** and refused to start rather than ignoring it. That is the behaviour `M0-FOUND-BE-002` added, working on its first real chance.
 
-**Deferred:** the API image does not copy `web/out` into itself — it serves from the mounted repository. Putting built assets in the image belongs with packaging (M0-STACK-DEPLOY-009 for Compose, Phase 7 for the installer).
+**Ticket order corrected.** `M0-FOUND-TEST-005` depends on `M0-DATA-DB-013`, which depends on this ticket — the numbering implies an order the dependency graph contradicts. Remaining M0 order is `013 → 005 → 006`, then the rest.
 
 ## Next task
 
-**`M0-FOUND-TEST-005`** — establish the test harness and the first meaningful tests. 73 tests already exist and pass, so this is less about starting from nothing than about deciding what the harness guarantees: fixtures, coverage expectations, and which modules must have tests before their implementation (`AGENTS.md` §4 names retrieval, SQL validation and the agent loop).
+**`M0-DATA-DB-013`** — the first migration creating the v1 schema. Alembic against the running Postgres. `docs/architecture.md` §7 is the data model: 13 tables plus `citations` and `fact_usage`. `citations` is a real table rather than jsonb because C4 cannot be enforced or measured otherwise.
+
+Then `M0-DATA-DB-014` (raw invariants in the same migration), then `M0-FOUND-TEST-005` (the harness, which needs a schema to make a disposable database from), then `M0-FOUND-DEPLOY-006` (CI).
 
 Forward references outstanding: the configuration error message points at `.env.example` (`M0-FOUND-SEC-007`), no screen exists yet (`M0-SHELL-FE-017`), and built assets are not in the API image (M0-STACK-DEPLOY-009 / Phase 7).
 

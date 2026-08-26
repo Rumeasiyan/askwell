@@ -17,6 +17,10 @@ from askwell.health import ComponentHealth, ComponentState, check_components
 
 EXPECTED = {"database", "queue", "worker", "inference", "egress_proxy"}
 
+# The worker is not probed by opening a socket — see test_the_worker_is_not_
+# probed_by_opening_a_socket. Tests that patch the connection exclude it.
+SOCKET_PROBED = EXPECTED - {"worker"}
+
 
 async def test_every_component_is_reported_separately(settings: Settings) -> None:
     """Not one aggregate boolean. `docs/states-and-edge-cases.md` §1."""
@@ -79,6 +83,7 @@ async def test_answers_even_when_every_component_hangs(
 
     assert len(results) == len(EXPECTED)
     assert all(item.state is ComponentState.UNREACHABLE for item in results)
+    assert len(SOCKET_PROBED) == 4
     # Serial would be ~2.0s. Concurrent is ~0.4s.
     assert elapsed < 1.0, f"probes appear to be serial: {elapsed:.2f}s for 5 components"
 
@@ -103,7 +108,8 @@ async def test_a_broken_probe_blames_the_probe_not_the_component(
         raise RuntimeError("the probe itself is broken")
 
     monkeypatch.setattr("askwell.health.asyncio.open_connection", explode)
-    results = await check_components(settings)
+    results = [item for item in await check_components(settings) if item.name != "worker"]
+    assert results, "the socket-probed components should not be empty"
     assert all(item.state is ComponentState.UNKNOWN for item in results)
     assert all("Probe failed" in (item.reason or "") for item in results)
 
@@ -117,12 +123,88 @@ async def test_an_unresolvable_host_says_so_rather_than_may_be_starting(
     may still be starting when the name does not exist sends them to watch a
     container that is never going to appear.
     """
-    missing = settings.model_copy(update={"worker_host": "worker.invalid"})
+    missing = settings.model_copy(update={"inference_host": "inference.invalid"})
     results = {item.name: item for item in await check_components(missing)}
-    assert results["worker"].state is ComponentState.UNREACHABLE
-    reason = results["worker"].reason or ""
+    assert results["inference"].state is ComponentState.UNREACHABLE
+    reason = results["inference"].reason or ""
     assert "does not resolve" in reason
     assert "starting" not in reason
+
+
+async def test_the_worker_is_not_probed_by_opening_a_socket(settings: Settings) -> None:
+    """An arq worker consumes a queue and listens on nothing.
+
+    A TCP probe would report a perfectly healthy worker as down, every time.
+    This is a regression guard: the socket-probe version shipped first and the
+    defect only surfaced once a real worker was running beside it.
+    """
+    results = {item.name: item for item in await check_components(settings)}
+    worker = results["worker"]
+    # Reported against the queue, because that is where the evidence is.
+    assert worker.address == f"{settings.redis_host}:{settings.redis_port}"
+
+
+async def test_a_worker_that_has_not_checked_in_is_distinguished_from_a_dead_queue(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two different problems needing two different actions.
+
+    "The queue is down" means start the stack. "The queue is up and the worker
+    has not checked in" means the worker specifically is not running. Collapsing
+    them sends the user to look at the wrong container.
+    """
+    import redis.asyncio as redis
+
+    class Checked:
+        async def get(self, _key: str) -> bytes | None:
+            return None
+
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr(redis, "Redis", lambda **_kwargs: Checked())
+    results = {item.name: item for item in await check_components(settings)}
+    reason = results["worker"].reason or ""
+    assert results["worker"].state is ComponentState.UNREACHABLE
+    assert "queue is up" in reason
+    assert "not running" in reason
+
+
+async def test_a_worker_that_has_checked_in_is_reachable(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import redis.asyncio as redis
+
+    class Alive:
+        async def get(self, _key: str) -> bytes:
+            return b"Aug-27 09:00:00 j_complete=0 j_failed=0 j_retried=0 j_ongoing=0"
+
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr(redis, "Redis", lambda **_kwargs: Alive())
+    results = {item.name: item for item in await check_components(settings)}
+    assert results["worker"].state is ComponentState.REACHABLE
+    assert results["worker"].reason is None
+
+
+async def test_an_unreachable_queue_does_not_blame_the_worker_for_it(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import redis.asyncio as redis
+
+    class Dead:
+        async def get(self, _key: str) -> bytes | None:
+            raise OSError("connection refused")
+
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr(redis, "Redis", lambda **_kwargs: Dead())
+    results = {item.name: item for item in await check_components(settings)}
+    reason = results["worker"].reason or ""
+    assert "Could not ask the queue" in reason
+    assert "not running" not in reason
 
 
 async def test_a_slow_name_lookup_does_not_orphan_its_exception(

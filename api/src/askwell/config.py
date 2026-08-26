@@ -77,8 +77,12 @@ class Settings(BaseSettings):
     redis_host: str = "redis"
     redis_port: Port = 6379
 
-    worker_host: str = "worker"
-    worker_port: Port = 8081
+    # The worker is not addressed by host and port, deliberately. An arq
+    # worker consumes a queue; it does not listen on anything, so a TCP probe
+    # can never see it and would report a perfectly healthy worker as down.
+    # It publishes a health record into Redis instead, and that is what gets
+    # read. The key expires, so its presence is also its freshness.
+    worker_health_key: str = "arq:queue:health-check"
 
     # llama.cpp runs as a native host process, not a container, so from inside
     # the API container the host gateway is the address that reaches it.

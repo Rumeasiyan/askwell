@@ -1,0 +1,130 @@
+# Askwell — the local stack.
+#
+# One user, one machine. There is no operator, no second node and no
+# orchestrator: this runs on somebody's laptop, which is also running their
+# browser. Every service here is something a non-technical person has to have
+# working unaided, which is why the API reports each of them separately rather
+# than as one boolean (see api/src/askwell/health.py).
+#
+#   podman compose up -d          bring it up
+#   podman compose logs -f api    watch one service
+#   podman compose down           stop, keeping data
+#   podman compose down -v        stop and destroy the data. There is no undo.
+#
+# Not here yet, deliberately: the egress proxy (M0-STACK-SEC-010), the sandbox
+# database for untrusted dumps (M4, C3), voice (M6), and native inference,
+# which runs as a host process rather than a container because it needs the
+# GPU.
+
+name: askwell
+
+services:
+  postgres:
+    # pgvector's own image, which is Postgres with the extension already built.
+    # Building it into the stock image would mean a compiler in the runtime
+    # image and a build step on every user's machine.
+    image: docker.io/pgvector/pgvector:pg18
+    environment:
+      POSTGRES_USER: ${ASKWELL_DB_USER:-askwell}
+      POSTGRES_PASSWORD: ${ASKWELL_DB_PASSWORD:?ASKWELL_DB_PASSWORD is not set. Copy .env.example to .env and set it. It is never committed (C8).}
+      POSTGRES_DB: ${ASKWELL_DB_NAME:-askwell}
+      # Askwell's own data lives in a subdirectory of the volume so that the
+      # volume can also hold anything else the database needs later without
+      # Postgres refusing to initialise into a non-empty directory.
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # -U and -d matter: the default `pg_isready` asks about a database named
+      # after the current user, which reports healthy while the database the
+      # application actually connects to is still being created on first boot.
+      test:
+        ["CMD-SHELL", "pg_isready -U ${ASKWELL_DB_USER:-askwell} -d ${ASKWELL_DB_NAME:-askwell}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      # Postgres restarts itself once during first-boot initialisation, and
+      # accepts connections briefly in between. Without a start period the
+      # dependents connect into that window and are dropped.
+      start_period: 10s
+    # No ports. Nothing outside the stack talks to the database, and publishing
+    # it would put an open Postgres on the machine's network interface.
+    restart: unless-stopped
+
+  redis:
+    image: docker.io/redis:8-alpine
+    command:
+      # appendonly: a job enqueued and then interrupted by the machine
+      # restarting is retried rather than lost. Closing the laptop mid-ingest
+      # is a normal Tuesday.
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --save
+      - ""
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  api:
+    image: localhost/askwell-api:dev
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    command: ["askwell-api"]
+    environment:
+      ASKWELL_DATABASE_URL: postgresql://${ASKWELL_DB_USER:-askwell}:${ASKWELL_DB_PASSWORD:?set ASKWELL_DB_PASSWORD in .env}@postgres:5432/${ASKWELL_DB_NAME:-askwell}
+      ASKWELL_REDIS_HOST: redis
+      # Inside the container the API must listen on all interfaces to be
+      # reachable at all. What keeps it off the network is the port publishing
+      # below, which binds to loopback on the host. M0-STACK-SEC-012 proves it.
+      ASKWELL_HOST: 0.0.0.0
+      ASKWELL_PORT: "8000"
+      ASKWELL_ENVIRONMENT: ${ASKWELL_ENVIRONMENT:-development}
+      ASKWELL_PROFILE: ${ASKWELL_PROFILE:-balanced}
+      ASKWELL_LOG_LEVEL: ${ASKWELL_LOG_LEVEL:-INFO}
+      ASKWELL_WEB_ASSETS_DIR: /app/web/out
+    volumes:
+      # The built interface, read-only: the API serves these files and has no
+      # reason to be able to change them.
+      - ./web/out:/app/web/out:ro,z
+    ports:
+      # 127.0.0.1 is load-bearing, not decoration. "8000:8000" would publish on
+      # every interface, putting the user's entire corpus on whatever café
+      # network they are on.
+      - "127.0.0.1:${ASKWELL_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    image: localhost/askwell-api:dev
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    command: ["askwell-worker"]
+    environment:
+      ASKWELL_DATABASE_URL: postgresql://${ASKWELL_DB_USER:-askwell}:${ASKWELL_DB_PASSWORD:?set ASKWELL_DB_PASSWORD in .env}@postgres:5432/${ASKWELL_DB_NAME:-askwell}
+      ASKWELL_REDIS_HOST: redis
+      ASKWELL_ENVIRONMENT: ${ASKWELL_ENVIRONMENT:-development}
+      ASKWELL_LOG_LEVEL: ${ASKWELL_LOG_LEVEL:-INFO}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  # Named, so `podman compose down` keeps them. The user closes the lid and
+  # reopens it the next day; their sources and conversations are still there.
+  postgres-data:
+  redis-data:
