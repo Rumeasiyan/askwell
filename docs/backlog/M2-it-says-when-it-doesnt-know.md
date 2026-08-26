@@ -136,21 +136,27 @@
 **Context / Background**
 **Detailed Description:** Render abstention at full measure with generous space, in the ordinary text and muted tokens — never the alarm colour, never a small grey note, never an inline caveat. The margin renders its explicit empty state saying nothing in the files matched. The next action is present and obvious.
 
+**This surface later carries the escalation offer, and its shape must anticipate that.** From Phase 6.5, `../ux/web-search.md` §2 renders three options — search the web, ask a larger model, add a source instead — **below the abstention, never above it**. The abstention is the answer; the offer is what the user may do next. This ticket therefore places the add-a-source action in the region that offer will occupy, so M6.5-WEB-FE-186 adds two siblings beside it rather than rebuilding the state. It must not leave a design in which anything could sit above the abstention statement.
+
+**A collapsed abstained turn shows no source count** (`../ux/conversation.md` §2, `../states-and-edge-cases.md` §7.1). M1-CONV-BE-177 stores the absence and M1-CONV-FE-178 renders it; this ticket is where the abstention path actually produces it, so the two must be checked together.
+
 **Scope**
 - Abstained state rendering per the specification.
 - Margin empty state for abstention specifically.
-- The add-a-source action wired to the add flow with the question retained so it can be re-asked.
+- The add-a-source action wired to the add flow with the question retained so it can be re-asked, positioned below the abstention statement in the region the escalation offer later shares.
+- Confirmation that an abstained turn collapses with no source count.
 
 **Out of Scope**
+- The web-search and larger-model escalations (M6.5-WEB-FE-186). They do not exist yet and **must not be stubbed in**, because a disabled "search the web" control on the abstention surface teaches exactly the expectation C10 exists to prevent.
 - Threshold adjustment (M5).
 - Trace panel (M5).
 
 **Acceptance Criteria**
-- **Acceptance Criteria:** An abstention renders visually distinct from an answer, at full measure, without alarm colouring. The margin explicitly says it is empty because nothing matched. The add-a-source action works and the question is retained for re-asking.
-- **Edge Cases:** An abstention immediately after a normal answer — the visual distinction is clear in sequence, not only in isolation. A narrow window — the state renders correctly with the margin inline. Abstention in a voice turn (M6) — spoken in full without softening.
+- **Acceptance Criteria:** An abstention renders visually distinct from an answer, at full measure, without alarm colouring. The margin explicitly says it is empty because nothing matched. The add-a-source action works and the question is retained for re-asking, and sits **below** the abstention statement. Collapsing an abstained turn produces no source count, distinguishable at a glance from an answered turn.
+- **Edge Cases:** An abstention immediately after a normal answer — the visual distinction is clear in sequence, not only in isolation. A narrow window — the state renders correctly with the margin inline. Abstention in a voice turn (M6) — spoken in full without softening. An abstained turn collapsed between two answered ones — the absent count reads as absent, carried by shape as well as colour.
 - **Permissions / Roles:** Single user — no roles. Not applicable.
-- **UI States:** `../ux/ask.md` §5 abstained and §6; `../ux/design-system.md` §2 — abstention is never the alarm colour.
-- **Validation Rules:** No design change may soften abstention into a caveated guess; the specification records why to refuse.
+- **UI States:** `../ux/ask.md` §5 abstained and §6; `../ux/conversation.md` §2 and §5 for the collapsed abstained turn; `../ux/design-system.md` §2 — abstention is never the alarm colour.
+- **Validation Rules:** No design change may soften abstention into a caveated guess; the specification records why to refuse. Nothing may be rendered above the abstention statement — the layout that later carries the escalation offer must make that structurally true rather than a convention (C10).
 - **Audit / Logging Requirements:** None beyond M2-ABSTAIN-OBS-056.
 - **Analytics Events:** Local counter only — nothing transmitted (C1).
 
@@ -164,8 +170,8 @@
 
 **Testing Notes / Scenarios**
 - **Cold-start manual walkthrough:** Cold start with an indexed corpus. Ask a covered question and read the answer. Then ask an uncovered one. Observe the abstention rendered with more space, in ordinary type, not red, with the margin stating it is empty. Click add-a-source, add a relevant document, wait for indexing, and confirm the question is still available to re-ask — then ask it and get an answer.
-- **Other scenarios:** Narrow the window and confirm the state still reads correctly.
-- **Known gaps:** No trace, so the near-miss is not visible to the user yet. No threshold control.
+- **Other scenarios:** Narrow the window and confirm the state still reads correctly. Ask a second question and confirm the abstained turn collapses with no number.
+- **Known gaps:** No trace, so the near-miss is not visible to the user yet. No threshold control. **No escalation offer** — Askwell cannot search the web or reach a larger model at this point, and nothing on this screen suggests it can. That arrives in M6.5 and M8 respectively, and until it does, abstention is the end of the turn.
 
 **Effort & Granularity Check**
 - **Estimate:** 2–3 hours · **Priority:** Critical
@@ -557,7 +563,8 @@
 
 **Acceptance Criteria**
 - **Acceptance Criteria:** The harness runs a named suite and reports mean and worst-of-three per category. It runs with the network disabled. Results are recorded in a comparable format.
-- **Edge Cases:** The model is unavailable — the run fails clearly rather than reporting zeros as if measured. A task that times out — recorded as a failure with the reason, not silently skipped. Nondeterministic output — the three-run design is the answer, and variance is reported.
+- **Edge Cases:** The model is unavailable — the run fails clearly rather than reporting zeros as if measured. A task that times out — recorded as a failure with the reason, not silently skipped. Nondeterministic output — the three-run design is the answer, and variance is reported. **A suite whose bar is 1.00** — SQL safety, and later web escalation discipline — reports pass or fail rather than a mean that reads as nearly fine, because "0.97 on ten tasks" is a failure that looks like a score.
+- **Assumption, stated:** the harness must be able to run a suite with **no network access at all** and still exercise the web-search path, because M6.5's suite asserts that Askwell *does not* reach the web. That suite needs no provider, only a machine with the network down and an assertion about what was refused.
 - **Permissions / Roles:** Single user — no roles. Not applicable.
 - **UI States:** None.
 - **Validation Rules:** A suite may never be run once and reported as if run three times.
@@ -575,7 +582,7 @@
 **Testing Notes / Scenarios**
 - **Cold-start manual walkthrough:** Cold start with a small fixture corpus indexed. Run the harness against a tiny suite. Observe per-task results, three runs each, with mean and worst-case. Disconnect the network and run again — identical behaviour.
 - **Other scenarios:** Stop the model and run — the harness fails clearly.
-- **Known gaps:** No real suites yet. No gate. Scoring for some categories is manual until the suites define it.
+- **Known gaps:** No real suites yet. No gate. Scoring for some categories is manual until the suites define it. Eight categories totalling 165 tasks are planned (`../build-plan.md`); three exist by the end of this milestone.
 
 **Effort & Granularity Check**
 - **Estimate:** 3–4 hours · **Priority:** Critical
@@ -745,7 +752,7 @@
 - *As someone merging a change to a prompt, I want the eval suite to run automatically somewhere capable, so that the rule is enforced rather than remembered.*
 
 **Context / Background**
-**Detailed Description:** The 155-task gate needs a model and time, which hosted runners do not comfortably provide. Run it on a self-hosted runner or by manual dispatch, with a cached small model, triggered when a prompt file or the retrieval configuration changes. The run posts its results for comparison, and a change that touches a prompt without a run is blocked.
+**Detailed Description:** The 165-task gate needs a model and time, which hosted runners do not comfortably provide. Run it on a self-hosted runner or by manual dispatch, with a cached small model, triggered when a prompt file or the retrieval configuration changes. The run posts its results for comparison, and a change that touches a prompt without a run is blocked.
 
 **Scope**
 - Workflow triggered by prompt or retrieval-configuration changes, dispatchable manually.
@@ -755,7 +762,7 @@
 
 **Out of Scope**
 - Running the full gate on every push — it is too slow and this is deliberate.
-- The remaining suites, which arrive with their features in M3, M4 and M5.
+- The remaining suites, which arrive with their features in M3, M4, M5 and M6.5.
 
 **Acceptance Criteria**
 - **Acceptance Criteria:** Changing a prompt file triggers the eval workflow. The run loads a cached model without downloading it. Results are recorded in a comparable format. A prompt change with no run is blocked from merging.
@@ -777,7 +784,7 @@
 **Testing Notes / Scenarios**
 - **Cold-start manual walkthrough:** Change a prompt file on a branch and push. Observe the eval workflow trigger. Watch it load the cached model and run the suites, then read the published results. Push a second change to the same prompt without a run available and confirm the merge is blocked with a readable reason.
 - **Other scenarios:** Dispatch the workflow manually against the main branch and confirm it produces a baseline.
-- **Known gaps:** Only three of the seven gate categories exist so far. The runner is a single machine and its results are not reproducible across hardware; the model and settings are recorded so comparisons stay honest.
+- **Known gaps:** Only three of the **eight** gate categories exist so far — grounded QA, abstention and conflicting sources. Memory application arrives in M3, text-to-SQL and SQL safety in M4, tool selection in M5, and **web escalation discipline in M6.5** (M6.5-EVAL-TEST-194, 10 tasks at 1.00 with no exceptions). The workflow is written so a category is added by naming a suite, not by editing the gate. The runner is a single machine and its results are not reproducible across hardware; the model and settings are recorded so comparisons stay honest.
 
 **Effort & Granularity Check**
 - **Estimate:** 3–4 hours · **Priority:** High

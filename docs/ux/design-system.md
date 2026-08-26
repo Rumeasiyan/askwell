@@ -31,12 +31,13 @@ The palette's job is to say **how Askwell knows a thing**. This is the rule that
 | Token | Light | Dark | Means |
 | ----- | ----- | ---- | ----- |
 | `--provenance` | `#2F6B62` | `#5FA99B` | **Traceable to a source.** Citations, source cards, leaders, quoted passages, the SQL that produced a number |
-| `--inferred` | `#8A6A22` | `#C9A34E` | **Askwell guessed.** Low-confidence memory, inferred CSV types, uninspected OCR, anything the user has not confirmed |
+| `--inferred` | `#7D601F` | `#C9A34E` | **Askwell guessed.** Low-confidence memory, inferred CSV types, uninspected OCR, anything the user has not confirmed |
 | `--ink` | `#232722` | `#E4E7E1` | Askwell's own words and all primary text |
 | `--paper` | `#E9EBE7` | `#191C1A` | Ground. Cool grey-green, blotting paper — not the warm cream every AI tool uses |
 | `--surface` | `#F3F4F1` | `#222623` | Raised: cards, inputs, the margin rail |
-| `--rule` | `#C9CDC6` | `#333833` | Hairlines, leaders, dividers |
-| `--muted` | `#6B716A` | `#9AA096` | Labels, metadata, timestamps |
+| `--rule` | `#C9CDC6` | `#333833` | **Decorative** hairlines and dividers only |
+| `--rule-strong` | `#7A8078` | `#6A7268` | **Lines that carry meaning** — the claim leader, and the card's left edge when the margin reflows inline. Meets 3:1 because losing it loses which source belongs to which claim |
+| `--muted` | `#5F655E` | `#9AA096` | Labels, metadata, timestamps |
 | `--alarm` | `#8C3A2E` | `#D9705F` | Failures only. Never for abstention |
 
 **`--provenance` is reserved.** It appears on nothing that is not traceable to a source. Buttons are not this colour. Links in the chrome are not this colour. Because it is spent nowhere else, the colour itself comes to mean "you can check this" — and a user learns that in about a day without being told.
@@ -85,6 +86,7 @@ Answer prose sets at a **68–75 character measure**. Wider is measurably harder
 
 - **Radius: 3px**, everywhere. Near-square reads as instrument; pill shapes read as consumer chat. One exception: circular avatars/status dots.
 - **Borders over shadows.** A 1px `--rule` is the default separator. Shadow only for genuinely floating things (menus, dialogs) — an interface that is mostly flat makes the few raised things mean something.
+- **Depth cues are tokens, never literals.** `--inset` and `--drop` carry the shadow colour and differ per theme. Black at 7% reads as depth on paper and is invisible on a dark ground, so a hardcoded shadow silently removes the affordance it was added for in exactly one of the two themes.
 - **Controls: 32px** standard height, 24px compact, **44px minimum for any primary action.** Desktop-first, but a trackpad on a laptop is not a mouse on a desk.
 - **Focus: 2px `--provenance` outline, 2px offset**, never removed. Keyboard navigation is not optional.
 
@@ -103,7 +105,11 @@ Answer prose sets at a **68–75 character measure**. Wider is measurably harder
 └────────────┴─────────────────────────────┴───────────────────┘
 ```
 
-Below 1100px the provenance rail moves under each answer as an inline block rather than disappearing. **It is never removed** — that would make citations conditional on window width.
+Below the breakpoint the provenance rail moves under each answer as an inline block, with a `--rule-strong` edge carrying the relationship the leader carried at width. **It is never removed** — that would make citations conditional on window width.
+
+**The left rail becomes a drawer** at the same breakpoint: a menu control in the app's own chrome, a scrim that dismisses it, and selecting a destination closes it. It is reachable, not removed — the library is the only route to sources, memory and settings, and hiding it without a way back strands the user.
+
+Askwell installs as a desktop application, so **there is no phone**. Responsiveness serves a resized window on a laptop, which is a normal thing to do, rather than a small screen.
 
 ---
 
@@ -144,6 +150,10 @@ Never: "Oops", "Uh oh", "Something went wrong", "AI-powered", "seamlessly", "sim
 
 Three are not generic and must not be reskinned into standard patterns.
 
+**Interactive things look interactive.** A primary action is filled, not outlined. An input is inset. A control that navigates lifts or shifts on hover and states where it goes. The flatness of this design is deliberate, and it means affordance has to be carried by the few differences that remain rather than assumed.
+
+**Web result** — deliberately *not* a variant of the source card. Dashed border in `--inferred`, headed as not-your-material, carrying a retrieval date. A shared component with a flag is exactly how the distinction between the user's material and the web erodes (C10).
+
 **Source card** — the margin unit. Filename in mono, page or table, then the exact retrieved passage in serif. Left edge is a 2px `--provenance` bar. Clicking opens the source at that position.
 
 **Claim leader** — a hairline from a cited claim to its card. `--rule` at rest, `--provenance` on hover of either end.
@@ -156,7 +166,8 @@ Three are not generic and must not be reskinned into standard patterns.
 
 Not a checklist item; the target user works in this for hours.
 
-- Text contrast ≥ 4.5:1, UI ≥ 3:1, in both themes. `--provenance` and `--inferred` are tuned to pass on `--paper` and `--surface`.
+- Text contrast ≥ 4.5:1, UI ≥ 3:1, in both themes. **Measured, not assumed** — `--muted` and `--inferred` originally failed on `--paper` and `--sunk` in the *light* theme, which nobody would have guessed from looking at it.
+- A line that conveys information is a UI component and needs 3:1. That is why `--rule-strong` exists separately from `--rule`: the claim leader is the only thing joining a claim to its source, so it cannot be a decorative hairline.
 - **Colour is never the only signal.** The confidence marker differs in fill as well as hue; abstention is stated in words, not implied by tone.
 - Full keyboard path through ask → read answer → open citation → correct a fact. That is the core loop and it must not require a pointer.
 - Respects the OS light/dark setting, with a manual override.

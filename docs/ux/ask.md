@@ -43,6 +43,7 @@ The margin is the point. It is populated or explicitly empty; it is never hidden
 | Action | Result |
 | ------ | ------ |
 | Type, `Enter` | Submit. `Shift+Enter` newline |
+| **Mic control** | Opens voice mode (`voice.md`). Present from Phase 1, disabled with its reason until Phase 5 — the composer is not rebuilt later to make room for it |
 | Hover a cited claim | Its leader and card raise |
 | Click a claim or card | Opens the source at that page, passage highlighted |
 | Click a memory chip | Popover: the fact, its origin, **Correct** and **Delete** |
@@ -51,6 +52,10 @@ The margin is the point. It is populated or explicitly empty; it is never hidden
 | "How did you get this?" | Trace panel |
 | Stop | Ends generation; partial answer kept and marked partial |
 | Navigate away mid-answer | Generation continues server-side and completes (#14) |
+
+### Suggested follow-ups
+
+Up to three, after an answer, derived from what was just answered. They **fill the composer rather than sending** — the point is to lower the cost of the next question, not to ask it for the user. Specified in `conversation.md` §3.
 
 ### Correction from inside the answer
 
@@ -71,7 +76,7 @@ Every one of these ships. A screen with only the answered state is not finished.
 | **Retrieving** | Named steps: *searching your files · reading 4 sources · querying `sales`*. On a slow local model this can run 20s+, and an unlabelled spinner reads as broken |
 | **Streaming** | Tokens appear at their real pace. Cards enter the margin as claims are cited, leader drawing on arrival |
 | **Answered** | Full answer, populated margin, memory chips, trace available |
-| **Abstained** | See §6 |
+| **Abstained** | See §6. The escalation offer renders below it, never above (`web-search.md` §2) |
 | **Partial** | Grounded part answered; the ungrounded part named explicitly as not covered. Never smoothed into fluent prose |
 | **Conflicting sources** | Both presented with both citations and their dates. Never silently prefers one. Offers to resolve, which writes a memory fact |
 | **Tool ceiling hit** | What was gathered, plus a note that it stopped after 8 steps, plus **Continue** |
@@ -79,6 +84,8 @@ Every one of these ships. A screen with only the answered state is not finished.
 | **Model unavailable** | "The assistant is unavailable." Search across sources still works — degrade to search, not to a blank product |
 | **Deleted source cited** | Card renders as *deleted on 3 June*, greyed, not clickable (#11) |
 | **Unvalidated model** | Persistent marker on every answer produced by a user-supplied model, naming that citations and abstention are unverified for it. Not an error state — the user chose this knowingly (`settings.md` §2) |
+| **Answered from the web** | Separate region, marked as not-your-material, never in the margin (`web-search.md` §3) |
+| **Several turns** | Past turns collapse (`conversation.md`). The live turn keeps its margin |
 | **Online mode** | Persistent marker on the conversation. Before the first send, exactly what will leave the machine |
 | **Credits exhausted** | Falls back to local, says so, continues. Never blocks — the product works offline for free |
 | **Past latency budget (voice)** | Indicator appears, only once passed (#15) |

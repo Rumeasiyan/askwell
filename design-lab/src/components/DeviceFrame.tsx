@@ -17,8 +17,10 @@ export function DeviceFrame({
 }) {
   return (
     <div className="flex h-full w-full items-start justify-center overflow-auto bg-black/20 p-6">
+      {/* @container makes the screen respond to THIS frame's width, not the browser's.
+          Viewport breakpoints would ignore the device switcher entirely. */}
       <div
-        className="h-[calc(100vh-160px)] overflow-auto bg-[var(--color-bg)] shadow-2xl transition-[width] duration-300"
+        className="@container h-[calc(100vh-150px)] overflow-hidden bg-[var(--color-bg)] shadow-2xl transition-[width] duration-300"
         style={{ width: WIDTHS[mode], maxWidth: '100%' }}
       >
         {children}

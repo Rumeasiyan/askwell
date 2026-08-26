@@ -17,6 +17,8 @@ Apply on every surface.
 | State | What the user sees | What the system does |
 | ----- | ------------------ | -------------------- |
 | **Offline / no network, local mode** | Nothing. No indicator, no banner | This is the design point, not a degraded state. **Never render an offline warning** — it implies something is broken when the product is working exactly as promised (C1) |
+| **Web search asked for, one question** | Named progress while the question is out; results in their own marked region; a closing note that the next question starts local | C10. Offered only after abstention, never fired automatically — that rule is what keeps abstention meaningful |
+| **Web search unavailable** — offline or provider down | *"I can't reach the web right now."* The abstention still stands and is still the answer | Failing to escalate is not failing to answer. The honest answer was already given |
 | **Online AI enabled for a conversation** | Clear, persistent marker on that conversation, and a statement of what will be sent *before* the first send | C1. The user must never discover after the fact that content left the machine |
 | **Online credits exhausted** | The conversation falls back to local AI, saying so plainly. Nothing is lost | Refusing to answer because credit ran out, on a product that works offline for free, would be absurd |
 | **First launch, nothing configured** | Guided setup: add a first source, wait for indexing, ask a first question | Install-to-first-answer is the metric most likely to kill the product (`success-metrics.md` §4) |
@@ -27,6 +29,9 @@ Apply on every surface.
 | **Log storage at hard limit** | **New ingestion refused**; asking questions keeps working | Ingestion is the biggest writer. Blocking the cheapest and most valuable operation last is what keeps the product usable |
 | **Decisions store cannot be written** | The action fails, with a clear reason and what to free up | Issue #10, Option A — the only place a write failure stops an action |
 | **Disk full** | Adding sources refused with a clear message. Existing material stays queryable | Never accept a source that cannot be durably written |
+
+| **Narrow window** | Left rail becomes a drawer, reachable from a control in the app's own chrome | Hiding navigation without a way back strands the user in a product where the library is the only route to sources, memory and settings |
+| **Native file dialog open** | The Tauri shell's own picker, for nominating a root directory or relocating a moved file | Indexing in place makes both core paths, and neither works well in a browser tab |
 
 There is no licence state, no seat cap, no session expiry and no permission denial. The product is free, single-user and local — none of those states exist.
 
@@ -134,6 +139,16 @@ Every one of these is a real screen someone will see on day one, and each is an 
 | Usage dashboard, pre-traffic | What will appear once questions are asked |
 
 ---
+
+## 7.1 Conversation states
+
+| State | What is shown |
+| ----- | ------------- |
+| **Past turn collapsed** | Question, one-line summary, source count in the provenance colour |
+| **Past turn that abstained** | Collapsed with **no source count**, summary saying so — visibly different at a glance |
+| **Past turn that used the web** | Keeps its web marker when collapsed. Never shown as if it came from the user's files |
+| **Past turn citing a deleted source** | Count reflects what was cited then; expanding shows the tombstone |
+| **New question while an answer streams** | Queued, not interleaved |
 
 ## 8. Decisions this document surfaced — all now answered
 

@@ -1,18 +1,21 @@
 # M7 — Someone else can install it
 
-**Goal:** A clean machine installs Askwell and runs it with the network cable unplugged; a backup taken on one machine restores onto another with corpus and memory intact; and everything unglamorous that a release actually needs exists.
+**Goal:** A clean machine installs Askwell as a **desktop application** and runs it with the network cable unplugged; a backup taken on one machine restores onto another with corpus and memory intact; and everything unglamorous that a release actually needs exists.
 
-**Phase:** 6 (`../build-plan.md`) · **Depends on:** M6 · **Tickets:** 32 · **Estimated:** 97–141 hours of unblocked work
+**Phase:** 6 (`../build-plan.md`) · **Depends on:** M6 · **Tickets:** 37 · **Estimated:** 113–165 hours of unblocked work
 
-**Exit condition:** A non-technical person installs Askwell on Linux, Windows or macOS, is given a profile with what to expect, reaches a first cited answer, and can do all of it disconnected from the internet. A backup restores onto a clean machine with a tested procedure. The log budget degrades in the right order. The licence and notices file, the support boundary and the release checklist all exist before anything is published.
+**Exit condition:** A non-technical person installs Askwell on Linux, Windows or macOS, opens it as an application rather than a browser tab, nominates a folder through a real file dialog, is given a profile with what to expect, reaches a first cited answer, and can do all of it disconnected from the internet. A backup restores onto a clean machine with a tested procedure. The log budget degrades in the right order. The licence and notices file, the support boundary and the release checklist all exist before anything is published.
 
 > **Discovering this work a week before release is how releases slip.** None of it is in the business case and all of it is required to ship.
+
+> **The phase grew from 2.5 to 3.5 weeks** when the desktop shell was decided (`../decisions.md`, 2026-08-26). The shell is genuinely new work, and per-platform code signing — Apple notarisation especially — is not a footnote. The `TAURI` epic is where that week went.
 
 ## Included epics
 
 | Epic | Code | Covers |
 | ---- | ---- | ------ |
 | Hardware probe | `PROBE` | Host-side detection, profile, warn-and-continue |
+| Desktop shell | `TAURI` | The window, native file dialogs, supervision, code signing and notarisation |
 | Packaging | `PACK` | Three installers, supervision of stack plus native process |
 | Offline install | `OFFLINE` | Bundled models, manual placement, the cable-unplugged test |
 | Settings | `SET` | The six sections completed |
@@ -127,6 +130,241 @@
 
 ---
 
+### M7-TAURI-DEPLOY-181 — The desktop shell: a window of Askwell's own
+
+**Type:** Story
+
+**User Story**
+- **Actor:** someone who installed Askwell and does not think of it as a website.
+- **User Need:** an application they open, not an address they have to remember.
+- **Business Value:** a local product that lives at a localhost URL asks the user to hold a mental model of a server on their laptop. The shell removes that — and, more importantly, it is what makes the native file dialogs possible, which is the actual argument for it.
+- *As someone who installed this like any other program, I want to open Askwell from my applications, so that I never type a port number.*
+
+**Context / Background**
+**Detailed Description:** Askwell ships as a **Tauri desktop application** — a Rust shell around the system webview, wrapping the interface the API already serves (`../architecture.md` §1 and §2). Tauri was chosen over Electron on size: roughly 10 MB against 150, on an installer already carrying 2.4 GB of model weights.
+
+**The shell does not replace the container stack.** This is a shell over the same architecture: the API still serves the built assets, the containers still run, inference still runs natively. What the shell adds is a window, an application identity, and the native dialogs that M7-TAURI-FE-182 depends on.
+
+This ticket builds the window and nothing else. Dialogs, supervision and signing are the three tickets that follow, deliberately separated because each has a different failure mode and each would push this one past six hours.
+
+**Scope**
+- A Rust shell hosting the system webview, pointed at the local API.
+- Window identity: title, icon, minimum size, position and size remembered between sessions.
+- The application's own chrome region, which the narrow-window menu control from M0-SHELL-FE-017a attaches to.
+- Ordinary window behaviour: close, minimise, full screen, and the platform's expected menu conventions.
+- Nothing but the local API is loadable in the webview.
+
+**Out of Scope**
+- Native file dialogs (M7-TAURI-FE-182).
+- Supervising the stack and the inference process (M7-TAURI-DEPLOY-183).
+- Signing and notarisation (M7-TAURI-DEPLOY-184).
+- Any change to the interface itself — the shell hosts what already exists.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** Launching Askwell opens a window showing the application, with no address bar and no URL for the user to know. The window remembers its size and position across launches. The application's own chrome carries the menu control below the breakpoint. Every screen that worked in a browser works identically in the shell. **The webview refuses to navigate anywhere but the local API** — C1 is not weakened by the shell; the shell is one more place where a stray external URL must be impossible rather than merely unlikely.
+- **Edge Cases:** The API is not yet up when the window opens — the window shows Askwell's own starting state rather than a browser error page, and recovers when the API answers. The system webview is missing or too old — reported by name with what to install, rather than a blank window. A second launch while one is running — focuses the existing window rather than opening a duplicate. The window restored to a size or a display that no longer exists — falls back to a sane default on the primary display rather than opening off screen. A link in retrieved content pointing at an external site — **it does not navigate the webview**; C7 says retrieved content is data, and a webview that follows it is a rendering engine taking instruction from a document.
+- **Permissions / Roles:** Single user — no roles. Not applicable.
+- **UI States:** `../ux/design-system.md` §4 for the layout the window hosts and the app's own chrome; `../states-and-edge-cases.md` §1 for the starting and unavailable states.
+- **Validation Rules:** The webview's allowed origin is the local API and nothing else. No remote content may be loaded into the shell under any circumstance.
+- **Audit / Logging Requirements:** Shell start and stop are logged with the version of the shell and of the API it connected to.
+- **Analytics Events:** Local counter of launches — nothing transmitted (C1).
+
+**Real-World Example Scenarios**
+- A user opens Askwell from their dock, sees the window where they left it, and asks a question without ever knowing a container stack exists.
+- A malicious PDF in the corpus contains a link; clicking it in the answer does not navigate the application window anywhere.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M0-FOUND-DEPLOY-004, M0-SHELL-FE-017, M0-SHELL-FE-017a.
+- **API / Data Touchpoints:** The local API's address and health surface.
+- **Assumptions:** The Rust toolchain is an accepted new build dependency — it was accepted knowingly in `../decisions.md` rather than discovered. The system webview is present on all three supported platforms in a version the interface targets; where it is not, the installer says so (M7-PACK-DEPLOY-139 through 141).
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** On a machine with Askwell installed, open it from the applications menu — not from a browser. Confirm a window appears with Askwell's name and icon and no address bar. Ask a question and confirm it behaves exactly as it did in a browser. Resize and move the window, quit, and reopen — confirm it returns where you left it. Now stop the API from outside and open Askwell: confirm Askwell's own message, not a browser error page. Start the API and confirm the window recovers.
+- **Other scenarios:** Launch a second time and confirm the first window is focused rather than a second appearing. Move the window to a second display, disconnect it, and relaunch. Add a document containing an external link, ask a question that quotes it, click the link, and confirm the application window does not navigate.
+- **Known gaps:** No native file dialogs yet — nominating a root and relocating a file still use the browser-provided control until M7-TAURI-FE-182. The shell does not yet start or supervise anything. It is unsigned, so every platform will complain until M7-TAURI-DEPLOY-184.
+
+**Effort & Granularity Check**
+- **Estimate:** 4–6 hours · **Priority:** Critical
+- **Labels / Component:** `phase:6`, deployment, frontend, `constraint:local-first`
+- **Granularity:** One window and its navigation rules. Upper bound because a new toolchain is in play; splitting further would ship a window that cannot be opened.
+
+---
+
+### M7-TAURI-FE-182 — Native file dialogs for root registration and relocating a moved file
+
+**Type:** Story
+
+**User Story**
+- **Actor:** someone pointing Askwell at forty gigabytes of case files that are not moving anywhere.
+- **User Need:** to choose a folder the way they choose a folder in every other application.
+- **Business Value:** **this is the reason the desktop shell exists** (`../decisions.md`, 2026-08-26). Askwell indexes in place, so nominating root directories and relocating a moved file are core paths, and both are poor in a browser tab. A folder that cannot be chosen properly is a product that cannot be pointed at anything.
+- *As someone whose material lives in one folder tree, I want to pick that folder from a normal dialog, so that setting Askwell up is not an exercise in typing paths.*
+
+**Context / Background**
+**Detailed Description:** The shell provides the platform's own file and directory dialogs and wires them into the two flows that were built against a provisional selection step: **root registration** (M1-ADD-ING-021) and **relocating a moved file** (M1-VIEW-BE-049). Both were deliberately shaped so the selection step could be replaced without touching the registry, the hash verification or the state machine — this ticket makes that substitution.
+
+**It is a picker, not an upload control.** Askwell copies nothing; the dialog returns a path that becomes a known mount or a corrected document path. Anything resembling a browser upload would contradict indexing in place and must not appear.
+
+**Scope**
+- Native directory selection wired into root registration.
+- Native file selection wired into relocation, with the existing hash verification unchanged.
+- Native file selection as the browse alternative on the add-source screen.
+- Path translation between what the dialog returns on the host and what the containers see as a mount, on all three platforms.
+- The platform's own permission prompts surfaced with Askwell's explanation beside them, not instead of them.
+
+**Out of Scope**
+- Any change to the roots registry, its validation or the consequences of removing a root (M1-ADD-ING-021).
+- Any change to hash verification or the moved/deleted distinction (M1-VIEW-BE-049).
+- Folder watching — still out of v1.
+- File copying or upload of any kind — there is none and there will not be one.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** Registering a root opens the platform's directory dialog and the chosen directory registers exactly as a typed path did. Relocating a moved document opens the platform's file dialog and the existing hash check still runs, still accepting a match and still refusing a mismatch by name. Browsing for files on the add-source screen uses the native dialog. On every platform the path returned by the dialog resolves correctly inside the containers.
+- **Edge Cases:** The user cancels the dialog — the flow returns to where it was with nothing changed and no error. A directory the user cannot read — refused at registration with the permission named, not with a missing-file message. A path that cannot be mounted into the container runtime — refused at registration with the reason, rather than registering and failing at index time. On macOS, a folder outside the areas the application is permitted — the platform prompt appears with Askwell's explanation of why it is asking (`../ux/add-source.md`). A network share — permitted with the existing slow-indexing warning. A path containing characters the container boundary handles differently — round-tripped and verified, not assumed. The dialog is opened while ingestion is running — permitted; registration is independent.
+- **Permissions / Roles:** Single user — no roles in the product. Operating-system folder permissions are what the dialog negotiates.
+- **UI States:** `../ux/add-source.md` §1 (indexing in place) and §5; `../ux/source-viewer.md` §4 (file moved or renamed); `../states-and-edge-cases.md` §1 "Native file dialog open".
+- **Validation Rules:** The dialog returns a path, never a copy of a file. A path outside every registered root is still never read. Relocation still verifies by content hash — a native dialog does not make a chosen file trustworthy.
+- **Audit / Logging Requirements:** Registering a root and relocating a document remain decisions records, naming the paths, exactly as before.
+- **Analytics Events:** Local counter only — nothing transmitted (C1).
+
+**Real-World Example Scenarios**
+- A consultant clicks *choose a folder*, navigates to their client directory in the dialog they use every day, and Askwell begins indexing forty thousand files in place.
+- A user who reorganised their filing clicks *relocate*, picks the moved contract from a normal dialog, and the hash matches, so the citation opens again.
+- A user picks the wrong file when relocating; the hash mismatch is named and nothing is silently repointed.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M7-TAURI-DEPLOY-181, M1-ADD-ING-021, M1-VIEW-BE-049, M1-ADD-FE-022.
+- **API / Data Touchpoints:** The roots registry; `documents.path`; the mount configuration.
+- **Assumptions:** Both flows were built behind a single selection seam as their tickets require; if either was not, this ticket grows and the estimate is wrong — that is a check to make before starting, not after.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** On a clean install, open Askwell from the applications menu. On first run, choose to add a source and click to nominate a folder. Confirm the platform's own directory dialog opens — the one you would see in any other application. Choose a folder containing PDFs, grant any permission the system asks for, and watch indexing begin. Ask a question and click a citation to confirm the file opens from that path. Quit Askwell, rename the file on disk, reopen, and click the same citation: read the moved-file message, click relocate, pick the renamed file from the native dialog, and confirm the viewer opens it. Then repeat the relocation with a *different* document and confirm it is refused by hash.
+- **Other scenarios:** Cancel a dialog halfway and confirm nothing changed. Register a folder on a network share and confirm the slow-indexing warning. On macOS, pick a folder requiring permission and confirm Askwell's explanation appears alongside the system prompt. On Windows, register a folder and confirm the path resolves across the virtualisation boundary.
+- **Known gaps:** No folder watching. No bulk relocation of a whole moved root. Multi-select of several roots at once is not supported; roots are registered one at a time.
+
+**Effort & Granularity Check**
+- **Estimate:** 4–6 hours · **Priority:** Critical
+- **Labels / Component:** `phase:6`, frontend, deployment, ingestion
+- **Granularity:** Two flows and one path-translation problem. Upper bound because the translation differs on all three platforms; it stays one ticket because the two flows share it entirely.
+
+---
+
+### M7-TAURI-DEPLOY-183 — The shell supervises the stack and the inference process, with three distinct causes
+
+**Type:** Story
+
+**User Story**
+- **Actor:** someone who opened Askwell and got a window that says it is not ready.
+- **User Need:** to be told which of the three things is wrong, because each has a different fix.
+- **Business Value:** the shell was accepted knowing it adds a third distinct cause of *"the assistant is unavailable"* (`../decisions.md`, 2026-08-26). A cost accepted and then left undiagnosed becomes a support queue.
+- *As someone whose Askwell opened but will not answer, I want to be told whether it is the containers, the assistant or something else, so that I try the right fix rather than reinstalling.*
+
+**Context / Background**
+**Detailed Description:** The shell starts the container stack and the native inference process when it launches, watches both, and stops both when it quits. M0-MODEL-BE-020 established two causes of unavailability — stack down, assistant down. **The shell adds a third**: the shell is running while one or both of the others are not, which is precisely the case a user now sees, because previously a dead stack meant nothing opened at all.
+
+The shell is the natural supervisor because it is the thing the user launches. M7-PACK-DEPLOY-142 covers platform service registration so Askwell can also come up with the session; this ticket covers what the shell does while it is open.
+
+**Scope**
+- Ordered start of the container stack and the native inference process on shell launch.
+- Watching both, restarting either on failure with backoff and a capped retry that ends in a stated failed state.
+- Clean stop of both when the shell quits, leaving nothing orphaned.
+- Three distinguishable unavailability causes, each with its own message and its own fix, extending M0-MODEL-BE-020's two.
+- A starting state in the window while the halves come up, rather than a blank or an error.
+
+**Out of Scope**
+- The repair surface with its buttons (M7-PACK-FE-143).
+- Starting with the session and platform service registration (M7-PACK-DEPLOY-142).
+- Repairing a corrupted container volume — reported, not fixed.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** Launching the shell brings up the stack and the inference process in order, showing a starting state meanwhile. Killing either produces a supervised restart with backoff. Quitting the shell leaves no container and no process running. The three causes are reported distinctly, each naming what still works and what to try. Sleeping and waking the machine recovers both without user action.
+- **Edge Cases:** The container runtime itself is not installed or not running — reported as such, since Askwell cannot start it; distinct from the stack failing to come up. A restart loop — backoff caps and the state becomes failed with the **last reason retained**, rather than restarting forever or forgetting why. The shell is killed rather than quit — the next launch adopts or cleans up what was left running rather than creating a second stack. The stack is already running because the user started it from the command line — the shell attaches rather than duplicating. Shutdown while ingestion is in progress — the job is left resumable, and the user is told before the stop rather than after.
+- **Permissions / Roles:** Single user — no roles. Not applicable.
+- **UI States:** `../states-and-edge-cases.md` §1 (model not loaded, and the desktop shell's own states); `../ux/ask.md` §5 "Model unavailable" — degrade to search, not to a blank product.
+- **Validation Rules:** The three causes may never be collapsed into one message. Quitting must leave nothing orphaned.
+- **Audit / Logging Requirements:** Supervision events — start, stop, restart, backoff cap — are logged with cause and timing.
+- **Analytics Events:** Local counter only — nothing transmitted (C1).
+
+**Real-World Example Scenarios**
+- A user's antivirus quarantines the inference binary. Askwell opens, the window says the assistant is unavailable and names the file, and search across sources still works.
+- A user closes the lid for three days, opens it, and asks a question a few seconds later without doing anything.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M7-TAURI-DEPLOY-181, M0-MODEL-DEPLOY-018, M0-MODEL-BE-020.
+- **API / Data Touchpoints:** The health surface; the container runtime; the inference process.
+- **Assumptions:** The shell has the rights to start and stop the container runtime's stack on all three platforms without elevation after install; where it does not, the installer arranges it and this ticket states which platform needed it.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** With nothing running, open Askwell from the applications menu. Watch the window appear and report that it is starting, then become ready. Ask a question to confirm. Now kill the inference process from outside and watch the window report the assistant unavailable, then recover. Kill a container and watch the same with a different message. Quit Askwell and confirm from outside that no container and no process remain. Reopen and confirm a clean start. Finally, stop the container runtime entirely and open Askwell — confirm it names the runtime as the thing to start, which is a different message again.
+- **Other scenarios:** Sleep the machine overnight and wake it. Force-kill the shell and relaunch. Start the stack manually first, then open the shell, and confirm it attaches rather than duplicating. Induce repeated failures and confirm backoff caps with the last reason still shown.
+- **Known gaps:** No repair buttons in the window yet — the causes are described, not fixed, until M7-PACK-FE-143. Corrupted container volumes are reported and repaired manually.
+
+**Effort & Granularity Check**
+- **Estimate:** 4–6 hours · **Priority:** Critical
+- **Labels / Component:** `phase:6`, deployment, observability
+- **Granularity:** One supervision model and three messages. Upper bound; the buttons are split into their own ticket to keep it there.
+
+---
+
+### M7-TAURI-DEPLOY-184 — Code signing on three platforms, including Apple notarisation
+
+**Type:** Task
+
+**User Story**
+- **Actor:** someone downloading a free security-focused tool from an unknown developer.
+- **User Need:** an installation their operating system does not warn them about.
+- **Business Value:** Askwell's entire pitch is that it can be trusted with material the user cannot upload anywhere. An unsigned binary that the operating system flags as unidentified contradicts that in the first ten seconds — and the first ten minutes decide everything for a free download with no sunk cost.
+- *As someone about to install a local AI tool because I do not trust cloud ones, I want my operating system not to warn me about it, so that the promise and the experience agree.*
+
+**Context / Background**
+**Detailed Description:** Signing was accepted as a real, recurring cost when the shell was decided (`../decisions.md`, 2026-08-26) — **"per-platform code signing, with Apple notarisation the expensive one"**. It covers the shell binary, the installer, and the native inference binary that ships beside them.
+
+Apple notarisation is the substantial half: the signed artefact is submitted to Apple, waits on their service, and the result is stapled to the artefact. It is a build-pipeline step with a network dependency and a turnaround time, and treating it as a checkbox at the end of the phase is exactly how a release slips.
+
+**Signing is a build-time act, not a runtime one.** Nothing about it puts a network call inside the product; C1 is untouched, and the release test in M7-OFFLINE-TEST-145 still runs with the cable unplugged.
+
+**Scope**
+- Signing the shell binary, the installer and the native inference binary on each platform.
+- Apple notarisation, including submission, waiting, and stapling the result.
+- Secure handling of signing credentials as environment-only secrets, never committed (C8).
+- A documented, repeatable release procedure that includes the notarisation wait as a real step with a real duration.
+- Verification on each platform that a freshly downloaded artefact installs without a security warning.
+
+**Out of Scope**
+- App store distribution on any platform.
+- Update delivery, which is blocked (M7-UPDATE-BLOCKED-161) and which will need signing again when it is unblocked.
+- Any runtime signature check inside the product.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** A signed installer on each platform installs on a clean machine without the user disabling any security feature. On macOS, the artefact is notarised and stapled, and installs cleanly on a machine that has never seen it and is offline. Signing credentials exist only as environment secrets and appear nowhere in the repository. The release procedure names notarisation as its own step with its own wait, and someone who has not done it before can follow it.
+- **Edge Cases:** A certificate that has expired or is close to expiring — caught before the release rather than by a user, and the expiry date is recorded where a release will look at it. Notarisation rejected for a nested binary that was not signed — the procedure signs the inference binary too, which is the usual cause. Notarisation queued longer than expected — the release waits rather than shipping the unstapled artefact. A platform whose signing credentials are unavailable — **that is a blocking issue to raise, not a workaround to ship**, exactly as the existing assumption in this milestone states. Signing on Windows without an established reputation — the reputation warning may still appear for a time; that is stated in the documentation rather than presented as a defect.
+- **Permissions / Roles:** Single user — no roles in the product. Developer signing identities are a build concern.
+- **UI States:** `../ux/first-run.md` §2 — the first-run experience must not begin with a security warning.
+- **Validation Rules:** No signing credential is ever committed (C8). An unsigned or unnotarised artefact may not be published.
+- **Audit / Logging Requirements:** Each release records what was signed, with which identity, and when it was notarised.
+- **Analytics Events:** None.
+
+**Real-World Example Scenarios**
+- A lawyer downloads Askwell on a Mac, double-clicks the installer, and it opens normally instead of being blocked as an unidentified developer — which for this audience is the difference between installing and closing the tab.
+- A release is prepared on a Friday, notarisation takes two hours, and the procedure said it would, so nobody publishes an unstapled build to save time.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M7-TAURI-DEPLOY-181, M7-PACK-DEPLOY-139, M7-PACK-DEPLOY-140, M7-PACK-DEPLOY-141.
+- **API / Data Touchpoints:** None inside the product. The build pipeline and the platform signing services.
+- **Assumptions:** **Signing and notarisation credentials are available.** This is an explicitly accepted assumption of this milestone; if they are not, it is a blocking issue to raise rather than a workaround to ship. Notarisation requires network access from the build machine, which is a build-time dependency and not a runtime one.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** Take the produced installer for each platform to a clean machine that has never run Askwell, downloaded the way a user would download it. On macOS, disconnect the network first and then install — a stapled artefact validates offline, and an unstapled one does not, which is the whole point of stapling. Confirm the installer opens without a warning naming an unidentified developer, completes, and that opening Askwell produces no second warning. Repeat on Windows and Linux and record what each says.
+- **Other scenarios:** Verify the signature on each artefact from outside the build. Deliberately submit an artefact with the inference binary unsigned and confirm notarisation rejects it, so the procedure's ordering is proved rather than assumed. Check the recorded certificate expiry dates.
+- **Known gaps:** Windows reputation may take time to establish regardless of signing, and the documentation says so. No app store distribution. Update delivery is blocked and will need this again.
+
+**Effort & Granularity Check**
+- **Estimate:** 4–6 hours · **Priority:** Critical
+- **Labels / Component:** `phase:6`, deployment, security
+- **Granularity:** One signing pipeline across three platforms. Upper bound, and the notarisation wait is elapsed time rather than work. If credentials must be obtained from scratch, that is a separate blocking issue and not part of this estimate.
+
+---
+
 ### M7-PACK-DEPLOY-139 — Linux installer
 
 **Type:** Story
@@ -138,10 +376,10 @@
 - *As someone who wants to try this without learning container tooling, I want one installer, so that installation is not a systems task.*
 
 **Context / Background**
-**Detailed Description:** A Linux installer that checks for or installs the container runtime, places the container images and the native inference binary, runs the probe, creates the data directories, registers the service so it starts with the session, and opens the browser at the local address. It never fetches a model at runtime; models come from the bundle or manual placement.
+**Detailed Description:** A Linux installer that checks for or installs the container runtime, places the container images, the native inference binary **and the desktop shell**, runs the probe, creates the data directories, registers the application so it starts with the session, and opens **the Askwell window** — not a browser at a local address. Askwell is a desktop application (M7-TAURI-DEPLOY-181); an installer that ends at a URL contradicts that on the first screen. It never fetches a model at runtime; models come from the bundle or manual placement.
 
 **Scope**
-- Runtime check and guidance, image placement, native binary placement.
+- Runtime check and guidance, image placement, native binary placement, desktop shell placement and an applications-menu entry.
 - Data directory creation with sensible defaults and a way to choose another location.
 - Session start registration and first launch.
 - Clean uninstall that removes Askwell's data only on explicit request and never touches the user's own files.
@@ -151,7 +389,7 @@
 - Update delivery — blocked.
 
 **Acceptance Criteria**
-- **Acceptance Criteria:** A clean Linux machine installs and reaches the first-run screen. The container runtime is present or the installer says exactly what to install. Data directories are created and their location is shown. Uninstall removes Askwell without touching indexed files.
+- **Acceptance Criteria:** A clean Linux machine installs, and opening Askwell from the applications menu reaches the first-run screen inside its own window. The container runtime is present or the installer says exactly what to install. Data directories are created and their location is shown. Uninstall removes Askwell without touching indexed files.
 - **Edge Cases:** A machine with an incompatible runtime version — named, with the required version. Insufficient disk — refused before copying, naming the space needed. A previous installation present — upgraded in place or reported, never silently overwriting data. Installation without administrative rights — supported where possible and clearly refused with the reason where not.
 - **Permissions / Roles:** Single user — no roles. Not applicable.
 - **UI States:** `../ux/first-run.md` §2.
@@ -163,14 +401,14 @@
 - A researcher installs on their laptop in five minutes and lands on the first-run screen without opening a terminal.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M7-PROBE-DEPLOY-137, M0-STACK-DEPLOY-009, M0-MODEL-DEPLOY-018.
+- **Dependencies:** M7-PROBE-DEPLOY-137, M0-STACK-DEPLOY-009, M0-MODEL-DEPLOY-018, M7-TAURI-DEPLOY-181.
 - **API / Data Touchpoints:** File system; container runtime.
 - **Assumptions:** Podman is the supported runtime and no Docker daemon is assumed anywhere.
 
 **Testing Notes / Scenarios**
-- **Cold-start manual walkthrough:** On a clean Linux virtual machine with no container tooling, run the installer. Follow whatever it says about the runtime. Watch it place images, run the probe and start. Confirm the browser opens on the first-run screen. Reboot and confirm Askwell starts with the session. Then uninstall and confirm the indexed files on disk are untouched.
+- **Cold-start manual walkthrough:** On a clean Linux virtual machine with no container tooling, run the installer. Follow whatever it says about the runtime. Watch it place images, run the probe and start. Confirm **the Askwell window** opens on the first-run screen, from the applications menu, with no browser involved. Reboot and confirm Askwell starts with the session. Then uninstall and confirm the indexed files on disk are untouched.
 - **Other scenarios:** Install over an existing installation and confirm data survives.
-- **Known gaps:** No update mechanism — blocked. Distribution coverage is limited to the tested set and is stated.
+- **Known gaps:** No update mechanism — blocked. Distribution coverage is limited to the tested set and is stated. The artefact is unsigned until M7-TAURI-DEPLOY-184.
 
 **Effort & Granularity Check**
 - **Estimate:** 4–6 hours · **Priority:** Critical
@@ -190,7 +428,7 @@
 - *As someone on a work-issued Windows laptop, I want a normal installer, so that I can try this without administrator help if possible.*
 
 **Context / Background**
-**Detailed Description:** A Windows installer covering the same ground as the Linux one, with the platform's particular problems handled: the container runtime's virtualisation requirements, antivirus interference with the native inference binary, path length limits, and file paths for registered roots that cross the virtual machine boundary.
+**Detailed Description:** A Windows installer covering the same ground as the Linux one, including the desktop shell and its start-menu entry, with the platform's particular problems handled: the container runtime's virtualisation requirements, antivirus interference with the native inference binary **and with an unsigned shell**, path length limits, and file paths for registered roots that cross the virtual machine boundary.
 
 **Scope**
 - Installation with runtime prerequisites checked and explained.
@@ -214,14 +452,14 @@
 - A lawyer installs on their firm laptop, hits a quarantined binary, reads the message, releases it from quarantine, and continues.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M7-PACK-DEPLOY-139, M1-ADD-ING-021.
+- **Dependencies:** M7-PACK-DEPLOY-139, M1-ADD-ING-021, M7-TAURI-DEPLOY-181.
 - **API / Data Touchpoints:** File system; container runtime; registered roots.
 - **Assumptions:** The virtualisation layer is the main source of platform-specific failure and most of the work is in explaining it well.
 
 **Testing Notes / Scenarios**
 - **Cold-start manual walkthrough:** On a clean Windows virtual machine, run the installer with virtualisation initially disabled — confirm the message names what to enable. Enable it and install. Reach the first-run screen. Nominate a folder on a normal Windows path, add a PDF, ask a question, and click a citation to confirm the viewer opens the file across the boundary. Restart the machine and confirm Askwell starts.
 - **Other scenarios:** Change a drive letter and confirm the root reports unavailable rather than mass file-missing.
-- **Known gaps:** Enterprise-managed machines with restrictive policies may not install, and the documentation says so.
+- **Known gaps:** Enterprise-managed machines with restrictive policies may not install, and the documentation says so. Until M7-TAURI-DEPLOY-184 the artefact is unsigned, so warnings during this walkthrough are expected rather than defects — and even after signing, reputation takes time to establish.
 
 **Effort & Granularity Check**
 - **Estimate:** 4–6 hours · **Priority:** Critical
@@ -241,10 +479,10 @@
 - *As someone on a Mac laptop, I want Askwell to use my machine properly, so that answers are fast rather than the platform being an afterthought.*
 
 **Context / Background**
-**Detailed Description:** A macOS installer covering the same ground, with the platform's particular problems: code signing and notarisation of the native binary, the security prompt on first run, permission to read the nominated folders, and mounting those folders into the container runtime's virtual machine.
+**Detailed Description:** A macOS installer covering the same ground, including the desktop shell as a proper application bundle, with the platform's particular problems: **code signing and notarisation, which are large enough to be their own ticket** (M7-TAURI-DEPLOY-184) and are only wired in here; the security prompt on first run; permission to read the nominated folders, which the native directory dialog negotiates (M7-TAURI-FE-182); and mounting those folders into the container runtime's virtual machine.
 
 **Scope**
-- Signed and notarised native binary with the first-run prompt handled gracefully.
+- An application bundle for the shell, with the signed and notarised artefacts from M7-TAURI-DEPLOY-184 wired in and the first-run prompt handled gracefully.
 - Folder access permission requests at root registration time, explained.
 - Root mounting into the runtime's virtual machine.
 - Start with the session, and uninstall.
@@ -265,14 +503,14 @@
 - A consultant installs, grants access to their client folder, and gets answers in three seconds because the accelerator is used.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M7-PACK-DEPLOY-140, M1-ADD-ING-021.
+- **Dependencies:** M7-PACK-DEPLOY-140, M1-ADD-ING-021, M7-TAURI-DEPLOY-181.
 - **API / Data Touchpoints:** File system permissions; container runtime; the native process.
-- **Assumptions:** Signing and notarisation are required for a credible install and the certificate is available; if it is not, that becomes a blocking issue to raise rather than a workaround to ship.
+- **Assumptions:** Signing and notarisation are required for a credible install and the certificate is available; if it is not, that becomes a blocking issue to raise rather than a workaround to ship. The signing work itself is M7-TAURI-DEPLOY-184 and is not inside this estimate.
 
 **Testing Notes / Scenarios**
 - **Cold-start manual walkthrough:** On a clean Mac, run the installer. Confirm the security prompt is a normal one and that no security feature must be disabled. Reach first run. Nominate a folder in your documents, read the permission explanation, grant it, add a PDF and ask a question. Click a citation and confirm the viewer opens it. Check settings and confirm the profile reports acceleration in use.
 - **Other scenarios:** Deny folder permission and confirm the message names permission rather than a missing file.
-- **Known gaps:** No app store distribution. Older hardware without acceleration falls back and says so.
+- **Known gaps:** No app store distribution. Older hardware without acceleration falls back and says so. This walkthrough only passes cleanly once M7-TAURI-DEPLOY-184 has notarised the artefact; before that, expect the unidentified-developer warning.
 
 **Effort & Granularity Check**
 - **Estimate:** 4–6 hours · **Priority:** Critical
@@ -292,7 +530,7 @@
 - *As someone who just wants to open Askwell, I want everything it needs started for me, so that I never think about processes and containers.*
 
 **Context / Background**
-**Detailed Description:** The installer provisions and supervises both the container stack and the native inference process, starting them in the right order, restarting either on failure with backoff, and reporting the two causes of unavailability separately. Stopping Askwell stops both.
+**Detailed Description:** The installer registers Askwell with each platform's own service mechanism so it can come up with the session and be stopped cleanly, whether or not the desktop shell is open. **The shell supervises while it is running (M7-TAURI-DEPLOY-183); this ticket is the platform half** — start with the session, survive the shell being closed, and report the three causes of unavailability separately rather than as one. Stopping Askwell stops everything.
 
 **Scope**
 - Supervision of both halves on all three platforms.
@@ -304,9 +542,9 @@
 
 **Acceptance Criteria**
 - **Acceptance Criteria:** Starting Askwell starts the stack and the native process in order. Killing either results in a supervised restart. Stopping Askwell stops both, leaving nothing running. The two failure causes are reported separately.
-- **Edge Cases:** The machine sleeping and waking — both halves recover without user action. A restart loop — backoff caps and the state becomes failed with the last reason, rather than restarting forever. A user starting Askwell twice — the second start attaches rather than creating a duplicate stack.
+- **Edge Cases:** The machine sleeping and waking — both halves recover without user action. A restart loop — backoff caps and the state becomes failed with the last reason, rather than restarting forever. A user starting Askwell twice — the second start attaches rather than creating a duplicate stack. **The shell closed but the session still running** — the stack may keep running or be stopped, but whichever it is, the next launch of the shell is fast and correct rather than finding a half-state.
 - **Permissions / Roles:** Single user — no roles. Not applicable.
-- **UI States:** `../states-and-edge-cases.md` §1 model not loaded; M0-MODEL-BE-020's two causes.
+- **UI States:** `../states-and-edge-cases.md` §1 model not loaded; the three causes established in M7-TAURI-DEPLOY-183, extending M0-MODEL-BE-020's two.
 - **Validation Rules:** Stopping must leave no orphaned container or process.
 - **Audit / Logging Requirements:** Supervision events are logged with cause.
 - **Analytics Events:** Local only — nothing transmitted (C1).
@@ -315,7 +553,7 @@
 - A user closes the lid for three days, opens it, and Askwell answers a question a few seconds later without them doing anything.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M7-PACK-DEPLOY-141, M0-MODEL-DEPLOY-018.
+- **Dependencies:** M7-PACK-DEPLOY-141, M0-MODEL-DEPLOY-018, M7-TAURI-DEPLOY-183.
 - **API / Data Touchpoints:** Health surface.
 - **Assumptions:** Each platform's own service mechanism is used rather than a custom supervisor.
 
@@ -342,7 +580,7 @@
 - *As someone who is not going to open a terminal, I want a restart button, so that the fix I was told about is something I can do.*
 
 **Context / Background**
-**Detailed Description:** A small surface — reachable from the desktop entry point and from the unavailable state in the application — showing the state of the stack and the native process, with start, stop and restart actions and the last failure reason for each. It works even when the API is down, because that is exactly when it is needed.
+**Detailed Description:** A small surface — reachable from the desktop entry point and from the unavailable state in the application — showing the state of the stack and the native process, with start, stop and restart actions and the last failure reason for each. It works even when the API is down, because that is exactly when it is needed, and it names **which of the three causes** applies (M7-TAURI-DEPLOY-183): the container stack, the inference process, or the container runtime itself not running.
 
 **Scope**
 - State display for both halves with the last failure reason.
@@ -366,9 +604,9 @@
 - A user sees the assistant is unavailable, clicks through to the supervision surface, presses restart, and is answering questions a minute later.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M7-PACK-DEPLOY-142, M0-MODEL-BE-020.
+- **Dependencies:** M7-PACK-DEPLOY-142, M7-TAURI-DEPLOY-183, M0-MODEL-BE-020.
 - **API / Data Touchpoints:** Supervision state; log paths.
-- **Assumptions:** A minimal native surface is needed because a browser-served one cannot be shown when the API is down.
+- **Assumptions:** A minimal native surface is needed because a surface served by the API cannot be shown when the API is down. The desktop shell hosts it, which is one of the things having a shell buys.
 
 **Testing Notes / Scenarios**
 - **Cold-start manual walkthrough:** With Askwell running, stop the API container from outside. Open the supervision surface from the desktop entry point and confirm it loads and reports the API as down with a reason. Press restart and watch it recover, then open the browser and confirm the product works. Repeat with the inference process.
@@ -454,10 +692,11 @@
 
 **Out of Scope**
 - Online AI mode, which is deliberately excluded and tested separately in M8.
+- Web search **as a working feature** — it does not exist until M6.5, which is sequenced after this milestone. What this test does assert, once M6.5 has landed, is the negative: with the network disconnected, an abstained question still offers the escalation and, on being declined, produces no fetch at all (M6.5-EVAL-TEST-194 covers the same rule with the network up).
 
 **Acceptance Criteria**
 - **Acceptance Criteria:** The full feature walkthrough completes with the network disconnected. The proxy reports zero permitted outbound requests. The independent capture shows no traffic leaving. Any refusal counted by the proxy is investigated and named, not dismissed. The result is recorded for the release.
-- **Edge Cases:** A refusal counted for a benign dependency check — investigated and the dependency fixed or documented, never accepted as noise. A live database connection configured — excluded from this test, or included with its single permitted destination and counted separately. A font or asset request in the built frontend — a release blocker.
+- **Edge Cases:** A refusal counted for a benign dependency check — investigated and the dependency fixed or documented, never accepted as noise. A live database connection configured — excluded from this test, or included with its single permitted destination and counted separately. A font or asset request in the built frontend — a release blocker. **Once M6.5 exists:** an abstained question with the cable out shows the escalation offer and, if accepted, states that the web cannot be reached while the abstention still stands as the answer (`../ux/web-search.md` §4) — an unreachable web must not turn into a failed answer, because the honest answer was already given.
 - **Permissions / Roles:** Single user — no roles. Not applicable.
 - **UI States:** `../states-and-edge-cases.md` §1 — **never render an offline warning**, which this test also verifies.
 - **Validation Rules:** Zero permitted outbound requests. Refusals must be zero or explained.
@@ -468,14 +707,14 @@
 - A dependency upgrade adds a version check on import; the release test catches it before anyone installs it.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M7-OFFLINE-DEPLOY-144, M0-STACK-SEC-011, M6-VUI-FE-135.
+- **Dependencies:** M7-OFFLINE-DEPLOY-144, M0-STACK-SEC-011, M6-VUI-FE-135. Where M6.5 has landed before the release, also M6.5-WEB-FE-192.
 - **API / Data Touchpoints:** Proxy counters; external capture.
 - **Assumptions:** An external capture is necessary because a counter produced by the system under test is not sufficient evidence on its own.
 
 **Testing Notes / Scenarios**
 - **Cold-start manual walkthrough:** This ticket is itself a manual walkthrough. On a clean machine with a network capture running on another host or at the interface, install from the offline bundle, physically disconnect, and work through the entire product: first run, add files, add a CSV, import a dump, ask, abstain, answer a clarification, correct a fact, use voice, take a backup, export the log. Confirm nothing failed for network reasons, no offline banner appeared anywhere, and both the proxy counter and the capture show nothing left the machine.
 - **Other scenarios:** Repeat with the network connected but the proxy denying, and confirm identical behaviour.
-- **Known gaps:** The test is manual in large part and takes a working session; automating more of it is a follow-up.
+- **Known gaps:** The test is manual in large part and takes a working session; automating more of it is a follow-up. Web search is not in the walkthrough until M6.5 has landed; the offer-and-decline check is added to the procedure at that point rather than being rewritten.
 
 **Effort & Granularity Check**
 - **Estimate:** 4–6 hours · **Priority:** Critical
@@ -549,10 +788,13 @@
 **Context / Background**
 **Detailed Description:** The privacy section: the passphrase control with its no-recovery warning; **network activity stated as a fact rather than offered as a toggle**, with the live count of outbound requests from the proxy; and the connected databases with their read-only status. Any permitted destination — a user's own database — is shown separately so the local-mode zero stays meaningful.
 
+**There is no web-search setting, and there must never be one.** `../ux/web-search.md` §1 and §5 are explicit: no toggle in settings makes web search a default, because sticky egress is how a per-question permission quietly becomes a standing one (C10, and C1 as amended). When web search ships in M6.5 it appears here only as *history* — how many questions were escalated and to where — never as a control. The section is built now in a shape that has room for that history and no room for a switch.
+
 **Scope**
 - Passphrase control surfacing the feature built in M7-SEC-BE-151.
 - Network activity statement with the proxy's live counts and recent refusals.
 - Connected databases with read-only status and their permitted destinations listed distinctly.
+- A shape that accommodates per-question web escalations as history once M6.5 lands, with **no control that could enable them in advance**.
 
 **Out of Scope**
 - The passphrase mechanism itself (M7-SEC-BE-151).
@@ -562,7 +804,7 @@
 - **Edge Cases:** The proxy unreadable — the count says unavailable, never zero. A non-zero refusal count — shown plainly with destinations, because hiding it would be the opposite of the point. No databases connected — the section says so rather than being empty.
 - **Permissions / Roles:** Single user — no roles. Not applicable.
 - **UI States:** `../ux/settings.md` §4 and §8.
-- **Validation Rules:** The count must come from the proxy, never from the application.
+- **Validation Rules:** The count must come from the proxy, never from the application. **No setting on this screen may pre-authorise egress of any kind.** Online AI is per conversation and web search is per question; both are decided at the moment of use, and a settings control that granted either in advance would defeat the constraint the count exists to prove.
 - **Audit / Logging Requirements:** None for viewing.
 - **Analytics Events:** Local counters only — nothing transmitted (C1).
 
@@ -572,7 +814,7 @@
 **Dependencies & Assumptions**
 - **Dependencies:** M0-STACK-SEC-011, M4-CONN-BE-099, M7-SEC-BE-151.
 - **API / Data Touchpoints:** Proxy counters; `sources`.
-- **Assumptions:** Showing refusals openly builds more trust than hiding them, even when a refusal is a dependency misbehaving.
+- **Assumptions:** Showing refusals openly builds more trust than hiding them, even when a refusal is a dependency misbehaving. The count will need to distinguish three kinds of permitted destination once M6.5 and M8 land — a user's own database, a web search, and online AI — and is built to name the destination rather than to increment one total.
 
 **Testing Notes / Scenarios**
 - **Cold-start manual walkthrough:** Cold start and use Askwell normally for a session. Open settings and read the privacy section — confirm it states network activity as a fact and shows a zero permitted count. Trigger a refused request from a container and confirm the refusal count and destination appear. Connect a database and confirm it is listed as a permitted destination, separately, with read-only status.
@@ -1356,7 +1598,7 @@
 *As someone running my own model, I want answers from it to say so, so that I do not extend Askwell's guarantees to something that never earned them.*
 
 **Context / Background**
-**Detailed Description:** Shipped defaults pass the 155-task gate, including abstention at ≥ 0.90 and SQL safety at 1.00. A user-supplied model has passed none of it and can fabricate citations or refuse to abstain while every answer renders with the same confident provenance margin. A one-time warning in settings is not sufficient — the decision is made once and its consequence persists for months. The marker belongs where the consequence lands, which is on the answer.
+**Detailed Description:** Shipped defaults pass the 165-task gate, including abstention at ≥ 0.90 and SQL safety at 1.00. A user-supplied model has passed none of it and can fabricate citations or refuse to abstain while every answer renders with the same confident provenance margin. A one-time warning in settings is not sufficient — the decision is made once and its consequence persists for months. The marker belongs where the consequence lands, which is on the answer.
 
 **Scope**
 - A persistent, unobtrusive marker on every answer produced by a user-supplied model.
@@ -1380,7 +1622,7 @@
 - A user swaps in a small local model to save memory, forgets, and two months later notices an answer with no citations. The marker is what tells them why, instead of the product looking broken.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M1-ASK-FE-041, M0-MODEL-BE-019.
+- **Dependencies:** M1-ASK-FE-039, M0-MODEL-BE-019.
 - **API / Data Touchpoints:** The interaction record's backend field; the answer surface.
 - **Assumptions:** Whether a model is a shipped default is knowable from configuration rather than requiring a registry lookup at answer time.
 
@@ -1562,10 +1804,12 @@ Cold start. Ask a question on the shipped model — no marker. Open settings, pl
 - *As someone publishing a privacy product to an audience that will audit it, I want a deliberate review first, so that the first finding is mine rather than theirs.*
 
 **Context / Background**
-**Detailed Description:** A structured review covering each constraint's enforcement point: egress default-deny and the counter's honesty, sandbox isolation and its hostile fixtures, SQL validation and the independent read-only role, the citation and abstention paths, the audit chain and its grants, the injection boundary, and secret handling. Findings are recorded and either fixed or documented as accepted residual risk.
+**Detailed Description:** A structured review covering each constraint's enforcement point: egress default-deny and the counter's honesty, sandbox isolation and its hostile fixtures, SQL validation and the independent read-only role, the citation and abstention paths, the audit chain and its grants, the injection boundary, secret handling, bundled-model licensing, and — once M6.5 has landed — **the web escalation boundary**. Findings are recorded and either fixed or documented as accepted residual risk.
+
+**C10 gets its own section of this review**, because it is the constraint most easily lost to a well-meaning change: a retry that reaches the web when retrieval scores low looks like a helpful fix and destroys abstention (C5). The review asserts the negative — that no code path can initiate a fetch without an explicit per-question authorisation — and verifies it at the proxy rather than in application code.
 
 **Scope**
-- Review against each of the eight constraints and its enforcement point.
+- Review against each of the **ten** constraints and its enforcement point, C9 and C10 included.
 - Dependency vulnerability review across both sides.
 - Findings recorded with a fix or an accepted-risk statement.
 - Verification that the residual risks the documentation claims to state are actually stated.
@@ -1574,11 +1818,11 @@ Cold start. Ask a question on the shipped model — no marker. Open settings, pl
 - External penetration testing.
 
 **Acceptance Criteria**
-- **Acceptance Criteria:** Every constraint has a recorded review result naming where it is enforced and how that was verified. Dependency vulnerabilities are reviewed and either fixed or accepted with a reason. Residual risks — particularly prompt injection — are documented honestly rather than overclaimed. Findings are recorded before release.
+- **Acceptance Criteria:** Every constraint has a recorded review result naming where it is enforced and how that was verified. For C10 specifically, the recorded result states that a fetch cannot be initiated without a per-question authorisation, that the authorisation closes with the turn, and that both were verified at the proxy rather than asserted from the code. Dependency vulnerabilities are reviewed and either fixed or accepted with a reason. Residual risks — particularly prompt injection — are documented honestly rather than overclaimed. Findings are recorded before release.
 - **Edge Cases:** A finding that cannot be fixed before release — documented as an accepted risk with its reasoning, not silently deferred. A dependency vulnerability with no fix available — assessed for actual reachability rather than reacted to by severity alone. A constraint whose enforcement point turns out to be a convention rather than a mechanism — that is a release blocker, since the entire design principle is that a rule with no enforcement point is a wish.
 - **Permissions / Roles:** Single user — no roles. Not applicable.
 - **UI States:** None.
-- **Validation Rules:** Each constraint must have a mechanical enforcement point, not a convention.
+- **Validation Rules:** Each constraint must have a mechanical enforcement point, not a convention. For C10 the enforcement point is the proxy, not a check in the answer path — application-level enforcement is defeated by one dependency making an unexpected call, which is the realistic threat.
 - **Audit / Logging Requirements:** Review results are recorded with the release.
 - **Analytics Events:** None.
 
@@ -1586,14 +1830,14 @@ Cold start. Ask a question on the shipped model — no marker. Open settings, pl
 - The review finds that one code path builds a query without going through the parser, which is the exact class of bug the review exists to find.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M7-OFFLINE-TEST-145, M4-DUMP-SEC-091, M4-EVAL-TEST-112.
+- **Dependencies:** M7-OFFLINE-TEST-145, M4-DUMP-SEC-091, M4-EVAL-TEST-112, and — where M6.5 has landed before release — M6.5-WEB-SEC-187 and M6.5-EVAL-TEST-194.
 - **API / Data Touchpoints:** All enforcement points.
 - **Assumptions:** A single-maintainer review is not equivalent to external testing, and the documentation says so rather than implying more assurance than exists.
 
 **Testing Notes / Scenarios**
-- **Cold-start manual walkthrough:** Work through each constraint in a running installation. For egress, attempt an outbound request from every container. For the sandbox, run the hostile fixtures. For SQL, attempt each forbidden statement shape and separately attempt a write as the query role. For citations, run the uncited-claim check. For abstention, run its subset. For audit, alter a record and verify. For injection, add a document with an injection attempt and confirm the flag. For secrets, grep the logs and the repository. Record each result.
+- **Cold-start manual walkthrough:** Work through each constraint in a running installation. For egress, attempt an outbound request from every container. For the sandbox, run the hostile fixtures. For SQL, attempt each forbidden statement shape and separately attempt a write as the query role. For citations, run the uncited-claim check. For abstention, run its subset. **For web escalation, ask twenty questions the corpus cannot answer, decline every offer, and read the proxy's log: it must show zero fetches. Then accept one offer and confirm exactly one authorisation opened and closed.** For audit, alter a record and verify. For injection, add a document with an injection attempt and confirm the flag, then add a *web page* fixture with one and confirm the same. For secrets, grep the logs and the repository. For bundled models, check each weight's licence and gating status. Record each result.
 - **Other scenarios:** Review the documentation's residual-risk statements and confirm they are present and honest.
-- **Known gaps:** No external penetration testing. The injection mitigation is partial and documented as such.
+- **Known gaps:** No external penetration testing. The injection mitigation is partial and documented as such, and it is **weaker for web content than for documents** — the user chose their documents and did not choose a page written to contain instructions (`../web-search.md` §5). That is stated rather than overclaimed.
 
 **Effort & Granularity Check**
 - **Estimate:** 4–6 hours · **Priority:** Critical
@@ -1664,7 +1908,7 @@ Cold start. Ask a question on the shipped model — no marker. Open settings, pl
 - *As the only person who can say this is ready, I want one checklist that walks the whole product, so that readiness is demonstrated rather than believed.*
 
 **Context / Background**
-**Detailed Description:** A single release checklist gathering every gate: the eval suite against its seven categories and their bars, the cable-unplugged test, the tested restore, the security review, the performance measurement, the licence and notices check, the support boundary, the version and changelog, and a full manual regression walkthrough from a cold install through every milestone's headline path. A failure anywhere blocks the release.
+**Detailed Description:** A single release checklist gathering every gate: the eval suite against its **eight** categories and their bars — 165 tasks, with SQL safety and **web escalation discipline** both at 1.00 with no exceptions — the cable-unplugged test, the tested restore, the security review, the performance measurement, the licence and notices check, the support boundary, the version and changelog, and a full manual regression walkthrough from a cold install through every milestone's headline path. A failure anywhere blocks the release.
 
 **Scope**
 - The checklist covering every gate with its pass condition and where its evidence lives.
@@ -1676,7 +1920,7 @@ Cold start. Ask a question on the shipped model — no marker. Open settings, pl
 
 **Acceptance Criteria**
 - **Acceptance Criteria:** The checklist covers every gate with a pass condition. The manual walkthrough covers every milestone's headline path from a cold install. A failure blocks the release. The result and its evidence are recorded per release.
-- **Edge Cases:** A gate that cannot be run this release, such as an unavailable eval runner — the release is blocked rather than proceeding unmeasured. A known issue accepted for release — recorded with its reasoning and its follow-up, never silently carried. A walkthrough step that fails intermittently — treated as a failure, since intermittent for the maintainer is constant for someone.
+- **Edge Cases:** A gate that cannot be run this release, such as an unavailable eval runner — the release is blocked rather than proceeding unmeasured. A known issue accepted for release — recorded with its reasoning and its follow-up, never silently carried. A walkthrough step that fails intermittently — treated as a failure, since intermittent for the maintainer is constant for someone. **A category at 1.00 scoring 0.9** — that is a failure, and the checklist states it as pass-or-fail rather than as a number, because a near-perfect score on a ten-task safety suite reads as fine and is not.
 - **Permissions / Roles:** Single user — no roles. Not applicable.
 - **UI States:** Exercises every screen in `../ux/`.
 - **Validation Rules:** Every gate must pass or be explicitly accepted with reasoning.
@@ -1687,14 +1931,14 @@ Cold start. Ask a question on the shipped model — no marker. Open settings, pl
 - A release is held because the abstention subset dropped below its bar, which is exactly what the bar is for.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M7-OFFLINE-TEST-145, M7-BACKUP-TEST-159, M7-SEC-TEST-166, M7-PERF-TEST-167, M7-DOC-DOC-163, M7-DOC-DOC-164, M5-EVAL-TEST-124.
+- **Dependencies:** M7-OFFLINE-TEST-145, M7-BACKUP-TEST-159, M7-SEC-TEST-166, M7-PERF-TEST-167, M7-DOC-DOC-163, M7-DOC-DOC-164, M5-EVAL-TEST-124, and — for any release after M6.5 — M6.5-EVAL-TEST-194.
 - **API / Data Touchpoints:** The whole product.
 - **Assumptions:** A single maintainer can execute this in a working day or two; if it grows beyond that it needs splitting, and that is stated.
 
 **Testing Notes / Scenarios**
-- **Cold-start manual walkthrough:** This ticket is the walkthrough. On a clean machine, install from the release artefact. Complete first run offline with a manually placed model. Nominate a folder, add a PDF and a scan, watch them index, ask a question and get a cited answer, click the citation and land on the page. Rename the file and confirm the moved state. Ask an uncovered question and read the abstention. Import a CSV and a dump, answer their clarifications, ask a data question and read the query. Correct a memory fact from inside an answer. Ask a question needing both a document and the database, and read the trace. Ask by voice and stop mid-answer. Take a backup, restore it on a second machine, and verify. Export everything and read the files. Run verify on the log. Confirm the outbound count is zero throughout.
+- **Cold-start manual walkthrough:** This ticket is the walkthrough. On a clean machine, install from the release artefact. Complete first run offline with a manually placed model. Nominate a folder, add a PDF and a scan, watch them index, ask a question and get a cited answer, click the citation and land on the page. Rename the file and confirm the moved state. Ask an uncovered question and read the abstention. Import a CSV and a dump, answer their clarifications, ask a data question and read the query. Correct a memory fact from inside an answer. Ask a question needing both a document and the database, and read the trace. Ask by voice and stop mid-answer. **Where M6.5 has landed:** ask an uncovered question, confirm the abstention comes first and the escalation is offered below it, accept the web search once and confirm the results appear in their own marked region with retrieval dates and never in the provenance margin, then ask a second question and confirm it starts local again. Take a backup, restore it on a second machine, and verify. Export everything and read the files. Run verify on the log. Confirm the outbound count is zero throughout.
 - **Other scenarios:** Repeat the walkthrough on each supported platform, or record which platforms were covered.
-- **Known gaps:** The walkthrough is long and manual; that is deliberate.
+- **Known gaps:** The walkthrough is long and manual; that is deliberate. The web-search steps are absent until M6.5 lands and are appended to the script then.
 
 **Effort & Granularity Check**
 - **Estimate:** 4–6 hours · **Priority:** Critical

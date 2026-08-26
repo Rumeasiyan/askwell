@@ -1,69 +1,101 @@
-/* Askwell design tokens.
-   Seeded from docs/ux/design-system.md — that document is the source of truth.
-   Values here are for exploring alternatives in the lab, not for redefining the system.
-   If a change here proves better, change design-system.md and say why in docs/decisions.md. */
+@import "tailwindcss";
+
+/*
+  Two independent token sets, deliberately separated.
+
+  1. :root — the LAB's own chrome (tab bar, screen nav, TweakBar, device frame).
+     This is upstream ui-design-lab's set. Do not repurpose these for a design
+     direction; the harness reads them and the TweakBar writes them.
+
+  2. .askwell — Askwell's design tokens, seeded from ../../docs/ux/design-system.md.
+     Scoped to the Shell wrapper so a direction can never collide with the harness,
+     and so the app's theme is controlled inside the frame rather than by the OS.
+     design-system.md is the source of truth; tune here, decide there.
+*/
 
 :root {
-  /* --- colour encodes epistemics (design-system.md §2) --------------------
-     provenance = traceable to a source. Spent on nothing else, ever.
-     inferred   = Askwell guessed. Correct me.
-     ink        = Askwell's own words, including abstention.
-     alarm      = something broke. Never abstention.                         */
-  --paper:       #E9EBE7;
-  --surface:     #F3F4F1;
-  --sunk:        #DFE2DD;
-  --ink:         #232722;
-  --rule:        #C9CDC6;
-  --muted:       #6B716A;
-  --provenance:  #2F6B62;
-  --inferred:    #8A6A22;
-  --alarm:       #8C3A2E;
+  /* color */
+  --color-bg: #0a0a0a;
+  --color-fg: #f5f5f5;
+  --color-accent: #ff4d4d;
+  --color-muted: #8a8a8a;
 
-  /* --- type says who is speaking (§3) ------------------------------------
-     serif = language: answers, excerpts, questions put to the user.
-     mono  = evidence and machinery: citations, SQL, metadata, all chrome.
-     No web fonts — a font that fails offline is a broken interface here.    */
-  --font-text:  Charter, "Bitstream Charter", Georgia, "Iowan Old Style", serif;
-  --font-app:   ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  /* type */
+  --font-display: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  --font-scale: 1;
 
-  --t-display:  28px;  --lh-display: 34px;
-  --t-title:    20px;  --lh-title:   28px;
-  --t-body:     16px;  --lh-body:    26px;
-  --t-ui:       14px;  --lh-ui:      20px;
-  --t-meta:   12.5px;  --lh-meta:    18px;
-  --t-micro:    11px;  --lh-micro:   16px;
-  --measure:    72ch;          /* answer prose: 68–75ch */
+  /* shape */
+  --radius: 8px;
+  --gap: 16px;
 
-  /* --- space and shape (§4) ---------------------------------------------- */
-  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px; --s7: 48px;
-  --radius:        3px;   /* near-square reads as instrument, not consumer chat */
-  --control-h:    32px;
-  --control-h-lg: 44px;   /* minimum for any primary action */
-  --rail-left:   240px;
-  --rail-margin: 300px;   /* the provenance margin. Never collapsible. */
-
-  /* --- motion (§5) ------------------------------------------------------- */
-  --motion:            1;
-  --dur-leader:    180ms;   /* claim → source card. The one deliberate flourish */
-  --dur-hover:     120ms;
-  --dur-panel:     160ms;
-  --ease: cubic-bezier(0.2, 0, 0, 1);
+  /* motion */
+  --motion-on: 1; /* 0 or 1, read by components to skip transitions */
+  --motion-duration: 1; /* multiplier */
+  --reveal-distance: 22px;
 }
 
-:root:not([data-theme="light"]) {
-  @media (prefers-color-scheme: dark) {
-    --paper: #191C1A; --surface: #222623; --sunk: #141715;
-    --ink: #E4E7E1; --rule: #333833; --muted: #9AA096;
-    --provenance: #5FA99B; --inferred: #C9A34E; --alarm: #D9705F;
-  }
+body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-display);
 }
 
-:root[data-theme="dark"] {
-  --paper: #191C1A; --surface: #222623; --sunk: #141715;
-  --ink: #E4E7E1; --rule: #333833; --muted: #9AA096;
-  --provenance: #5FA99B; --inferred: #C9A34E; --alarm: #D9705F;
+/* ------------------------------------------------------------------
+   Askwell — light is the default. See docs/ux/design-system.md §2–§5.
+   ------------------------------------------------------------------ */
+
+.askwell {
+  /* colour encodes epistemics (§2)
+     ask-provenance = traceable to a source. Spent on nothing else, ever.
+     ask-inferred   = Askwell guessed. Correct me.
+     ask-ink        = Askwell's own words, including abstention.
+     ask-alarm      = something broke. Never abstention. */
+  --ask-paper:      #E9EBE7;
+  --ask-surface:    #F3F4F1;
+  --ask-sunk:       #DFE2DD;
+  --ask-ink:        #232722;
+  --ask-rule:       #C9CDC6;   /* decorative hairlines only */
+  --ask-rule-strong:#7A8078;   /* lines that carry meaning — the claim leader, the inline card edge */
+
+  /* Depth cues are tokens too. A shadow hardcoded as black at 6% is invisible on a dark
+     ground, which silently removes the affordance it was added for. */
+  --ask-inset: rgb(0 0 0 / 0.07);
+  --ask-drop:  rgb(0 0 0 / 0.15);
+  --ask-muted:      #5F655E;
+  --ask-provenance: #2F6B62;
+  --ask-inferred:   #7D601F;
+  --ask-alarm:      #8C3A2E;
+
+  /* type says who is speaking (§3)
+     serif = language: answers, excerpts, questions put to the user
+     mono  = evidence and machinery: citations, SQL, metadata, all chrome
+     No web fonts — a font that fails offline is a broken interface here. */
+  --ask-font-text: Charter, "Bitstream Charter", Georgia, "Iowan Old Style", serif;
+  --ask-font-app:  ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  --ask-measure:   72ch;
+
+  /* space and shape (§4) — near-square reads as instrument, not consumer chat */
+  --ask-radius:      3px;
+  --ask-rail:        180px;
+  --ask-margin:      268px;
+
+  color-scheme: light;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  :root { --motion: 0; --dur-leader: 0ms; --dur-hover: 0ms; --dur-panel: 0ms; }
+[data-ask-theme='dark'] .askwell {
+  --ask-paper:      #191C1A;
+  --ask-surface:    #222623;
+  --ask-sunk:       #141715;
+  --ask-ink:        #E4E7E1;
+  --ask-rule:       #333833;
+  --ask-rule-strong:#6A7268;
+  --ask-inset: rgb(0 0 0 / 0.45);
+  --ask-drop:  rgb(0 0 0 / 0.55);
+  --ask-muted:      #9AA096;
+  --ask-provenance: #5FA99B;
+  --ask-inferred:   #C9A34E;
+  --ask-alarm:      #D9705F;
+
+  color-scheme: dark;
 }

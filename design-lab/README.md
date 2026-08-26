@@ -12,6 +12,25 @@ Vendored from [ui-design-lab](https://github.com/Rumeasiyan/ui-design-lab) (MIT)
 
 **It is not the design system.** [`../docs/ux/design-system.md`](../docs/ux/design-system.md) is the source of truth. `src/tokens.css` is seeded from it so directions render in Askwell's real palette, type and spacing rather than in invented values.
 
+### Two token sets, deliberately separate
+
+`src/tokens.css` holds both, and they must not be mixed:
+
+| Set | Scope | Owns |
+| --- | ----- | ---- |
+| `--color-*`, `--font-display`, `--gap`, `--motion-*` | `:root` | **The lab's own chrome** — tab bar, screen nav, TweakBar, device frame. Upstream's set. The TweakBar reads and writes these. |
+| `--ask-*` | `.askwell` | **Askwell's design.** Scoped to the `Shell` wrapper so a direction can never break the harness it is being viewed in. |
+
+Do not repurpose a `--color-*` token inside a direction, and do not move an `--ask-*` token to `:root`. Overwriting the `:root` set leaves the lab's own interface unreadable — grey text on grey — which is exactly what happened the first time this was set up.
+
+**Askwell's theme is controlled from the lab chrome, not by your OS.** Light/dark sits next to the device switcher at the top right. It is deliberately not inside the screen — a control that belongs to the harness has no business colliding with the app's own interface.
+
+### Screens respond to the frame, not the browser
+
+The device frame is a **container query root**. Screens use `@2xl:` / `@3xl:` variants rather than `md:` / `lg:`, because viewport breakpoints ignore the device switcher entirely — a screen would look identical at 390px and full width, which makes the switcher a lie.
+
+Below `@3xl` the provenance margin moves **inline, beneath the claim it supports**, with a rule down its left edge. It is never removed. Citations are not conditional on window width (`../docs/ux/design-system.md` §4).
+
 **Screen specifications live in [`../docs/ux/`](../docs/ux/), and they win.** Ten screens are already specified in writing. A direction explored here that contradicts a spec means either the spec changes deliberately — with a note in `../docs/decisions.md` — or the direction is wrong. Images acquire authority they have not earned; the written spec is the specification.
 
 ## Constraints that do and do not apply
@@ -59,4 +78,30 @@ The existing direction is a decision with recorded reasoning, not a default. Exp
 
 ## Status
 
-Set up, empty. `src/directions/v1/Page.tsx` is the template's placeholder and is not an Askwell design. No direction has been authored yet.
+One direction, **`instrument`**, with **36 screens** — every surface Askwell has, including the states that usually get skipped: didn't-know, partial answers, conflicting sources, refused queries, moved files, deleted sources, poor OCR, mic denied, assistant down, locked, near-limit storage.
+
+Run `pnpm dev` and press `1`, or use the screen bar to move between them.
+
+### Screens
+
+| Group | Screens |
+| ----- | ------- |
+| Asking | answered · working · didn't know · partial & conflict · asks you first · nothing yet |
+| Asking your data | answered with SQL shown · refused |
+| Following a citation | source viewer · moved & deleted |
+| Adding material | choose · reading · CSV review · dump sandbox · connect database · library |
+| The differentiator | clarifications · clarifications empty · memory |
+| Showing the working | trace · trace near-miss · how it's going · history |
+| Voice | voice · edge cases |
+| Getting started | what it is · this machine · model · locked · assistant down |
+| Settings | model · privacy · storage · your data · online AI · about |
+
+### Adding an alternative
+
+`instrument` is a decision with recorded reasoning, not a default. To test something against it:
+
+```
+node scripts/new-direction.mjs v2 --label "V2" --sub "What you are betting on"
+```
+
+Then press `G` to see both side by side under identical content. If the alternative wins, say why in `../docs/decisions.md` and update `../docs/ux/design-system.md` — do not leave the two disagreeing.

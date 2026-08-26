@@ -1,25 +1,30 @@
 # Askwell — engineering execution package
 
-The full ordered backlog: nine milestones, thirty-one epics, **176 tickets**, none longer than six hours.
+The full ordered backlog: ten milestones, **198 tickets**, none longer than six hours.
 
 This is PART 1 — the master execution document. Each milestone is also written up as a standalone file that can be handed to someone on its own:
 
 | Milestone | File | Tickets | Estimate |
 | --------- | ---- | ------- | -------- |
-| M0 — It runs | [`M0-it-runs.md`](M0-it-runs.md) | 20 | 56–81 h |
-| M1 — It answers from my documents | [`M1-it-answers-from-my-documents.md`](M1-it-answers-from-my-documents.md) | 32 | 102–148 h |
+| M0 — It runs | [`M0-it-runs.md`](M0-it-runs.md) | 21 | 59–85 h |
+| M1 — It answers from my documents | [`M1-it-answers-from-my-documents.md`](M1-it-answers-from-my-documents.md) | 37 | 113–164 h |
 | M2 — It says when it doesn't know | [`M2-it-says-when-it-doesnt-know.md`](M2-it-says-when-it-doesnt-know.md) | 15 | 42–58 h |
 | M3 — It learns my material | [`M3-it-learns-my-material.md`](M3-it-learns-my-material.md) | 19 | 56–78 h |
 | M4 — It answers from my data | [`M4-it-answers-from-my-data.md`](M4-it-answers-from-my-data.md) | 26 | 80–115 h |
 | M5 — It handles harder questions | [`M5-it-handles-harder-questions.md`](M5-it-handles-harder-questions.md) | 12 | 34–48 h |
 | M6 — I can speak to it | [`M6-i-can-speak-to-it.md`](M6-i-can-speak-to-it.md) | 12 | 30–43 h |
-| M7 — Someone else can install it | [`M7-someone-else-can-install-it.md`](M7-someone-else-can-install-it.md) | 32 | 97–141 h |
+| M7 — Someone else can install it | [`M7-someone-else-can-install-it.md`](M7-someone-else-can-install-it.md) | 37 | 113–165 h |
+| M6.5 — It can look outside | [`M6.5-it-can-look-outside.md`](M6.5-it-can-look-outside.md) | 11 | 29–40 h unblocked |
 | M8 — The paid upgrade | [`M8-the-paid-upgrade.md`](M8-the-paid-upgrade.md) | 8 | 17–25 h unblocked |
-| **Total** | | **176** | **514–737 h** |
+| **Total** | | **198** | **573–821 h** |
 
-**Apply the rework multiplier.** Estimates are optimistic by construction; past M1, multiply by 1.3–1.5. That gives roughly **670–1,050 hours** to the end of M7, before the two blocked decisions are answered. A plan quoting a number without a rework multiplier is a number nobody should plan against.
+**M6.5 is listed after M7 because that is when it is built.** Web search needs the settings surface and the audit path to exist, and it comes before credits because it is free and they are not (`../build-plan.md`). The fractional number keeps every existing milestone's identifier intact.
 
-Ticket identifiers follow `[MILESTONE]-[EPIC]-[DOMAIN]-[###]`, with the numeric part running sequentially from 001 to 176 across the whole backlog so no identifier is ambiguous.
+**Apply the rework multiplier.** Estimates are optimistic by construction; past M1, multiply by 1.3–1.5. That gives roughly **720–1,190 hours** to a complete free product — M0 through M7 including M6.5 — before the blocked decisions are answered. A plan quoting a number without a rework multiplier is a number nobody should plan against.
+
+Ticket identifiers follow `[MILESTONE]-[EPIC]-[DOMAIN]-[###]`. The numeric part ran sequentially from 001 to 176 when the backlog was first written; **tickets added since continue that sequence from 177 regardless of where they sit in the order**, and two use a letter suffix because they belong immediately beside an existing ticket (`M0-SHELL-FE-017a`, `M1-ASK-FE-039a`, joining the existing `M7-SET-FE-146a`). So the numbers record when a ticket was written, not when it is built — M1 contains 177–180 and M7 contains 181–184. Identifiers are never reused and never renumbered, because a renumbered backlog silently invalidates every reference made to it.
+
+**What changed on 2026-08-26**, when the desktop shell and web search were decided (`../decisions.md`): a new milestone M6.5; a `TAURI` epic in M7 and a `CONV` epic in M1; twenty-two new tickets; the quality gate's eighth category; and revisions to the tickets those decisions touched. Nothing was renumbered.
 
 ---
 
@@ -29,10 +34,11 @@ These are decisions, not options. Where one reverses something the documentation
 
 ### Topology
 
-**Seven containers plus one native host process**, on one machine, for one user.
+**A desktop shell, seven containers and one native host process**, on one machine, for one user.
 
 | Component | Kind | Why it exists |
 | --------- | ---- | ------------- |
+| Askwell | **Tauri desktop shell** | The window, the native file dialogs, and supervision of everything below it. Rust around the system webview |
 | `api` | container | The only reachable service; also serves the built frontend assets |
 | `postgres` | container | Relational state, vectors and full-text in one system |
 | `redis` | container | Queue only in v1 — ingestion, embedding batches, clarification and export jobs |
@@ -43,6 +49,10 @@ These are decisions, not options. Where one reverses something the documentation
 | llama.cpp server | **native host process** | Generation, embeddings and reranking, with GPU access on all three platforms |
 
 **There is no `web` container.** The frontend is built to static assets served by the API — no server, no session to protect, no search indexing to serve, so a permanent Node process on a laptop bought nothing.
+
+**The shell is a shell, not a replacement.** Tauri does not remove the container stack; it wraps the interface the API already serves. It was chosen over Electron on size — roughly 10 MB against 150, on an installer already carrying 2.4 GB of weights — and it was chosen at all for **the native file picker**. Askwell indexes in place, so nominating root directories and relocating a moved file are core paths, and both are poor in a browser tab. The accepted costs are a Rust toolchain, per-platform code signing with Apple notarisation the expensive one, and a **third** distinct cause of *"the assistant is unavailable"*.
+
+**Askwell is a desktop application, so there is no phone.** Responsiveness serves a resized window on a laptop. Any ticket treating a small screen as a first-class case is wrong.
 
 **Inference is native because containerised inference silently excluded macOS.** A Linux container on Apple Silicon runs inside a virtual machine with no Metal passthrough, which would have made the accelerated profiles unreachable on the platform most target users carry. The accepted cost is that the installer supervises a process alongside a container stack, and that *"the assistant is unavailable"* has two distinct causes that must be diagnosed and reported separately.
 
@@ -62,7 +72,9 @@ These are decisions, not options. Where one reverses something the documentation
 | Models | One native process serves generation, `bge-m3` embeddings and `bge-reranker-v2-m3` reranking. Whisper `small` plus Silero voice activity detection for transcription; **Kokoro-82M** for synthesis |
 | Documents | **pypdfium2** for PDF — not PyMuPDF, which is AGPL and would force the project off Apache-2.0. Tesseract for OCR with orientation detection. Format libraries for Word, spreadsheets and slide decks. Locally bundled pdf.js for the viewer |
 | Retrieval | Hybrid dense plus lexical, fused with reciprocal rank fusion, then a reranking pass. Structure-aware chunking |
-| Operations | Host-side hardware probe at install. GitHub Actions for lint, typecheck and tests on every push; the 155-task eval gate on a self-hosted or manually dispatched runner with a cached model |
+| Packaging | **Tauri desktop shell** around the system webview, over the same container stack. Three signed installers; macOS notarised and stapled |
+| Web search | A provider **behind an interface**, like the synthesis engine, with exactly one call site reachable only from an accepted per-question escalation. Provider and billing model **not yet chosen** |
+| Operations | Host-side hardware probe at install. GitHub Actions for lint, typecheck and tests on every push; the **165-task** eval gate across eight categories on a self-hosted or manually dispatched runner with a cached model |
 
 ### Constraint enforcement points
 
@@ -70,7 +82,7 @@ Every constraint has a mechanism. A rule with no enforcement point is a wish, an
 
 | Constraint | Enforced by | Tickets |
 | ---------- | ----------- | ------- |
-| C1 local by default | Default-deny egress proxy; refusal counter read from the proxy, not the application; cable-unplugged release test | 010, 011, 145, 169, 176 |
+| C1 local by default | Default-deny egress proxy; refusal counter read from the proxy, not the application; cable-unplugged release test. **Two paths may open, both per-unit and never sticky** — online AI for one conversation, web search for one question | 010, 011, 145, 169, 176, 187 |
 | C2 SQL never trusted | `sqlglot` parsing rejecting anything but a single read, **plus** an independent read-only database role and a statement timeout | 104, 105, 106, 107, 112 |
 | C3 dumps are untrusted code | Separate sandbox instance, one database per source, restricted role, no egress route, size and time caps, hostile-fixture suite | 087, 088, 089, 091 |
 | C4 every claim cited | `citations` as a real table written at composition time; the permanent provenance margin; the query that proves no claim is uncited | 042, 043, 045, 079 |
@@ -79,6 +91,9 @@ Every constraint has a mechanism. A rule with no enforcement point is a wish, an
 | C7 retrieved content is data | Delimitation plus the standing statement in versioned prompt files, extended to tool results; injection flagged in the trace | 037, 114 |
 | C8 secrets in environment | Ignore rules, an example file checked against what the code reads, log redaction, credential encryption at rest | 007, 098, 152 |
 | C9 bundled model licence | Every bundled model verified redistributable, commercial-use permitted and ungated; evidenced in the notices file | 144, 146, 146a, 163 |
+| C10 web results are never your material | The offer renders only **below** an abstention and nothing else can reach the provider; a per-question grant at the proxy that closes with the turn; a results region that shares no component with the source card; nothing fetched is ever chunked, embedded or persisted; the discipline suite at **1.00 with no exceptions** | 185–194 |
+
+**`constraint:web-escalation` is registered** in `../../AGENTS.md` §8 and on the tracker. It names the rule rather than the topic, deliberately — what needs protecting is that the web stays an escalation the user performs, not that web code exists.
 
 ---
 
@@ -87,13 +102,16 @@ Every constraint has a mechanism. A rule with no enforcement point is a wish, an
 Each is labelled where it appears in the tickets. None is a silent default.
 
 1. **Indexing in place means nominated root directories become known mounts.** The user nominates a root at add time; the container gets a route to that tree and nothing else. Safer than open filesystem access, and the only approach that works with a virtual machine in the path on Windows and macOS. **No screen specification covers path registration** — M1-ADD-ING-021 writes it against the existing add-source shape rather than inventing a new screen, and M7's installers handle the platform half.
-2. **Speech-to-text stays containerised on CPU.** Whisper `small` on CPU is likely adequate for the standard profile, but it is untested. M6-PERF-TEST-136 is what answers it; if transcription is the cause of a missed budget, it becomes a second native process and the installer changes. Flagged in M6-AUDIO-DEPLOY-125.
-3. **A live database connection is an authorised outbound destination, not a violation of C1.** It is the user's own database, authorised explicitly by them at connection time, limited to that destination, and counted separately in settings so the local-mode zero stays meaningful. Stated in M4-CONN-FE-096.
-4. **Passage-level highlighting on scanned pages starts at page level.** The licence decision that rules out one PDF library makes coordinate mapping harder; scans highlight the page and say so. Passage-level on scans is a later story, not a defect.
-5. **One table per CSV, one table per spreadsheet sheet.** Merged headers are flagged rather than resolved, because the multi-sheet and merged-cell question is genuinely open.
-6. **Cross-database questions are out of scope in v1** and are refused explicitly rather than attempted.
-7. **Eval results are not reproducible across machines.** The runner is one machine; model, settings and prompt version are recorded so comparisons stay honest.
-8. **Signing and notarisation credentials are available for the macOS installer.** If they are not, that is a blocking issue to raise rather than a workaround to ship.
+2. **The native file dialog arrives four phases after the flows that need it.** The desktop shell is Phase 6; root registration and relocating a moved file are Phase 1. Both are therefore built against a browser-provided selection step, **behind a single seam**, so M7-TAURI-FE-182 substitutes the native dialog without touching the roots registry, the hash verification or the state machine. This is stated because it is the one place where the sequence and the justification for the shell disagree: the picker is *why* the shell exists, and it is not available when the paths it justifies are first built. If either flow is built without that seam, M7-TAURI-FE-182's estimate is wrong.
+3. **The search provider and its billing model are not chosen** (`../web-search.md` §6). Everything in M6.5 is built against a fixture implementation, which is enough for the whole milestone including the eval suite — because that suite asserts a *negative*, that no search happens, and needs no provider at all. Only M6.5-WEB-BLOCKED-195 waits on the decision.
+4. **Speech-to-text stays containerised on CPU.** Whisper `small` on CPU is likely adequate for the standard profile, but it is untested. M6-PERF-TEST-136 is what answers it; if transcription is the cause of a missed budget, it becomes a second native process and the installer changes. Flagged in M6-AUDIO-DEPLOY-125.
+5. **A live database connection is an authorised outbound destination, not a violation of C1.** It is the user's own database, authorised explicitly by them at connection time, limited to that destination, and counted separately in settings so the local-mode zero stays meaningful. Stated in M4-CONN-FE-096.
+6. **Passage-level highlighting on scanned pages starts at page level.** The licence decision that rules out one PDF library makes coordinate mapping harder; scans highlight the page and say so. Passage-level on scans is a later story, not a defect.
+7. **One table per CSV, one table per spreadsheet sheet.** Merged headers are flagged rather than resolved, because the multi-sheet and merged-cell question is genuinely open.
+8. **Cross-database questions are out of scope in v1** and are refused explicitly rather than attempted.
+9. **Eval results are not reproducible across machines.** The runner is one machine; model, settings and prompt version are recorded so comparisons stay honest.
+10. **Signing and notarisation credentials are available**, for all three platforms and not only macOS. If they are not, that is a blocking issue to raise rather than a workaround to ship — M7-TAURI-DEPLOY-184 says so explicitly, and obtaining a certificate from scratch is not inside its estimate.
+11. **Web search is an authorised outbound destination for one question, and is not a violation of C1.** C1 as amended names both egress paths; the grant is opened by the user, scoped to the provider, closed with the turn, and counted separately so the local-mode zero stays meaningful. Stated in M6.5-WEB-SEC-187.
 
 ---
 
@@ -110,12 +128,15 @@ Each ends in something demonstrable, and each is genuinely sequential — a late
 | M4 | It answers from my data | CSV, sandboxed dumps, live read-only connections, validated SQL always shown | 3 |
 | M5 | It handles harder questions | Multi-step answers across documents and data, with a readable trace | 4 |
 | M6 | I can speak to it | Voice in, voice out, stop control, latency inside budget | 5 |
-| M7 | Someone else can install it | Three installers, offline install, backup with a tested restore, and everything a release actually needs | 6 |
+| M7 | Someone else can install it | A desktop application on three platforms, signed, offline-installable, with a tested restore and everything a release actually needs | 6 |
+| M6.5 | It can look outside | An abstained question offers the web, the user escalates once, results arrive marked and dated — **one decision blocked** | 6.5 |
 | M8 | The paid upgrade | Per-conversation online AI — **two decisions blocked** | 7 |
 
 **M2 is deliberately its own milestone.** Abstention and the failure states are normally folded into the chat work and quietly dropped when time runs short. They are the product's central claim, and they get their own demonstrable end.
 
 **M3 comes before M4 deliberately.** Memory shapes ingestion and the data model, and the database path is where it pays off most. Building databases first means rebuilding the schema-notes path afterwards.
+
+**M6.5 comes after M7 deliberately.** Web search needs the settings surface and the audit path to already exist, and it is sequenced before credits because it is free and they are not. It also has the smallest blast radius of anything in the backlog if it slips: the product is complete without it, and every ticket in it is built against a fixture, so the unchosen provider blocks one ticket rather than the milestone.
 
 ---
 
@@ -135,6 +156,7 @@ Each ends in something demonstrable, and each is genuinely sequential — a late
 | M1 | Citations | `CITE` | Citation rows, the provenance margin, the uncited-claim query |
 | M1 | Source viewer | `VIEW` | In-app rendering, navigation, moved files |
 | M1 | Library and first run | `LIB` | Inventory, statuses, empty states, the first ten minutes |
+| M1 | Conversation | `CONV` | Stored turn summaries, collapsing, expanding, suggested follow-ups |
 | M2 | Abstention | `ABSTAIN` | Threshold, copy, rendering, recording |
 | M2 | Partial and conflicting | `PARTIAL` | Grounded-part answers, conflict presentation and detection |
 | M2 | Failure states | `FAIL` | Degrading to search |
@@ -159,6 +181,7 @@ Each ends in something demonstrable, and each is genuinely sequential — a late
 | M6 | Synthesis | `TTS` | Sentence streaming, text fallback |
 | M6 | Voice interface | `VUI` | Composer control, stop, latency indicator, states |
 | M7 | Probe | `PROBE` | Host-side detection, warn and continue |
+| M7 | Desktop shell | `TAURI` | The window, native file dialogs, supervision, signing and notarisation |
 | M7 | Packaging | `PACK` | Three installers, supervision, the repair surface |
 | M7 | Offline | `OFFLINE` | Bundle, manual placement, the cable-unplugged test |
 | M7 | Settings | `SET` | The six sections completed |
@@ -168,6 +191,8 @@ Each ends in something demonstrable, and each is genuinely sequential — a late
 | M7 | Data ownership | `DATA` | Export everything, delete, reset |
 | M7 | Update delivery | `UPDATE` | **Blocked** |
 | M7 | Release readiness | `QA`, `DOC`, `OPS`, `PERF` | Checklist, notices, support boundary, rollback, performance |
+| M6.5 | Web search | `WEB` | Provider interface, the offer, per-question egress, caps, the results region, mixed answers, states |
+| M6.5 | Evaluation | `EVAL` | Web escalation discipline at 1.00 |
 | M8 | Online routing | `ONLINE` | Authorisation, provider, marker, logging |
 | M8 | Credits | `CREDIT` | Purchase, limits, exhaustion |
 
@@ -190,6 +215,9 @@ Every ticket, in dependency order within each domain. Full text lives in the mil
 | M4-DUMP-DEPLOY-087 | Sandbox Postgres with a restricted role and no egress | Critical | 4–6 h |
 | M6-AUDIO-DEPLOY-125 | Voice container with transcription and synthesis | Critical | 3–4 h |
 | M7-PROBE-DEPLOY-137 | Host-side hardware probe and profile selection | Critical | 4–6 h |
+| M7-TAURI-DEPLOY-181 | The desktop shell: a window of Askwell's own | Critical | 4–6 h |
+| M7-TAURI-DEPLOY-183 | The shell supervises the stack and the inference process, three causes | Critical | 4–6 h |
+| M7-TAURI-DEPLOY-184 | Code signing on three platforms, including Apple notarisation | Critical | 4–6 h |
 | M7-PACK-DEPLOY-139 | Linux installer | Critical | 4–6 h |
 | M7-PACK-DEPLOY-140 | Windows installer | Critical | 4–6 h |
 | M7-PACK-DEPLOY-141 | macOS installer | Critical | 4–6 h |
@@ -212,6 +240,7 @@ Every ticket, in dependency order within each domain. Full text lives in the mil
 | M7-SEC-BE-151 | Passphrase: set, unlock, and no recovery | High | 3–4 h |
 | M7-SEC-BE-152 | Encryption at rest for documents and credentials | High | 4–6 h |
 | M7-SEC-TEST-166 | Security review before public release | Critical | 4–6 h |
+| M6.5-WEB-SEC-187 | Per-question egress authorisation, opened and closed at the proxy | Critical | 4–6 h |
 | M8-ONLINE-SEC-169 | Per-conversation egress authorisation for one destination | Critical | 4–6 h |
 
 ### Database
@@ -262,6 +291,10 @@ Every ticket, in dependency order within each domain. Full text lives in the mil
 | M6-STT-BE-128 | Turn detection and the silent timeout | High | 3–4 h |
 | M6-TTS-BE-130 | Sentence-streamed speech synthesis | Critical | 3–4 h |
 | M6-TTS-BE-131 | Fall back to text when synthesis is unavailable | High | 1–2 h |
+| M1-CONV-BE-177 | Store a one-line summary and a source count with every turn | High | 2–3 h |
+| M6.5-WEB-BE-185 | The search provider behind an interface, called only on explicit request | Critical | 3–4 h |
+| M6.5-WEB-BE-188 | Fetch caps, delimitation, and never persisting web content | Critical | 3–4 h |
+| M6.5-WEB-BE-189 | Retrieval timestamps, stored with the turn | High | 2–3 h |
 | M7-LOG-BE-153 | Log storage budget with staged degradation | Critical | 3–4 h |
 | M7-LOG-BE-154 | Interaction retention window and prune | High | 2–3 h |
 | M7-LOG-BE-155 | Log export as a background job, with the chain and a verifier | High | 4–6 h |
@@ -315,8 +348,10 @@ Every ticket, in dependency order within each domain. Full text lives in the mil
 | -- | ----- | -------- | ---- |
 | M0-FOUND-FE-003 | Scaffold the frontend as one pinned verified set | Critical | 4–6 h |
 | M0-SHELL-FE-017 | Application shell, navigation and the ready state | High | 3–4 h |
+| M0-SHELL-FE-017a | The left rail becomes a reachable drawer below the breakpoint | High | 3–4 h |
 | M1-ADD-FE-022 | Add-source screen, files route, drag-and-drop anywhere | Critical | 3–4 h |
-| M1-ASK-FE-039 | Ask screen: composer, conversation, streaming, step labels | Critical | 4–6 h |
+| M1-ASK-FE-039 | Ask screen: composer, the live turn, streaming, step labels | Critical | 4–6 h |
+| M1-ASK-FE-039a | Mic control in the composer, disabled with its reason until voice ships | Medium | 1–2 h |
 | M1-CITE-FE-043 | The provenance margin with source cards and leaders | Critical | 4–6 h |
 | M1-CITE-FE-044 | Hover pairing and the narrow-window inline fallback | High | 2–3 h |
 | M1-VIEW-FE-046 | Source viewer: in-app PDF at the cited page, highlighted | Critical | 4–6 h |
@@ -325,6 +360,9 @@ Every ticket, in dependency order within each domain. Full text lives in the mil
 | M1-LIB-FE-050 | Library list with status and needs-attention expansion | High | 4–6 h |
 | M1-LIB-FE-051 | Empty states that teach rather than say "no items" | High | 3–4 h |
 | M1-LIB-FE-052 | First-run sequence | Critical | 4–6 h |
+| M1-CONV-FE-178 | Past turns collapse; an abstained turn shows no source count | High | 3–4 h |
+| M1-CONV-FE-179 | Expanding a past turn, clicking a source count, paging | High | 3–4 h |
+| M1-CONV-FE-180 | Suggested follow-ups that fill the composer rather than sending | Medium | 2–3 h |
 | M2-ABSTAIN-FE-055 | The abstained state on Ask | Critical | 2–3 h |
 | M2-PARTIAL-FE-058 | Partial rendering and conflicting-sources presentation | High | 3–4 h |
 | M2-FAIL-FE-060 | Degrade to search when the assistant is unavailable | High | 3–4 h |
@@ -354,6 +392,11 @@ Every ticket, in dependency order within each domain. Full text lives in the mil
 | M6-VUI-FE-134 | Latency indicator, only once the budget is passed | Medium | 1–2 h |
 | M6-VUI-FE-135 | Voice states: permission denied, non-English, abstention in full | High | 2–3 h |
 | M6-STT-FE-129 | Low confidence: show the transcript and confirm | High | 2–3 h |
+| M6.5-WEB-FE-186 | The escalation offer on the abstention surface | Critical | 3–4 h |
+| M6.5-WEB-FE-190 | The web results region, separate from the provenance margin | Critical | 3–4 h |
+| M6.5-WEB-FE-191 | Mixed answers: each claim points at its own kind of source | Critical | 3–4 h |
+| M6.5-WEB-FE-192 | Searching, nothing found, unavailable, and the escalation closing | Critical | 3–4 h |
+| M7-TAURI-FE-182 | Native file dialogs for root registration and relocating a moved file | Critical | 4–6 h |
 | M7-PROBE-FE-138 | Warn and continue below the floor and on probe failure | High | 2–3 h |
 | M7-SET-FE-146 | Settings: model and speed | High | 3–4 h |
 | M7-SET-FE-147 | Settings: privacy and security with the measured count | Critical | 2–3 h |
@@ -375,6 +418,7 @@ Every ticket, in dependency order within each domain. Full text lives in the mil
 | M2-ABSTAIN-OBS-056 | Record abstentions with scores and threshold stored | High | 2–3 h |
 | M3-STORE-OBS-077 | Clarification answers as decisions records in one transaction | Critical | 2–3 h |
 | M4-SQL-OBS-108 | Record executed and rejected SQL with reasons | High | 2–3 h |
+| M6.5-WEB-OBS-193 | Trace flagging of fetched content, and the escalation on the record | High | 2–3 h |
 | M8-ONLINE-OBS-172 | Online-mode logging **[BLOCKED]** | Critical | — |
 
 ### Test, evaluation and quality
@@ -391,6 +435,7 @@ Every ticket, in dependency order within each domain. Full text lives in the mil
 | M4-EVAL-TEST-112 | Text-to-SQL and SQL-safety eval suites | Critical | 4–6 h |
 | M5-EVAL-TEST-124 | Tool selection eval suite, including parallel calls | Critical | 3–4 h |
 | M6-PERF-TEST-136 | Measure voice latency against the profile budgets | Critical | 3–4 h |
+| M6.5-EVAL-TEST-194 | Web escalation discipline suite, **1.00 with no exceptions** | Critical | 3–4 h |
 | M7-OFFLINE-TEST-145 | The cable-unplugged release test | Critical | 4–6 h |
 | M7-BACKUP-TEST-159 | Tested restore, every release | Critical | 3–4 h |
 | M7-PERF-TEST-167 | Measure the performance budgets on a real corpus | High | 3–4 h |
@@ -412,6 +457,7 @@ Every ticket, in dependency order within each domain. Full text lives in the mil
 | -- | ----- | ---------- |
 | M7-UPDATE-BLOCKED-161 | Update delivery mechanism | How a free local install learns a new version exists without phoning home by default |
 | M7-UPDATE-BLOCKED-162 | Update notification surface | The same decision, and 161 |
+| M6.5-WEB-BLOCKED-195 | Search provider and billing model | Which provider, and whether the user supplies a key or it is metered through credits. Metered is consistent with "you never hand Askwell an API key" (`../PRD.md` §6) and sequences search behind M8; a user key is cheaper and breaks that sentence |
 | M8-ONLINE-OBS-172 | Online-mode logging | What online mode transmits |
 | M8-CREDIT-BLOCKED-173 | Credit purchase | Credit pricing — rate, minimum, margin |
 | M8-CREDIT-BLOCKED-174 | Spending limit and balance | The same decision, and 173 |
@@ -425,7 +471,8 @@ Non-functional work is mandatory here, not an optional extra. Every row names th
 
 | Requirement | How it is met | Tickets |
 | ----------- | ------------- | ------- |
-| **Privacy — no outbound calls in local mode** | Default-deny proxy, refusal counter read from the proxy, cable-unplugged release test with an independent network capture, per-conversation authorisation for online | 010, 011, 145, 147, 169, 176 |
+| **Privacy — no outbound calls in local mode** | Default-deny proxy, refusal counter read from the proxy, cable-unplugged release test with an independent network capture, per-conversation authorisation for online AI and per-question authorisation for web search — both opened by the user, both closing on their own | 010, 011, 145, 147, 169, 176, 187 |
+| **Privacy — the web is an escalation, never a fallback (C10)** | The offer exists in exactly one place, below an abstention, and the provider interface has one call site reachable only from an accepted offer. The permission is a grant at the proxy scoped to one destination and one turn, with a hard expiry. Nothing fetched is chunked, embedded or persisted, so no escalation can improve a later retrieval. No settings control can pre-authorise it. The discipline suite asserts the negative at 1.00 with no exceptions, and the security review verifies it at the proxy rather than in code | 185, 186, 187, 188, 192, 194, 166, 147 |
 | **Privacy — no telemetry** | There is none, and none may be added. Every ticket's analytics field is a local counter or nothing. No consent dialogue exists because there is nothing to consent to | Every ticket; 052 explicitly |
 | **Security — untrusted input** | Dump sandbox with a restricted role, size and time caps, hostile-fixture containment suite; SQL parsing plus an independent read-only role; retrieved content and tool output delimited as data | 087–091, 104–107, 037, 114 |
 | **Security — secrets and data at rest** | Environment-only secrets with a checked example file and log redaction; credential encryption from the moment credentials exist; optional passphrase with no recovery; corpus encryption with honest documentation of what remains readable | 007, 098, 151, 152 |
@@ -433,13 +480,13 @@ Non-functional work is mandatory here, not an optional extra. Every row names th
 | **Reliability — failure states** | Degrade to search when the assistant is down; the two distinct unavailability causes; staged disk degradation with ingestion refused before asking; nothing ever silently dropped | 020, 060, 143, 153, 030, 032 |
 | **Reliability — data safety** | Tombstoned deletion with content and embedding cleared; supersession distinct from deletion; backup with a **tested restore** every release; original files never touched, stated repeatedly | 061, 034, 157, 158, 159, 160 |
 | **Auditability** | Hash-chained stores with no update or delete grant; fail-the-action for decisions and interactions, fail-open for traces; verification naming the break; export with a standalone verifier; **never called immutable** | 014, 015, 041, 077, 108, 155, 156 |
-| **Correctness — grounding** | Citations as real rows written at composition time; the permanent provenance margin; the uncited-claim query; abstention as its own milestone with a 0.90 bar and a guard against a lowered threshold | 042, 043, 045, 053–056, 065, 079 |
-| **Correctness — evaluation** | Seven suites totalling 155 tasks, each run three times with worst-case reported beside mean; the gate on a capable runner; a prompt change without a run is blocked | 063–067, 086, 112, 124 |
+| **Correctness — grounding** | Citations as real rows written at composition time; the permanent provenance margin; the uncited-claim query; abstention as its own milestone with a 0.90 bar and a guard against a lowered threshold. **A web-sourced claim never enters the margin and never renders as the user's own material**, in an answer, a collapsed turn or an export; a turn's source count and summary are stored, never recomputed | 042, 043, 045, 053–056, 065, 079, 177, 178, 190, 191 |
+| **Correctness — evaluation** | **Eight suites totalling 165 tasks**, each run three times with worst-case reported beside mean. Two are pass-or-fail at 1.00 — SQL safety and web escalation discipline — and are reported as pass or fail rather than as a mean, because a near-perfect score on a ten-task safety suite reads as fine and is not. The gate runs on a capable runner; a prompt change without a run is blocked | 063–067, 086, 112, 124, 194 |
 | **Performance** | Answer budgets measured on a realistic corpus per profile with a per-stage breakdown; voice latency measured from end of speech; bounded ingestion concurrency so the laptop stays usable | 167, 136, 025 |
 | **Observability** | Structured logging with no unstructured printing; component-level health; the trace with stored scores and timings; local-only counters computed on demand | 002, 017, 117, 119–123 |
 | **Maintainability** | Strict typing on both sides; prompts as versioned files never inlined; model names only in configuration; one version value read by both packages; migrations never hand-edited | 001, 003, 008, 019, 037, 013 |
-| **Usability — every state ships** | Every ticket's UI-states field cites the relevant screen specification and the states document. Empty, loading, partial, denied, degraded and failed states have their own tickets rather than being folded into a happy path | 051, 060, 075, 111, 123, 135 |
-| **Accessibility and layout** | Status conveyed by word plus shape, never colour alone; keyboard parity for citation pairing; wide and narrow layouts both keep every source card | 050, 044 |
+| **Usability — every state ships** | Every ticket's UI-states field cites the relevant screen specification and the states document. Empty, loading, partial, denied, degraded and failed states have their own tickets rather than being folded into a happy path. **A long conversation is its own set of states** — collapsed, expanded, abstained-and-collapsed, web-marked, paging — rather than an assumption that answers stack forever | 051, 060, 075, 111, 123, 135, 178, 179, 192 |
+| **Accessibility and layout** | Status conveyed by word plus shape, never colour alone — the absent source count on an abstained turn is carried by shape as well as its absence. Keyboard parity for citation pairing, drawer navigation and follow-up suggestions. **Contrast measured in both themes rather than assumed**, with `--rule-strong` existing precisely because a line that carries meaning is a UI component needing 3:1. **Depth cues are tokens**, since a literal shadow is invisible in one of the two themes. Wide and narrow layouts both keep every source card, and the left rail becomes a reachable drawer rather than disappearing. **There is no phone** — this is a desktop application, and narrow means a resized window | 003, 044, 050, 017a, 178 |
 | **Supportability** | Stated support boundary before release; issue templates requesting version, platform, profile and trace; copyable trace; rollback rehearsed; local-only crash reports | 164, 121, 165, 149 |
 | **Licence compliance** | Notices covering every dependency **and every bundled model weight**; a check that fails the release on a disallowed licence; the PDF library chosen to preserve the project's licence | 163, 026 |
 | **Recoverability** | Backup excluding regenerable data with the re-embed cost stated; restore with credential re-entry and missing-original handling; a tested restore as a release gate | 157, 158, 159 |
@@ -463,6 +510,11 @@ The sequence runs: environment and foundation → repository setup → shared fo
 - **M3 blocks M4.** Schema notes come from the clarification loop; building the database path first means building the notes path twice.
 - **M4 blocks M5.** The tool loop needs a database query tool worth calling.
 - **M7-BACKUP-BE-158 blocks M7-BACKUP-TEST-159, which blocks release.** An untested restore is a backup that does not exist.
+- **M7-TAURI-DEPLOY-181 blocks the other three shell tickets and all three installers.** There is no dialog, no supervision and nothing to sign until there is a window.
+- **M7-TAURI-DEPLOY-184 blocks the macOS installer's acceptance, not its build.** M7-PACK-DEPLOY-141 can be written and run locally unsigned; its cold-start walkthrough only passes cleanly once the artefact is notarised and stapled, which is why the two are separate tickets with an ordering rather than one large one.
+- **M2-ABSTAIN-FE-055 blocks M6.5-WEB-FE-186 by four milestones.** The escalation offer is an addition to the abstention surface, and it only stays a three-hour addition if 055 placed the add-a-source action below the abstention in a region that can hold three options, as its scope requires.
+- **M6.5-WEB-SEC-187 blocks the honest version of everything else in M6.5.** Without the proxy grant, the escalation rule is enforced by application code, and application-level enforcement is defeated by one dependency making an unexpected call. M7-SEC-TEST-166 treats a constraint enforced only by convention as a release blocker, so building the feature before its enforcement point would produce a milestone that cannot be released.
+- **M1-CONV-BE-177 blocks M1-CONV-FE-178, which blocks M1-CONV-FE-179.** The last two ship together in practice: collapsing without expanding does not compress a conversation, it deletes it.
 
 ### What can run in parallel
 
@@ -472,6 +524,10 @@ The sequence runs: environment and foundation → repository setup → shared fo
 - The eval suites (064, 065, 066, 086, 112, 124) each attach to their feature and can be written alongside it rather than batched at the end.
 - The three installers (139, 140, 141) share a design but are independently testable, though each needs its own machine.
 - Documentation tickets (008, 163, 164, 165) can run at any point after the thing they document exists.
+- Within M1, the `CONV` epic (177–180) depends only on the answer and citation path, so it can run alongside the source viewer and library work rather than after them.
+- Within M7, the `TAURI` epic (181–184) is independent of the log, backup and settings epics and is the natural place for a second person.
+- Within M6.5, the provider interface (185) and the proxy grant (187) are independent of each other and converge at the offer (186).
+- **M6.5 as a whole can run in parallel with M8's unblocked work**, since the two touch the proxy at different scopes and share no surface.
 
 ### What must be complete before each gate
 
@@ -479,7 +535,7 @@ The sequence runs: environment and foundation → repository setup → shared fo
 
 **Before staging verification (the pre-release cold-machine run):** M7-PACK-DEPLOY-139 through 142, M7-OFFLINE-DEPLOY-144, and M7-BACKUP-BE-158. Without an installer there is nothing to verify on a clean machine, and a verification that skips the installer verifies the wrong thing.
 
-**Before release:** all seven eval categories at their bars with worst-case reported; the cable-unplugged test passed with an independent capture; the tested restore passed; the security review complete with findings fixed or explicitly accepted; the performance budgets measured; the notices file complete including model weights; the support boundary published; the version and changelog correct; and the full manual regression walkthrough completed on at least one platform per supported family, with the coverage recorded.
+**Before release:** all **eight** eval categories at their bars with worst-case reported, the two 1.00 categories reported as pass or fail rather than as means; the cable-unplugged test passed with an independent capture; the tested restore passed; the security review complete with findings fixed or explicitly accepted, **including C10's enforcement verified at the proxy rather than asserted from the code**; every artefact signed, and the macOS one notarised and stapled; the performance budgets measured; the notices file complete including model weights; the support boundary published; the version and changelog correct; and the full manual regression walkthrough completed on at least one platform per supported family, with the coverage recorded.
 
 **A failure at any of those blocks the release.** A known issue carried into a release is recorded with its reasoning and its follow-up, never silently.
 
@@ -502,11 +558,13 @@ The sequence runs: environment and foundation → repository setup → shared fo
 | Text-to-SQL, execution-matched | ≥ 0.80 mean | 112 |
 | SQL safety | **1.00, no exceptions** | 112 |
 | Tool selection including parallel | ≥ 0.85 | 124 |
+| Web escalation discipline | **1.00, no exceptions** — every task asserts Askwell abstains and offers rather than searches | 194 |
 | Network calls in local mode | **0**, with the cable unplugged and an independent capture | 145 |
 | Backup restored onto a clean machine | Pass, every release | 159 |
 | Security review | Every constraint has a verified mechanical enforcement point | 166 |
 | Answer latency | Median under 20 s, ninety-fifth under 60 s on standard | 167 |
 | Voice latency | ≤ 3.5 s accelerated, ≤ 8 s standard, from end of speech | 136 |
+| Code signing | Every artefact signed; the macOS one notarised and **stapled**, so it validates offline | 184 |
 | Licence notices | Complete, including every bundled model weight | 163 |
 | Support boundary | Published and reachable from the product | 164 |
 | Manual regression walkthrough | Completed from a cold install, coverage recorded | 168 |
@@ -516,7 +574,9 @@ The sequence runs: environment and foundation → repository setup → shared fo
 Stated so it is not discovered as a surprise.
 
 - **Update delivery does not exist.** Users learn about a new version by looking. This is a blocked decision, and M7-OPS-DOC-165 names the incident-response limitation it creates rather than glossing over it.
-- **Prompt injection is mitigated, not solved.** Retrieved content is delimited, the standing statement is in the prompt, and instruction-like content is flagged in the trace. The residual risk is documented honestly, because overclaiming here would be the same error the design warns about elsewhere.
+- **Prompt injection is mitigated, not solved**, and it is **weaker for web content than for documents**. Retrieved content is delimited, the standing statement is in the prompt, and instruction-like content is flagged in the trace — identically for a page and for a file. But the user chose their documents and did not choose a page written to contain instructions, so the residual risk is larger on the web path. Fetches are capped in count, size and time, an oversized page is dropped rather than truncated into the prompt, and nothing fetched is ever persisted into the corpus. That is a mitigation. It is documented honestly, because overclaiming here would be the same error the design warns about elsewhere.
+- **Web search has no chosen provider.** M6.5 is complete and testable against a fixture, including its eval suite, and M6.5-WEB-BLOCKED-195 is the one ticket waiting on the decision. Askwell can prove it does not search on its own long before it can search at all — which is the right order for this particular feature.
+- **Escalating a web search by voice is unspecified** and deferred with the voice work. So is re-asking an escalated question locally once the user adds a relevant document.
 - **The abstention band and the retention targets are reasoned, not measured**, and there is no telemetry to measure them with. That is an accepted handicap, carried by conservative defaults instead.
 - **Passage-level highlighting on scanned pages** starts at page level.
 - **Cross-database questions, multi-sheet spreadsheet semantics, folder watching, memory import and export, bulk clarification patterns and result-set export** are all out of v1 and are named as known gaps in the tickets they touch.

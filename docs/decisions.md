@@ -22,6 +22,43 @@ Template:
 
 ---
 
+## 2026-08-26 — Desktop shell, and web search as an escalation the user performs
+
+**Decision:** Two answers, recorded together because both change what leaves the machine and what the product is.
+
+**Askwell ships as a Tauri desktop application.** Rust shell around the system webview, wrapping the interface the API already serves.
+
+**Askwell can search the web** — per question, only when the user asks, and **never as a fallback when retrieval comes up short.** Added as constraint **C10**.
+
+**Why a desktop shell:** the argument is the native file picker, not the icon. Askwell indexes files in place, so the user nominates root directories at add time, and the moved-file relocate flow needs a real dialog. Both are core paths and both are poor in a browser tab. Tauri over Electron on size — roughly 10 MB against 150, on an installer already carrying 2.4 GB of model weights.
+
+The costs are real and were accepted rather than discovered: it does **not** remove the container stack, so this is a shell over the same architecture; it adds a Rust toolchain and per-platform code signing, with Apple notarisation the expensive one; and the installer now supervises a native process alongside containers, so "the assistant is unavailable" gains a third distinct cause.
+
+**Why web search, against the earlier recommendation:** issue #38 argued for scoping it out. The owner decided otherwise, and the reasoning holds: a local AI that cannot reach past your own files is a harder product to love, the gap against Khoj is real, and the user is the one deciding what leaves.
+
+**Why the escalation rule is the whole design.** The danger was never the network call, it was what an automatic one does to abstention. Askwell's most-tested behaviour is saying "your files do not cover this" — and that is *useful* because it is informative. If the web is reached whenever retrieval is thin, that sentence stops happening, so it stops meaning anything, and the user loses the signal that told them their corpus had a gap. The abstention rate, which `success-metrics.md` treats as the key operational number, would fall to zero for entirely the wrong reason.
+
+So: **Askwell abstains first, exactly as before, and then offers.** The user escalates. That single rule preserves C5 while delivering the feature, and it is the reason C10 exists as a constraint rather than a note.
+
+Two supporting rules follow from it. Web results **never enter the provenance margin** — that space is for material the user owns and can open, and a URL can change or vanish after the answer while a document on disk cannot. And web content is **the most untrusted input Askwell handles**: C7 governed documents the user chose, and a page written to contain instructions is not one of those.
+
+Rejected: making it a conversation-level toggle. Sticky egress is how a per-unit permission quietly becomes a default, and C1 now names both paths explicitly for the same reason.
+
+**Consequences:**
+
+- **Phase 6 grows to 3.5 weeks** for the shell and signing. New **Phase 6.5** for web search, sequenced after the shell because it needs settings and audit to exist, and before credits because it is free and they are not.
+- The quality gate gains a **web escalation discipline** category at **1.00, no exceptions** — every task presents an unanswerable question and asserts Askwell offers rather than searches. A single automatic fetch fails the suite.
+- The egress proxy now authorises two narrow paths rather than one, and remains what makes "per question" enforceable rather than an intention in application code.
+- Web results are **not chunked, not embedded, not persisted** into `chunks`, so a hostile page cannot influence a future answer it was not part of.
+- The 390px mobile frame stops being a real target. There is no phone. Responsiveness still matters for a resized window, and the drawer stays.
+- Three new screens: the escalation offer, a web-only answer, and an answer mixing both kinds of source with each claim pointing at its own kind.
+
+**Open:** the search provider, and whether the user supplies a key or it is metered through credits. Metered is more consistent with "you never hand Askwell an API key"; a user key is cheaper to ship.
+
+**Refs:** `AGENTS.md` §3 (C1 amended, C10 added), `docs/web-search.md`, `docs/PRD.md` §1, §4, §5, §6, `docs/architecture.md` §1, §2, §5, `docs/build-plan.md`; issues #34, #38.
+
+---
+
 ## 2026-08-26 — C9: bundled models must be redistributable; a swapped model is marked unverified
 
 **Decision:** Two related calls. **C9** is added to `AGENTS.md` §3: a bundled model's licence must permit redistribution and commercial use, and the weights must not be access-gated. Separately, **swapping to a user-supplied model is permitted and marked** — settings distinguishes validated defaults from unverified models, and every answer produced by one carries a persistent marker.
