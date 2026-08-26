@@ -171,3 +171,62 @@ Not a checklist item; the target user works in this for hours.
 - **Colour is never the only signal.** The confidence marker differs in fill as well as hue; abstention is stated in words, not implied by tone.
 - Full keyboard path through ask → read answer → open citation → correct a fact. That is the core loop and it must not require a pointer.
 - Respects the OS light/dark setting, with a manual override.
+
+### Measured, 2026-08-26
+
+Not a claim — the output of `web/scripts/contrast.mjs`, which reads the token
+values out of `web/app/globals.css` and computes the ratios. Regenerate with
+`scripts/dev.sh web-run pnpm contrast -- --markdown`. A failure here is
+build-blocking: `scripts/dev.sh web-check` runs it and stops.
+
+**Tightest pair: `--rule-strong` on `--surface` in the dark theme, at 3.08:1
+against a 3.0:1 floor.** That is the source card's left edge when the margin
+reflows inline, and it has almost no headroom. Darkening `--surface` or
+lightening `--rule-strong` in the dark theme would drop it below the floor, so
+neither can be adjusted casually.
+
+| Theme | Foreground | Background | Floor | Measured | Used for |
+| ----- | ---------- | ---------- | ----- | -------- | -------- |
+| light | `--ink` | `--paper` | 4.5:1 | **12.64:1** | Answer prose, primary text |
+| light | `--ink` | `--surface` | 4.5:1 | **13.74:1** | Text on a card or the margin rail |
+| light | `--ink` | `--sunk` | 4.5:1 | **11.60:1** | Text typed into an input |
+| light | `--muted` | `--paper` | 4.5:1 | **4.99:1** | Labels, metadata, timestamps |
+| light | `--muted` | `--surface` | 4.5:1 | **5.42:1** | Metadata on a card |
+| light | `--muted` | `--sunk` | 4.5:1 | **4.58:1** | Placeholder text in an input |
+| light | `--provenance` | `--paper` | 4.5:1 | **5.15:1** | Citations, quoted passages |
+| light | `--provenance` | `--surface` | 4.5:1 | **5.59:1** | Citation on a source card |
+| light | `--inferred` | `--paper` | 4.5:1 | **4.91:1** | Anything Askwell guessed |
+| light | `--inferred` | `--surface` | 4.5:1 | **5.34:1** | A guessed column description on a card |
+| light | `--alarm` | `--paper` | 4.5:1 | **6.34:1** | Failure messages |
+| light | `--alarm` | `--surface` | 4.5:1 | **6.89:1** | Failure state on a card |
+| light | `--paper` | `--ink` | 4.5:1 | **12.64:1** | A filled primary action's label |
+| light | `--rule-strong` | `--paper` | 3.0:1 | **3.37:1** | The claim leader — the only thing joining a claim to its source |
+| light | `--rule-strong` | `--surface` | 3.0:1 | **3.67:1** | The inline source-card edge below the breakpoint |
+| light | `--provenance` | `--surface` | 3.0:1 | **5.59:1** | The source card's 2px left bar |
+| light | `--provenance` | `--paper` | 3.0:1 | **5.15:1** | The focus ring |
+| light | `--inferred` | `--paper` | 3.0:1 | **4.91:1** | The web-result dashed border (C10) |
+| light | `--ink` | `--paper` | 3.0:1 | **12.64:1** | A filled primary action against the ground |
+| dark | `--ink` | `--paper` | 4.5:1 | **13.76:1** | Answer prose, primary text |
+| dark | `--ink` | `--surface` | 4.5:1 | **12.28:1** | Text on a card or the margin rail |
+| dark | `--ink` | `--sunk` | 4.5:1 | **14.46:1** | Text typed into an input |
+| dark | `--muted` | `--paper` | 4.5:1 | **6.42:1** | Labels, metadata, timestamps |
+| dark | `--muted` | `--surface` | 4.5:1 | **5.73:1** | Metadata on a card |
+| dark | `--muted` | `--sunk` | 4.5:1 | **6.74:1** | Placeholder text in an input |
+| dark | `--provenance` | `--paper` | 4.5:1 | **6.25:1** | Citations, quoted passages |
+| dark | `--provenance` | `--surface` | 4.5:1 | **5.57:1** | Citation on a source card |
+| dark | `--inferred` | `--paper` | 4.5:1 | **7.23:1** | Anything Askwell guessed |
+| dark | `--inferred` | `--surface` | 4.5:1 | **6.45:1** | A guessed column description on a card |
+| dark | `--alarm` | `--paper` | 4.5:1 | **5.26:1** | Failure messages |
+| dark | `--alarm` | `--surface` | 4.5:1 | **4.70:1** | Failure state on a card |
+| dark | `--paper` | `--ink` | 4.5:1 | **13.76:1** | A filled primary action's label |
+| dark | `--rule-strong` | `--paper` | 3.0:1 | **3.45:1** | The claim leader — the only thing joining a claim to its source |
+| dark | `--rule-strong` | `--surface` | 3.0:1 | **3.08:1** | The inline source-card edge below the breakpoint |
+| dark | `--provenance` | `--surface` | 3.0:1 | **5.57:1** | The source card's 2px left bar |
+| dark | `--provenance` | `--paper` | 3.0:1 | **6.25:1** | The focus ring |
+| dark | `--inferred` | `--paper` | 3.0:1 | **7.23:1** | The web-result dashed border (C10) |
+| dark | `--ink` | `--paper` | 3.0:1 | **13.76:1** | A filled primary action against the ground |
+
+The depth tokens are not in this table because a shadow is not a contrast pair.
+They are checked separately by `web/scripts/check-tokens.mjs`, which fails the
+build if a shadow is written as a literal colour, or if `--inset` or `--drop`
+hold the same value in both themes — the same defect in a different shape.

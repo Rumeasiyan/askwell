@@ -118,7 +118,7 @@ What not to do: guess, note the guess in a comment, keep going. That is how a bu
 
 ## 5. Commands
 
-**The host needs Podman and nothing else.** Python, the dependency resolver, the linter, the type checker and the test runner all live inside the API image. Do not install them on the host and do not invoke the host's Python — it is 3.14, the project targets 3.12, and the AI toolchain has no 3.14 wheels.
+**The host needs Podman and nothing else.** Python, Node, pnpm, the dependency resolvers, the linters, the type checkers and the test runner all live inside the API and web images. Do not install them on the host and do not invoke the host's Python — it is 3.14, the project targets 3.12, and the AI toolchain has no 3.14 wheels.
 
 Everything runs through one entry point:
 
@@ -132,9 +132,12 @@ Everything runs through one entry point:
 | Rebuild the image | `scripts/dev.sh build` | **Verified** |
 | Anything else inside the image | `scripts/dev.sh run <cmd>` / `scripts/dev.sh shell` | **Verified** |
 | Regenerate the lockfile | `scripts/dev.sh lock` | **Verified** |
+| All frontend checks | `scripts/dev.sh web-check` | **Verified** |
+| Build the frontend to `web/out` | `scripts/dev.sh web-build` | **Verified** |
+| Install frontend dependencies | `scripts/dev.sh web-install` | **Verified** |
+| Anything else in the frontend image | `scripts/dev.sh web-run <cmd>` / `web-shell` | **Verified** |
 | Build-runner guard tests | `bash scripts/guards.test.sh` | **Verified** |
 | Bring up the stack | `podman compose up -d` | M0-STACK-DEPLOY-009 |
-| Web dev server | Next.js 16 in `web/` | M0-FOUND-FE-003 |
 | Eval suite | `python eval/bench.py --suite <name>` | M1 |
 
 Two things about `scripts/dev.sh` that are deliberate:

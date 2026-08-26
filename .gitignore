@@ -15,3 +15,15 @@ __pycache__/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
+
+# Frontend build output and dependencies.
+# .pnpm-store is pnpm's content-addressed package cache. It lands at the repo
+# root because the container's working tree starts there, and it is a cache —
+# keeping it means installs stay fast between runs, committing it would add
+# tens of thousands of files.
+.pnpm-store/
+web/node_modules/
+web/.next/
+web/out/
+next-env.d.ts
+web/tsconfig.tsbuildinfo
