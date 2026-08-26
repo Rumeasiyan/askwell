@@ -4,6 +4,24 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.1.1 — 2026-08-26
+
+First product code. `M0-FOUND-DEPLOY-001`.
+
+### Added
+
+- `api/Dockerfile` — API image pinned to Python 3.12, carrying `uv`, `ruff`, `mypy` and `pytest` inside it. The host needs Podman and nothing else. The build fails loudly if the base image ever drifts off 3.12.
+- `api/pyproject.toml`, `api/uv.lock` — dependency manifest and lockfile. The lockfile is the pin; the manifest holds only bounds.
+- `api/hatch_build.py` — reads the package version from the repository's `VERSION` file, so there is no second version to maintain.
+- `api/src/askwell/` — the package, with version resolution that prefers the `VERSION` file over stamped metadata so a bump is visible without reinstalling.
+- `api/tests/test_version.py` — five tests, including one that scans the tree for a second declared version string.
+- `scripts/dev.sh` — runs lint, format, typecheck and tests inside the image against the working tree. Every command runs with `--network=none` except `lock`, which needs an index and says so.
+
+### Changed
+
+- `AGENTS.md` §5 — the commands table now lists commands that have been run, not commands that are intended.
+- `AGENTS.md` §7 — tickets inside a phase are `PATCH`; the phase landing is the `MINOR`. Previously the two rules in that section contradicted each other for any phase with more than one ticket.
+
 ## 0.1.0 — 2026-08-10 (rewrite)
 
 Product repositioned. The previous documentation described on-premise software sold to government ministries; Askwell is a free local install for one individual professional. Version unchanged — no code exists, so no user-visible behaviour changed.

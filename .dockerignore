@@ -1,0 +1,17 @@
+# The build context is the repository root. Keep it to what the images need.
+.git
+.github
+.claude
+design-lab
+docs
+scripts
+node_modules
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.venv
+*.md
+!README.md

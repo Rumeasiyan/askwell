@@ -22,6 +22,38 @@ Template:
 
 ---
 
+## 2026-08-26 — The toolchain lives in the image; the lockfile is the pin
+
+**Decision:** The API image pins Python 3.12 and carries `uv`, `ruff`, `mypy` and `pytest` inside it. Nothing but Podman is installed on the host, and the host's Python is never invoked. Dependency bounds live in `api/pyproject.toml`; the exact versions live in `api/uv.lock`, and the image installs with `uv sync --locked`. The package version is read from the root `VERSION` file at build time by `api/hatch_build.py` and at run time by `askwell._version`, so it is never typed twice.
+
+**Why:** The obvious alternative — a virtualenv on the host, `pip install -r requirements.txt` — fails on this machine on the first command. The host runs Python 3.14; the project targets 3.12 because llama-cpp bindings, OCR and embeddings have no 3.14 wheels. A contributor taking the obvious path gets a wheel-build failure on day one, before they have any context to diagnose it, and the error message will be about a C compiler rather than about a version. Putting the interpreter in the image makes that class of failure impossible rather than documented.
+
+`--locked` over `--frozen` is the part worth recording, because both look correct and only one is. `--frozen` installs whatever the lockfile says and never reads `pyproject.toml`, so adding a dependency and forgetting to relock produces a **build that succeeds while missing it** — surfacing much later as an `ImportError` in unrelated code. This was verified, not assumed: with `--frozen`, adding `httpx>=0.27` to the manifest and rebuilding succeeded; with `--locked` the same change failed the build with `To update the lockfile, run uv lock`. A silent hole in the reproducibility guarantee is worse than no guarantee, because people rely on it.
+
+Version resolution prefers the `VERSION` file over installed metadata, which is the opposite of the usual ordering, and deliberately. Metadata is stamped once at install time. With the source mounted into a container — the normal development loop here — a `VERSION` bump would otherwise stay invisible until someone remembered to reinstall, and §7 exists precisely to stop a build reporting a number that matches nothing. Released installs have no `VERSION` file above `site-packages` and fall through to metadata, which by then holds the same value.
+
+**Rejected:** a `requirements.txt` with `pip-compile` (no project metadata, so the single-source version trick has nowhere to live); Poetry (declares its own version in `pyproject.toml`, reintroducing the second source); a devcontainer (ties the loop to one editor, and this project's contributors have not arrived yet to have an editor in common); running tools on the host with `pipx` (the 3.14 problem again, one layer along).
+
+**Consequences:** Every Python command now goes through `scripts/dev.sh`, which costs a container start (~1s) per invocation. That is the price of the host needing nothing, and it is paid on every lint. Adding a dependency is a two-step action — edit the bound, run `scripts/dev.sh lock`, review the diff — and the build will refuse until both are done. `scripts/dev.sh` runs everything with `--network=none` except `lock`, so a dependency that tries to reach the network during a test fails visibly rather than working on the maintainer's machine and nowhere else. Reversing this means putting a Python version constraint on every contributor's host, which is the thing being avoided.
+
+**Refs:** [#53](https://github.com/Rumeasiyan/askwell/issues/53), `docs/backlog/M0-it-runs.md` ticket `M0-FOUND-DEPLOY-001`, `api/Dockerfile`, `api/hatch_build.py`, `api/src/askwell/_version.py`, `scripts/dev.sh`, `AGENTS.md` §5.
+
+---
+
+## 2026-08-26 — A ticket is a PATCH; a milestone is the MINOR
+
+**Decision:** Inside a phase, each completed ticket bumps `PATCH`. The milestone landing takes the `MINOR`. So M0 walks `0.1.1` … `0.1.21` and then lands at `0.2.0`.
+
+**Why:** `AGENTS.md` §7 held two rules that were individually sensible and jointly impossible: *"bump on every completed change"*, and *"a phase completing takes `0.1.0` → `0.2.0`"*. M0 has 21 tickets. Following the first rule with `MINOR` bumps lands Phase 0 at `0.22.0`; following the second means 20 completed tickets carry no version at all, which breaks the property §7 is actually protecting — that a `BRAIN.md` entry, a closing issue comment and a version line up. Treating a ticket as a `PATCH` satisfies both: every completed change still moves the number, and the milestone boundary is still visible in the version.
+
+This is a reading of §7, not a change to it. It was written before there was a backlog, so nothing in it had to reconcile 21 tickets with one phase.
+
+**Consequences:** `PATCH` no longer means only "bug fix" during `0.x` — a ticket that adds a feature still bumps `PATCH` until its milestone lands. That reads oddly against the table in §7, so §7 now says so explicitly rather than leaving the next person to notice the contradiction and pick a side. Once `1.0.0` ships, the table governs on its own.
+
+**Refs:** `AGENTS.md` §7, [#53](https://github.com/Rumeasiyan/askwell/issues/53).
+
+---
+
 ## 2026-08-26 — No trademark, unsigned distribution, and Apache-2.0 stays
 
 **Decision:** Askwell will **not register a trademark**, and ships **unsigned** with published checksums and written bypass instructions. The licence **stays Apache-2.0**; moving to MIT was considered and rejected.

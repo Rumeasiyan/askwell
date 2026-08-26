@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "askwell"
+description = "Personal AI over your own files and databases."
+license = "Apache-2.0"
+requires-python = "==3.12.*"
+dynamic = ["version"]
+dependencies = []
+
+[dependency-groups]
+# Toolchain only. Runtime dependencies arrive with the code that needs them.
+# Constraints live here; the exact pins live in uv.lock, which is what the
+# build installs. Widening a bound here does not change any build until the
+# lock is regenerated deliberately.
+dev = [
+    "mypy>=1.11",
+    "pytest>=8.2",
+    "ruff>=0.6",
+]
+
+# The version is not declared here. It is read from the repository's VERSION
+# file by hatch_build.py, so there is exactly one place to change it.
+[tool.hatch.metadata.hooks.custom]
+path = "hatch_build.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/askwell"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # import sorting
+    "B",         # bugbear
+    "UP",        # pyupgrade
+    "ASYNC",     # blocking calls in async code
+    "T20",       # flake8-print: C6/conventions forbid print(), logging is structured
+    "RUF",
+]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src"]
+# An untyped dependency should be a decision, not a silent hole.
+disallow_any_unimported = true
+warn_unreachable = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q --strict-markers --strict-config"

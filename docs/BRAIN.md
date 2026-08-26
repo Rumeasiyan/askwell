@@ -7,25 +7,37 @@
 
 ## Current phase
 
-**Phase 0 — Skeleton. Not started.** Repository is documentation only: no application code, no manifests, no tests, no CI.
+**M0 — It runs. In progress: 1 of 21 tickets done.**
 
-**Version:** `0.1.0` (see `VERSION`). Phase 0 landing takes it to `0.2.0`.
-**Tracker:** `Rumeasiyan/askwell` (private). Working agreements in `AGENTS.md`.
+The repository is no longer documentation only. `api/` exists: an image, manifests, the package and its tests. The Compose stack, the database schema, the shell and the inference process do not exist yet.
+
+**Version:** `0.1.1` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
+**Tracker:** `Rumeasiyan/askwell`. Working agreements in `AGENTS.md`. Backlog in `docs/backlog/`.
+
+## Last completed
+
+**`M0-FOUND-DEPLOY-001`** — [#53](https://github.com/Rumeasiyan/askwell/issues/53). API image pinned to Python 3.12 with `uv`, `ruff`, `mypy` and `pytest` inside it; `scripts/dev.sh` runs them against the working tree.
+
+Verified, not assumed:
+
+- `scripts/dev.sh check` — lint, format, typecheck, 5 tests, all pass.
+- With every Python removed from `PATH`, `scripts/dev.sh test` still passes. The host interpreter is genuinely never invoked.
+- `--network=none` on every command: a socket to `1.1.1.1:53` raises `Network is unreachable` while the tests pass beside it (C1).
+- Deleting `api/uv.lock` fails the build with an explanation. Naming the file directly in `COPY` produced only `stat: no such file or directory`, so it is matched by a glob and the check below it does the explaining.
+- Adding a dependency to `pyproject.toml` without relocking **fails** the build. Under `--frozen` it silently succeeded — see `decisions.md`.
+- Writing `9.9.9` into `VERSION` changes what `askwell.__version__` reports, with no reinstall.
 
 ## Next task
 
-[#7](https://github.com/Rumeasiyan/askwell/issues/7) — scaffold the Compose stack and the FastAPI skeleton:
+**`M0-FOUND-BE-002`** — scaffold the API application: typed settings from environment, structured logging with no `print`, and a health surface reporting database, queue, worker, inference and egress proxy **separately**, each with a state and a reason when unhealthy. Not one aggregate boolean — see `docs/backlog/M0-it-runs.md`.
 
-- `compose.yaml` with `api`, `web`, `postgres` (pgvector), `redis`
-- FastAPI app with `/health`, config via Pydantic Settings
-- Alembic initialised, first migration
-- CI: ruff + mypy + pytest on push
+`ruff` already enforces the no-`print` half: `T20` is in the lint selection.
 
-Do **not** add `llm`, `voice`, `worker` or the `sandbox` Postgres yet — they arrive in later phases (`build-plan.md`).
+## Open
 
-**Blocked on [#9](https://github.com/Rumeasiyan/askwell/issues/9)** for the `web/` half: PRD-era stack versions are stale and `create-next-app` would contradict them on the first commit.
-
-The first migration no longer creates `organisations` and `users` — those tables are gone with the repositioning. See `architecture.md` §7 for the current data model.
+- [#47](https://github.com/Rumeasiyan/askwell/issues/47) — the support boundary in `SUPPORT.md` needs the owner to read and agree it. An agent wrote promises in his name. Not blocking any ticket.
+- [#49](https://github.com/Rumeasiyan/askwell/issues/49)–[#52](https://github.com/Rumeasiyan/askwell/issues/52) — contributor issues. #49 (does an 8 GB machine actually work?) is the riskiest unverified number in the project and needs hardware nobody here has.
+- The build runner still refuses live runs by design. It needs a product gate to check its own work against, and M0 is what builds that gate. Unblock it when `AGENTS.md` §7.3 can be filled with commands that exist.
 
 ---
 
