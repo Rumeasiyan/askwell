@@ -14,6 +14,7 @@ credential is a `SecretStr`, which keeps it out of logs, tracebacks and
 import os
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
+from pathlib import Path
 from typing import Annotated
 
 from pydantic import Field, SecretStr, ValidationError
@@ -86,6 +87,10 @@ class Settings(BaseSettings):
 
     egress_proxy_host: str = "egress-proxy"
     egress_proxy_port: Port = 3128
+
+    # Where the built frontend lives. The default is the path inside the API
+    # image; a source checkout points it at web/out.
+    web_assets_dir: Path = Path("/app/web/out")
 
     # How long a single health probe may take. Health must answer even when
     # every component is down, so this is short and it is a ceiling per probe,
