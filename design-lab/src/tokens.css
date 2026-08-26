@@ -55,10 +55,11 @@ body {
   --ask-surface:    #F3F4F1;
   --ask-sunk:       #DFE2DD;
   --ask-ink:        #232722;
-  --ask-rule:       #C9CDC6;
-  --ask-muted:      #6B716A;
+  --ask-rule:       #C9CDC6;   /* decorative hairlines only */
+  --ask-rule-strong:#7A8078;   /* lines that carry meaning — the claim leader, the inline card edge */
+  --ask-muted:      #5F655E;
   --ask-provenance: #2F6B62;
-  --ask-inferred:   #8A6A22;
+  --ask-inferred:   #7D601F;
   --ask-alarm:      #8C3A2E;
 
   /* type says who is speaking (§3)
@@ -83,6 +84,7 @@ body {
   --ask-sunk:       #141715;
   --ask-ink:        #E4E7E1;
   --ask-rule:       #333833;
+  --ask-rule-strong:#6A7268;
   --ask-muted:      #9AA096;
   --ask-provenance: #5FA99B;
   --ask-inferred:   #C9A34E;

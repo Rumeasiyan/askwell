@@ -31,12 +31,13 @@ The palette's job is to say **how Askwell knows a thing**. This is the rule that
 | Token | Light | Dark | Means |
 | ----- | ----- | ---- | ----- |
 | `--provenance` | `#2F6B62` | `#5FA99B` | **Traceable to a source.** Citations, source cards, leaders, quoted passages, the SQL that produced a number |
-| `--inferred` | `#8A6A22` | `#C9A34E` | **Askwell guessed.** Low-confidence memory, inferred CSV types, uninspected OCR, anything the user has not confirmed |
+| `--inferred` | `#7D601F` | `#C9A34E` | **Askwell guessed.** Low-confidence memory, inferred CSV types, uninspected OCR, anything the user has not confirmed |
 | `--ink` | `#232722` | `#E4E7E1` | Askwell's own words and all primary text |
 | `--paper` | `#E9EBE7` | `#191C1A` | Ground. Cool grey-green, blotting paper — not the warm cream every AI tool uses |
 | `--surface` | `#F3F4F1` | `#222623` | Raised: cards, inputs, the margin rail |
-| `--rule` | `#C9CDC6` | `#333833` | Hairlines, leaders, dividers |
-| `--muted` | `#6B716A` | `#9AA096` | Labels, metadata, timestamps |
+| `--rule` | `#C9CDC6` | `#333833` | **Decorative** hairlines and dividers only |
+| `--rule-strong` | `#7A8078` | `#6A7268` | **Lines that carry meaning** — the claim leader, and the card's left edge when the margin reflows inline. Meets 3:1 because losing it loses which source belongs to which claim |
+| `--muted` | `#5F655E` | `#9AA096` | Labels, metadata, timestamps |
 | `--alarm` | `#8C3A2E` | `#D9705F` | Failures only. Never for abstention |
 
 **`--provenance` is reserved.** It appears on nothing that is not traceable to a source. Buttons are not this colour. Links in the chrome are not this colour. Because it is spent nowhere else, the colour itself comes to mean "you can check this" — and a user learns that in about a day without being told.
@@ -156,7 +157,8 @@ Three are not generic and must not be reskinned into standard patterns.
 
 Not a checklist item; the target user works in this for hours.
 
-- Text contrast ≥ 4.5:1, UI ≥ 3:1, in both themes. `--provenance` and `--inferred` are tuned to pass on `--paper` and `--surface`.
+- Text contrast ≥ 4.5:1, UI ≥ 3:1, in both themes. **Measured, not assumed** — `--muted` and `--inferred` originally failed on `--paper` and `--sunk` in the *light* theme, which nobody would have guessed from looking at it.
+- A line that conveys information is a UI component and needs 3:1. That is why `--rule-strong` exists separately from `--rule`: the claim leader is the only thing joining a claim to its source, so it cannot be a decorative hairline.
 - **Colour is never the only signal.** The confidence marker differs in fill as well as hue; abstention is stated in words, not implied by tone.
 - Full keyboard path through ask → read answer → open citation → correct a fact. That is the core loop and it must not require a pointer.
 - Respects the OS light/dark setting, with a manual override.

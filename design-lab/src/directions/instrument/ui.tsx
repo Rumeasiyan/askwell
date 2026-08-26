@@ -192,8 +192,8 @@ export function ClaimRow({ claim, card }: { claim: ReactNode; card: ReactNode })
       <div>{claim}</div>
       {/* leader is the desktop affordance; below the breakpoint the card sits inline under
           the claim it supports. It is never removed — citations are not conditional on width. */}
-      <div className="mt-[13px] hidden h-px bg-[var(--ask-rule)] transition-colors group-hover:bg-[var(--ask-provenance)] @3xl:block" />
-      <div className="border-l-2 border-l-[var(--ask-rule)] pl-3 @3xl:border-l-0 @3xl:pl-0">{card}</div>
+      <div className="mt-[13px] hidden h-px bg-[var(--ask-rule-strong)] transition-colors group-hover:bg-[var(--ask-provenance)] @3xl:block" />
+      <div className="border-l-2 border-l-[var(--ask-rule-strong)] pl-3 @3xl:border-l-0 @3xl:pl-0">{card}</div>
     </div>
   )
 }
