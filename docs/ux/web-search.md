@@ -74,5 +74,5 @@ Claims from the user's documents render normally, with the margin. Claims from t
 
 ## 6. Open
 
-1. **Provider, and whether the user supplies a key or it is metered** (`../web-search.md` §6).
-2. **Whether an escalated question is re-asked locally** once the user adds a relevant document. Attractive, unspecified.
+1. **Provider, and whether the user supplies a key or it is metered** — [#43](https://github.com/Rumeasiyan/askwell/issues/43). Note that a user-supplied key contradicts `../PRD.md` §6.
+2. **Not in v1: re-asking an escalated question locally** once the user adds a relevant document (`../web-search.md` §8).

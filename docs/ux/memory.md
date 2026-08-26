@@ -89,4 +89,4 @@ Inferred facts get **Confirm** as well as Edit — one click to promote a good g
 ## 7. Open
 
 1. **Settled: bulk confirm exists, and requires the facts to be on screen.** Select-visible-then-confirm, never a single button that confirms an unseen list. The risk is rubber-stamping, and the mitigation is that a user cannot confirm what they have not scrolled past — which keeps the speed for a genuinely reviewed run and removes it for a blind one.
-2. **Export and import** across machines (`../memory-and-clarification.md` §9). Not v1.
+2. **Not in v1: memory import/export across machines** (`../memory-and-clarification.md` §9). The full export already carries memory in an open format; what is missing is a merge path.

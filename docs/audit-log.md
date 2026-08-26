@@ -111,4 +111,4 @@ Two gigabytes holds a very large amount of text — years of interactions for a 
 
 ## 9. Open
 
-1. **What online mode transmits** (§6). Deferred with Phase 7. Must be settled before that work starts — token counts, timestamps and model only, never content, but the precise shape needs writing down.
+1. **What online mode transmits** (§6) — [#45](https://github.com/Rumeasiyan/askwell/issues/45). Deferred with Phase 8. Must be settled before that work starts — token counts, timestamps and model only, never content, but the precise shape needs writing down.
