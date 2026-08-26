@@ -2,7 +2,7 @@
 
 **Goal:** Askwell starts on a clean machine and says it is ready. The container stack comes up, the native inference process comes up, the database has its full v1 schema with its invariants, egress is default-deny and counted, and the shell renders with a working local session.
 
-**Phase:** 0 (`../build-plan.md`) · **Depends on:** nothing · **Tickets:** 20 · **Estimated:** 56–81 hours
+**Phase:** 0 (`../build-plan.md`) · **Depends on:** nothing · **Tickets:** 21 · **Estimated:** 59–85 hours
 
 **Exit condition:** From a clean clone on a machine with only Podman and the platform's package manager, the stack comes up, the shell loads in a browser at localhost, the health surface reports every component individually, the assistant reports itself available, an attempt by any container to reach the internet is refused and counted, and lint, typecheck and tests pass in CI on push.
 
@@ -13,7 +13,7 @@
 | Repository and toolchain foundation | `FOUND` | Images, scaffolds, tests, CI, secrets, versioning |
 | Container stack and egress control | `STACK` | Compose topology, egress proxy, localhost binding |
 | Database and schema groundwork | `DATA` | Migrations, invariants, audit stores |
-| Application shell and session | `SHELL` | Local session, navigation, health |
+| Application shell and session | `SHELL` | Local session, navigation, health, the narrow-window drawer |
 | Native inference process | `MODEL` | Provisioning, supervision, client, failure separation |
 
 ---
@@ -92,7 +92,7 @@
 - Error handling that fails loudly in development and degrades with a stated reason otherwise.
 
 **Out of Scope**
-- Session handling (M0-SHELL-SESS-015).
+- Session handling (M0-SHELL-SESS-016).
 - Serving frontend assets (M0-FOUND-DEPLOY-004).
 - Any domain behaviour.
 
@@ -100,7 +100,7 @@
 - **Acceptance Criteria:** The application starts with valid configuration and refuses to start with invalid configuration, naming the offending value. The health surface reports each component separately. Logs are structured, include a timestamp and event name, and contain no secrets.
 - **Edge Cases:** A required environment variable is absent — startup fails naming it, rather than failing later at first use. The database is up but the inference process is not — health reports exactly that split. Every dependency is down — health still responds rather than hanging.
 - **Permissions / Roles:** Single user — no roles. Not applicable.
-- **UI States:** Consumed by the shell's ready/not-ready state (M0-SHELL-FE-016) and by the "assistant is unavailable" state in `../states-and-edge-cases.md` §1.
+- **UI States:** Consumed by the shell's ready/not-ready state (M0-SHELL-FE-017) and by the "assistant is unavailable" state in `../states-and-edge-cases.md` §1.
 - **Validation Rules:** All configuration is typed and validated at load. Unknown configuration keys are reported rather than ignored.
 - **Audit / Logging Requirements:** Startup and shutdown are logged with the resolved profile and component states. No audit record — this is not a user decision.
 - **Analytics Events:** Local usage counter only — nothing transmitted (C1).
@@ -111,7 +111,7 @@
 
 **Dependencies & Assumptions**
 - **Dependencies:** M0-FOUND-DEPLOY-001.
-- **API / Data Touchpoints:** Health surface; configuration store is environment only at this stage, with the `settings` table arriving in M0-DATA-DB-012.
+- **API / Data Touchpoints:** Health surface; configuration store is environment only at this stage, with the `settings` table arriving in M0-DATA-DB-013.
 - **Assumptions:** Component health is polled cheaply enough to be called on every shell load.
 
 **Testing Notes / Scenarios**
@@ -139,24 +139,27 @@
 **Context / Background**
 **Detailed Description:** The frontend is Next.js 16 with React 19, Tailwind 4 and shadcn/ui, managed with pnpm, and built to static assets. There is no permanent Node process on the user's machine — no server, no session to protect, no search indexing to serve. This ticket scaffolds the project, pins the four as one verified working set, sets TypeScript to strict, and establishes the design tokens from `../ux/design-system.md` §2 and §3 as the styling foundation, including the rule that no web fonts are fetched.
 
+The token set is **not** a colour palette alone. `../ux/design-system.md` §2 distinguishes `--rule` (decorative hairlines) from `--rule-strong` (lines that carry meaning — the claim leader, and the source card's left edge when the margin reflows inline), and §3 requires depth cues to be tokens (`--inset`, `--drop`) rather than literal shadow values, because a hardcoded black-at-7% shadow reads as depth on paper and is invisible on a dark ground. A literal shadow silently removes the affordance it was added for in exactly one of the two themes, which is the kind of defect nobody reports because nobody sees it.
+
 **Scope**
 - Project scaffold with the four dependencies pinned as one set, using pnpm.
 - Strict TypeScript, no implicit permissive typing.
-- Design tokens for colour and type from the design system, with both light and dark values.
+- Design tokens for colour and type from the design system, with both light and dark values, including `--rule-strong` as a token distinct from `--rule`, and `--inset` and `--drop` for depth.
+- The base affordance rules from `../ux/design-system.md` §7 expressed in the token layer: a primary action is **filled, not outlined**; an input is inset; a navigating control lifts or shifts on hover.
 - Bundled or system fonts only; no external font or asset requests anywhere.
 - A static export build producing assets on disk.
 
 **Out of Scope**
-- Any screen (M0-SHELL-FE-016 provides only the shell).
+- Any screen (M0-SHELL-FE-017 provides only the shell).
 - Serving the assets (M0-FOUND-DEPLOY-004).
 - Component work for specific screens.
 
 **Acceptance Criteria**
-- **Acceptance Criteria:** The build produces static assets. The four dependencies are pinned to exact versions recorded together. Type checking passes in strict mode. The design tokens are defined once and referenced, not repeated.
-- **Edge Cases:** Build run with no network after install — succeeds. A stylesheet or script referencing an external host — the build fails or is caught by the check in M0-STACK-SEC-009's release test.
+- **Acceptance Criteria:** The build produces static assets. The four dependencies are pinned to exact versions recorded together. Type checking passes in strict mode. The design tokens are defined once and referenced, not repeated. `--rule-strong` exists as its own token and is not an alias of `--rule`. Depth is expressed only through the depth tokens. **Contrast is measured, not assumed:** every token pair used for text reaches 4.5:1 and every pair used for a UI line or control reaches 3:1, checked in *both* themes and recorded — `../ux/design-system.md` §8 notes that `--muted` and `--inferred` originally failed in the light theme, which nobody would have guessed by looking.
+- **Edge Cases:** Build run with no network after install — succeeds. A stylesheet or script referencing an external host — the build fails or is caught by the check in M0-STACK-SEC-010's release test. A shadow written as a literal colour rather than a depth token — caught, because it will be invisible in one theme. A line carrying meaning styled with `--rule` — caught, because at 3:1 it is the only thing joining a claim to its source.
 - **Permissions / Roles:** Single user — no roles. Not applicable.
-- **UI States:** None yet; tokens back every state in `../ux/design-system.md`.
-- **Validation Rules:** No external URL may appear in built output. Colour values appear only as tokens.
+- **UI States:** None yet; tokens back every state in `../ux/design-system.md` §2, §3, §7 and §8.
+- **Validation Rules:** No external URL may appear in built output. Colour values appear only as tokens. Shadow values appear only as depth tokens. A contrast pair that fails in either theme is a build-blocking defect, not a design preference.
 - **Audit / Logging Requirements:** None.
 - **Analytics Events:** None. There is no analytics SDK and there will not be one (`../success-metrics.md` §6).
 
@@ -169,9 +172,9 @@
 - **Assumptions:** pnpm is available in the build environment; the static export path is compatible with every screen planned, including the source viewer.
 
 **Testing Notes / Scenarios**
-- **Cold-start manual walkthrough:** From a clean clone, install and build the frontend, then open the produced index file directly in a browser with the network disabled. Observe it renders with the intended typeface and background rather than falling back to a default sans-serif on a white page.
-- **Other scenarios:** Inspect the built output for any external host reference — there must be none.
-- **Known gaps:** No routes, no data, no components beyond the token demonstration. Nothing is served by the API yet.
+- **Cold-start manual walkthrough:** From a clean clone, install and build the frontend, then open the produced index file directly in a browser with the network disabled. Observe it renders with the intended typeface and background rather than falling back to a default sans-serif on a white page. Switch the operating system between light and dark and confirm the raised surfaces still read as raised in both — a demonstration card with an inset input and a filled primary action is enough to see it.
+- **Other scenarios:** Inspect the built output for any external host reference — there must be none. Run the contrast measurement over the token pairs and read the reported figures for both themes.
+- **Known gaps:** No routes, no data, no components beyond the token demonstration. Nothing is served by the API yet. The contrast check covers token pairs, not every rendered composition; screens are re-checked as they ship.
 
 **Effort & Granularity Check**
 - **Estimate:** 4–6 hours · **Priority:** Critical
@@ -199,14 +202,14 @@
 - A build step that places assets where the API expects them.
 
 **Out of Scope**
-- Frontend content (M0-SHELL-FE-016).
+- Frontend content (M0-SHELL-FE-017).
 - Update delivery (blocked, M7).
 
 **Acceptance Criteria**
 - **Acceptance Criteria:** Opening the local address in a browser loads the interface. A deep client-side route loads directly rather than returning not-found. After a rebuild, a reload serves the new assets rather than a cached old bundle.
 - **Edge Cases:** Assets missing entirely — the API reports a clear message naming the missing build rather than serving a blank page. A request for a path that is neither an asset nor a known route — a clear not-found, not the application shell.
 - **Permissions / Roles:** Single user — no roles. Not applicable.
-- **UI States:** The unbuilt-assets case surfaces as the not-ready state in M0-SHELL-FE-016.
+- **UI States:** The unbuilt-assets case surfaces as the not-ready state in M0-SHELL-FE-017.
 - **Validation Rules:** No asset path may escape the asset directory.
 - **Audit / Logging Requirements:** None.
 - **Analytics Events:** Local usage counter only — nothing transmitted (C1).
@@ -267,7 +270,7 @@
 - A contributor changes the health surface and a test catches that a component stopped being reported individually.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M0-FOUND-DEPLOY-001, M0-FOUND-BE-002, M0-DATA-DB-012.
+- **Dependencies:** M0-FOUND-DEPLOY-001, M0-FOUND-BE-002, M0-DATA-DB-013.
 - **API / Data Touchpoints:** Disposable database schema.
 - **Assumptions:** A real Postgres is used rather than an in-memory substitute, because the schema relies on vector and full-text features a substitute does not have.
 
@@ -463,7 +466,7 @@
 - **Acceptance Criteria:** One command brings the stack up from a clean clone. The database retains data across a stop and start. The worker picks up and completes a trivial enqueued job. Health declarations prevent the API reporting ready before the database accepts connections.
 - **Edge Cases:** Port already in use — the failure names the port. Volume from an older schema version present — migrations run and either succeed or fail with a readable message. The machine restarts mid-job — the job is retried rather than lost.
 - **Permissions / Roles:** Single user — no roles. Not applicable.
-- **UI States:** Feeds the ready/not-ready state in M0-SHELL-FE-016 and the "model not loaded" split in `../states-and-edge-cases.md` §1.
+- **UI States:** Feeds the ready/not-ready state in M0-SHELL-FE-017 and the "model not loaded" split in `../states-and-edge-cases.md` §1.
 - **Validation Rules:** No service binds to a network-reachable interface except through the deliberate localhost binding in M0-STACK-SEC-012.
 - **Audit / Logging Requirements:** Each service logs start and stop with its version.
 - **Analytics Events:** Local usage counter only — nothing transmitted (C1).
@@ -861,18 +864,22 @@
 **Context / Background**
 **Detailed Description:** The shell is the three-column layout from `../ux/design-system.md` §4 with the left rail carrying sources, memory and settings, an empty centre and the provenance margin reserved. It renders the component-level ready state from the health surface, distinguishing the container stack being down from the assistant process being down, because those have different fixes.
 
+**Askwell is a desktop application, so there is no phone.** Responsiveness here serves a resized window on a laptop, which is a normal thing to do — not a small screen. The shell is later hosted inside the Tauri window (M7-TAURI-DEPLOY-181) and must not assume browser chrome for anything, which is why the narrow-window menu control lives in the app's own chrome and gets its own ticket (M0-SHELL-FE-017a).
+
 **Scope**
 - Three-column shell with the left rail and reserved margin.
 - Route stubs for the screens that arrive later, each rendering its empty state placeholder.
 - Ready and not-ready states driven by component health, with a per-component reason.
+- The app's own chrome region, which the narrow-window menu control attaches to in M0-SHELL-FE-017a.
 
 **Out of Scope**
+- The drawer behaviour below the breakpoint (M0-SHELL-FE-017a).
 - Any screen's content beyond a placeholder.
 - Keyboard shortcuts beyond basic navigation.
 
 **Acceptance Criteria**
 - **Acceptance Criteria:** The shell renders at the local address with the left rail and the reserved margin. When a component is unhealthy, the shell names it and states what still works. When the assistant is unavailable but the database is fine, the shell says the assistant is unavailable rather than that Askwell is down.
-- **Edge Cases:** Health cannot be read at all — the shell says so rather than rendering as if healthy. Window narrower than the three-column breakpoint — the margin moves inline rather than disappearing, per `../ux/ask.md` §5.
+- **Edge Cases:** Health cannot be read at all — the shell says so rather than rendering as if healthy. Window narrower than the three-column breakpoint — the margin moves inline rather than disappearing, per `../ux/ask.md` §5, and the left rail becomes reachable as a drawer rather than being removed (M0-SHELL-FE-017a).
 - **Permissions / Roles:** Single user — no roles. Not applicable.
 - **UI States:** `../ux/design-system.md` §4 for layout; `../states-and-edge-cases.md` §1 for the model-not-loaded and offline states — **never render an offline warning**, because being offline is the design point.
 - **Validation Rules:** No screen may hide the provenance margin.
@@ -890,12 +897,69 @@
 **Testing Notes / Scenarios**
 - **Cold-start manual walkthrough:** Bring the stack up cold and open the local address. Observe the shell with its left rail and the reserved margin, and a ready indication. Stop the inference process only and reload — observe the assistant reported unavailable while navigation still works. Stop the database and reload — observe a different, specific message.
 - **Other scenarios:** Narrow the window past the breakpoint and confirm the margin moves inline rather than vanishing.
-- **Known gaps:** Every screen is a placeholder. No conversation, no sources, no settings content. Offline shows nothing, which is correct.
+- **Known gaps:** Every screen is a placeholder. No conversation, no sources, no settings content. Offline shows nothing, which is correct. The left rail simply reflows at this stage; the drawer arrives in M0-SHELL-FE-017a.
 
 **Effort & Granularity Check**
 - **Estimate:** 3–4 hours · **Priority:** High
 - **Labels / Component:** `phase:0`, frontend
 - **Granularity:** Shell and health rendering only. Small because no screen content is included.
+
+---
+
+### M0-SHELL-FE-017a — The left rail becomes a reachable drawer below the breakpoint
+
+**Type:** Story
+
+**User Story**
+- **Actor:** someone who has dragged the Askwell window to half the screen so they can read a contract beside it.
+- **User Need:** navigation that is out of the way but still reachable.
+- **Business Value:** the left rail is the only route to sources, memory and settings; hiding it without a way back strands the user inside the product with no way to add the source that would answer their question.
+- *As someone working with Askwell in half a window next to the document I am checking, I want the navigation tucked away but one click from returning, so that a narrow window costs me space rather than function.*
+
+**Context / Background**
+**Detailed Description:** Below the layout breakpoint the left rail becomes a drawer rather than disappearing (`../ux/design-system.md` §4). A menu control lives in **the application's own chrome**, not in the browser's, because the shell is later hosted in a Tauri window where there is no browser chrome to borrow. Opening the drawer lays it over the content with a scrim; the scrim dismisses it; selecting a destination closes it and navigates.
+
+This is a resized-window behaviour, not a mobile behaviour. Askwell installs as a desktop application and **there is no phone** — the target is a laptop window someone has made narrow on purpose.
+
+**Scope**
+- A menu control in the app's own chrome, present only below the breakpoint.
+- Drawer presentation of the existing left rail contents, with no item removed or reordered.
+- A scrim that dismisses on click and on Escape.
+- Dismissal on selecting a destination, with the navigation completing.
+- Focus handling: focus moves into the drawer on open and returns to the menu control on close.
+
+**Out of Scope**
+- Any change to what the rail contains.
+- The provenance margin's own reflow (M1-CITE-FE-044).
+- Gesture-driven opening — there is no touch target audience.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** Above the breakpoint the rail is permanently visible and no menu control is shown. Below it, the rail is hidden and a menu control appears in the app's own chrome. Activating it opens the drawer over the content with a scrim. Clicking the scrim, pressing Escape, or selecting a destination all close it, and selecting a destination navigates. Every rail item present at width is present in the drawer.
+- **Edge Cases:** The window is resized from narrow to wide **while the drawer is open** — the drawer resolves into the permanent rail rather than leaving a stranded overlay. The window is resized wide to narrow while a rail item is focused — focus is not lost. A destination that is itself unavailable because a component is down — it still appears, with its reason, rather than vanishing from navigation. The drawer is opened while an answer is streaming — streaming continues underneath and is not interrupted.
+- **Permissions / Roles:** Single user — no roles. Not applicable.
+- **UI States:** `../ux/design-system.md` §4 (the breakpoint, the drawer, the scrim, and the statement that there is no phone); `../states-and-edge-cases.md` §1 "Narrow window".
+- **Validation Rules:** No navigation destination may be removed at any width. The menu control must belong to the application's chrome so it survives being hosted in the desktop shell.
+- **Audit / Logging Requirements:** None — this is presentation.
+- **Analytics Events:** None.
+
+**Real-World Example Scenarios**
+- A user snaps Askwell to the left half of their screen with a PDF on the right, opens the drawer to reach settings, changes the theme, and the drawer closes as the settings screen loads.
+- A user drags the window back to full width mid-navigation and the drawer becomes the ordinary rail without a flicker of an orphaned overlay.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M0-SHELL-FE-017.
+- **API / Data Touchpoints:** None.
+- **Assumptions:** One breakpoint governs both the rail and the provenance margin, so a window is never in a state where one has reflowed and the other has not.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** Bring the stack up cold and open the shell at full width. Confirm the left rail is visible and there is no menu control. Drag the window narrow past the breakpoint and watch the rail withdraw and a menu control appear in Askwell's own chrome. Click it, see the drawer over the content with a dimmed background, click the dimmed area and watch it close. Open it again, choose a different destination, and confirm the drawer closes and the destination loads. Drag the window wide again and confirm the rail is simply there.
+- **Other scenarios:** Open the drawer and press Escape. Open the drawer and widen the window without closing it. Tab through the drawer with the keyboard and confirm focus returns to the menu control on close.
+- **Known gaps:** No swipe gesture. No remembered open/closed state between sessions — it opens closed every time, deliberately. The drawer is not yet hosted in the desktop shell; that is M7-TAURI-DEPLOY-181.
+
+**Effort & Granularity Check**
+- **Estimate:** 3–4 hours · **Priority:** High
+- **Labels / Component:** `phase:0`, frontend
+- **Granularity:** One control, one overlay and its dismissal rules. Small because the rail's contents are already built.
 
 ---
 
@@ -938,7 +1002,7 @@
 **Dependencies & Assumptions**
 - **Dependencies:** M0-FOUND-BE-002, M0-STACK-DEPLOY-009.
 - **API / Data Touchpoints:** Process state feeds the health surface.
-- **Assumptions:** *Assumption, explicitly accepted:* speech-to-text stays containerised on CPU. If it turns out to need GPU access on accelerated profiles, this supervision work extends to a second native process and the installer changes — flagged in M6-AUDIO-DEPLOY-118.
+- **Assumptions:** *Assumption, explicitly accepted:* speech-to-text stays containerised on CPU. If it turns out to need GPU access on accelerated profiles, this supervision work extends to a second native process and the installer changes — flagged in M6-AUDIO-DEPLOY-125.
 
 **Testing Notes / Scenarios**
 - **Cold-start manual walkthrough:** On a cold machine, start Askwell and observe the shell report the assistant available and name the loaded model. Kill the inference process from the operating system and watch the shell change to unavailable, then return to available after the restart. Rename the model file and restart — the shell reports the assistant unavailable with the missing path named.
@@ -1026,6 +1090,7 @@
 **Out of Scope**
 - Automatic repair.
 - The installer's supervision UI (M7).
+- The third cause. Once Askwell is hosted in the desktop shell (M7-TAURI-DEPLOY-181) the shell itself can be running while either half is not, which M7-TAURI-DEPLOY-183 adds as a third distinguishable cause. It does not exist in M0 and must not be pre-built here.
 
 **Acceptance Criteria**
 - **Acceptance Criteria:** With the stack down, the browser cannot reach Askwell at all, and the installer-side supervision surface later covers this; with the stack up and the assistant down, the shell states the assistant is unavailable, names the fix and confirms browsing and search still work.
@@ -1047,7 +1112,7 @@
 **Testing Notes / Scenarios**
 - **Cold-start manual walkthrough:** From a cold start with everything healthy, stop only the inference process. Reload the browser and read the message — it names the assistant, offers a fix, and says search still works. Restart it, confirm recovery, then stop the whole stack and confirm the failure is visibly different.
 - **Other scenarios:** Trigger a restart and confirm the transient restarting state appears.
-- **Known gaps:** No repair button yet; the fix is described, not performed.
+- **Known gaps:** No repair button yet; the fix is described, not performed. Two causes, not three — the desktop shell does not exist until M7 and adds a third then (M7-TAURI-DEPLOY-183).
 
 **Effort & Granularity Check**
 - **Estimate:** 2–3 hours · **Priority:** High

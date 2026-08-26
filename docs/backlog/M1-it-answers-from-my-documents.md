@@ -2,7 +2,7 @@
 
 **Goal:** Add a PDF, watch it index, ask about it, get a cited answer, click the citation and land on the page with the passage highlighted.
 
-**Phase:** 1 (`../build-plan.md`) · **Depends on:** M0 · **Tickets:** 32 · **Estimated:** 102–148 hours
+**Phase:** 1 (`../build-plan.md`) · **Depends on:** M0 · **Tickets:** 37 · **Estimated:** 113–164 hours
 
 **Exit condition:** From a clean install, a user nominates a folder, adds a scanned English PDF, watches it index, asks a question it covers, receives a streamed answer whose every factual claim carries a source card naming file and page, clicks a card and lands on the highlighted passage in under a second, and renames the file on disk to see the moved-file state rather than a deletion.
 
@@ -17,6 +17,7 @@
 | Citations | `CITE` | Citation extraction, the provenance margin, the uncited-claim query |
 | Source viewer | `VIEW` | In-app rendering, navigation, moved files |
 | Library and first run | `LIB` | Inventory, statuses, empty states, the first ten minutes |
+| Conversation | `CONV` | Stored turn summaries, collapsing past turns, expanding, suggested follow-ups |
 
 ---
 
@@ -33,6 +34,8 @@
 **Context / Background**
 **Detailed Description:** Askwell indexes in place rather than copying. The API and worker run in containers, so a nominated root directory becomes a known mount rather than the container having open filesystem access. Adding a file under an unregistered root prompts to register its root first. **No screen specification currently covers path registration** — this ticket writes it against the existing add-source shape rather than inventing a new screen.
 
+**The native directory picker is why the desktop shell exists** (`../decisions.md`, 2026-08-26). Nominating a root is one of the two paths the Tauri shell was justified by, and the other is relocating a moved file (M1-VIEW-BE-049). The shell does not exist until M7, so this ticket builds the registry and the flow against a typed or browser-selected path and **is deliberately shaped so the picker replaces only the selection step** — M7-TAURI-FE-182 swaps it in without touching the registry, the validation or the consequences of removing a root. Building the registry around a browser upload control instead would have to be undone.
+
 **Scope**
 - A registry of nominated root directories with their mount state.
 - Registration flow reachable from the add-source screen when a file falls outside every known root.
@@ -41,6 +44,7 @@
 
 **Out of Scope**
 - Folder watching and re-indexing on change (open in `../ux/add-source.md` §6).
+- The native directory dialog itself (M7-TAURI-FE-182).
 - Installer-side registration (M7).
 - Any file copying — there is none.
 
@@ -65,7 +69,7 @@
 **Testing Notes / Scenarios**
 - **Cold-start manual walkthrough:** Launch Askwell from a cold start on a machine with no sources. Go to add a source and drag in a file from an unregistered folder. Observe a prompt to nominate that folder, with a plain explanation. Accept, and observe the file proceed to indexing. Add a second file from the same folder and observe no second prompt. Open settings and see the folder listed.
 - **Other scenarios:** Unmount a removable root and observe its sources reported unavailable rather than deleted. Remove a root and confirm sources say so.
-- **Known gaps:** No folder watching. Registration may require a stack restart on some platforms; if so it is stated at the moment of registration rather than discovered.
+- **Known gaps:** No folder watching. Registration may require a stack restart on some platforms; if so it is stated at the moment of registration rather than discovered. **Selection is by typed or browser-provided path until the desktop shell ships** — a directory cannot be chosen from a real system dialog until M7-TAURI-FE-182, and until then a path the browser will not surface must be typed. That is a known gap, not a defect.
 
 **Effort & Granularity Check**
 - **Estimate:** 4–6 hours · **Priority:** Critical
@@ -113,12 +117,12 @@
 **Dependencies & Assumptions**
 - **Dependencies:** M1-ADD-ING-021, M0-SHELL-FE-017.
 - **API / Data Touchpoints:** `sources`, `documents`.
-- **Assumptions:** The browser's drop event gives usable paths under every supported platform; where it does not, the browse path is the fallback and is stated.
+- **Assumptions:** The browser's drop event gives usable paths under every supported platform; where it does not, the browse path is the fallback and is stated. **The browse alternative is a placeholder for the native file dialog**, which the desktop shell provides in M7-TAURI-FE-182; this ticket keeps selection behind one seam so that swap is a replacement rather than a rewrite. It is not a file *upload* control and must never become one — Askwell indexes in place and copies nothing.
 
 **Testing Notes / Scenarios**
 - **Cold-start manual walkthrough:** Launch cold, land on the empty state, and drag a single PDF onto the window from the desktop. Observe the drop affordance appear and the file accepted. Then drag a folder of several files and observe a count before it starts. Use the browse button and confirm the same result.
 - **Other scenarios:** Drop while a previous add is running.
-- **Known gaps:** Nothing is extracted or searchable yet. The other three routes do nothing.
+- **Known gaps:** Nothing is extracted or searchable yet. The other three routes do nothing. Browsing for files uses whatever the browser provides until the native dialog arrives in M7-TAURI-FE-182.
 
 **Effort & Granularity Check**
 - **Estimate:** 3–4 hours · **Priority:** Critical
@@ -198,7 +202,7 @@
 
 **Out of Scope**
 - The dump-specific refusal message (M4).
-- Password-protected files, which are a failure rather than an unsupported format (M1-EXTRACT-ING-030).
+- Password-protected files, which are a failure rather than an unsupported format (M1-EXTRACT-VAL-030).
 
 **Acceptance Criteria**
 - **Acceptance Criteria:** An unsupported file is rejected by name with the supported list and nothing is added for it. Other files in the same drop proceed. A file whose extension lies about its content is judged on content.
@@ -948,7 +952,7 @@
 
 ---
 
-### M1-ASK-FE-039 — Ask screen: composer, conversation, streaming and step labels
+### M1-ASK-FE-039 — Ask screen: composer, the live turn, streaming and step labels
 
 **Type:** Story
 
@@ -959,23 +963,30 @@
 - *As someone who currently opens files one at a time, I want to type a question and get an answer, so that I stop hunting.*
 
 **Context / Background**
-**Detailed Description:** Build the Ask screen in its three-column form: left rail, centre conversation at a 68–75 character measure, and the provenance margin reserved. The composer submits on Enter with a newline on Shift-Enter. Step labels render during retrieval, tokens stream into the conversation, and the margin is present even before it is populated.
+**Detailed Description:** Build the Ask screen in its three-column form: left rail, centre column at a 68–75 character measure, and the provenance margin reserved. The composer submits on Enter with a newline on Shift-Enter. Step labels render during retrieval, tokens stream, and the margin is present even before it is populated.
+
+**This ticket builds the *live turn*, not the conversation.** `../ux/conversation.md` is a separate specification: past turns collapse to a question, a stored one-line summary and a source count, while the live turn keeps its full margin. That behaviour is the `CONV` epic (M1-CONV-BE-177 onwards) and is deliberately not folded in here — a single question and answer is enough to prove the answer path, and collapsing needs stored summaries and citation counts that do not exist yet. What this ticket must do is render the live turn in a container that the collapse behaviour can later wrap, rather than assuming one answer is all there will ever be.
+
+**The composer carries a mic control from Phase 1**, disabled with its reason until voice ships (`../ux/ask.md` §4). That is M1-ASK-FE-039a, immediately after this one, and the reason it is not deferred to M6 is that the composer must not be rebuilt later to make room for it.
 
 **Scope**
-- Composer, conversation list, streaming render, step labels.
+- Composer, the live turn, streaming render, step labels.
 - Reserved margin rendering its explicitly empty state.
+- A turn container that later collapses without being rewritten.
 - Keyboard entry to the screen from anywhere.
 
 **Out of Scope**
+- The mic control (M1-ASK-FE-039a).
+- Collapsing past turns, stored summaries, suggested follow-ups (M1-CONV-BE-177 through M1-CONV-FE-180).
 - Source cards and leaders (M1-CITE-FE-043).
 - Abstention rendering (M2).
 - Memory chips (M3), SQL disclosure (M4), trace (M5), voice (M6).
 
 **Acceptance Criteria**
-- **Acceptance Criteria:** A typed question submits and an answer streams into the conversation. Step labels appear before the first token. The margin is visible and states it is empty rather than being hidden. The measure is within the specified range.
-- **Edge Cases:** A submitted empty question — no request is made. A question submitted while one is running — queued or refused with a stated reason, not silently dropped. Navigating away mid-answer and back — the completed answer is present. A very long conversation — scrolling stays smooth.
+- **Acceptance Criteria:** A typed question submits and an answer streams into the live turn. Step labels appear before the first token. The margin is visible and states it is empty rather than being hidden. The measure is within the specified range. A second question renders as a second turn — unstyled by the collapse rules, which arrive in the `CONV` epic — rather than replacing the first.
+- **Edge Cases:** A submitted empty question — no request is made. A question submitted while one is running — **queued, not interleaved** (`../ux/conversation.md` §5); one answer at a time and nothing silently dropped. Navigating away mid-answer and back — the completed answer is present. Several turns — scrolling stays smooth, and they stack until collapsing lands.
 - **Permissions / Roles:** Single user — no roles. Not applicable.
-- **UI States:** `../ux/ask.md` §2, §4, §5 (retrieving, streaming, answered); `../ux/design-system.md` §4.
+- **UI States:** `../ux/ask.md` §2, §4, §5 (retrieving, streaming, answered); `../ux/conversation.md` §5 (single turn — "it is `ask.md`"); `../ux/design-system.md` §4.
 - **Validation Rules:** Non-English questions get the English-only statement rather than a poor answer (`../ux/ask.md` §5).
 - **Audit / Logging Requirements:** Every question and answer is an interaction record.
 - **Analytics Events:** Local counter of questions asked — nothing transmitted (C1).
@@ -991,12 +1002,68 @@
 **Testing Notes / Scenarios**
 - **Cold-start manual walkthrough:** Launch cold with an indexed PDF present. Land on Ask. Type a question about the document and press Enter. Observe step labels within a second, then streaming tokens, then a complete answer. Confirm the margin is on screen and says it is empty. Navigate to the library and back — the answer is still there.
 - **Other scenarios:** Ask a question in another language and read the English-only statement.
-- **Known gaps:** The answer is ungrounded until the next ticket lands — no sources are shown and nothing can be checked. This state must not ship to a user; M1-CITE-BE-042 and M1-CITE-FE-043 follow immediately.
+- **Known gaps:** The answer is ungrounded until the next ticket lands — no sources are shown and nothing can be checked. This state must not ship to a user; M1-CITE-BE-042 and M1-CITE-FE-043 follow immediately. Past turns do not collapse and there are no follow-up suggestions; both are the `CONV` epic. The mic control is not present until M1-ASK-FE-039a.
 
 **Effort & Granularity Check**
 - **Estimate:** 4–6 hours · **Priority:** Critical
 - **Labels / Component:** `phase:1`, frontend
-- **Granularity:** One screen with three regions. Upper bound.
+- **Granularity:** One screen with three regions and one live turn. Upper bound; the conversation behaviour was split out precisely to keep it there.
+
+---
+
+### M1-ASK-FE-039a — Mic control in the composer, disabled with its reason until voice ships
+
+**Type:** Story
+
+**User Story**
+- **Actor:** someone who wonders, on day one, whether they will be able to talk to this.
+- **User Need:** to see that voice is part of the product and to be told plainly when it arrives.
+- **Business Value:** the composer is the most-used control in Askwell, and adding a button to it four phases later means rebuilding and re-testing it. Reserving the space now costs an hour; retrofitting it costs the composer.
+- *As someone who dictates rather than types when their hands are full, I want to see that voice exists and is coming, so that I am not left guessing whether the product will ever suit how I work.*
+
+**Context / Background**
+**Detailed Description:** `../ux/ask.md` §4 puts a mic control in the composer **from Phase 1**, disabled, stating its own reason — the composer is not rebuilt later to make room for it. This ticket adds the control, its disabled presentation, and the statement that voice arrives with the voice phase. It does no audio work of any kind.
+
+The disabled state must read as *not yet* rather than *broken*. `../ux/design-system.md` §6 forbids apologetic copy; the control says what it will do and when, in Askwell's own voice.
+
+**Scope**
+- The mic control in the composer, at its final position and size.
+- Disabled presentation consistent with the design system, with a reason available on hover and on keyboard focus.
+- Copy naming voice as arriving later, not as unavailable or failed.
+- The seam that M6-VUI-FE-132 enables, so the voice phase changes state rather than layout.
+
+**Out of Scope**
+- Any audio capture, permission request, transport or synthesis — all of M6.
+- The level meter and the stop control (M6-VUI-FE-132, M6-VUI-FE-133).
+- Escalating a web search by voice — not specified, deferred with the voice work (`../web-search.md` §8).
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** The composer renders a mic control in every state the composer has. It is visibly disabled, is skipped by tab order or focusable-and-explained rather than silently inert, and states why on hover and on focus. Activating it does nothing and requests no microphone permission. The composer's layout is identical to what it will be once voice is enabled — enabling voice in M6 changes state, not geometry.
+- **Edge Cases:** A screen reader reaching the control — it is announced as disabled with the reason, not as an unlabelled button. The window narrowed past the breakpoint — the control stays in the composer rather than being dropped, because dropping it would mean re-solving the layout in M6. A user clicking it repeatedly — nothing happens, no error, no permission prompt.
+- **Permissions / Roles:** Single user — no roles. Not applicable. **No microphone permission is requested** — asking for a device before the feature exists is exactly the kind of surprise this product cannot afford.
+- **UI States:** `../ux/ask.md` §4 (mic control, present from Phase 1, disabled with its reason); `../ux/voice.md` for what it becomes; `../ux/design-system.md` §6 for the copy.
+- **Validation Rules:** The control may never be hidden rather than disabled — a control that appears in M6 is a layout change, which is the thing this ticket exists to prevent.
+- **Audit / Logging Requirements:** None. Nothing happens.
+- **Analytics Events:** None.
+
+**Real-World Example Scenarios**
+- A user evaluating three local AI tools sees the mic control, hovers it, reads that speaking to Askwell arrives in a later version, and files that as a plan rather than a gap.
+- The voice phase arrives and the composer is not touched beyond enabling the control, so nothing that worked before needs re-testing.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M1-ASK-FE-039.
+- **API / Data Touchpoints:** None.
+- **Assumptions:** The control's final size and position are known from `../ux/voice.md` and will not change when voice ships; if they do, this ticket has not done its job.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** Launch cold and land on Ask. Look at the composer and see the mic control beside the send affordance. Hover it and read a sentence saying speaking to Askwell arrives later — not an error, not an apology. Click it and confirm nothing happens and no browser microphone prompt appears. Tab through the composer with the keyboard and confirm the control is announced with its reason rather than being an unlabelled dead stop.
+- **Other scenarios:** Narrow the window and confirm the control is still in the composer. Compare the composer against the voice specification's illustration and confirm the geometry already matches.
+- **Known gaps:** No voice of any kind. No microphone access. Voice escalation of a web search is unspecified and deferred (`../web-search.md` §8).
+
+**Effort & Granularity Check**
+- **Estimate:** 1–2 hours · **Priority:** Medium
+- **Labels / Component:** `phase:1`, frontend
+- **Granularity:** One disabled control and its copy. Small by design — the whole point is that it is cheap now and expensive later.
 
 ---
 
@@ -1219,25 +1286,29 @@
 **Context / Background**
 **Detailed Description:** Hovering a cited claim raises its leader and its card; hovering a card raises its claim. Below the three-column breakpoint, cards move inline beneath the answer rather than being removed. Nothing is ever hidden by width.
 
+**The line that joins a claim to its card carries information, so it is `--rule-strong`, not `--rule`** (`../ux/design-system.md` §2 and §8). At width that is the claim leader; below the breakpoint, where there is no room for a leader, the card's left edge carries the same relationship and takes the same token. A decorative hairline at the contrast of a divider would lose which source belongs to which claim, which is the whole content of the pairing.
+
+**There is no phone.** Askwell installs as a desktop application, so this behaviour serves a window someone has made narrow beside another window — not a small screen.
+
 **Scope**
-- Hover pairing in both directions with a clear raised state.
-- Inline card layout below the breakpoint, preserving order and content.
+- Hover pairing in both directions with a clear raised state, the leader drawn in `--rule-strong`.
+- Inline card layout below the breakpoint, preserving order and content, with a `--rule-strong` left edge carrying the relationship the leader carried at width.
 - Keyboard focus parity, so pairing works without a mouse.
 
 **Out of Scope**
 - Click-through (M1-VIEW-FE-048).
 
 **Acceptance Criteria**
-- **Acceptance Criteria:** Hovering a claim raises exactly its leader and card and no others. Hovering a card raises its claim. Narrowing the window moves cards inline with none removed. Keyboard focus produces the same pairing.
-- **Edge Cases:** A claim with two cards — both raise. Overlapping leaders in a dense answer — the raised one is unambiguous. Touch input with no hover — tap raises, and a second tap opens.
+- **Acceptance Criteria:** Hovering a claim raises exactly its leader and card and no others. Hovering a card raises its claim. Narrowing the window moves cards inline with none removed and gives each card a `--rule-strong` left edge. Keyboard focus produces the same pairing. The leader and the inline edge both measure at least 3:1 against their ground **in both themes**, checked rather than assumed (`../ux/design-system.md` §8).
+- **Edge Cases:** A claim with two cards — both raise. Overlapping leaders in a dense answer — the raised one is unambiguous. The window resized mid-hover — the pairing survives the reflow rather than dropping. Dark theme — the leader is still visible, which is the failure `--rule-strong` exists to prevent.
 - **Permissions / Roles:** Single user — no roles. Not applicable.
-- **UI States:** `../ux/ask.md` §4 and §5; `../ux/design-system.md` §1.
-- **Validation Rules:** No breakpoint may remove a card.
+- **UI States:** `../ux/ask.md` §4 and §5; `../ux/design-system.md` §1, §2 (`--rule-strong`), §4 (the breakpoint), §8 (measured contrast).
+- **Validation Rules:** No breakpoint may remove a card. A line conveying which claim belongs to which source may never be styled with `--rule`.
 - **Audit / Logging Requirements:** None.
 - **Analytics Events:** None.
 
 **Real-World Example Scenarios**
-- A user reading on a 13-inch laptop half-screen sees the cards beneath each answer rather than losing them.
+- A user who has snapped Askwell to half their screen to read a contract alongside it sees the cards beneath each answer rather than losing them, with each card's edge still pointing at its claim.
 
 **Dependencies & Assumptions**
 - **Dependencies:** M1-CITE-FE-043.
@@ -1246,13 +1317,13 @@
 
 **Testing Notes / Scenarios**
 - **Cold-start manual walkthrough:** Cold start, ask a question producing several cited claims. Hover each claim in turn and confirm only its card raises. Hover a card and confirm its claim raises. Drag the window narrow past the breakpoint and confirm every card is still on screen, now inline. Widen again and confirm they return to the margin.
-- **Other scenarios:** Tab through the answer with the keyboard and confirm the same pairing.
-- **Known gaps:** Touch behaviour is minimal; this is a desktop product.
+- **Other scenarios:** Tab through the answer with the keyboard and confirm the same pairing. Switch to the dark theme and repeat the narrow-window check, confirming the card edges are still clearly visible. Measure the leader and the inline edge against their ground in both themes.
+- **Known gaps:** Touch behaviour is minimal; this is a desktop application and there is no phone target.
 
 **Effort & Granularity Check**
 - **Estimate:** 2–3 hours · **Priority:** High
-- **Labels / Component:** `phase:1`, frontend
-- **Granularity:** One interaction and one layout rule.
+- **Labels / Component:** `phase:1`, frontend, `constraint:grounding`
+- **Granularity:** One interaction and one layout rule, both using tokens that already exist from M0-FOUND-FE-003.
 
 ---
 
@@ -1474,7 +1545,9 @@
 - *As someone who tidies their filing occasionally, I want Askwell to say which path is missing and offer to find it, so that reorganising does not look like data loss.*
 
 **Context / Background**
-**Detailed Description:** When a document's recorded path no longer resolves, the document is marked missing since a timestamp — not deleted. The viewer names the missing path and offers relocation. Relocation may be a manual file pick in v1; where the content hash matches, relocation is confirmed automatically rather than trusted blindly.
+**Detailed Description:** When a document's recorded path no longer resolves, the document is marked missing since a timestamp — not deleted. The viewer names the missing path and offers relocation. Relocation is a manual file pick in v1; where the content hash matches, relocation is confirmed automatically rather than trusted blindly.
+
+**The relocate flow is the second reason the desktop shell exists** (`../decisions.md`, 2026-08-26) — picking a moved file is exactly what a browser tab is poor at. As with root registration, this ticket builds the detection, the hash verification and the repair against whatever selection the browser can offer, keeping the selection step behind one seam so **M7-TAURI-FE-182 substitutes the native dialog without touching the verification or the state machine**.
 
 **Scope**
 - Missing detection at open time and during a periodic check.
@@ -1500,12 +1573,12 @@
 **Dependencies & Assumptions**
 - **Dependencies:** M1-VIEW-FE-046, M1-ADD-ING-021.
 - **API / Data Touchpoints:** `documents.path`, `documents.missing_since`, `sources.status`.
-- **Assumptions:** Relocation is manual in v1; automatic re-discovery within a registered root is a later improvement and is stated as a known gap.
+- **Assumptions:** Relocation is manual in v1; automatic re-discovery within a registered root is a later improvement and is stated as a known gap. The selection step is provisional until the native dialog lands in M7-TAURI-FE-182.
 
 **Testing Notes / Scenarios**
 - **Cold-start manual walkthrough:** Cold start, add a PDF, ask a question about it, and confirm the citation opens. Quit Askwell, rename the file on disk, and start again. Click the same card. Observe a message saying the file has moved, naming the old path, with a relocate action — and confirm it does not say deleted. Relocate to the renamed file and confirm the viewer opens normally.
 - **Other scenarios:** Relocate to a different document and confirm refusal on hash mismatch.
-- **Known gaps:** Relocation is manual file-picking. No folder watching. Bulk relocation of a moved root may not exist yet.
+- **Known gaps:** Relocation is manual file-picking, through the browser's own control until M7-TAURI-FE-182 replaces it with the native dialog. No folder watching. Bulk relocation of a moved root may not exist yet.
 
 **Effort & Granularity Check**
 - **Estimate:** 3–4 hours · **Priority:** High
@@ -1671,3 +1744,234 @@
 - **Estimate:** 4–6 hours · **Priority:** Critical
 - **Labels / Component:** `phase:1`, frontend, deployment
 - **Granularity:** Four steps sharing one sequence. Upper bound; splitting would ship a partial first run, which is the worst place to ship a partial anything.
+
+---
+
+### M1-CONV-BE-177 — Store a one-line summary and a source count with every turn
+
+**Type:** Story
+
+**User Story**
+- **Actor:** someone on the fourth question of a conversation, scrolling back to find what they asked second.
+- **User Need:** each past turn to describe itself accurately, in a way that does not change afterwards.
+- **Business Value:** the collapsed view is only trustworthy if what it says about a turn is what was true when the turn happened; a summary recomputed later against a changed corpus makes the user's own history unreliable.
+- *As someone whose conversations run to a dozen questions, I want each past turn to carry the summary it earned at the time, so that scrolling back tells me what actually happened rather than what would happen now.*
+
+**Context / Background**
+**Detailed Description:** `../ux/conversation.md` §2 collapses a past turn to three things: the question, a one-line summary of what answered it, and a source count in the provenance colour. §6 is explicit that **the summary is stored with the turn and never recomputed** — re-running a past turn to produce its label would make the record of a conversation depend on the state of the corpus at the moment someone scrolled.
+
+This ticket produces both values at composition time and writes them with the turn. The source count is derived from the citation rows that turn actually produced, so it is a count of evidence rather than an estimate. **A turn that abstained gets no count at all** — not zero, absent — because §2 makes the absence itself the signal that a run of questions went unanswered.
+
+**Scope**
+- A one-line summary generated once, at composition time, and stored on the turn.
+- A source count stored with the turn, derived from its citation rows.
+- The distinction between "no sources" and "abstained", stored explicitly rather than inferred from a count of zero.
+- Both values immutable once written, alongside the answer they describe.
+
+**Out of Scope**
+- Rendering (M1-CONV-FE-178).
+- Suggested follow-ups (M1-CONV-FE-180).
+- Any re-summarisation, re-scoring or backfill of past turns — deliberately, and permanently.
+- The web marker on a turn that used web search (M6.5-WEB-FE-192).
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** Composing an answer writes a one-line summary and a source count with the turn, in the same transaction as the answer. Reading a turn back later returns the stored values without any model call. Deleting a source that a past turn cited does **not** change that turn's stored count. Adding new sources does not change any past turn's summary.
+- **Edge Cases:** An answer that abstained — a summary is stored saying so, and **no source count is stored**, distinguishable from a stored count of zero. A partial answer — the count reflects the grounded part and the summary names the gap. A turn stopped mid-generation — the partial answer's summary describes what was produced and is marked partial rather than being omitted. Summary generation itself fails — the turn stores a fallback derived from the question rather than blocking the answer, and the failure is logged; an answer must never fail because its label could not be written. A conflicting-sources answer — the count includes both sides, since both were cited.
+- **Permissions / Roles:** Single user — no roles. Not applicable.
+- **UI States:** Consumed by `../ux/conversation.md` §2 and §5; `../states-and-edge-cases.md` §7.1.
+- **Validation Rules:** A stored summary is never overwritten. A source count is never recomputed on read. An abstained turn must have no count, not a zero.
+- **Audit / Logging Requirements:** The summary and count are part of the interaction record (M1-ASK-OBS-041), written with it rather than beside it. Summary-generation failures are logged with the reason.
+- **Analytics Events:** Local counter of turns per conversation — nothing transmitted (C1).
+
+**Real-World Example Scenarios**
+- A user asks six questions about a supplier contract, then deletes the contract. Scrolling back, the earlier turns still say they cited three sources, and expanding one shows the tombstone — the history is honest about what it had at the time.
+- A user adds a new source that would have answered question two. Question two's summary still says the files did not cover it, because that is what happened.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M1-CITE-BE-042, M1-ASK-OBS-041.
+- **API / Data Touchpoints:** `messages` or the turn record; `citations`; the interaction record.
+- **Assumptions:** A one-line summary can be produced cheaply enough at composition time not to add noticeable latency to an answer the user is already waiting for; if it cannot, it is produced immediately after streaming completes rather than being deferred to read time.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** Cold start with two indexed PDFs. Ask three questions that the documents cover and one they plainly do not. Restart Askwell entirely. Return to the conversation and confirm each of the first three turns carries a short description of its answer and a number of sources, and that the fourth carries a description saying the files did not cover it and **no number at all**. Delete one of the PDFs and reload — confirm the earlier counts are unchanged.
+- **Other scenarios:** Stop an answer mid-stream and confirm the turn still gets a summary, marked partial. Add a new document and confirm no past summary changes.
+- **Known gaps:** Nothing renders these values yet — that is M1-CONV-FE-178. Summaries are not editable by the user and there is no plan for that. Turns that used web search carry no web marker until M6.5.
+
+**Effort & Granularity Check**
+- **Estimate:** 2–3 hours · **Priority:** High
+- **Labels / Component:** `phase:1`, backend, `constraint:grounding`
+- **Granularity:** Two stored values and one rule about never recomputing them. Small because composition already knows both.
+
+---
+
+### M1-CONV-FE-178 — Past turns collapse; an abstained turn shows no source count
+
+**Type:** Story
+
+**User Story**
+- **Actor:** someone four questions into following a thread through their contracts.
+- **User Need:** the conversation to stay readable as it grows, without losing sight of which answers were grounded.
+- **Business Value:** a stack of full answers with three provenance margins between the user and the question they are looking for is worse than useless by the fourth turn — and the product's central claim is exactly what a careless collapse would hide first.
+- *As someone whose questions build on each other, I want past turns to shrink to a line I can scan, so that a long conversation stays navigable.*
+
+**Context / Background**
+**Detailed Description:** `../ux/conversation.md` §2: **past turns collapse, the live turn does not.** A collapsed turn shows the question in full on one line (truncated with an ellipsis if it must be), the stored one-line summary, and the source count in the provenance colour. The live turn renders exactly as `../ux/ask.md` describes, margin and all.
+
+**The source count is not decoration.** Collapsing may hide the detail of the evidence, never the fact that evidence existed. A turn showing no count is a turn that abstained, and §2 requires that to be visible at a glance — it is how a user notices a run of unanswerable questions and thinks to add a source instead of asking a fifth time.
+
+Turns are separated by simple dividers — *earlier today*, *yesterday*, a date. §4: no per-turn timestamp, because the interval matters and the clock time does not.
+
+**Scope**
+- Collapsed presentation: question, stored summary, source count in `--provenance`.
+- The live turn rendering uncollapsed with its full margin.
+- The previous live turn collapsing when a new question is asked.
+- The abstained variant: no count, and a summary that says so, visibly different from an answered turn at a glance.
+- Time dividers between turns.
+
+**Out of Scope**
+- Expanding a collapsed turn and paging (M1-CONV-FE-179).
+- Suggested follow-ups (M1-CONV-FE-180).
+- Generating or storing the summary and count (M1-CONV-BE-177).
+- The web marker on a collapsed turn (M6.5-WEB-FE-192).
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** With one turn present, nothing collapses and no dividers appear — the screen is exactly `../ux/ask.md`. Asking a second question collapses the first to question, summary and count, and renders the second in full with its margin. The count is in the provenance colour and nothing else on the collapsed row is. A collapsed turn that abstained shows **no count**, and the difference from an answered turn is apparent without reading the summary. The live turn is never collapsed.
+- **Edge Cases:** A question longer than one line — truncated with an ellipsis, with the full text available on expansion, never wrapped to three lines. A turn that abstained sitting between two answered turns — the absent count reads as absent rather than as a rendering failure; **shape as well as colour carries it** (`../ux/design-system.md` §8, colour is never the only signal). A partial answer — collapsed with its count and a summary naming the gap. A turn citing a source deleted since — the count reflects what was cited then (`../ux/conversation.md` §5). A new question asked while an answer streams — queued, not interleaved; the streaming turn stays live and collapses only when its own answer completes.
+- **Permissions / Roles:** Single user — no roles. Not applicable.
+- **UI States:** `../ux/conversation.md` §2, §4, §5; `../states-and-edge-cases.md` §7.1; `../ux/design-system.md` §2 for `--provenance` being reserved.
+- **Validation Rules:** A collapsed turn may never omit its source count when one was stored. `--provenance` appears on the count and on nothing else in the collapsed row — it is reserved, and spending it elsewhere is how it stops meaning "you can check this".
+- **Audit / Logging Requirements:** None — this is presentation over values already recorded.
+- **Analytics Events:** Local counter of turns per conversation — nothing transmitted (C1).
+
+**Real-World Example Scenarios**
+- A user asks about supplier terms, then about one supplier, then about that supplier's invoices. The first two shrink to scannable lines while the third keeps its margin, and the whole thread fits on one screen.
+- Three consecutive turns show no source count. The user notices the run, realises the relevant folder was never added, and adds it — which is exactly the behaviour the absent count exists to produce.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M1-CONV-BE-177, M1-ASK-FE-039, M1-CITE-FE-043.
+- **API / Data Touchpoints:** The stored turn summary and count.
+- **Assumptions:** The stored summary is short enough to sit on one line at the specified measure; if it is not, it is truncated in the same way the question is rather than the row growing.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** Cold start with an indexed PDF. Ask one question and confirm the screen looks exactly like the single-answer screen — no collapsing, no divider. Ask a second and watch the first shrink to one line carrying the question, a short description and a number in the provenance colour, while the second answer streams with its margin intact. Ask a third question the documents plainly do not cover; when it collapses, confirm it carries no number and that you can tell at a glance it is different from the other two without reading the words. Leave Askwell overnight, return, ask another question and confirm a divider reading *yesterday* separates the old turns.
+- **Other scenarios:** Ask a very long question and confirm the collapsed row truncates rather than wrapping. Switch to the dark theme and confirm the abstained turn is still distinguishable. Ask a new question while an answer is streaming and confirm it queues rather than interleaving.
+- **Known gaps:** Collapsed turns cannot yet be expanded — that is the next ticket, and until it lands the detail is genuinely unreachable, which is why the two ship together. No paging of very long conversations yet. No follow-up suggestions. A turn that used web search has no marker until M6.5.
+
+**Effort & Granularity Check**
+- **Estimate:** 3–4 hours · **Priority:** High
+- **Labels / Component:** `phase:1`, frontend, `constraint:grounding`
+- **Granularity:** One collapsed presentation and one transition. The expansion half is split out to keep this at the bound.
+
+---
+
+### M1-CONV-FE-179 — Expanding a past turn, clicking a source count, and paging a long conversation
+
+**Type:** Story
+
+**User Story**
+- **Actor:** someone who wants to re-read the evidence behind an answer they got ten minutes ago.
+- **User Need:** to open a past turn back up, in place, with its margin.
+- **Business Value:** collapsing without expanding does not compress a conversation, it deletes it. The evidence has to be one click away or the citation stops being checkable, which is C4.
+- *As someone who wants to check where an earlier figure came from, I want to open that turn back up where it sits, so that I do not lose my place in the thread.*
+
+**Context / Background**
+**Detailed Description:** `../ux/conversation.md` §3. Clicking a collapsed turn expands it **in place**, with its full answer and its full margin, and leaves every other turn collapsed. Clicking a collapsed turn's source count expands it *and* scrolls to its margin. §5: older turns page in on scroll and are **never truncated silently** — a conversation that quietly stops having a beginning is a conversation the user cannot trust.
+
+Expansion restores what was stored, not what would be produced now. A citation to a since-deleted source expands to the tombstone (M2-DELETE-FE-062), which is the honest thing rather than a gap.
+
+**Scope**
+- Expand in place on clicking a collapsed turn, restoring answer and margin.
+- Expand-and-scroll-to-margin on clicking the source count.
+- Independent expansion: expanding one turn collapses nothing else.
+- Re-collapsing an expanded past turn.
+- Paging older turns in on scroll, with a visible boundary rather than a silent end.
+- Keyboard parity: a collapsed turn is focusable and expands from the keyboard.
+
+**Out of Scope**
+- Editing a past question and re-asking — not v1 (`../ux/conversation.md` §7).
+- Suggested follow-ups (M1-CONV-FE-180).
+- Deletion and tombstones themselves (M2-DELETE-FE-062).
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** Clicking a collapsed turn expands it in place with the full answer and the full margin, and no other turn changes state. Clicking a source count expands the turn and brings its margin into view. An expanded past turn can be collapsed again. Scrolling to the top of a long conversation loads older turns and shows that it is doing so; when there are genuinely no more, it says so rather than simply stopping. Every one of these works from the keyboard.
+- **Edge Cases:** Expanding a past turn **while a new answer is streaming** — both render; the live turn keeps streaming and is not disturbed. Several past turns expanded at once — permitted; the user chose it. A turn whose citation points at a since-deleted source — expands showing the tombstone card, greyed and not clickable, not an empty margin. A very long expanded answer pushing the live turn off screen — the user's scroll position is preserved rather than jumping. Expanding while the window is below the breakpoint — the margin reflows inline for that turn, with its `--rule-strong` edges, and is still complete. Paging fails to load older turns — says so and offers to retry; **never renders a shorter conversation as if it were the whole one**.
+- **Permissions / Roles:** Single user — no roles. Not applicable.
+- **UI States:** `../ux/conversation.md` §3, §5; `../states-and-edge-cases.md` §7.1; `../ux/design-system.md` §4 for the reflowed margin.
+- **Validation Rules:** A conversation is never silently truncated. An expanded turn shows exactly what was stored, never a regenerated answer.
+- **Audit / Logging Requirements:** None — reading stored records.
+- **Analytics Events:** Local counter of expansions — nothing transmitted (C1).
+
+**Real-World Example Scenarios**
+- A user reads a number in a summary from three questions ago, clicks the source count, lands on the card, clicks through to the page, and returns to the same place in the thread.
+- A user scrolls back through forty turns, sees the paging boundary load more, and reaches the actual first question rather than a truncation.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M1-CONV-FE-178, M1-CITE-FE-043, M1-CITE-FE-044.
+- **API / Data Touchpoints:** Stored turns and their citation rows; a paged read of the conversation.
+- **Assumptions:** How far back a conversation runs before paging is unspecified in `../ux/conversation.md` §7 and needs real conversations to answer; a conservative page size is chosen and the number is recorded so it can be tuned rather than rediscovered.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** Cold start with an indexed corpus. Ask five questions in sequence. Click the second collapsed turn and watch it open in place with its answer and its source cards, while the others stay collapsed. Click one of its cards and land on the highlighted page; come back and confirm you are still at the same point in the conversation. Collapse it again. Click a third turn's source number and confirm it opens *and* the margin is brought into view. Now ask a sixth question and, while it is streaming, expand an old turn — confirm the streaming answer is unaffected.
+- **Other scenarios:** Ask enough questions to trigger paging, scroll to the top, and confirm older turns load with a visible boundary. Narrow the window and expand a past turn, confirming its cards appear inline and complete. Expand a turn citing a document you have since deleted and confirm the tombstone.
+- **Known gaps:** Past questions cannot be edited or re-asked — deliberately not v1. The page size is a guess until there are real conversations to measure. Suggested follow-ups arrive in the next ticket.
+
+**Effort & Granularity Check**
+- **Estimate:** 3–4 hours · **Priority:** High
+- **Labels / Component:** `phase:1`, frontend
+- **Granularity:** One expansion, one scroll target and one paging rule, over presentation that already exists.
+
+---
+
+### M1-CONV-FE-180 — Suggested follow-ups that fill the composer rather than sending
+
+**Type:** Story
+
+**User Story**
+- **Actor:** someone who has just read an answer and can feel there is a next question but has not phrased it yet.
+- **User Need:** a cheap start on the next question, without it being asked for them.
+- **Business Value:** most real use is follow-up, and the cost of phrasing the second question is where a conversation stops. Lowering that cost is worth doing; removing the decision is not.
+- *As someone who has just learned that one supplier is on non-standard terms, I want a suggested next question I can edit before sending, so that following the thread is cheap but still mine.*
+
+**Context / Background**
+**Detailed Description:** `../ux/conversation.md` §3: after an answer, up to three suggestions derived from what was just answered — *"show me Meridian's open invoices"*, *"how did you get this?"*. **They fill the composer; they do not send.** A suggestion that fires immediately takes the decision away, and the point is to lower the cost of the next question rather than to ask it for the user.
+
+That distinction is the whole ticket. Everything else here is presentation.
+
+**Scope**
+- Up to three suggestions rendered after a completed answer, derived from that answer.
+- Clicking one places its text in the composer, focused and editable, with the cursor at the end.
+- Suggestions clear when the next question is submitted.
+- Keyboard reachability for each suggestion.
+
+**Out of Scope**
+- Any automatic sending, under any circumstance.
+- Suggestions on the abstention surface — that surface offers escalations instead, and mixing the two would blur an offer to look outside with an offer to ask more (`../ux/web-search.md` §2, M6.5-WEB-FE-186).
+- Suggestions during streaming.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** After a completed answer, up to three suggestions appear, each clearly derived from that answer rather than generic. Clicking one fills the composer with its text, focused and editable, and **sends nothing**. Editing the filled text and pressing Enter sends the edited version. Submitting any question clears the suggestions. Every suggestion is reachable and activatable from the keyboard.
+- **Edge Cases:** An answer that supports no sensible follow-up — **fewer than three, or none at all**; three suggestions are a maximum, not a quota, and padding produces generic filler that trains the user to ignore the whole row. An abstained answer — no suggestions; the abstention surface has its own offers. A partial answer — suggestions may address the gap, since that is genuinely the useful next question. A suggestion clicked while the composer already has text — the user is not silently overwritten; the existing draft is preserved or replacement is explicit. Suggestion generation fails — nothing renders, and the answer is unaffected; this is an accelerator and must never be able to break an answer.
+- **Permissions / Roles:** Single user — no roles. Not applicable.
+- **UI States:** `../ux/conversation.md` §3; `../ux/ask.md` §4 "Suggested follow-ups".
+- **Validation Rules:** **A suggestion may never dispatch a question.** No configuration, shortcut or double-click may make it do so.
+- **Audit / Logging Requirements:** A question originating from a suggestion is recorded as an ordinary question; nothing distinguishes it, because the user sent it.
+- **Analytics Events:** Local counter of suggestions used — nothing transmitted (C1).
+
+**Real-World Example Scenarios**
+- A user reads that Meridian has 45-day terms, clicks *"show me Meridian's open invoices"*, changes it to *"show me Meridian's overdue invoices"*, and sends — which is exactly the behaviour filling rather than sending is for.
+- An answer about a single date produces no useful follow-up, so no row appears, and the user does not learn to ignore a row of filler.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M1-CONV-FE-178, M1-ASK-FE-039.
+- **API / Data Touchpoints:** The completed answer; the composer.
+- **Assumptions:** Suggestions can be produced after streaming completes without delaying the answer the user is reading; if generation is slow, the row appears late rather than the answer arriving late.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** Cold start with an indexed contract. Ask a question with a substantive answer. When it finishes, read the suggestions and confirm they are about *this* answer rather than generic prompts. Click one and watch the text land in the composer with the cursor in it — and confirm nothing was sent. Edit a word and press Enter; confirm the edited question is what was asked. Then ask a question the corpus cannot answer and confirm no suggestions appear beneath the abstention.
+- **Other scenarios:** Type a draft, then click a suggestion, and confirm your draft is not silently destroyed. Tab to a suggestion and activate it from the keyboard. Ask a question with a very narrow answer and confirm fewer than three, or none, rather than padding.
+- **Known gaps:** Suggestions are heuristic and will sometimes be poor; they are cheap to ignore because they never send. None on the abstention surface — that surface gets its escalation offers in M6.5.
+
+**Effort & Granularity Check**
+- **Estimate:** 2–3 hours · **Priority:** Medium
+- **Labels / Component:** `phase:1`, frontend
+- **Granularity:** One row of controls and one rule about what they must not do. Small.

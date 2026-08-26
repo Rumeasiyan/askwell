@@ -95,7 +95,7 @@ Running the concept-to-build procedure over the existing docs. **Its phase numbe
 | P2 — design the screens, in `docs/ux/` | **done** — design system + 10 screens |
 | Review the data model against what the screens need | **done** — #20 closed |
 | P6 — full ticket backlog | **done** — 177 tickets in `docs/backlog/`, superseding the `docs/stories/` sample format |
-| Build M0 | **unblocked** — awaiting explicit go-ahead |
+| Build M0 | **unblocked** — docs, specs, designs and backlog all locked to current decisions |
 
 Screens before schema is deliberate: drawing a screen surfaces the missing button and the number with nowhere to come from.
 
@@ -108,6 +108,8 @@ Not yet established. First run at the end of Phase 1.
 | —     | —     | —       | —          | —    |
 
 ## Session log
+
+**2026-08-26 (decisions locked)** — Designs approved. **Tauri desktop shell** and **web search** both decided yes, and everything reworked to match rather than left drifting. Web search is constraint **C10**: an escalation the user performs, never a fallback when retrieval is thin — because an automatic one destroys abstention, which is the behaviour the whole product protects. C1 now names both egress paths. New `docs/web-search.md`, new specs `docs/ux/conversation.md` and `docs/ux/web-search.md`, three new lab screens (40 total, swept clean across three widths and both themes). Backlog reworked to **198 tickets** across 10 milestones including a new Phase 6.5, 573–821 hours raw. Quality gate at 165 tasks with a web-escalation category at 1.00, no exceptions. Closed #34, #35, #37, #38.
 
 **2026-08-26 (issues closed)** — Resolved every open issue before any build work. **C9 added** — a bundled model must be redistributable, commercial-use permitted and ungated; Gemma is permanently excluded on that basis. **Model swapping is permitted and marked** rather than restricted, with a persistent marker on answers from an unvalidated model, following the retrieval-threshold precedent. v2 language findings recorded in `architecture.md` §6.1 — the Tamil TTS plan rests on a non-commercial model and Sinhala ASR has no shippable option, which strengthens the deferral that was originally argued on schedule alone. Closed #6, #7, #9 as superseded by M0 tickets, and #24–#28 as resolved. Backlog updated: new ticket M7-SET-FE-146a, C9 added to the constraint coverage map.
 

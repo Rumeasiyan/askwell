@@ -256,7 +256,7 @@ Typos, formatting, renaming a local variable, a one-line correction to a documen
 | `constraint:grounding` | Touches C4/C5 — citations, abstention, retrieval thresholds |
 | `constraint:audit` | Touches C6 — audit stores, retention, hash chain |
 | `constraint:injection` | Touches C7 — retrieved-content-as-data boundary |
-| `constraint:web` | Touches C10 — web search, its separation from your own material, and its escalation-not-fallback rule |
+| `constraint:web-escalation` | Touches C10 — web search stays an escalation the user performs, and its results stay separate from the user's own material |
 | `eval` | Changes eval suites, pass bars, or requires an eval run to land |
 | `v2:language` | Tamil or Sinhala work. Out of v1 scope — do not start without a scope decision. |
 | `deploy` | Install bundle, hardware probe, deployment profiles, licensing |

@@ -2,7 +2,7 @@
 
 **Goal:** Optional online AI, chosen per conversation, paid by credit, with the user told exactly what will be sent before anything is sent.
 
-**Phase:** 7 (`../build-plan.md`) · **Depends on:** M7 · **Tickets:** 8 · **Estimated:** 17–25 hours of unblocked work, plus an unestimated remainder behind two open decisions
+**Phase:** 7 (`../build-plan.md`) · **Depends on:** M6.5 · **Tickets:** 8 · **Estimated:** 17–25 hours of unblocked work, plus an unestimated remainder behind two open decisions
 
 **Exit condition:** Cannot be defined until the two open decisions are answered. The unblocked portion ends with a conversation able to route to exactly one authorised destination, with the disclosure shown first, the local log unchanged, and a fallback to local mode that never blocks the user.
 
