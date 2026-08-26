@@ -36,11 +36,11 @@ The core loop. Most of these states are reachable in the first five minutes of u
 
 | State | What the user sees | Why it matters |
 | ----- | ------------------ | -------------- |
-| **First run, empty corpus** | Not an empty chat box. A first-run state that says no documents are ingested yet, what Askwell will be able to answer once they are, and — for admins — a direct path to upload | An empty chat box invites a question that will abstain, which teaches the user in their first 30 seconds that the product does not work |
-| **Thinking / retrieving** | Streamed progress naming the step: searching documents, reading N sources, querying the database | On the `edge` profile at ~8 tok/s a question can take 20s+. A silent spinner for 20 seconds reads as broken |
+| **First run, empty corpus** | Not an empty chat box. A first-run state that says no documents are ingested yet, what Askwell will be able to answer once files are added, and a direct path to add the first one | An empty chat box invites a question that will abstain, which teaches the user in their first 30 seconds that the product does not work |
+| **Thinking / retrieving** | Streamed progress naming the step: searching documents, reading N sources, querying the database | On the `light` profile a question can take 20s+. A silent spinner for 20 seconds reads as broken |
 | **Answering** | Token streaming. Citations render as they are emitted, not appended at the end | — |
-| **Abstention — nothing above threshold** | An explicit "I don't know" state, visually distinct from an answer. States what was searched, and what would need to be ingested to answer it. For admins, a path to upload it. **Never a hedged half-answer** | C4. This is a first-class product state, not an error. It is the state most likely to be quietly degraded later by lowering the threshold — see `docs/success-metrics.md` §2 |
-| **Partial retrieval** — some claims grounded, some not | Answer the grounded part; say plainly which part is not covered | The tempting failure is to smooth over the gap in fluent prose. C3 and C4 both forbid it |
+| **Abstention — nothing above threshold** | An explicit "I don't know" state, visually distinct from an answer. States what was searched, and what would need to be added to answer it, with a path to add it. **Never a hedged half-answer** | C5. This is a first-class product state, not an error. It is the state most likely to be quietly degraded later by lowering the threshold — see `docs/success-metrics.md` §2 |
+| **Partial retrieval** — some claims grounded, some not | Answer the grounded part; say plainly which part is not covered | The tempting failure is to smooth over the gap in fluent prose. C4 and C5 both forbid it |
 | **Tool-call ceiling hit (8 calls)** | Return what was gathered, with an explicit note that it stopped early and why. Offer to continue as a new turn | `architecture.md` §10. Silently truncating reasoning and presenting the result as complete is worse than saying it stopped |
 | **Conflicting sources** | Present both, with both citations and their dates. Do not silently prefer one | `build-plan.md` quality gate has a whole eval category for this (10 tasks, ≥ 0.75); it needs a UI, not just model behaviour |
 | **Superseded document** | Answer from the current version, stating "as of the June revision" | `data-sources.md` §1 requires this explicitly |
@@ -58,12 +58,12 @@ The core loop. Most of these states are reachable in the first five minutes of u
 | **Upload in progress** | Per-file progress. Navigating away does not cancel it | Ingestion is a background job (`arq`), not a request |
 | **Queued behind a backlog** | Position and a realistic estimate | Embedding a large corpus on CPU takes hours. An untimed spinner suggests a hang |
 | **Extraction failed** (corrupt, encrypted, password-protected PDF) | The document is listed as failed with the reason. Retry available | Never silently drop it (AGENTS.md §6) |
-| **Scanned, OCR produced little or no text** | Flag as low-confidence. It is ingested but marked; it will retrieve poorly | Distinct from failure. The document exists but is nearly invisible to search, and the admin needs to know |
+| **Scanned, OCR produced little or no text** | Flag as low-confidence. It is ingested but marked; it will retrieve poorly | Distinct from failure. The document exists but is nearly invisible to search, and the user needs to know |
 | **Scanned Tamil document** | Ingests via the bundled `tam` traineddata; marked as not-supported-language | `PRD.md` §8 — a hedge, not a feature. It must not appear as Tamil support |
 | **Unsupported format** | Rejected at upload with the supported list | `data-sources.md` §1 lists formats |
 | **Duplicate (same sha256)** | Named as already present, linked to the existing document. Not re-ingested | `documents.sha256` exists in `architecture.md` §7 for this |
 | **New version of an existing document** | Marked superseding the old one; the old one stays queryable for history | `data-sources.md` §1: supersede, do not duplicate |
-| **Embedding job failed after retries** | Visible in the admin console with the error and a retry | AGENTS.md §6, explicitly |
+| **Embedding job failed after retries** | Visible in the library with the error and a retry | AGENTS.md §6, explicitly |
 | **Document deleted** | Old citations resolve to "deleted on `<date>`" rather than breaking | Issue #11, Option A — tombstone. Content and embedding are cleared so it stops influencing retrieval; the row survives so the audit chain and old citations still resolve |
 | **Empty collection** | Empty state naming what it is for and how to add to it | — |
 

@@ -34,7 +34,7 @@ One machine. Every service is a container on it, and only the web UI is reachabl
                                     user's own databases (read-only, optional)
 ```
 
-Seven containers. Every one is something the user has to have working on their own laptop with no help, so the count is a real cost — resist an eighth.
+Eight containers, counting the sandbox Postgres. Every one is something the user has to have working on their own laptop with no help, so the count is a real cost — resist a ninth, and if one is added, say here why it earned its place.
 
 **No high availability, ever.** Single machine, single Postgres, no replication or failover (issue #4, closed as out of scope). A second machine is meaningless for one person.
 
