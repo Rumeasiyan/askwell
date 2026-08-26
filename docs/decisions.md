@@ -22,6 +22,32 @@ Template:
 
 ---
 
+## 2026-08-26 — Updates, the online payload, and credits priced per question
+
+**Decision:** Three answers, each closing a `PRD.md` §11 item or a blocked ticket.
+
+**Update delivery: an opt-in weekly check against a static version file.** Off by default. The request carries the version number and nothing else.
+
+**What online mode transmits: a default-deny list of exactly four fields** — token counts, timestamp, model, and an opaque account identifier.
+
+**Credits are priced per question, flat within a model tier**, not per token.
+
+**Why a static file rather than an endpoint:** an endpoint could log who asked, and the only thing standing between that capability and its use is a promise. A static file has no such capability — the difference between *we do not log this* and *there is nothing here that could* is the difference between a policy and a property. C1 stays intact because the check is off unless the user turns it on, and the payload is small enough to state truthfully in one sentence rather than approximately.
+
+The alternative — no check at all, the repository as the channel — was rejected because nobody watches a repository they installed software from. This product handles other people's confidential material, so a security fix that reaches almost nobody is not an acceptable outcome of constraint purity.
+
+**Why default-deny on the payload:** the boundary in `audit-log.md` §6 was the right shape and was not a specification. Billing needs enough to bill; anti-abuse needs enough to detect abuse; each argues for one more field, and every one of those arguments is reasonable in isolation. Left informal, the list gets settled by whoever implements billing on the day — which is exactly how a privacy-first product ends up transmitting more than it promised. A field not on the list is now refused rather than reviewed, matching the egress proxy. Adding one is a decision recorded here first.
+
+IP address was considered and left off. It is a genuine anti-abuse signal and it is an identifier the product promised not to collect; collecting it before an abuse problem exists trades a real promise for a hypothetical benefit.
+
+**Why questions rather than tokens:** the spending limit in `ux/settings.md` §3 is only meaningful if the unit is one the user can picture. *About forty questions left* is a number someone can plan around; *five hundred thousand tokens* is not. The cost is that we absorb the variance when a question retrieves a lot of context — and that is the correct side to put the variance on, because a meter that only makes sense in arrears contradicts everything else in this product about not springing surprises.
+
+**Consequences:** `M7-UPDATE-BLOCKED-161/162` and `M8-CREDIT-BLOCKED-173/174` and `M8-ONLINE-OBS-172` are unblocked and the `[BLOCKED]` markers come off. Balance is displayed in questions remaining, which the credit service must therefore compute rather than exposing a token count. The update check needs a static file hosted somewhere — trivial, and it belongs in the Phase 7 packaging work rather than being discovered there.
+
+**Refs:** `PRD.md` §7, §11; `ux/settings.md` §3, §7; `audit-log.md` §9; issues #44, #45, #46.
+
+---
+
 ## 2026-08-26 — Copy-review marker, and the audit lineage resets per milestone
 
 **Decision:** Tickets that render wording a user reads carry `**Human review:** copy` under their `**Type:**` line — 26 of them. The build runner's audit and manual-test lineages reset at each milestone boundary rather than running as one session across all 198 tickets.

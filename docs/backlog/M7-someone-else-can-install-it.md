@@ -1499,7 +1499,7 @@ Apple notarisation is the substantial half: the signed artefact is submitted to 
 
 ---
 
-### M7-UPDATE-BLOCKED-161 — Update delivery mechanism **[BLOCKED]**
+### M7-UPDATE-BLOCKED-161 — Update delivery mechanism **[UNBLOCKED 2026-08-26]**
 
 **Type:** Spike
 
@@ -1548,7 +1548,7 @@ Apple notarisation is the substantial half: the signed artefact is submitted to 
 
 ---
 
-### M7-UPDATE-BLOCKED-162 — Update notification surface **[BLOCKED]**
+### M7-UPDATE-BLOCKED-162 — Update notification surface **[UNBLOCKED 2026-08-26]**
 
 **Type:** Spike
 

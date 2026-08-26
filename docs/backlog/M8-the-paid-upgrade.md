@@ -183,7 +183,7 @@ The constraint already recorded for the second is that local logging continues i
 
 ---
 
-### M8-ONLINE-OBS-172 — Online-mode logging **[BLOCKED]**
+### M8-ONLINE-OBS-172 — Online-mode logging **[UNBLOCKED 2026-08-26]**
 
 **Type:** Spike
 
@@ -231,7 +231,7 @@ The constraint already recorded for the second is that local logging continues i
 
 ---
 
-### M8-CREDIT-BLOCKED-173 — Credit purchase **[BLOCKED]**
+### M8-CREDIT-BLOCKED-173 — Credit purchase **[UNBLOCKED 2026-08-26]**
 
 **Type:** Spike
 
@@ -279,7 +279,7 @@ The constraint already recorded for the second is that local logging continues i
 
 ---
 
-### M8-CREDIT-BLOCKED-174 — Spending limit and balance **[BLOCKED]**
+### M8-CREDIT-BLOCKED-174 — Spending limit and balance **[UNBLOCKED 2026-08-26]**
 
 **Type:** Spike
 

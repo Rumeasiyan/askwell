@@ -586,6 +586,14 @@ Stated so it is not discovered as a surprise.
 
 Free and open sets a support expectation a single maintainer cannot meet. The boundary, the issue templates and the triage convention exist **before** the first release, not after it — that is M7-DOC-DOC-164, and it is Critical for that reason rather than because it is difficult.
 
+### Tickets whose id says BLOCKED but are not
+
+`M7-UPDATE-BLOCKED-161/162` and `M8-CREDIT-BLOCKED-173/174` were blocked when they were written and are not any more — their `[BLOCKED]` markers now read `[UNBLOCKED 2026-08-26]`, and the runner builds them.
+
+**The ids were not renamed.** Every dependency field in 198 tickets refers to tickets by id, and renaming four of them to fix a cosmetic inaccuracy would break references across ten files to remove a word. The marker is what the runner reads; the id is only a name.
+
+`M6.5-WEB-BLOCKED-195` is genuinely still blocked, on the web search provider decision.
+
 ### The copy-review marker
 
 A ticket that renders wording a user reads carries, directly under its `**Type:**` line:
