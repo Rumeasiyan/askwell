@@ -6,9 +6,18 @@ That shapes what is useful right now.
 
 ## What helps most today
 
-- **Read the plan and tell us where it is wrong.** `docs/PRD.md` for what it is, `docs/architecture.md` for how, `docs/backlog/` for the work. Finding a bad assumption now is worth more than any code.
-- **Domain reality checks.** If you are a consultant, lawyer, researcher or analyst with a pile of confidential files, the thing we most want to know is whether this would actually help you, and what would make you uninstall it in week one.
-- **Hardware reality checks.** The deployment profile floors in `docs/architecture.md` §6 are estimates. Nobody has measured tokens/second on real machines.
+Four things, each an open issue you can reply to rather than a vague invitation:
+
+| | |
+| --- | --- |
+| **[#49](https://github.com/Rumeasiyan/askwell/issues/49) — Hardware reality check** | Have an 8 GB laptop? Run a 4B model and tell us how slow it actually is. This is the riskiest unverified number in the project, and it needs a machine the maintainer does not have |
+| **[#50](https://github.com/Rumeasiyan/askwell/issues/50) — Does this help you?** | If you work with confidential documents for a living, ten minutes on `docs/PRD.md` and an honest answer is worth more than any code right now |
+| **[#51](https://github.com/Rumeasiyan/askwell/issues/51) — Review the designs** | 40 interactive screens, two commands to run. Tell us what is wrong with them |
+| **[#52](https://github.com/Rumeasiyan/askwell/issues/52) — Run `shellcheck`** | Small, self-contained, needs no context on the project. The tests tell you if you broke something |
+
+**Finding a bad assumption now is worth more than any code.** The plan is thorough and it is still a set of guesses.
+
+Prefer to talk it through rather than file something? [Discussions](https://github.com/Rumeasiyan/askwell/discussions) is open.
 
 ## Before you write code
 
