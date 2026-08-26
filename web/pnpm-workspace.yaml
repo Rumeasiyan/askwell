@@ -1,0 +1,20 @@
+# pnpm 11 reads its settings from here, not from a "pnpm" field in
+# package.json — that field is silently ignored with a warning.
+
+# Native postinstall scripts are opt-in, and the key is `allowBuilds`:
+# `onlyBuiltDependencies` is still accepted but no longer decides, so setting
+# only that one leaves the warning in place and looks like pnpm ignoring you.
+# `pnpm config list` prints the setting each package is actually waiting on.
+#
+# unrs-resolver is eslint's module resolver. It ships prebuilt binaries for
+# every platform we target and compiles only as a fallback, so approving it
+# is narrow rather than a blanket grant of install-time execution.
+allowBuilds:
+  unrs-resolver: true
+
+# Every pnpm command, including `pnpm run`, otherwise re-verifies the lockfile
+# against the registry's supply-chain policies. With no network that turns into
+# several minutes of retries per command before anything runs, and with a
+# network it is a call C1 has no reason to make during a build. Verification
+# belongs to `install`, which is the one command allowed to reach an index.
+verifyDepsBeforeRun: false

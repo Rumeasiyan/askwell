@@ -7,35 +7,39 @@
 
 ## Current phase
 
-**M0 — It runs. In progress: 2 of 21 tickets done.**
+**M0 — It runs. In progress: 3 of 21 tickets done.**
 
-The repository is no longer documentation only. `api/` exists: an image, manifests, the application, and 54 tests. The API starts, refuses bad configuration by name, and serves `GET /health` reporting five components separately. The Compose stack, the database schema, the frontend and the inference process do not exist yet — so all five components correctly report `unreachable`.
+The repository is no longer documentation only. `api/` exists: an image, manifests, the application, and 54 tests. The API starts, refuses bad configuration by name, and serves `GET /health` reporting five components separately. `web/` builds to static assets with the design tokens in place. The Compose stack, the database schema and the inference process do not exist yet — so all five health components correctly report `unreachable`.
 
-**Version:** `0.1.2` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
+**Version:** `0.1.3` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
 **Tracker:** `Rumeasiyan/askwell`. Working agreements in `AGENTS.md`. Backlog in `docs/backlog/`.
 
 ## Last completed
 
-**`M0-FOUND-BE-002`** — [#55](https://github.com/Rumeasiyan/askwell/issues/55). Application, typed configuration, structured logging, health surface.
+**`M0-FOUND-FE-003`** — [#57](https://github.com/Rumeasiyan/askwell/issues/57). Frontend scaffold, pinned as one verified set, with the design tokens and three checks that make the ticket's claims mechanical.
 
-Verified by running it, not by reading it:
+Verified by running it:
 
-- Started with no configuration: exit 1, `ASKWELL_DATABASE_URL is not set, and it has no default.`
-- Started with `ASKWELL_LOG_LEVE` (typo): refused, naming the variable and saying the intended one is still on its default.
-- `GET /health` with nothing else running: five components, each `unreachable`, each with its own reason.
-- With `queue` pointed at a live listener: `queue reachable`, the other four `unreachable`. The split is visible, which is the whole point of the ticket.
-- Every log line parses as JSON, uvicorn's included. Zero `ERROR` lines. The database password appears nowhere in the log or the response body.
+- Clean `typecheck`, `lint`, `build`, all with `--network=none`. Static assets in `web/out`, 23 files.
+- Contrast: 38 pairs measured across both themes, all passing. **Tightest is `--rule-strong` on `--surface` in dark at 3.08:1 against a 3.0:1 floor** — almost no headroom, recorded in `docs/ux/design-system.md` §8.
+- Token hygiene and the offline scan both mutation-tested: a literal shadow, a depth token equal across themes, `--rule-strong` aliased to `--rule`, and an injected Google Fonts link were each caught.
+- Offline scan: no fetching reference to any external host, and no bundled font — the type stack is system faces only.
 
-**Two defects found and fixed while running it**, neither visible from reading the code:
+**Three things went wrong, all of them the ticket's own subject matter.**
 
-- structlog's `cache_logger_on_first_use` binds a logger to the configuration live at its first use. Modules take their loggers at import, before configuration is read, so `configure_logging` was silently ignored for those loggers.
-- The timeout cancelled the name lookup, whose exception was then never retrieved, so the event loop logged `Future exception was never retrieved` at ERROR — a line that reads as a crash, in the health surface, which is where a confused user is looking. Fixed by owning the lookup and draining it. The regression test was checked by breaking the fix and watching it fail.
+`eslint` was pinned at 10.9.1 because it was latest. `eslint-config-next` 16 pulls `eslint-plugin-react`, which calls `context.getFilename()` — removed in ESLint 10. Lint died on the first run. That is exactly the failure this ticket exists to prevent, arrived at by picking a version independently. Pinned to 9.39.5.
+
+pnpm 11 verifies the lockfile against registry supply-chain policies on **every** command, `pnpm run` included. Under `--network=none` that is minutes of retries before anything executes. Set `verifyDepsBeforeRun: false` in `pnpm-workspace.yaml`; verification belongs to `install`.
+
+Corepack caches under `$HOME`, and the image sets `HOME=/tmp` after preparing pnpm — so the baked pnpm was in a directory nothing looked in, and the offline build died in corepack fetching it. `COREPACK_HOME` is now explicit.
+
+**Not verified:** the browser walkthrough. The Chrome extension is not connected, so nobody has looked at the rendered page in either theme. The two claims it was meant to check — depth survives the theme switch, no request leaves the machine — are now covered mechanically by `check-tokens.mjs` and `check-offline.mjs`, but "it looks right" is still unconfirmed. Worth ten minutes before M0-SHELL-FE-017 builds on it.
 
 ## Next task
 
-**`M0-FOUND-FE-003`** — scaffold the frontend as one pinned verified set. Next.js 16 + React 19 + Tailwind 4 + shadcn/ui, built to static assets. The 40 designed screens in `design-lab/src/directions/instrument/` are the target; do not invent a second design system.
+**`M0-FOUND-DEPLOY-004`** — serve the built frontend assets from the API. `web/out` exists and the API is running; this joins them.
 
-One forward reference is outstanding: the configuration error message points at `.env.example`, which `M0-FOUND-SEC-007` creates.
+Forward references outstanding: the configuration error message points at `.env.example` (`M0-FOUND-SEC-007`), and no screen exists yet — `web/app/page.tsx` is a token demonstration, not a surface (`M0-SHELL-FE-017`).
 
 ## Open
 

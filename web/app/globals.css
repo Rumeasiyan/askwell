@@ -1,0 +1,226 @@
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------------------
+   Askwell design tokens — docs/ux/design-system.md §2, §3, §4.
+
+   Defined once, here, and referenced everywhere else. A colour written as a
+   literal in a component is invisible to the contrast check in
+   scripts/contrast.mjs, which only knows about tokens.
+
+   Two rules in this file are load-bearing and look like details:
+
+   --rule-strong is NOT an alias of --rule. --rule is a decorative hairline.
+   --rule-strong carries meaning — the claim leader, and the source card's left
+   edge when the margin reflows inline — so it has to reach 3:1. Collapsing the
+   two loses which source belongs to which claim, and loses it silently.
+
+   Depth is --inset and --drop, never a literal shadow. Black at 7% reads as
+   depth on paper and is invisible on a dark ground, so a hardcoded shadow
+   removes the affordance it was added for in exactly one of the two themes —
+   a defect nobody reports, because nobody sees it.
+--------------------------------------------------------------------------- */
+
+:root {
+  /* §2 Colour encodes epistemics.
+     --provenance is reserved: it appears on nothing that is not traceable to
+     a source. Not buttons, not chrome links. Because it is spent nowhere
+     else, the colour itself comes to mean "you can check this".
+     --inferred is the honesty colour: Askwell guessed, correct me.
+     --alarm is failures only — never abstention, which is correct behaviour. */
+  --paper: #e9ebe7;
+  --surface: #f3f4f1;
+  --sunk: #dfe2dd;
+  --ink: #232722;
+  --muted: #5f655e;
+  --rule: #c9cdc6;
+  --rule-strong: #7a8078;
+  --provenance: #2f6b62;
+  --inferred: #7d601f;
+  --alarm: #8c3a2e;
+
+  /* Depth cues, per theme. See the note above. */
+  --inset: rgb(0 0 0 / 0.07);
+  --drop: rgb(0 0 0 / 0.15);
+
+  /* §3 Type says who is speaking.
+     serif = language: answers, excerpts, questions put to the user.
+     mono  = evidence and machinery: citations, SQL, metadata, all chrome.
+     No web fonts. Everything is bundled or system (C1) — a font that fails to
+     load offline is a broken interface on the exact machine this is for. */
+  --font-text: Charter, "Bitstream Charter", Georgia, "Iowan Old Style", serif;
+  --font-app: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+
+  /* §3 Scale. Fifth-based, tightened at the top for a dense desktop tool. */
+  --t-display: 28px;
+  --t-display-lh: 34px;
+  --t-title: 20px;
+  --t-title-lh: 28px;
+  --t-body: 16px;
+  --t-body-lh: 26px;
+  --t-ui: 14px;
+  --t-ui-lh: 20px;
+  --t-meta: 12.5px;
+  --t-meta-lh: 18px;
+  --t-micro: 11px;
+  --t-micro-lh: 16px;
+  --t-micro-tracking: 0.08em;
+
+  /* Answer prose sets at a 68–75 character measure. Wider is measurably
+     harder to read, and this product asks people to read carefully. */
+  --measure: 72ch;
+
+  /* §4 Space and shape. 4px base; radius 3px everywhere — near-square reads
+     as instrument, pill shapes read as consumer chat. */
+  --radius: 3px;
+  --control-height: 32px;
+  --control-height-compact: 24px;
+  --control-height-primary: 44px;
+  --rail: 240px;
+  --margin-rail: 300px;
+
+  color-scheme: light;
+}
+
+/* Respects the OS setting (§8), with a manual override that wins in both
+   directions. `:root:not([data-theme="light"])` rather than a bare media
+   query, so an explicit light choice survives a dark OS. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #191c1a;
+    --surface: #222623;
+    --sunk: #141715;
+    --ink: #e4e7e1;
+    --muted: #9aa096;
+    --rule: #333833;
+    --rule-strong: #6a7268;
+    --provenance: #5fa99b;
+    --inferred: #c9a34e;
+    --alarm: #d9705f;
+    --inset: rgb(0 0 0 / 0.45);
+    --drop: rgb(0 0 0 / 0.55);
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --paper: #191c1a;
+  --surface: #222623;
+  --sunk: #141715;
+  --ink: #e4e7e1;
+  --muted: #9aa096;
+  --rule: #333833;
+  --rule-strong: #6a7268;
+  --provenance: #5fa99b;
+  --inferred: #c9a34e;
+  --alarm: #d9705f;
+  --inset: rgb(0 0 0 / 0.45);
+  --drop: rgb(0 0 0 / 0.55);
+  color-scheme: dark;
+}
+
+/* Expose the tokens to Tailwind's utility generator. `inline` means the
+   utilities resolve to the custom properties rather than copying their values,
+   so a theme switch changes the rendering without regenerating any CSS. */
+@theme inline {
+  --color-paper: var(--paper);
+  --color-surface: var(--surface);
+  --color-sunk: var(--sunk);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-rule: var(--rule);
+  --color-rule-strong: var(--rule-strong);
+  --color-provenance: var(--provenance);
+  --color-inferred: var(--inferred);
+  --color-alarm: var(--alarm);
+
+  --font-serif: var(--font-text);
+  --font-mono: var(--font-app);
+
+  --radius-instrument: var(--radius);
+}
+
+@layer base {
+  * {
+    border-color: var(--rule);
+  }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    /* Chrome is machinery, so the default face is mono. Prose opts into
+       serif, not the other way round. */
+    font-family: var(--font-app);
+    font-size: var(--t-ui);
+    line-height: var(--t-ui-lh);
+  }
+
+  /* §4: keyboard navigation is not optional, and the ring is never removed. */
+  :focus-visible {
+    outline: 2px solid var(--provenance);
+    outline-offset: 2px;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   §7 Affordance. The flatness of this design is deliberate, which means
+   affordance has to be carried by the few differences that remain rather than
+   assumed. These three are the differences.
+--------------------------------------------------------------------------- */
+@layer components {
+  /* A primary action is filled, not outlined. */
+  .ask-action-primary {
+    min-height: var(--control-height-primary);
+    background: var(--ink);
+    color: var(--paper);
+    border: 1px solid var(--ink);
+    border-radius: var(--radius);
+    box-shadow: 0 1px 2px var(--drop);
+  }
+
+  .ask-action-primary:hover {
+    box-shadow: 0 2px 4px var(--drop);
+  }
+
+  /* An input is inset. */
+  .ask-input {
+    min-height: var(--control-height);
+    background: var(--sunk);
+    color: var(--ink);
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+    box-shadow: inset 0 1px 2px var(--inset);
+  }
+
+  /* A control that navigates lifts or shifts on hover. */
+  .ask-navigates {
+    border-radius: var(--radius);
+    transition:
+      transform 120ms ease,
+      box-shadow 120ms ease;
+  }
+
+  .ask-navigates:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px var(--drop);
+  }
+
+  /* The margin unit's left edge, and any other line that carries meaning. */
+  .ask-carries-meaning {
+    border-left: 2px solid var(--provenance);
+  }
+
+  .ask-prose {
+    font-family: var(--font-text);
+    font-size: var(--t-body);
+    line-height: var(--t-body-lh);
+    max-width: var(--measure);
+  }
+
+  .ask-micro {
+    font-size: var(--t-micro);
+    line-height: var(--t-micro-lh);
+    letter-spacing: var(--t-micro-tracking);
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+}

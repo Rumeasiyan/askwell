@@ -4,6 +4,23 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.1.3 — 2026-08-26
+
+`M0-FOUND-FE-003`. The frontend, pinned as one verified set.
+
+### Added
+
+- `web/` — Next.js 16.3.3, React 19.2.8, Tailwind 4.3.3, pnpm 11.24.0, built to static assets in `web/out`. Every dependency is an exact version; there is not a single range operator in `package.json`.
+- `web/app/globals.css` — the design tokens from `docs/ux/design-system.md` §2–§4, defined once. `--rule-strong` is its own token, not an alias of `--rule`. Depth is `--inset` and `--drop`, per theme.
+- `web/scripts/contrast.mjs` — measures all 19 token pairs in both themes and fails below 4.5:1 for text or 3:1 for UI lines. Figures recorded in `docs/ux/design-system.md` §8.
+- `web/scripts/check-tokens.mjs` — fails on a literal colour or a literal shadow anywhere outside the token definition, and on a depth token that does not differ between themes.
+- `web/scripts/check-offline.mjs` — scans the built output for anything that would reach the network, by position rather than by pattern (C1).
+- `web/Dockerfile` and `scripts/dev.sh web-*` — the Node toolchain lives in an image, like the Python one. Every frontend command runs with `--network=none` except `web-install`.
+
+### Changed
+
+- `docs/ux/design-system.md` §8 now records measured contrast figures rather than asserting a floor.
+
 ## 0.1.2 — 2026-08-26
 
 `M0-FOUND-BE-002`. The API application, its configuration, its logging and its health surface.
