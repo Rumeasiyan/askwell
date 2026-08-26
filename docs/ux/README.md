@@ -8,14 +8,16 @@
 | Add source | [`add-source.md`](add-source.md) | 1 · 3 |
 | Library | [`library.md`](library.md) | 1 |
 | **Ask** — the core loop | [`ask.md`](ask.md) | 1 |
+| Conversation — multi-turn | [`conversation.md`](conversation.md) | 1 |
 | Source viewer — where a citation lands | [`source-viewer.md`](source-viewer.md) | 1 |
 | Clarifications | [`clarifications.md`](clarifications.md) | 2 |
 | Memory | [`memory.md`](memory.md) | 2 |
 | Trace | [`trace.md`](trace.md) | 4 |
 | Voice | [`voice.md`](voice.md) | 5 |
 | Settings | [`settings.md`](settings.md) | 1 → 6 |
+| Web search — the escalation | [`web-search.md`](web-search.md) | 6.5 |
 
-Visual reference: [`screens-reference.html`](screens-reference.html) — Ask answered, Ask abstained, Clarifications. Also published as an artifact.
+**The design lab is the live reference.** `design-lab/` renders **40 screens** in this direction, clickable, at three widths and in both themes. `screens-reference.html` is an older static snapshot of three of them.
 
 **The written spec is the specification. The mockup is a reference.** Where they disagree the spec wins, or the mockup is redrawn. Images acquire authority they have not earned, which is why this is repeated in every screen document.
 

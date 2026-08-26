@@ -105,7 +105,11 @@ Answer prose sets at a **68–75 character measure**. Wider is measurably harder
 └────────────┴─────────────────────────────┴───────────────────┘
 ```
 
-Below 1100px the provenance rail moves under each answer as an inline block rather than disappearing. **It is never removed** — that would make citations conditional on window width.
+Below the breakpoint the provenance rail moves under each answer as an inline block, with a `--rule-strong` edge carrying the relationship the leader carried at width. **It is never removed** — that would make citations conditional on window width.
+
+**The left rail becomes a drawer** at the same breakpoint: a menu control in the app's own chrome, a scrim that dismisses it, and selecting a destination closes it. It is reachable, not removed — the library is the only route to sources, memory and settings, and hiding it without a way back strands the user.
+
+Askwell installs as a desktop application, so **there is no phone**. Responsiveness serves a resized window on a laptop, which is a normal thing to do, rather than a small screen.
 
 ---
 
@@ -145,6 +149,10 @@ Never: "Oops", "Uh oh", "Something went wrong", "AI-powered", "seamlessly", "sim
 ## 7. Components that carry meaning
 
 Three are not generic and must not be reskinned into standard patterns.
+
+**Interactive things look interactive.** A primary action is filled, not outlined. An input is inset. A control that navigates lifts or shifts on hover and states where it goes. The flatness of this design is deliberate, and it means affordance has to be carried by the few differences that remain rather than assumed.
+
+**Web result** — deliberately *not* a variant of the source card. Dashed border in `--inferred`, headed as not-your-material, carrying a retrieval date. A shared component with a flag is exactly how the distinction between the user's material and the web erodes (C10).
 
 **Source card** — the margin unit. Filename in mono, page or table, then the exact retrieved passage in serif. Left edge is a 2px `--provenance` bar. Clicking opens the source at that position.
 
