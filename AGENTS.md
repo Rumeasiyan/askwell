@@ -95,6 +95,7 @@ Rewritten 2026-08-10 with the repositioning. The old C7 (column-level access con
 - **A surface is not finished until its states are.** Before building or designing any screen, read the matching section of `docs/states-and-edge-cases.md`. A happy path with no empty, loading, denied, or failed state is a demo. When you find a state that document does not list, add it there in the same change.
 - **One task at a time.** Finish, verify, update `docs/BRAIN.md`, then take the next. Batching four features means discovering which broke by bisection.
 - **Never hardcode a model name in application code.** Models come from configuration, selected by deployment profile.
+- **Verify every model, weight and traineddata name against the registry before writing it down** — name, current version, licence, and whether access is gated. Do not assert a model does or does not exist from memory. This rule exists because it was broken twice: correct model names in the original PRD were replaced with older ones, and a correctly-chosen Apache-2.0 voice model was swapped for one with per-voice licensing (issues #24, #25).
 - **All prompts live in `api/src/askwell/agent/prompts/` as versioned files.** Never inline a system prompt in application logic.
 - **Any prompt change requires an eval run.** Run `eval/bench.py` against the affected suite and record before/after in `docs/BRAIN.md`. Prompt engineering without measurement is guessing, and small models are exactly where guessing fails.
 

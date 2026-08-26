@@ -119,16 +119,22 @@ Because inference is a native process (§2.1), GPU acceleration is available on 
 
 | Profile | Hardware | LLM | Expected |
 | ------- | -------- | --- | -------- |
-| `light` | 8GB RAM, CPU only | Qwen3 4B Q4_K_M | Slow but usable; text only, voice degraded |
-| `standard` | 16GB RAM, CPU only | Qwen3 4B Q4_K_M | Comfortable text, voice usable |
-| `accelerated` | 16GB+ RAM, 8GB+ VRAM | Qwen3 8B Q4_K_M | Fast, full voice |
-| `workstation` | 32GB+ RAM, 16GB+ VRAM | Qwen3 32B Q4_K_M | Full capability |
+| `light` | 8GB RAM, CPU only | Qwen3.5 4B Q4_K_M | Slow but usable; text only, voice degraded |
+| `standard` | 16GB RAM, CPU only | Qwen3.5 4B Q4_K_M | Comfortable text, voice usable |
+| `accelerated` | 16GB+ RAM, 8GB+ VRAM | Qwen3.5 9B Q4_K_M | Fast, full voice |
+| `workstation` | 32GB+ RAM, 16GB+ VRAM | Qwen3.6 27B Q4_K_M | Full capability |
 
 Two changes from the previous profiles, both from the repositioning: the floor drops to 8GB because a free product on a personal laptop cannot demand 16GB minimum, and concurrency is no longer a dimension — one user asks one question at a time.
 
 **The installer warns below the `light` floor rather than refusing.** Refusing made sense when a paid deployment could be blamed on the vendor; for a free download, refusing to run is just a lost user. Warn clearly, let them try.
 
 Model names are never hardcoded in application code. They come from configuration, selected by profile.
+
+**All four are Apache-2.0 and ungated**, verified against the model registry on 2026-08-26. That is a requirement, not a coincidence — Askwell bundles weights into a redistributable installer, so a model under restrictive or manually-gated terms cannot ship however well it performs (issue #26). Gemma 3 is excluded on exactly this basis.
+
+`Qwen3.6 35B-A3B` is worth evaluating for high-RAM CPU machines — a mixture-of-experts model with roughly 3B active parameters behaves far better on CPU than its total size suggests. Not assigned to a profile until measured.
+
+**Profile floors remain estimates.** Nobody has measured tokens/second on real hardware, and the `workstation` VRAM floor against a 27B at Q4_K_M is tight. The eval gate, not this table, decides what actually ships as a default.
 
 ## 7. Data model
 

@@ -22,6 +22,30 @@ Template:
 
 ---
 
+## 2026-08-26 — Model names corrected; registry verification is now a rule
+
+**Decision:** Supersedes the 2026-08-10 entry "`institution` profile is Qwen3 32B, not a 'Qwen3.6 27B'". That entry was **wrong**. Profiles now use Qwen3.5 4B, Qwen3.5 9B and Qwen3.6 27B. Speech synthesis reverts to **Kokoro-82M**, replacing Piper. `AGENTS.md` §4 gains a rule requiring registry verification of every model, weight and traineddata name.
+
+**Why:** The original pre-repositioning PRD specified `Qwen3.5 4B` and `Qwen3.6 27B`, and Kokoro-82M for English speech. All three were correct. On 2026-08-10 the Qwen names were "corrected" to older releases on the stated grounds that neither existed and that 27B was "a Gemma parameter count, not a Qwen one"; in MODE A on 2026-08-26 Kokoro was swapped for Piper without adequate justification.
+
+Verified against the model registry on 2026-08-26: `Qwen/Qwen3.5-4B` (7.7M downloads), `Qwen/Qwen3.5-9B` (13.4M), `Qwen/Qwen3.6-27B` (6.2M), `Qwen/Qwen3.6-35B-A3B` (5.4M), all Apache-2.0 and ungated. `hexgrad/Kokoro-82M` is Apache-2.0 with 12.3M downloads and a maintained ONNX build; Piper's voices are licensed individually, several are CC-BY-NC, and many carry no licence field at all — which is a distribution problem for weights bundled into a redistributable installer.
+
+The cause is the same in both cases and is what actually needed fixing: **model availability and licensing were asserted from training-time memory rather than checked against a registry.** The identical failure was anticipated and avoided two days earlier for frontend package versions, where checking caught that the documented Next.js version was two majors stale. Models had no equivalent rule, so the same mistake ran unchecked twice.
+
+**Consequences:**
+
+- `AGENTS.md` §4 now requires name, current version, licence and gating status to be verified before any model name is written down. It sits alongside the existing package-version discipline rather than being a special case.
+- The profile table states explicitly that all four models being Apache-2.0 and ungated is a **requirement, not a coincidence** — see the redistribution-licence constraint under discussion in #26.
+- `Qwen3.6 35B-A3B` is flagged for evaluation on high-RAM CPU machines. A mixture-of-experts model with roughly 3B active parameters behaves far better on CPU than its total size implies, and no profile currently exploits that.
+- The `workstation` VRAM floor against a 27B at Q4_K_M is tight and unmeasured. Profile floors remain estimates, and the eval gate rather than the table decides what ships.
+- Backlog tickets naming Piper were updated in the same change.
+
+**What this does not change:** the architecture, the profile structure, or the sizing logic. A 4B is still a 4B. Only the version line and the synthesis engine were wrong.
+
+**Refs:** `architecture.md` §6, `AGENTS.md` §4; issues #24, #25, #26; supersedes the 2026-08-10 model entry.
+
+---
+
 ## 2026-08-26 — Stack confirmed: all three platforms, native inference, egress proxy, no web container
 
 **Decision:** v1 targets **Linux, Windows and macOS**. The llama.cpp server runs as a **native host process** rather than a container. The frontend is **built to static assets served by the API**, removing the `web` container. A **default-deny egress proxy** container enforces C1. PDF work uses **pypdfium2**, not PyMuPDF. Twelve further recommendations were accepted as-is: Next.js 16 / React 19 / Tailwind 4 / shadcn/ui pinned as one set, pnpm, Python 3.12 with tooling inside the API image, SQLAlchemy 2.0 async with Alembic, PostgreSQL 18 sharing its image with the sandbox, server-sent streaming with WebSocket reserved for voice, embeddings and reranking served by the same inference process, Tesseract with the Office-format libraries, locally bundled pdf.js, Piper for speech synthesis, the host-side hardware probe, GitHub Actions CI with the eval gate on a self-hosted or dispatched runner, and backups excluding weights, traces and the vector index.
