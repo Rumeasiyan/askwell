@@ -1,0 +1,69 @@
+/* Askwell design tokens.
+   Seeded from docs/ux/design-system.md — that document is the source of truth.
+   Values here are for exploring alternatives in the lab, not for redefining the system.
+   If a change here proves better, change design-system.md and say why in docs/decisions.md. */
+
+:root {
+  /* --- colour encodes epistemics (design-system.md §2) --------------------
+     provenance = traceable to a source. Spent on nothing else, ever.
+     inferred   = Askwell guessed. Correct me.
+     ink        = Askwell's own words, including abstention.
+     alarm      = something broke. Never abstention.                         */
+  --paper:       #E9EBE7;
+  --surface:     #F3F4F1;
+  --sunk:        #DFE2DD;
+  --ink:         #232722;
+  --rule:        #C9CDC6;
+  --muted:       #6B716A;
+  --provenance:  #2F6B62;
+  --inferred:    #8A6A22;
+  --alarm:       #8C3A2E;
+
+  /* --- type says who is speaking (§3) ------------------------------------
+     serif = language: answers, excerpts, questions put to the user.
+     mono  = evidence and machinery: citations, SQL, metadata, all chrome.
+     No web fonts — a font that fails offline is a broken interface here.    */
+  --font-text:  Charter, "Bitstream Charter", Georgia, "Iowan Old Style", serif;
+  --font-app:   ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+
+  --t-display:  28px;  --lh-display: 34px;
+  --t-title:    20px;  --lh-title:   28px;
+  --t-body:     16px;  --lh-body:    26px;
+  --t-ui:       14px;  --lh-ui:      20px;
+  --t-meta:   12.5px;  --lh-meta:    18px;
+  --t-micro:    11px;  --lh-micro:   16px;
+  --measure:    72ch;          /* answer prose: 68–75ch */
+
+  /* --- space and shape (§4) ---------------------------------------------- */
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px; --s7: 48px;
+  --radius:        3px;   /* near-square reads as instrument, not consumer chat */
+  --control-h:    32px;
+  --control-h-lg: 44px;   /* minimum for any primary action */
+  --rail-left:   240px;
+  --rail-margin: 300px;   /* the provenance margin. Never collapsible. */
+
+  /* --- motion (§5) ------------------------------------------------------- */
+  --motion:            1;
+  --dur-leader:    180ms;   /* claim → source card. The one deliberate flourish */
+  --dur-hover:     120ms;
+  --dur-panel:     160ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+}
+
+:root:not([data-theme="light"]) {
+  @media (prefers-color-scheme: dark) {
+    --paper: #191C1A; --surface: #222623; --sunk: #141715;
+    --ink: #E4E7E1; --rule: #333833; --muted: #9AA096;
+    --provenance: #5FA99B; --inferred: #C9A34E; --alarm: #D9705F;
+  }
+}
+
+:root[data-theme="dark"] {
+  --paper: #191C1A; --surface: #222623; --sunk: #141715;
+  --ink: #E4E7E1; --rule: #333833; --muted: #9AA096;
+  --provenance: #5FA99B; --inferred: #C9A34E; --alarm: #D9705F;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --motion: 0; --dur-leader: 0ms; --dur-hover: 0ms; --dur-panel: 0ms; }
+}

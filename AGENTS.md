@@ -62,6 +62,7 @@ Four facts shape almost every decision here:
 | Current application version | `VERSION` |
 | What shipped in each version | `CHANGELOG.md` |
 | A cold introduction | `README.md` |
+| Exploring a UI direction before building it | `design-lab/` — a tool, never shipped |
 
 Paths under `api/`, `web/`, `eval/`, `deploy/` appear in `docs/build-plan.md` as **planned** and **do not exist yet**. Do not link to them as if they do. When you create one, move it out of the planned list in the same change, or that section stops being trustworthy and gets ignored.
 
@@ -89,6 +90,7 @@ Rewritten 2026-08-10 with the repositioning. The old C7 (column-level access con
 
 ## 4. Working rules
 
+- **`design-lab/` is a tool, not the product.** It never ships, `web/` never imports from it, and the external AI providers its scripts call are **not precedent for runtime network calls** — C1 is absolute in the product. Its `src/tokens.css` is seeded from `docs/ux/design-system.md`, which stays the source of truth.
 - **Do not scaffold beyond the current phase.** In Phase 0, do not create empty `voice/` modules "for later". Speculative structure rots and misleads the next session into thinking work exists.
 - **Edit surgically.** Targeted string replacement over file rewrites. If a change touches more than three files, describe the plan and get agreement first. Full-file regeneration silently destroys prior decisions.
 - **Run the thing.** A task is not complete because the code looks right. Start the stack, hit the endpoint, read the response. `podman compose up -d && curl ...` is the definition of done.

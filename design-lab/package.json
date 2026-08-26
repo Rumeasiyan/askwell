@@ -1,0 +1,62 @@
+{
+  "name": "askwell-design-lab",
+  "version": "0.4.0",
+  "private": true,
+  "description": "Design harness for Askwell. Not part of the shipped product.",
+  "keywords": [
+    "ui-design",
+    "ux-design",
+    "design-system",
+    "design-tokens",
+    "design-directions",
+    "ai-design",
+    "vibe-coding",
+    "react",
+    "vite",
+    "tailwindcss",
+    "typescript",
+    "design-playground",
+    "ui-prototyping",
+    "template"
+  ],
+  "license": "MIT",
+  "author": "Rumeasiyan",
+  "homepage": "https://github.com/Rumeasiyan/ui-design-lab#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Rumeasiyan/ui-design-lab.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Rumeasiyan/ui-design-lab/issues"
+  },
+  "type": "module",
+  "packageManager": "pnpm@11.5.2",
+  "engines": {
+    "pnpm": ">=9"
+  },
+  "scripts": {
+    "preinstall": "npx only-allow pnpm",
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "lint": "oxlint",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.4",
+    "autoprefixer": "^10.5.4",
+    "only-allow": "^1.2.2",
+    "oxlint": "^1.75.0",
+    "postcss": "^8.5.26",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~6.0.2",
+    "vite": "^8.2.0"
+  }
+}
