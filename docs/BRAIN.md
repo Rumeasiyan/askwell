@@ -7,31 +7,35 @@
 
 ## Current phase
 
-**M0 — It runs. In progress: 1 of 21 tickets done.**
+**M0 — It runs. In progress: 2 of 21 tickets done.**
 
-The repository is no longer documentation only. `api/` exists: an image, manifests, the package and its tests. The Compose stack, the database schema, the shell and the inference process do not exist yet.
+The repository is no longer documentation only. `api/` exists: an image, manifests, the application, and 54 tests. The API starts, refuses bad configuration by name, and serves `GET /health` reporting five components separately. The Compose stack, the database schema, the frontend and the inference process do not exist yet — so all five components correctly report `unreachable`.
 
-**Version:** `0.1.1` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
+**Version:** `0.1.2` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
 **Tracker:** `Rumeasiyan/askwell`. Working agreements in `AGENTS.md`. Backlog in `docs/backlog/`.
 
 ## Last completed
 
-**`M0-FOUND-DEPLOY-001`** — [#53](https://github.com/Rumeasiyan/askwell/issues/53). API image pinned to Python 3.12 with `uv`, `ruff`, `mypy` and `pytest` inside it; `scripts/dev.sh` runs them against the working tree.
+**`M0-FOUND-BE-002`** — [#55](https://github.com/Rumeasiyan/askwell/issues/55). Application, typed configuration, structured logging, health surface.
 
-Verified, not assumed:
+Verified by running it, not by reading it:
 
-- `scripts/dev.sh check` — lint, format, typecheck, 5 tests, all pass.
-- With every Python removed from `PATH`, `scripts/dev.sh test` still passes. The host interpreter is genuinely never invoked.
-- `--network=none` on every command: a socket to `1.1.1.1:53` raises `Network is unreachable` while the tests pass beside it (C1).
-- Deleting `api/uv.lock` fails the build with an explanation. Naming the file directly in `COPY` produced only `stat: no such file or directory`, so it is matched by a glob and the check below it does the explaining.
-- Adding a dependency to `pyproject.toml` without relocking **fails** the build. Under `--frozen` it silently succeeded — see `decisions.md`.
-- Writing `9.9.9` into `VERSION` changes what `askwell.__version__` reports, with no reinstall.
+- Started with no configuration: exit 1, `ASKWELL_DATABASE_URL is not set, and it has no default.`
+- Started with `ASKWELL_LOG_LEVE` (typo): refused, naming the variable and saying the intended one is still on its default.
+- `GET /health` with nothing else running: five components, each `unreachable`, each with its own reason.
+- With `queue` pointed at a live listener: `queue reachable`, the other four `unreachable`. The split is visible, which is the whole point of the ticket.
+- Every log line parses as JSON, uvicorn's included. Zero `ERROR` lines. The database password appears nowhere in the log or the response body.
+
+**Two defects found and fixed while running it**, neither visible from reading the code:
+
+- structlog's `cache_logger_on_first_use` binds a logger to the configuration live at its first use. Modules take their loggers at import, before configuration is read, so `configure_logging` was silently ignored for those loggers.
+- The timeout cancelled the name lookup, whose exception was then never retrieved, so the event loop logged `Future exception was never retrieved` at ERROR — a line that reads as a crash, in the health surface, which is where a confused user is looking. Fixed by owning the lookup and draining it. The regression test was checked by breaking the fix and watching it fail.
 
 ## Next task
 
-**`M0-FOUND-BE-002`** — scaffold the API application: typed settings from environment, structured logging with no `print`, and a health surface reporting database, queue, worker, inference and egress proxy **separately**, each with a state and a reason when unhealthy. Not one aggregate boolean — see `docs/backlog/M0-it-runs.md`.
+**`M0-FOUND-FE-003`** — scaffold the frontend as one pinned verified set. Next.js 16 + React 19 + Tailwind 4 + shadcn/ui, built to static assets. The 40 designed screens in `design-lab/src/directions/instrument/` are the target; do not invent a second design system.
 
-`ruff` already enforces the no-`print` half: `T20` is in the lint selection.
+One forward reference is outstanding: the configuration error message points at `.env.example`, which `M0-FOUND-SEC-007` creates.
 
 ## Open
 
