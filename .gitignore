@@ -10,3 +10,8 @@ __pycache__/
 
 # build runner state — machine-local, full of session ids
 .build-runner/
+
+# Python toolchain caches — regenerated on every run
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/

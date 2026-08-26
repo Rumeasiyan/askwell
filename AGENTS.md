@@ -118,20 +118,31 @@ What not to do: guess, note the guess in a comment, keep going. That is how a bu
 
 ## 5. Commands
 
-**The repository has no application code yet.** There is no manifest, no test runner, and no CI. The only commands that currently run are git and `gh`.
+**The host needs Podman and nothing else.** Python, the dependency resolver, the linter, the type checker and the test runner all live inside the API image. Do not install them on the host and do not invoke the host's Python — it is 3.14, the project targets 3.12, and the AI toolchain has no 3.14 wheels.
 
-Phase 0 creates the toolchain. When it does, replace this section with verified commands — do not pre-populate it with commands that fail.
-
-Planned, per `docs/PRD.md` §5.1 and §9:
+Everything runs through one entry point:
 
 | Purpose | Command | Status |
 | ------- | ------- | ------ |
-| Bring up the stack | `podman compose up -d` | Phase 0 |
-| Lint / format Python | `ruff check api/` / `ruff format api/` | Phase 0 |
-| Typecheck | `mypy --strict api/src/` | Phase 0 |
-| Python tests | `pytest api/` | Phase 0 |
-| Web dev server | Next.js 15 in `web/` | Phase 1 |
-| Eval suite | `python eval/bench.py --suite <name>` | Phase 1 |
+| All read-only checks, in order | `scripts/dev.sh check` | **Verified** |
+| Lint | `scripts/dev.sh lint` (`--fix` to repair) | **Verified** |
+| Format | `scripts/dev.sh format` / `scripts/dev.sh fmt-check` | **Verified** |
+| Typecheck (`mypy --strict`) | `scripts/dev.sh typecheck` | **Verified** |
+| Python tests | `scripts/dev.sh test` | **Verified** |
+| Rebuild the image | `scripts/dev.sh build` | **Verified** |
+| Anything else inside the image | `scripts/dev.sh run <cmd>` / `scripts/dev.sh shell` | **Verified** |
+| Regenerate the lockfile | `scripts/dev.sh lock` | **Verified** |
+| Build-runner guard tests | `bash scripts/guards.test.sh` | **Verified** |
+| Bring up the stack | `podman compose up -d` | M0-STACK-DEPLOY-009 |
+| Web dev server | Next.js 16 in `web/` | M0-FOUND-FE-003 |
+| Eval suite | `python eval/bench.py --suite <name>` | M1 |
+
+Two things about `scripts/dev.sh` that are deliberate:
+
+- **Every command runs with `--network=none`** except `lock`. C1 is cheapest to enforce where the toolchain runs, and a linter has no business reaching an index. `lock` is the one command that legitimately resolves from one, and it opts back in explicitly rather than the default being loose.
+- **The lockfile is the pin, `pyproject.toml` holds only bounds.** The image installs with `uv sync --locked`, not `--frozen`: `--frozen` never reads `pyproject.toml`, so adding a dependency and forgetting to relock produces a build that succeeds while missing it, surfacing much later as an `ImportError` with no obvious cause. Widening a bound changes no build until you run `lock` deliberately and review the diff.
+
+Do not add a command to this table until it has been run and its output read.
 
 ### Local machine facts that will bite you
 
@@ -188,6 +199,8 @@ Format: `MAJOR.MINOR.PATCH`. No fourth component. A hotfix is a `PATCH` release,
 **Build number:** none. This is a server-side Compose deployment with no app-store build counter. If the offline install bundle in Phase 5 needs a unique build identifier, add it then as an always-increasing integer and represent it as `1.4.2+57` — the semantic version identifies the release, the build number identifies the exact generated build. Never reset or decrease it.
 
 **Cadence: bump on every completed change**, in the same commit as the work. Not batched at release time — the point is that a `docs/BRAIN.md` entry, a closing issue comment, and a version all line up.
+
+**Within a phase, a completed ticket is a `PATCH`. The phase landing is the `MINOR`.** M0 has 21 tickets; bumping `MINOR` per ticket would land Phase 0 at `0.22.0` and contradict the `0.1.0` → `0.2.0` line below. So tickets walk `0.1.1`, `0.1.2`, … and the milestone completing takes the `MINOR`. This applies to the `0.x` series; once `1.0.0` ships, the table above governs on its own and a feature is a `MINOR` regardless of which ticket carried it.
 
 | Change | Action |
 | ------ | ------ |
