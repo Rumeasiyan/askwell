@@ -22,7 +22,7 @@ Technical decisions and structure. `PRD.md` is the business case and deliberatel
 | Streaming | **Server-sent streaming** for answers, step labels and ingestion progress; **WebSocket only for voice** | One-way streaming reconnects on its own and covers everything up to Phase 5. A bidirectional channel in Phase 0 is complexity carried for five phases before anything needs it. |
 | Egress | **Default-deny egress proxy container** | See §5.1. Every service routes through it. |
 | Package manager | **pnpm** | Lockfile determinism and disk behaviour on a laptop. |
-| Packaging | **Tauri desktop shell + container bundle** | Rust shell around the system webview, ~10 MB against Electron's ~150. Chosen for the **native file picker**: Askwell indexes in place, so nominating root directories and relocating a moved file are core flows and both are poor in a browser tab. It does not remove the container stack. |
+| Packaging | **Tauri desktop shell + container bundle**, distributed **unsigned** with published checksums | Rust shell around the system webview, ~10 MB against Electron's ~150. Chosen for the **native file picker**: Askwell indexes in place, so nominating root directories and relocating a moved file are core flows and both are poor in a browser tab. It does not remove the container stack. Signing is deferred on cost — see `installing.md`. |
 | Web search | **`ddgs`** (MIT, keyless) behind an interface, called only on explicit request | No key, no account, no extra container. Per question, never per conversation. See §5.2. |
 
 ## 2. Topology

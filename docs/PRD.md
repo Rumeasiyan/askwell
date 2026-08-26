@@ -120,7 +120,7 @@ The business is not the code. It is the credit service: the provider contracts, 
 
 ### The honest risks
 
-- **Someone forks it and points it at their own credit service.** Nothing prevents this. What protects the position is the trademark, the brand, and the fact that operating a paid inference service means provider contracts, compliance and support — not a weekend's work.
+- **Someone forks it and points it at their own credit service.** Nothing prevents this, and there is **no registered trademark** — that was considered and declined on cost. What protects the position is narrower than a legal remedy: whoever runs the credit service holds the provider contracts, the billing relationship and the support burden, and that is a business to build rather than a repository to copy. Being the maintained original is worth something too, and it is worth nothing if the original stops being maintained.
 - **The entire revenue line is the optional feature**, and it is built last. Everything shipping first is free and open, so v1 earns nothing. That is deliberate — build the thing people want, charge for the upgrade — but it means adoption has to come first, and the credit system is the business rather than an add-on.
 - **Free and open sets a support expectation** that a single maintainer cannot meet. Issue triage and a stated support boundary need to exist before the first release, not after.
 
@@ -168,10 +168,10 @@ Build detail, estimates and acceptance criteria: `build-plan.md`.
 
 *Each is a tracked issue with an owner — a question recorded only here is a question nobody is answering.*
 
-2. **Trademark** ([#47](https://github.com/Rumeasiyan/askwell/issues/47)). "Askwell" needs registering if the brand is what protects the position against a fork.
-3. **Support boundary** ([#47](https://github.com/Rumeasiyan/askwell/issues/47)). What a single maintainer promises to answer, stated before release rather than discovered afterwards.
-4. **Code signing certificates** ([#42](https://github.com/Rumeasiyan/askwell/issues/42)). Apple Developer enrolment and a Windows certificate. Not a decision — a purchase with a lead time.
+1. **Support boundary** ([#47](https://github.com/Rumeasiyan/askwell/issues/47)). `SUPPORT.md` states one; it needs reading and agreeing rather than inheriting.
+
+Settled and recorded in `decisions.md`: no trademark registration, and unsigned distribution with published checksums. Both were declined on cost, deliberately, with the consequences written down rather than assumed away.
 
 ---
 
-_Name alternatives considered, if Askwell does not survive a trademark check: **SiloQ**, **AnchorQ**, **KeepQ**._
+_Name alternatives considered, if Askwell ever needs to change: **SiloQ**, **AnchorQ**, **KeepQ**._

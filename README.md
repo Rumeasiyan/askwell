@@ -72,6 +72,12 @@ Yes. Models come from configuration and are never hardcoded. Note that the model
 **Can I use it today?**
 Not yet. There is no application code — the repository is a complete specification and a 177-ticket backlog. Watch the repo if you want to know when that changes.
 
+## Installing
+
+Not yet — there is no release. When there is: **[`docs/installing.md`](docs/installing.md)**.
+
+Askwell is unsigned, so macOS and Windows will warn on first launch. That page explains the warning, how to get past it, and — more importantly — how to verify the download is the file we published. **Verify the checksum.** That is the check that protects you; the bypass only stops your computer asking.
+
 ## Non-negotiables
 
 Full list with reasoning in [`AGENTS.md`](AGENTS.md) §3.

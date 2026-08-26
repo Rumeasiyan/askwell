@@ -310,33 +310,32 @@ The shell is the natural supervisor because it is the thing the user launches. M
 
 ---
 
-### M7-TAURI-DEPLOY-184 — Code signing on three platforms, including Apple notarisation
+### M7-TAURI-DEPLOY-184 — Unsigned distribution with checksums and bypass instructions
+
+> **Signing is deferred, not dropped.** Certificates cost money every year and there is no revenue. This ticket ships the honest unsigned path; `M7-TAURI-DEPLOY-184a` adds signing when it is worth paying for.
 
 **Type:** Task
 
 **User Story**
 - **Actor:** someone downloading a free security-focused tool from an unknown developer.
-- **User Need:** an installation their operating system does not warn them about.
-- **Business Value:** Askwell's entire pitch is that it can be trusted with material the user cannot upload anywhere. An unsigned binary that the operating system flags as unidentified contradicts that in the first ten seconds — and the first ten minutes decide everything for a free download with no sunk cost.
-- *As someone about to install a local AI tool because I do not trust cloud ones, I want my operating system not to warn me about it, so that the promise and the experience agree.*
+- **User Need:** to get past their operating system's warning **and to know the file is the one we published.**
+- **Business Value:** the warning is coming either way until signing is paid for. What decides whether the install survives it is whether the project handles it openly — a checksum and a plain explanation read as competence; silence reads as amateurism, and this product is asking to be trusted with material the user cannot upload anywhere.
+- *As someone installing a local AI tool because I do not trust cloud ones, I want to verify what I downloaded is what was published, so that I am not simply trusting a warning-bypass instruction from the internet.*
 
 **Context / Background**
-**Detailed Description:** Signing was accepted as a real, recurring cost when the shell was decided (`../decisions.md`, 2026-08-26) — **"per-platform code signing, with Apple notarisation the expensive one"**. It covers the shell binary, the installer, and the native inference binary that ships beside them.
+**Detailed Description:** Askwell ships unsigned. Linux installs with no friction. macOS refuses the first launch and the user goes through System Settings → Privacy & Security → Open Anyway; Windows shows SmartScreen with **Don't run** as the default button and the user takes More info → Run anyway.
 
-Apple notarisation is the substantial half: the signed artefact is submitted to Apple, waits on their service, and the result is stapled to the artefact. It is a build-pipeline step with a network dependency and a turnaround time, and treating it as a checkbox at the end of the phase is exactly how a release slips.
-
-**Signing is a build-time act, not a runtime one.** Nothing about it puts a network call inside the product; C1 is untouched, and the release test in M7-OFFLINE-TEST-145 still runs with the cable unplugged.
+**The checksum is the part that actually protects anyone**, and it must be published and prominent. An unsigned build from a careful developer and an unsigned build from a hostile one are indistinguishable to Gatekeeper — so the bypass instruction alone is teaching people to click past warnings, which is a real cost. `docs/installing.md` puts verification above the bypass for that reason, and this ticket must not reorder them.
 
 **Scope**
-- Signing the shell binary, the installer and the native inference binary on each platform.
-- Apple notarisation, including submission, waiting, and stapling the result.
-- Secure handling of signing credentials as environment-only secrets, never committed (C8).
-- A documented, repeatable release procedure that includes the notarisation wait as a real step with a real duration.
-- Verification on each platform that a freshly downloaded artefact installs without a security warning.
+- A `SHA256SUMS` file published with every release, covering every artefact.
+- `docs/installing.md` linked prominently from the release page and the README.
+- Verification on each platform that a freshly downloaded artefact installs by following those instructions exactly, as written, on a machine that has never seen Askwell.
+- The release procedure documented, including generating and publishing checksums.
 
 **Out of Scope**
+- Code signing and Apple notarisation — deferred to `M7-TAURI-DEPLOY-184a`.
 - App store distribution on any platform.
-- Update delivery, which is blocked (M7-UPDATE-BLOCKED-161) and which will need signing again when it is unblocked.
 - Any runtime signature check inside the product.
 
 **Acceptance Criteria**
@@ -1647,6 +1646,61 @@ Cold start. Ask a question on the shipped model — no marker. Open settings, pl
 - **Estimate:** 2–3 hours · **Priority:** High
 - **Labels / Component:** frontend, grounding, settings
 - Small because the model identity is already on the interaction record — this reads it and renders one persistent element.
+
+---
+
+### M7-TAURI-DEPLOY-184a — Code signing and Apple notarisation
+
+> **Deferred: not scheduled.** Blocked on a purchase, not on engineering. Do not start it until certificates exist.
+
+**Type:** Task
+
+**User Story**
+- **Actor:** someone installing Askwell who never sees a security warning.
+- **User Need:** an install that behaves like any other application.
+- **Business Value:** `../success-metrics.md` §4 targets fewer than 20% of installs never reaching a first answer. A first-launch security warning on a free tool nobody has invested anything in is exactly where that number goes bad — but it is a conversion cost, not a blocker, which is why the unsigned path ships first.
+
+*As someone installing a local AI tool, I want my operating system not to warn me about it, so that the promise and the experience agree.*
+
+**Context / Background**
+**Detailed Description:** Signing covers the shell binary, the installer and the native inference binary. Apple notarisation is the substantial half — the signed artefact is submitted, waits on Apple's service, and the result is stapled. It is a build-pipeline step with a network dependency and a turnaround time, and treating it as a checkbox at the end of a phase is how a release slips.
+
+**Signing is a build-time act, not a runtime one.** Nothing about it puts a network call inside the product; C1 is untouched and the cable-unplugged release test is unaffected.
+
+**Scope**
+- Signing on each platform; Apple submission, wait and staple.
+- Signing credentials as environment-only secrets, never committed (C8).
+- The release procedure updated with the notarisation wait as a real step with a real duration.
+- `docs/installing.md` reduced to the parts still true.
+
+**Out of Scope**
+- App store distribution. Any runtime signature check.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** A freshly downloaded artefact installs on each platform with no security warning. Checksums are still published — signing establishes who published it, and a checksum establishes that the bytes are unaltered; they answer different questions and neither replaces the other.
+- **Edge Cases:** Notarisation rejected — the release stops rather than shipping a half-signed artefact. A certificate expiring mid-release. A new version warning on Windows until reputation accrues, which signing reduces rather than eliminates for a standard certificate.
+- **Permissions / Roles:** Single user — no roles. Not applicable.
+- **UI States:** None — this is invisible when it works.
+- **Validation Rules:** Credentials never reach a log, a commit, or a build artefact.
+- **Audit / Logging Requirements:** None in the product.
+- **Analytics Events:** None.
+
+**Real-World Example Scenarios**
+- Someone downloads Askwell on a work Mac with default security settings and it opens on the first try.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M7-TAURI-DEPLOY-184.
+- **API / Data Touchpoints:** None.
+- **Assumptions:** An Apple Developer enrolment and a Windows certificate exist. **Neither can be obtained by any build session** — both are purchases on the owner's identity, with lead times measured in days to weeks.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** On a machine that has never seen Askwell, with default security settings, download the release, open it, and confirm no warning appears at any point. Repeat on all three platforms. Then verify the checksum still matches, because signing does not remove that step.
+- **Known gaps:** Windows reputation still accrues per version with a standard certificate; an EV certificate avoids that and costs more.
+
+**Effort & Granularity Check**
+- **Estimate:** 4–6 hours · **Priority:** Low
+- **Labels / Component:** deploy, `phase:7`
+- **Granularity:** Upper bound because the work is waiting on someone else's service, and the first attempt on each platform is where the surprises are.
 
 ---
 

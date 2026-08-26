@@ -22,6 +22,30 @@ Template:
 
 ---
 
+## 2026-08-26 — No trademark, unsigned distribution, and Apache-2.0 stays
+
+**Decision:** Askwell will **not register a trademark**, and ships **unsigned** with published checksums and written bypass instructions. The licence **stays Apache-2.0**; moving to MIT was considered and rejected.
+
+**Why MIT would not have helped, since it was the reason MIT came up.** Apache-2.0 §6 explicitly reserves trademark rights; MIT is silent on them. Silence is not a grant, so neither licence gives a trademark away and neither creates one — **the trademark question is entirely orthogonal to which permissive licence is chosen.** Switching would have cost the explicit patent grant in §3, which protects the project and its contributors from a contributor later asserting a patent, in exchange for nothing at all. Apache-2.0 stays.
+
+**Why no trademark, and what that actually costs.** Registration is a few hundred pounds and enforcement is far more, against a project with no revenue. Most small open-source projects rely on unregistered rights arising from use, and are fine.
+
+The real cost is that a previously-recorded claim was wrong and had to be corrected. The Apache-2.0 entry said the position against a hostile fork is protected by "the trademark and the brand" — with no registration, that sentence asserted a protection that does not exist. **A document claiming a safeguard you do not have is worse than one admitting you have none**, because the first stops anyone looking for a real one.
+
+What actually protects the position is narrower and worth stating plainly: whoever runs the credit service holds the provider contracts, the billing relationship and the support burden. That is a business to build, not a repository to copy. Being the maintained original counts too — and counts for nothing if the original stops being maintained.
+
+**Why unsigned, and where the honesty has to sit.** Certificates cost money every year — an Apple Developer enrolment and a Windows code-signing certificate — against no revenue. Linux is unaffected. macOS refuses first launch until the user goes through System Settings, and Windows shows SmartScreen with *Don't run* as the default button.
+
+That is a conversion cost, not a distribution problem: `success-metrics.md` §4 targets fewer than 20% of installs never reaching a first answer, and a security warning on a free tool nobody has invested in is exactly where that number goes bad. It was accepted knowingly.
+
+The part that must not be got wrong: **an unsigned build from a careful developer and an unsigned build from a hostile one are indistinguishable to Gatekeeper.** So a bypass instruction on its own is teaching people to click past security warnings, with nothing offered in exchange. `installing.md` therefore puts **checksum verification above the bypass**, and says why — the bypass tells the machine to stop asking, the checksum is the check that actually protects the reader. Any future edit that reorders those two sections has removed the only real safeguard in the page.
+
+**Consequences:** `M7-TAURI-DEPLOY-184` becomes unsigned distribution with checksums; signing survives as `M7-TAURI-DEPLOY-184a`, deferred and explicitly blocked on a purchase rather than on engineering, so it is tracked rather than forgotten. `docs/installing.md` is new and is linked from the README. Phase 6's estimate no longer carries signing. Nothing in the product changes — signing was always build-time, and C1 was never involved.
+
+**Refs:** `PRD.md` §7, §11; `installing.md`; `architecture.md` §1; `build-plan.md` Phase 6; `LICENSE`; issues #42, #47.
+
+---
+
 ## 2026-08-26 — Web search uses a keyless library; no key means no contradiction
 
 **Decision:** Web search uses **`ddgs`**, an MIT-licensed keyless metasearch library, behind the provider interface. No API key, no account, no cost, no additional container. `PRD.md` §6 stands unamended, and web search stays at Phase 6.5 rather than moving behind the credit service.
@@ -268,7 +292,7 @@ Rejected alternatives. **AGPL** looks protective and mostly is not here: its net
 
 **Consequences:**
 
-- Someone can fork Askwell and point it at their own credit service. Nothing prevents that. The position is protected by the trademark, the brand and the operational reality of running paid inference — so **the trademark now needs registering**, which is a new open item.
+- Someone can fork Askwell and point it at their own credit service. Nothing prevents that. **Superseded 2026-08-26: no trademark will be registered** — see that day's entry. The protection is narrower than this line claimed.
 - Free and open sets a support expectation a single maintainer cannot meet. A stated support boundary and issue triage must exist before the first public release, not after it.
 - Everything shipping before Phase 7 is free and open, so v1 earns nothing. Adoption has to come first and the credit system stops being an add-on — it is the business.
 - The competitive field is large and established: AnythingLLM (64k stars), private-gpt (57k), Quivr (39k), Khoj (36k), Onyx (31k), open-webui (148k). Askwell will not win generic search terms against these and should not try. **None of them asks the user about their data or remembers the answers** — that phrase is unclaimed, and discovery strategy should own it rather than compete on "local AI for documents".
