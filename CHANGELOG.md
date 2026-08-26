@@ -4,6 +4,22 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.1.2 — 2026-08-26
+
+`M0-FOUND-BE-002`. The API application, its configuration, its logging and its health surface.
+
+### Added
+
+- `askwell.config` — typed settings from `ASKWELL_*` environment variables. Refuses to start on unusable configuration and names every offending variable at once, by the name a person actually typed. An unknown `ASKWELL_*` variable is reported rather than ignored, because a typo otherwise leaves the setting it was meant to change silently on its default.
+- `askwell.logging` — structlog, JSON to stderr, ISO-8601 UTC timestamps. Redaction is a processor, not a convention: anything whose key looks like a credential, and every `SecretStr` whatever its key is called, is replaced at any depth. Standard-library logs — uvicorn's included — are rendered by the same renderer, so the stream is parseable throughout.
+- `askwell.health` — five components probed independently and concurrently. Name resolution is separate from connection so that "does not resolve" and "is not answering yet" are different messages, because they need different actions from the user.
+- `askwell.app` — FastAPI application, `GET /health`, startup and shutdown logging with resolved profile and component states, and an error handler that shows the exception in development and a stated reason otherwise.
+- `askwell-api` console entry point.
+
+### Changed
+
+- Logger caching is off. structlog binds a cached logger to whatever configuration was live at first use, and modules take their loggers at import time — before configuration is read — so a cached logger silently ignores it.
+
 ## 0.1.1 — 2026-08-26
 
 First product code. `M0-FOUND-DEPLOY-001`.
