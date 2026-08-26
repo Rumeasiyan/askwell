@@ -94,7 +94,7 @@ Running the concept-to-build procedure over the existing docs. **Its phase numbe
 | P0/P1 — spec, metrics, states | **done**, then redone after the repositioning |
 | P2 — design the screens, in `docs/ux/` | **done** — design system + 10 screens |
 | Review the data model against what the screens need | **done** — #20 closed |
-| P6 — user-story backlog, vertical slices ≤ 3h | **next** |
+| P6 — user-story backlog, vertical slices ≤ 3h | **format drafted** — M1.1–M1.5 written as samples, awaiting sign-off before the rest |
 | Scaffold (Phase 0, #7) | blocked on #9 |
 
 Screens before schema is deliberate: drawing a screen surfaces the missing button and the number with nowhere to come from.
@@ -108,6 +108,8 @@ Not yet established. First run at the end of Phase 1.
 | —     | —     | —       | —          | —    |
 
 ## Session log
+
+**2026-08-10 (P6 format)** — Story format and milestones in `docs/stories/`. Five M1 stories written in full as samples rather than generating the whole backlog against an unagreed shape. Notable: **M2 "It says when it doesn't know" is its own milestone** — abstention and the failure states normally get folded into "the chat feature" and quietly dropped when time runs short, and they are the product's central claim. M1.3 ships an ungrounded answer path and says so explicitly, with M1.4 following immediately to satisfy C4; that is a deliberate temporary state, not an oversight. Manual tests walk from a cold start every time, so an upstream regression surfaces on the next story rather than in someone's install.
 
 **2026-08-10 (data model)** — Reviewed `architecture.md` §7 against all ten screens and rewrote it. Four changes: `documents.path`/`missing_since` so a moved file is distinguishable from a deleted one (indexing in place makes stale paths normal, not exceptional); **`citations` promoted to a real table** because C4 cannot be enforced or measured while citations live in a jsonb blob — `success-metrics.md` tracks uncited claims at 100% and that query has to be possible; `fact_usage` join table for "used in N answers"; `clarifications.rank`/`evidence` for the cap and the value distributions. Dropped `collections` — a flat list is right until someone needs grouping, and documents hang off `sources` now. Specified the shape of `messages.trace`, with scores and the threshold **stored not recomputed**, since recomputing gives a different number after any threshold change and breaks the explanation exactly when someone is investigating an old answer. Listed the constraints the ORM will not express, to go in the same migration that creates the tables. Closed #20.
 
