@@ -1,6 +1,8 @@
 # Build runner
 
-**Specification only. Nothing here is built.** No script, no state directory, no configuration exists yet — this document is what the session that writes the runner must follow.
+**The runner exists** — `scripts/build-runner.sh`, `scripts/guards.sh`, `scripts/guards.test.sh`. This document remains authoritative: where it and the script disagree, the script is wrong.
+
+**Live runs are deliberately disabled.** The runner refuses anything but `--dry` and `--list`, because §7.1's gate does not exist yet. A live run could not verify what it produced, and a runner that ships unverified work is worse than no runner. Remove the refusal in `main()` once M0 has landed and §7.3 is filled from real command output.
 
 Where this document and an implementer's instinct disagree, **this document is what was decided**. If a decision here is wrong, change it here and record why in `decisions.md`; do not diverge in the script.
 
@@ -171,6 +173,10 @@ docs/manual-tests/<TICKET>.md     # committed — the walkthrough is a deliverab
 
 ## 7. The gate, exactly
 
+### 7.0 A note on linting the runner itself
+
+**`shellcheck` is not installed on the development machine** — verified. The runner and guards are checked with `bash -n` only, which catches syntax but not quoting or word-splitting bugs. Install `shellcheck` and wire it into the repo gate when M0 creates one; until then, the guard tests are the only executable check on this code.
+
 ### 7.1 It does not exist yet
 
 Nothing in §7.2 runs today. The commands are created by M0 — principally `M0-FOUND-DEPLOY-001`, which puts `uv`, `ruff`, `mypy` and `pytest` inside the API image so the host needs only Podman.
@@ -337,11 +343,11 @@ Both live in `scripts/guards.sh`, separate from the runner and testable before i
 
 | # | Decision | Considerations | Where the answer goes |
 | --- | --- | --- | --- |
-| 1 | How the runner marks a ticket done | A state file is machine-local and invisible in review; a ticket-body edit is visible but makes every run a diff | `decisions.md` |
+| ~~1~~ | ~~How the runner marks a ticket done~~ | **Resolved:** a state file at `.build-runner/done/<ID>`. A ticket-body edit would make every run produce a diff in `backlog/`, and the durable record of a finished ticket is its merged PR, not a marker | `decisions.md` |
 | 2 | Whether the audit lineage resets per milestone | A single lineage across 198 tickets accumulates context that may stop being relevant; per-milestone loses cross-milestone memory | `decisions.md` |
 | 3 | Where the copy-review marker lives in the ticket header, and who back-fills it | §9 — required before any ticket with user-facing wording can be run unattended | The ticket format in `backlog/README.md` |
-| 4 | Whether the runner may create the branch, or a human creates it | Affects whether a run can start from a clean `main` | `decisions.md` |
-| 5 | What "estimate" the budget guard reads | Ticket hours are a range; the guard needs one number, and taking the low end under-protects | `decisions.md` |
+| ~~4~~ | ~~Whether the runner may create the branch~~ | **Resolved:** preflight refuses to run on `main` and the runner creates its own branch at PR time. `main` is unprotected here, so the runner is the only thing standing between an unattended session and the default branch | `decisions.md` |
+| ~~5~~ | ~~What "estimate" the budget guard reads~~ | **Resolved:** the **high end** of the ticket's hour range, and the ceiling is in **hours, not currency**. Every ticket carries hours; converting to money needs a rate this repo does not have, and a guard built on an invented rate reports a precision it does not possess | `decisions.md` |
 
 **These are also filed as issues**, per `AGENTS.md` §8 — a question raised only in a document is a question with no owner.
 

@@ -22,6 +22,30 @@ Template:
 
 ---
 
+## 2026-08-26 — Build runner: state file, hour-denominated ceiling, live runs disabled
+
+**Decision:** Three questions `build-runner.md` §13 left open are settled by the implementation.
+
+**A ticket is marked done by a state file** at `.build-runner/done/<ID>`, not by editing the ticket body. Editing the body would make every run produce a diff inside `docs/backlog/`, turning the backlog into a mutable log — and the durable record that a ticket finished is its merged pull request, not a marker anywhere.
+
+**The budget ceiling is denominated in hours, and reads the high end of the range.** Every ticket carries an hour estimate; nothing in the repository carries a rate, and converting hours to money would mean inventing one. A guard built on an invented rate reports a precision it does not have. The high end rather than the low end because a ceiling that under-protects is not a ceiling — a run that stops at the cap having used the top of every estimate has already overshot.
+
+**Live runs are disabled in the shipped runner.** It accepts `--dry` and `--list` and refuses anything else.
+
+That last one is the substantive call. The gate does not exist — verified: no root manifest, no Compose file, no CI workflow. M0 creates it. A runner that ran live today would build a ticket, skip every gate command, find nothing wrong because nothing was checked, and open a pull request implying verification that never happened. **A runner that ships unverified work is worse than no runner**, because the pull request carries an implicit claim the pipeline did not earn.
+
+The refusal is a single guarded exit in `main()`, removed once M0 has landed and §7.3 of the specification is filled in from real command output. Until then the dry run is genuinely useful: it renders and validates the prompt, which is the part most likely to be wrong.
+
+**Consequences:**
+
+- The guards ship complete and tested — 19 tests covering the stop file, budget boundaries, accumulation, and every fail-closed path. They are the parts that stop an unattended run from burning budget or refusing to die, so they exist and are proven before the thing they guard does.
+- **`shellcheck` is absent on this machine**, so the runner is checked with `bash -n` only. That catches syntax, not quoting or word-splitting. Recorded as a gap in §7.0; install it with the M0 toolchain.
+- The copy-review marker (§13.3) remains genuinely open and is the one that blocks unattended running of any ticket with user-facing wording. Detection is implemented and reads the ticket body, so it starts working the moment the marker is added — but no ticket carries one today.
+
+**Refs:** `build-runner.md` §7.0, §7.1, §13; `scripts/build-runner.sh`, `scripts/guards.sh`; issue #40.
+
+---
+
 ## 2026-08-26 — Desktop shell, and web search as an escalation the user performs
 
 **Decision:** Two answers, recorded together because both change what leaves the machine and what the product is.
