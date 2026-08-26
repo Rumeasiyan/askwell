@@ -59,4 +59,30 @@ The existing direction is a decision with recorded reasoning, not a default. Exp
 
 ## Status
 
-Set up, empty. `src/directions/v1/Page.tsx` is the template's placeholder and is not an Askwell design. No direction has been authored yet.
+One direction, **`instrument`**, with **36 screens** — every surface Askwell has, including the states that usually get skipped: didn't-know, partial answers, conflicting sources, refused queries, moved files, deleted sources, poor OCR, mic denied, assistant down, locked, near-limit storage.
+
+Run `pnpm dev` and press `1`, or use the screen bar to move between them.
+
+### Screens
+
+| Group | Screens |
+| ----- | ------- |
+| Asking | answered · working · didn't know · partial & conflict · asks you first · nothing yet |
+| Asking your data | answered with SQL shown · refused |
+| Following a citation | source viewer · moved & deleted |
+| Adding material | choose · reading · CSV review · dump sandbox · connect database · library |
+| The differentiator | clarifications · clarifications empty · memory |
+| Showing the working | trace · trace near-miss · how it's going · history |
+| Voice | voice · edge cases |
+| Getting started | what it is · this machine · model · locked · assistant down |
+| Settings | model · privacy · storage · your data · online AI · about |
+
+### Adding an alternative
+
+`instrument` is a decision with recorded reasoning, not a default. To test something against it:
+
+```
+node scripts/new-direction.mjs v2 --label "V2" --sub "What you are betting on"
+```
+
+Then press `G` to see both side by side under identical content. If the alternative wins, say why in `../docs/decisions.md` and update `../docs/ux/design-system.md` — do not leave the two disagreeing.
