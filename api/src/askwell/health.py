@@ -64,15 +64,75 @@ class _Target:
 
 
 def _targets(settings: Settings) -> list[_Target]:
-    """The five components the shell needs reported separately."""
+    """The components reachable by opening a socket. The worker is not one."""
     database_host, database_port = settings.database_host_port
     return [
         _Target("database", database_host, database_port),
         _Target("queue", settings.redis_host, settings.redis_port),
-        _Target("worker", settings.worker_host, settings.worker_port),
         _Target("inference", settings.inference_host, settings.inference_port),
         _Target("egress_proxy", settings.egress_proxy_host, settings.egress_proxy_port),
     ]
+
+
+# ASYNC109 is suppressed for the same reason as on _probe below: the timeout
+# has to come in, because turning it into a per-component state with a reason
+# attached is the job. Raised in the caller it would collapse five answers into
+# one exception.
+async def _probe_worker(settings: Settings, timeout: float) -> ComponentHealth:  # noqa: ASYNC109
+    """Ask Redis whether the worker has checked in lately.
+
+    The worker consumes a queue and listens on nothing, so there is no socket
+    to open. It publishes a health record on a short interval with an expiry
+    just past it, which means the key's presence *is* its freshness — no clock
+    comparison, and no chance of trusting a record left behind by a worker that
+    died an hour ago.
+
+    Reported against the queue's address rather than the worker's, because that
+    is where the evidence is, and because a user reading "worker: unreachable"
+    next to "queue: unreachable" should be able to see that one is likely
+    causing the other.
+    """
+    import redis.asyncio as redis
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    address = f"{settings.redis_host}:{settings.redis_port}"
+
+    def finish(state: ComponentState, reason: str | None) -> ComponentHealth:
+        return ComponentHealth(
+            name="worker",
+            state=state,
+            reason=reason,
+            address=address,
+            duration_ms=(loop.time() - started) * 1000,
+        )
+
+    client = redis.Redis(
+        host=settings.redis_host,
+        port=settings.redis_port,
+        socket_connect_timeout=timeout,
+        socket_timeout=timeout,
+    )
+    try:
+        async with asyncio.timeout(timeout):
+            record = await client.get(settings.worker_health_key)
+    except (TimeoutError, OSError, redis.RedisError) as error:
+        return finish(
+            ComponentState.UNREACHABLE,
+            f"Could not ask the queue whether the worker is alive: {type(error).__name__}.",
+        )
+    except Exception as error:  # pragma: no cover - defensive
+        return finish(ComponentState.UNKNOWN, f"Probe failed: {type(error).__name__}: {error}")
+    finally:
+        await client.aclose()
+
+    if record is None:
+        return finish(
+            ComponentState.UNREACHABLE,
+            "The queue is up but the worker has not checked in. It may still "
+            "be starting; if this persists, the worker is not running.",
+        )
+    return finish(ComponentState.REACHABLE, None)
 
 
 def _consume(task: asyncio.Task[Any]) -> None:
@@ -197,4 +257,8 @@ async def check_components(settings: Settings) -> Sequence[ComponentHealth]:
     waiting on the answer.
     """
     timeout = settings.health_probe_timeout_seconds
-    return await asyncio.gather(*(_probe(target, timeout) for target in _targets(settings)))
+    socket_probes = [_probe(target, timeout) for target in _targets(settings)]
+    results = await asyncio.gather(*socket_probes, _probe_worker(settings, timeout))
+    # Ordered as the shell reads them: the two the user can act on first.
+    order = {"database": 0, "queue": 1, "worker": 2, "inference": 3, "egress_proxy": 4}
+    return sorted(results, key=lambda item: order[item.name])

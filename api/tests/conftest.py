@@ -35,8 +35,9 @@ def settings() -> Settings:
         database_url="postgresql://askwell:pw@127.0.0.1:1/askwell",  # type: ignore[arg-type]
         redis_host="127.0.0.1",
         redis_port=1,
-        worker_host="127.0.0.1",
-        worker_port=1,
+        # A key nothing writes, so the worker reads as not-checked-in by
+        # default. Tests that want a live worker set it explicitly.
+        worker_health_key="askwell-test:no-such-worker",
         inference_host="127.0.0.1",
         inference_port=1,
         egress_proxy_host="127.0.0.1",

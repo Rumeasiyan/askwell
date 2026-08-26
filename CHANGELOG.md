@@ -4,6 +4,24 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.1.5 — 2026-08-27
+
+`M0-STACK-DEPLOY-009`. The stack comes up with one command.
+
+### Added
+
+- `compose.yaml` — `api`, `postgres` (pgvector, PG 18.6), `redis` and `worker`, with named volumes, health declarations and startup ordering. The egress proxy, sandbox database and voice are deliberately absent; they arrive in their own tickets.
+- `askwell.worker` — the arq worker and a `ping` job, which is the cheapest end-to-end proof the queue is wired up.
+- `.env.example` — the variables the stack needs. `M0-FOUND-SEC-007` completes it.
+
+### Fixed
+
+- **The worker was reported unreachable while running.** It was probed by opening a TCP socket, and an arq worker consumes a queue without listening on anything — so a healthy worker read as down, every time. It is now probed through the health record arq publishes into Redis, which distinguishes "the queue is down" from "the queue is up and the worker is not running". Those need different actions from the user.
+
+### Changed
+
+- `ASKWELL_WORKER_HOST` and `ASKWELL_WORKER_PORT` are gone, replaced by `ASKWELL_WORKER_HEALTH_KEY`.
+
 ## 0.1.4 — 2026-08-27
 
 `M0-FOUND-DEPLOY-004`. The API serves the interface. The `web` container is gone from the topology.
