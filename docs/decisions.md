@@ -22,6 +22,26 @@ Template:
 
 ---
 
+## 2026-08-26 — Web search uses a keyless library; no key means no contradiction
+
+**Decision:** Web search uses **`ddgs`**, an MIT-licensed keyless metasearch library, behind the provider interface. No API key, no account, no cost, no additional container. `PRD.md` §6 stands unamended, and web search stays at Phase 6.5 rather than moving behind the credit service.
+
+**Why the earlier framing was wrong.** I put three options forward — the user's own key, metering through credits, or a self-hosted SearXNG container — built on the constraint that *an open-source application cannot ship a shared API key*, because it would be lifted from the binary and the quota drained by everyone. That constraint is real. It is also irrelevant, because it presumes a key exists.
+
+Commercial products buy search API keys because they serve many users from shared infrastructure, and that traffic is what gets rate-limited and blocked. **Askwell is the opposite case in every dimension**: one person, on their own connection, escalating a handful of questions a week. That traffic is shaped like someone browsing, because it is. The thing that breaks keyless search is volume from one address, and there is no volume here.
+
+**What was rejected.** *CoexistAI* was raised and inspected: 521 stars, last pushed five months ago, and licensed `NOASSERTION` — not a standard OSI licence. It is a research framework that wraps SearXNG rather than a search backend, so it is a larger dependency than the problem needs, with the same class of licence question that removed PyMuPDF. *SearXNG itself* is a genuine option and remains the swap-in if `ddgs` stops being maintained; it was not chosen because it is a container on someone's laptop, and `architecture.md` §2 treats container count as a real cost.
+
+*The user's own key* was the tempting one, and would have required narrowing §6 to say "AI provider key" — defensible, since a search key is low-cost and low-blast-radius unlike an inference key. It is unnecessary now, and a promise not narrowed is worth more than a promise narrowed with good reason.
+
+**The cost, accepted knowingly:** a keyless metasearch depends on engines whose markup changes, so it will break and stay broken until the library is updated. That is a real dependency on someone else's maintenance, mitigated by where it sits — the unavailable state is already specified, and **the abstention still stands as the answer**. Failing to escalate is not failing to answer. The rule that must not bend when this fails: C5 does not relax because a network call did.
+
+**Consequences:** `M6.5-WEB-BLOCKED-195` is unblocked and **no ticket in the backlog carries a `[BLOCKED]` marker any more**. The provider interface earns its place — it exists precisely so this choice can be revisited without touching the answer path.
+
+**Refs:** `web-search.md` §6; `ux/web-search.md`; `architecture.md` §1; `PRD.md` §6, §11; issue #43.
+
+---
+
 ## 2026-08-26 — Updates, the online payload, and credits priced per question
 
 **Decision:** Three answers, each closing a `PRD.md` §11 item or a blocked ticket.

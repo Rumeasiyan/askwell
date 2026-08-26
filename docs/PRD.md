@@ -168,7 +168,6 @@ Build detail, estimates and acceptance criteria: `build-plan.md`.
 
 *Each is a tracked issue with an owner — a question recorded only here is a question nobody is answering.*
 
-1. **Web search provider** ([#43](https://github.com/Rumeasiyan/askwell/issues/43)). An open-source application cannot ship a shared API key, so the question is who holds one — and that decides whether search is free, metered, or keyless.
 2. **Trademark** ([#47](https://github.com/Rumeasiyan/askwell/issues/47)). "Askwell" needs registering if the brand is what protects the position against a fork.
 3. **Support boundary** ([#47](https://github.com/Rumeasiyan/askwell/issues/47)). What a single maintainer promises to answer, stated before release rather than discovered afterwards.
 4. **Code signing certificates** ([#42](https://github.com/Rumeasiyan/askwell/issues/42)). Apple Developer enrolment and a Windows certificate. Not a decision — a purchase with a lead time.
