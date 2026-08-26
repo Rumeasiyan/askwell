@@ -50,9 +50,9 @@ export default function TokenDemonstration() {
         <button type="button" className="ask-action-primary px-4">
           A primary action is filled
         </button>
-        <a href="#" className="ask-navigates inline-block w-fit border px-3 py-2">
+        <button type="button" className="ask-navigates w-fit border px-3 py-2 text-left">
           A navigating control lifts on hover
-        </a>
+        </button>
       </section>
 
       {/* Colour encodes epistemics. Each swatch is labelled in words as well as

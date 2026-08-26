@@ -7,39 +7,42 @@
 
 ## Current phase
 
-**M0 — It runs. In progress: 3 of 21 tickets done.**
+**M0 — It runs. In progress: 4 of 21 tickets done.**
 
-The repository is no longer documentation only. `api/` exists: an image, manifests, the application, and 54 tests. The API starts, refuses bad configuration by name, and serves `GET /health` reporting five components separately. `web/` builds to static assets with the design tokens in place. The Compose stack, the database schema and the inference process do not exist yet — so all five health components correctly report `unreachable`.
+The repository is no longer documentation only. `api/` exists: an image, manifests, the application, and 54 tests. The API starts, refuses bad configuration by name, and serves `GET /health` reporting five components separately. `web/` builds to static assets with the design tokens in place, and the API serves them — the `web` container is gone from the topology. The Compose stack, the database schema and the inference process do not exist yet — so all five health components correctly report `unreachable`.
 
-**Version:** `0.1.3` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
+**Version:** `0.1.4` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
 **Tracker:** `Rumeasiyan/askwell`. Working agreements in `AGENTS.md`. Backlog in `docs/backlog/`.
 
 ## Last completed
 
-**`M0-FOUND-FE-003`** — [#57](https://github.com/Rumeasiyan/askwell/issues/57). Frontend scaffold, pinned as one verified set, with the design tokens and three checks that make the ticket's claims mechanical.
+**`M0-FOUND-DEPLOY-004`** — [#59](https://github.com/Rumeasiyan/askwell/issues/59). The API serves the built interface. One process, one address.
 
-Verified by running it:
+Verified against a running container:
 
-- Clean `typecheck`, `lint`, `build`, all with `--network=none`. Static assets in `web/out`, 23 files.
-- Contrast: 38 pairs measured across both themes, all passing. **Tightest is `--rule-strong` on `--surface` in dark at 3.08:1 against a 3.0:1 floor** — almost no headroom, recorded in `docs/ux/design-system.md` §8.
-- Token hygiene and the offline scan both mutation-tested: a literal shadow, a depth token equal across themes, `--rule-strong` aliased to `--rule`, and an injected Google Fonts link were each caught.
-- Offline scan: no fetching reference to any external host, and no bundled font — the type stack is system faces only.
+| | |
+| --- | --- |
+| `/` | 200, `<title>Askwell</title>`, `cache-control: no-cache` |
+| `/health` | 200 — not shadowed by the catch-all |
+| `/_not-found/` and `/_not-found` | 200 both ways — a bookmarked deep route loads directly |
+| `/typo/` | 404 with the product's own page, not the shell |
+| `/../../etc/passwd` | 404 |
+| `/_next/static/chunks/*.js` | 200, `max-age=31536000, immutable` |
+| no build at all | 503 naming the directory and `scripts/dev.sh web-build`; `/health` still 200 |
 
-**Three things went wrong, all of them the ticket's own subject matter.**
+**The registration order in `create_app` is load-bearing.** `register_interface` installs a `/{path:path}` catch-all, so anything registered after it is unreachable. A test found this by adding a route post-hoc and getting a 404 where it expected a 500.
 
-`eslint` was pinned at 10.9.1 because it was latest. `eslint-config-next` 16 pulls `eslint-plugin-react`, which calls `context.getFilename()` — removed in ESLint 10. Lint died on the first run. That is exactly the failure this ticket exists to prevent, arrived at by picking a version independently. Pinned to 9.39.5.
+**Two weak tests, found and strengthened.** One asserted the not-found response was not the shell by checking for a `<title>`; the real export gives every page the same title, so it would have passed while missing the defect in production. It now compares against the shell's actual body. The other forced an exception before startup rather than during a request, so it exercised a different code path than it claimed.
 
-pnpm 11 verifies the lockfile against registry supply-chain policies on **every** command, `pnpm run` included. Under `--network=none` that is minutes of retries before anything executes. Set `verifyDepsBeforeRun: false` in `pnpm-workspace.yaml`; verification belongs to `install`.
+**Next's default 404 is hardcoded black-on-white** and drops the user out of the product. Replaced with `web/app/not-found.tsx`, built from tokens like everything else. The shell makes it navigable in `M0-SHELL-FE-017`.
 
-Corepack caches under `$HOME`, and the image sets `HOME=/tmp` after preparing pnpm — so the baked pnpm was in a directory nothing looked in, and the offline build died in corepack fetching it. `COREPACK_HOME` is now explicit.
-
-**Not verified:** the browser walkthrough. The Chrome extension is not connected, so nobody has looked at the rendered page in either theme. The two claims it was meant to check — depth survives the theme switch, no request leaves the machine — are now covered mechanically by `check-tokens.mjs` and `check-offline.mjs`, but "it looks right" is still unconfirmed. Worth ten minutes before M0-SHELL-FE-017 builds on it.
+**Deferred:** the API image does not copy `web/out` into itself — it serves from the mounted repository. Putting built assets in the image belongs with packaging (M0-STACK-DEPLOY-009 for Compose, Phase 7 for the installer).
 
 ## Next task
 
-**`M0-FOUND-DEPLOY-004`** — serve the built frontend assets from the API. `web/out` exists and the API is running; this joins them.
+**`M0-FOUND-TEST-005`** — establish the test harness and the first meaningful tests. 73 tests already exist and pass, so this is less about starting from nothing than about deciding what the harness guarantees: fixtures, coverage expectations, and which modules must have tests before their implementation (`AGENTS.md` §4 names retrieval, SQL validation and the agent loop).
 
-Forward references outstanding: the configuration error message points at `.env.example` (`M0-FOUND-SEC-007`), and no screen exists yet — `web/app/page.tsx` is a token demonstration, not a surface (`M0-SHELL-FE-017`).
+Forward references outstanding: the configuration error message points at `.env.example` (`M0-FOUND-SEC-007`), no screen exists yet (`M0-SHELL-FE-017`), and built assets are not in the API image (M0-STACK-DEPLOY-009 / Phase 7).
 
 ## Open
 

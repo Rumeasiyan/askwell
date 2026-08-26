@@ -38,8 +38,15 @@ def test_resolver_is_not_reading_a_stale_installed_copy() -> None:
 
 
 # Directories that are not ours to police, or that hold generated output.
+# Dependency caches matter here: pnpm's store holds thousands of vendored
+# package.json files, and some package somewhere will always happen to be at
+# whatever version Askwell is at.
 _SKIP_DIRS = {
     ".git",
+    ".pnpm-store",
+    ".turbo",
+    ".next",
+    "out",
     ".mypy_cache",
     ".pytest_cache",
     ".ruff_cache",

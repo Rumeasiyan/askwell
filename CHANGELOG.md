@@ -4,6 +4,22 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.1.4 — 2026-08-27
+
+`M0-FOUND-DEPLOY-004`. The API serves the interface. The `web` container is gone from the topology.
+
+### Added
+
+- `askwell.interface` — static asset serving with a deliberate route fallback, per-file cache behaviour, and containment checked after `resolve()` so `..` and symlinks are already collapsed.
+- `ASKWELL_WEB_ASSETS_DIR` — where the built interface lives.
+- `web/app/not-found.tsx` — the product's own not-found page. Next's default is hardcoded black-on-white and drops the user out of the interface entirely.
+- Fourteen tests covering the two requirements that pull against each other, five path-escape attempts and a symlink, cache headers per file kind, and the missing-build case.
+
+### Changed
+
+- Content-hashed assets are cached for a year and marked immutable; HTML is `no-cache`. The HTML is what points at the hashed filenames, so caching both the same way leaves a user on the old bundle after an update with no reason to suspect it.
+- A missing build returns a readable page naming the directory and the command, at HTTP 503 — not a blank page. `/health` keeps working, which is what someone with a broken install actually needs.
+
 ## 0.1.3 — 2026-08-26
 
 `M0-FOUND-FE-003`. The frontend, pinned as one verified set.

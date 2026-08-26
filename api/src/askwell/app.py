@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from askwell import __version__
 from askwell.config import ConfigurationError, Environment, Settings, load_settings
 from askwell.health import ComponentState, check_components
+from askwell.interface import register_interface
 from askwell.logging import configure_logging, get_logger
 
 log = get_logger(__name__)
@@ -113,6 +114,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         else:
             detail["hint"] = "The reason is in the application log."
         return JSONResponse(detail, status_code=500)
+
+    # Last: its catch-all would shadow every route registered after it.
+    register_interface(app, resolved)
 
     return app
 
