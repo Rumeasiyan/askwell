@@ -74,4 +74,4 @@ Deleting a source removes its schema notes. **General memory learned from it sur
 
 ## 6. Open
 
-1. **Per-source storage** — showing how much index each source costs, which matters once the log and index budgets bite.
+1. **Settled: index size is shown per source, in Settings rather than the library.** The library answers "what does Askwell know about"; storage is a different question asked at a different moment, and `settings.md` §5 already carries the budget it belongs beside. Putting a number nobody is looking for into a list they scan daily is how a scannable list stops being scannable.

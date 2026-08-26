@@ -128,4 +128,4 @@ Past 20s the retrieval labels keep updating so progress stays visible. The user 
 ## 8. Open
 
 1. **Suggested questions on the empty state** need generating from the corpus without an expensive model call at load.
-2. **Long conversations** — when the margin has fifty cards, does it scroll with the conversation or virtualise per answer? Affects the leader geometry.
+2. **Settled: the margin belongs to its answer and scrolls with it.** Past turns collapse (`conversation.md`), so a fifty-card margin never exists — only the live turn shows a full margin, and one answer's citations fit. Virtualising would break the leader geometry, which depends on a card and its claim being laid out together.

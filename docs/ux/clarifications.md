@@ -108,5 +108,5 @@ This screen is the version that works: one specific question, at the moment of a
 
 ## 8. Open
 
-1. **Ranking display** — whether to tell the user *why* a question was ranked into the top five. Transparent, possibly noise.
-2. **Bulk patterns** — five columns across three tables all named `*_cd`. One question with a note that it applies to all, or five separate ones?
+1. **Settled: the ranking is not shown.** Explaining why a question made the top five spends the user's attention on Askwell's bookkeeping rather than on the answer it needs. The cap is already stated honestly when it bites (§5, capped state); that is the disclosure that matters.
+2. **Settled: one question, applied to all matching columns, with the set named.** Five columns called `*_cd` across three tables is one thing the user knows and five questions they will resent. The question states which columns it covers and the answer applies to all of them — and each remains individually editable in Memory afterwards, so a wrong generalisation is cheap to undo.

@@ -113,4 +113,6 @@ An open-source product whose users never learn about a security fix is a real pr
 ## 9. Open
 
 1. **Update mechanism** (`../PRD.md` §11.2) — how a local install learns a version exists without phoning home by default.
-2. **Passphrase and backup interaction.** An encrypted backup restored on a machine without the passphrase is unrecoverable, and Phase 6 requires a tested restore.
+2. **Settled: a backup taken from a passphrase-protected install is encrypted with that passphrase, and restore refuses clearly without it.** The alternative — writing an unencrypted backup from an encrypted install — would silently produce the one artefact that defeats the passphrase entirely, and it would do so at the moment the user was being careful. Restore states plainly that the passphrase from the source machine is required and that there is no recovery path, which is the same honesty the passphrase screen already uses.
+
+   The tested restore in Phase 6 must cover **both** cases: passphrase set and not set. A restore path tested only in the easy direction is not tested.

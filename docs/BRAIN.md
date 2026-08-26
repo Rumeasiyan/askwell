@@ -79,11 +79,21 @@ Questions raised by the rewrite were settled as defaults rather than handed back
 | Sandbox caps | 5 GB, 10 minutes per import | `data-sources.md` §7 |
 | Telemetry | **None, not even opt-in**, through Phase 6 | `success-metrics.md` §6 |
 
-Still genuinely open, and deferred rather than forgotten:
+**Everything open is now a tracked issue.** Nothing lives only in a document — a doc section with no owner is the same failure as a chat message with no owner, which `AGENTS.md` §8 exists to prevent.
 
-- **What online mode transmits** (`audit-log.md` §9). Needed before Phase 7, which is where the revenue is.
-- **Excel multi-sheet and merged-cell handling** (`data-sources.md` §8). Common in real files.
-- **Memory import/export** across machines (`memory-and-clarification.md` §9). Not v1.
+| Waiting on you | Issue |
+| -------------- | ----- |
+| Code signing certificates — Apple and Windows, with lead times | [#42](https://github.com/Rumeasiyan/askwell/issues/42) |
+| Web search provider, and key-vs-credits | [#43](https://github.com/Rumeasiyan/askwell/issues/43) |
+| Update delivery | [#44](https://github.com/Rumeasiyan/askwell/issues/44) |
+| What online mode transmits | [#45](https://github.com/Rumeasiyan/askwell/issues/45) |
+| Credit pricing | [#46](https://github.com/Rumeasiyan/askwell/issues/46) |
+| Trademark, and agreeing the support boundary | [#47](https://github.com/Rumeasiyan/askwell/issues/47) |
+| The copy-review marker | [#40](https://github.com/Rumeasiyan/askwell/issues/40) |
+
+Everything else that was open in a document has been **decided and recorded where it belongs** — STT placement, PDF rendering, scan highlighting, passphrase-and-backup, trace retention and score presentation, audio retention, folder watching, Excel sheets and merged headers, clarification ranking and bulk patterns, bulk confirm, manual model install, suggested questions, margin scrolling, conversation paging, per-source storage. Four items are deferred with a reason rather than left open: voice escalation, re-asking an escalated question locally, editing a past question, and memory import/export.
+
+Three need real data and cannot be answered by thinking: the clarification cap of 5, the retention targets, and the abstention band.
 
 ## Build procedure
 

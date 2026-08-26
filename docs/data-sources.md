@@ -128,4 +128,4 @@ The unsupported-format message must say this explicitly — "MySQL dumps are not
 
 ## 8. Open
 
-1. **Excel with multiple sheets and merged cells.** Whether each sheet becomes a table, and how merged headers are handled. Common in real files and unresolved.
+1. **Settled: one sheet becomes one table, and merged header cells raise a clarification rather than being guessed.** Sheets are how people separate unrelated things, so collapsing them loses the author's own structure. Merged headers are genuinely ambiguous — a cell spanning three columns may be a group label or a stray formatting choice — and guessing wrong mislabels every value beneath it. That is the same class of error as the date-format ambiguity in §2, and gets the same treatment: ask, never infer.

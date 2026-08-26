@@ -97,5 +97,5 @@ Copy on refusal:
 
 ## 6. Open
 
-1. **Folder watching** — re-index when a watched folder changes. Obvious want, unspecified, and it interacts with supersession.
-2. **Excel multi-sheet** — one table per sheet, and what happens to merged headers (`../data-sources.md` §8).
+1. **Settled: no folder watching in v1.** It is an obvious want and it collides with supersession — a file saved five times in a minute would produce five superseding versions, and deciding when a change has "settled" is a heuristic that gets it wrong on somebody's workflow. v1 re-indexes on an explicit action. Revisit with real usage, once there is evidence about how people actually add material.
+2. **Settled: one table per sheet; merged headers raise a clarification** (`../data-sources.md` §7).

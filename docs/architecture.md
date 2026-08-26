@@ -56,7 +56,9 @@ The count went down by one despite adding the egress proxy. Every container is s
 
 The cost is accepted deliberately: the installer manages a native process alongside a container stack, and *"the assistant is unavailable"* now has two distinct causes to diagnose and report separately.
 
-**Open, and needed before Phase 5:** whether speech-to-text should also run natively for GPU access on the accelerated profiles, or stay containerised on CPU. Whisper `small` on CPU is likely adequate, which would keep `voice` in a container — but it is untested and the answer changes the installer.
+**Speech-to-text stays containerised, on CPU.** Whisper `small` is the smallest useful model in the line and the latency budget it must meet is 8s to first audio on `standard`, which is a CPU-only profile by definition — so the profile that constrains the design cannot use a GPU anyway. Moving STT native would buy speed only on profiles that already have headroom, at the cost of a second native process for the installer to supervise on three platforms.
+
+Revisit if the `standard` profile misses its budget in Phase 5 measurement. That is the trigger; nothing before it.
 
 **No high availability, ever.** Single machine, single Postgres, no replication or failover (issue #4, closed as out of scope). A second machine is meaningless for one person.
 

@@ -104,5 +104,5 @@ The change is recorded in the decisions log. Not hidden, not forbidden — it is
 
 ## 6. Open
 
-1. **Score presentation.** Raw cosine numbers are meaningless to most users, and a five-star rendering is a lie about precision. Currently raw with the threshold beside it; not obviously right.
-2. **Retention default** for the trace buffer, tied to the log budget.
+1. **Settled: raw scores, with the threshold beside them.** A five-star or percentage rendering invents precision the number does not carry. The raw figure is meaningless on its own and meaningful next to the threshold — which is exactly the comparison the abstention trace exists to show, and the only comparison that matters.
+2. **Settled: the trace buffer takes 20% of the log budget**, so it scales with the user's own setting rather than carrying a second number to keep in sync. At the default 2 GB that is roughly 400 MB of traces, which is a long history of the largest and least valuable of the three stores (`../audit-log.md` §2).
