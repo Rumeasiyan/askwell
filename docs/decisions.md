@@ -22,6 +22,58 @@ Template:
 
 ---
 
+## 2026-08-26 — Every open item resolved, deferred with a reason, or given an owner
+
+**Decision:** A sweep of all fourteen documents found roughly thirty items sitting in "Open" sections. Each is now decided and recorded where it belongs, deferred with a stated reason, or filed as a tracked issue with an owner. **No open item lives only in a document.**
+
+**Why this needed doing at all:** the tracker was empty and the project was reported as unblocked, repeatedly, while six backlog tickets were `[BLOCKED]`, four `PRD.md` §11 items were unanswered, and every specification carried an "Open" section nobody was assigned. Recording a question in a document felt like tracking it. It is not — `AGENTS.md` §8 says an item raised only in conversation is lost, and a doc section with no owner is the same failure with a nicer filename. The gap was invisible precisely because the tracker looked clean.
+
+One item was in **no document and no issue at all**: code signing certificates. Twenty-one references to notarisation across the M7 tickets, and nothing anywhere saying who obtains the Apple Developer enrolment or the Windows certificate — neither of which any session can do, and both of which have lead times measured in days to weeks. That is now #42.
+
+**The decisions worth naming, because each rejected something reasonable:**
+
+*Speech-to-text stays containerised.* The profile that constrains the latency budget is CPU-only by definition, so moving STT native would buy speed only where there is already headroom, at the cost of a second native process on three platforms.
+
+*Scanned pages highlight at page level.* Mapping OCR back to pixel regions and getting it slightly wrong highlights the wrong sentence — and a confident wrong highlight is a citation that lies, which is worse than a coarse one that does not.
+
+*Audio is not kept.* Retaining it would help diagnose bad transcription and would mean the product quietly accumulates recordings of its user's voice. For something whose claim is that nothing leaves the machine, holding more than it needs is the wrong instinct even when the data never moves.
+
+*No escalation to the web from voice.* Sending a question out is a deliberate act and a spoken command is the weakest possible confirmation of deliberateness. A misheard phrase would leak a question off the machine — the one failure this product cannot afford.
+
+*Merged spreadsheet headers raise a clarification rather than being guessed.* A cell spanning three columns may be a group label or stray formatting, and guessing wrong mislabels every value beneath it. Same class of error as the date-format ambiguity, so it gets the same treatment: ask, never infer.
+
+*No folder watching in v1.* It collides with supersession — a file saved five times in a minute would produce five superseding versions — and deciding when a change has settled is a heuristic that gets it wrong on somebody's workflow.
+
+**Consequences:** seven issues now wait on the owner, three of which have external lead times and should be started before they are needed. Three items need real usage data and are marked as such rather than pretending analysis can settle them. `BRAIN.md` no longer carries an open-blockers list of its own — it points at the tracker, because two lists is how one of them goes stale.
+
+**Refs:** issues #40, #42–#47; `PRD.md` §11; every `docs/ux/*.md` §Open; `data-sources.md`, `memory-and-clarification.md`, `web-search.md`, `architecture.md`.
+
+---
+
+## 2026-08-26 — Build runner: state file, hour-denominated ceiling, live runs disabled
+
+**Decision:** Three questions `build-runner.md` §13 left open are settled by the implementation.
+
+**A ticket is marked done by a state file** at `.build-runner/done/<ID>`, not by editing the ticket body. Editing the body would make every run produce a diff inside `docs/backlog/`, turning the backlog into a mutable log — and the durable record that a ticket finished is its merged pull request, not a marker anywhere.
+
+**The budget ceiling is denominated in hours, and reads the high end of the range.** Every ticket carries an hour estimate; nothing in the repository carries a rate, and converting hours to money would mean inventing one. A guard built on an invented rate reports a precision it does not have. The high end rather than the low end because a ceiling that under-protects is not a ceiling — a run that stops at the cap having used the top of every estimate has already overshot.
+
+**Live runs are disabled in the shipped runner.** It accepts `--dry` and `--list` and refuses anything else.
+
+That last one is the substantive call. The gate does not exist — verified: no root manifest, no Compose file, no CI workflow. M0 creates it. A runner that ran live today would build a ticket, skip every gate command, find nothing wrong because nothing was checked, and open a pull request implying verification that never happened. **A runner that ships unverified work is worse than no runner**, because the pull request carries an implicit claim the pipeline did not earn.
+
+The refusal is a single guarded exit in `main()`, removed once M0 has landed and §7.3 of the specification is filled in from real command output. Until then the dry run is genuinely useful: it renders and validates the prompt, which is the part most likely to be wrong.
+
+**Consequences:**
+
+- The guards ship complete and tested — 19 tests covering the stop file, budget boundaries, accumulation, and every fail-closed path. They are the parts that stop an unattended run from burning budget or refusing to die, so they exist and are proven before the thing they guard does.
+- **`shellcheck` is absent on this machine**, so the runner is checked with `bash -n` only. That catches syntax, not quoting or word-splitting. Recorded as a gap in §7.0; install it with the M0 toolchain.
+- The copy-review marker (§13.3) remains genuinely open and is the one that blocks unattended running of any ticket with user-facing wording. Detection is implemented and reads the ticket body, so it starts working the moment the marker is added — but no ticket carries one today.
+
+**Refs:** `build-runner.md` §7.0, §7.1, §13; `scripts/build-runner.sh`, `scripts/guards.sh`; issue #40.
+
+---
+
 ## 2026-08-26 — Desktop shell, and web search as an escalation the user performs
 
 **Decision:** Two answers, recorded together because both change what leaves the machine and what the product is.

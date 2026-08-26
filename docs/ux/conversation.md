@@ -83,5 +83,5 @@ Turns are separated by a simple divider: *earlier today*, *yesterday*, a date. N
 
 ## 7. Open
 
-1. **How far back before paging.** Unspecified; needs real conversations to answer.
-2. **Editing a past question and re-asking.** Attractive, and it raises what happens to the turns that followed it. Not v1.
+1. **Settled: twenty turns, then page.** A number is needed to build against and this one is defensible — twenty collapsed turns is a long working session and still scrolls quickly. It is a starting value, not a finding; revisit with real conversations.
+2. **Not in v1: editing a past question and re-asking.** It raises what happens to the turns that followed — silently invalidating them is wrong, and re-running them is expensive and surprising. Deferred rather than open: the answer needs usage evidence, not more thinking.

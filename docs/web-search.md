@@ -89,6 +89,6 @@ Behind an interface, like the TTS engine, so it can be swapped without touching 
 
 ## 8. Open
 
-1. **Provider and billing model** (§6).
-2. **Escalation from voice.** Speaking "search the web for that" is natural and is not specified. Deferred to the voice work.
-3. **Whether an escalated answer is re-askable locally later** — if the user then adds the document, does Askwell notice the earlier question is now answerable from their own files? Attractive, unspecified, not v1.
+1. **Provider and billing model** (§6) — [#43](https://github.com/Rumeasiyan/askwell/issues/43).
+2. **Settled: no escalation from voice in v1.** Sending a question out is a deliberate act, and a spoken command is the weakest possible confirmation of deliberateness — a misheard phrase would leak a question off the machine, which is the one failure this product cannot afford. Voice abstains and says the escalation is available on screen.
+3. **Not in v1: noticing that an escalated question became locally answerable.** Genuinely attractive, and it needs a mechanism for re-testing old questions against a changed corpus that does not exist yet. Deferred with the memory re-ask work.

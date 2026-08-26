@@ -111,7 +111,10 @@ What is used instead: direct contact with a small number of real users (small sa
 
 Revisit at Phase 6, once there are users to ask.
 
-## 7. Open
+## 7. Needs real data
+
+*Not open questions — neither can be settled by thinking, and both exist now so there is something to alarm on.*
+
 
 1. **Retention targets** (§1) — 35% at week 12 and ≥ 5 questions/week are reasoned, not measured. First real evidence should replace them.
 2. **The 5–20% abstention band** — invented from failure-mode reasoning. Re-derive from real traffic; it exists now so there is something to alarm on.

@@ -75,5 +75,5 @@ Voice does not take over the screen. The conversation stays visible, transcript 
 
 ## 7. Open
 
-1. **Hands-free turn detection** without push-to-talk needs a VAD threshold that works in a noisy room. Getting this wrong makes the product appear to interrupt itself.
-2. **Audio retention.** Currently the transcript is kept and the audio is not. Keeping audio would help debug bad transcription and is a meaningful amount of disk on a laptop.
+1. **Settled: push-to-talk is the only mode in v1.** Hands-free needs a voice-activity threshold that holds in a noisy room, and getting it wrong makes the product appear to interrupt itself — which reads as broken rather than as a tuning problem, and `../build-plan.md` Phase 5 already warns that two bad tries lose voice permanently. Push-to-talk is unambiguous and cannot misfire. Revisit with measurement, not with a guess at a threshold.
+2. **Settled: audio is not kept.** The transcript is the record. Keeping audio would help diagnose a bad transcription and would also mean the product quietly accumulates recordings of its user's voice on disk — for a product whose entire claim is that nothing leaves the machine, holding more than it needs is the wrong instinct even when the data never moves. A user who wants to check a transcription can look at it and re-ask.

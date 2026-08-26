@@ -74,5 +74,5 @@ The user can **add sources while this runs**. Ingestion does not need the model,
 
 ## 6. Open
 
-1. **Manual model install** needs a real path — the offline user is a core case and cannot be an afterthought.
-2. **Suggested first questions** must come from the corpus without an expensive model call at exactly the moment the machine is busy indexing.
+1. **Settled: a named directory the user drops a model file into, checked at startup and on demand.** The offline user is a core case — the people who most need Askwell are the least able to stream 2.4 GB — so this is a first-class path, not a fallback. Askwell states the exact filename it expects and where to put it, and verifies the file rather than assuming a correctly-named file is the right one.
+2. **Settled: suggested questions are drawn from the corpus without a model call** — real filenames, real column names, real headings, assembled from what ingestion already extracted. Generating them with the model at exactly the moment the machine is busy indexing is the wrong time to ask it for anything.

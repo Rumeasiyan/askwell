@@ -73,5 +73,6 @@ The image case matters more than it looks: showing OCR text beside the scan is h
 
 ## 5. Open
 
-1. **In-app PDF rendering** is a real dependency decision (`../architecture.md`), and it must work offline and bundle small.
-2. **Scanned-page highlighting** — mapping OCR text back to pixel regions is meaningfully harder than highlighting a text layer. May start as page-level for scans.
+1. **Settled: pdf.js, bundled locally.** Recorded in `../architecture.md` §1. It renders offline with no service, it is the same engine the browser already ships so behaviour matches what users expect from a PDF, and `pypdfium2` supplies the text and coordinates on the extraction side. No CDN, ever (C1).
+2. **Settled: scanned pages highlight at page level in v1.** Mapping OCR output back to pixel regions needs per-word bounding boxes carried through extraction, and getting it slightly wrong highlights the wrong sentence — which is worse than highlighting the page, because a confident wrong highlight is a citation that lies. Passage-level highlighting on scans is separate later work.
+3. **Settled elsewhere: per-source index size is shown in Settings, not the library** (`library.md` §6).

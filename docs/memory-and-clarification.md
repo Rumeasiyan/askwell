@@ -148,5 +148,5 @@ Everything below the cap is inferred, recorded as low confidence, and left visib
 
 ## 9. Open
 
-1. **Memory import/export** for users with several machines or reinstalling. Not v1; the storage shape should not make it hard later.
-2. Whether the cap of 5 survives contact with real imports. It is the number most likely to be wrong, and `success-metrics.md` §3 tracks dismissal rate specifically to catch it.
+1. **Not in v1: memory import/export across machines.** The full export in `ux/settings.md` §6 already carries memory in an open format, so nothing is trapped — what is missing is a merge path, and merging two memories that disagree is its own design problem. Deferred deliberately, and the storage shape does not preclude it.
+2. **The cap of 5 stands until real imports contradict it.** It is the number most likely to be wrong and `success-metrics.md` §3 tracks the dismissal rate specifically to catch that. This needs data, not more thinking.
