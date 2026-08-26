@@ -13,7 +13,7 @@ export default function AddIndexing() {
     <Shell>
       <Chrome right={<Badge>local</Badge>} />
       <Split>
-        <Rail groups={railWith('Settings')} />
+        <Rail groups={railWith('+ Add a source')} />
         <Main>
           <div className="flex items-baseline gap-3">
             <H>Reading 4 files</H>

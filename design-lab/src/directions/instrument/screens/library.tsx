@@ -5,7 +5,7 @@ export default function Library() {
     <Shell>
       <Chrome right={<Badge>local</Badge>} />
       <Split>
-        <Rail groups={railWith('Settings')} />
+        <Rail groups={railWith('All sources')} />
         <Main>
           <div className="flex items-baseline gap-3">
             <H>Sources</H>

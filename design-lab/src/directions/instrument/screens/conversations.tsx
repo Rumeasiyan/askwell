@@ -5,7 +5,7 @@ export default function Conversations() {
     <Shell>
       <Chrome right={<Badge>local</Badge>} />
       <Split>
-        <Rail groups={railWith('Ask')} />
+        <Rail groups={railWith('History')} />
         <Main>
           <div className="flex flex-wrap items-baseline gap-3">
             <H>Everything you've asked</H>

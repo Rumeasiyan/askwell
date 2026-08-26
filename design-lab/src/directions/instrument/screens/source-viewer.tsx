@@ -5,7 +5,7 @@ export default function SourceViewer() {
     <Shell>
       <Chrome right={<Badge>local</Badge>} />
       <Split>
-        <Rail groups={railWith('Ask')} />
+        <Rail groups={railWith('All sources')} />
         <div className="grid min-w-0 grid-cols-1 overflow-y-auto @3xl:grid-cols-[minmax(0,1fr)_260px] @3xl:overflow-visible">
           <Main className="gap-4">
             <div className="flex items-baseline gap-3">

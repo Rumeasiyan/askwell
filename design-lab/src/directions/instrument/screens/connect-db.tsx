@@ -5,7 +5,7 @@ export default function ConnectDb() {
     <Shell>
       <Chrome right={<Badge>local</Badge>} />
       <Split>
-        <Rail groups={railWith('Settings')} />
+        <Rail groups={railWith('+ Add a source')} />
         <Main>
           <div className="flex flex-col gap-2">
             <H>Connect a database</H>

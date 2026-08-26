@@ -105,6 +105,7 @@ export const railStd: { title: string; items: RailItem[] }[] = [
       { label: 'Contracts', count: '14', to: 'library' },
       { label: 'Policies', count: '6', to: 'library' },
       { label: 'sales-2024', count: 'db', to: 'library' },
+      { label: 'All sources', to: 'library' },
       { label: '+ Add a source', to: 'add-source' },
     ],
   },
@@ -119,11 +120,13 @@ export const railStd: { title: string; items: RailItem[] }[] = [
     ],
   },
 ]
+/* Marks whichever item matches, in either group. Passing a label that exists in neither
+   marks nothing — correct for screens reached from outside the rail. */
 export function railWith(active: string) {
-  return [
-    railStd[0],
-    { title: 'Library', items: railStd[1].items.map((i) => ({ ...i, on: i.label === active })) },
-  ]
+  return railStd.map((g) => ({
+    ...g,
+    items: g.items.map((i) => ({ ...i, on: i.label === active })),
+  }))
 }
 
 /* ---------- type ---------- */

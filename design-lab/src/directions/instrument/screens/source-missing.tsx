@@ -5,7 +5,7 @@ export default function SourceMissing() {
     <Shell>
       <Chrome right={<Badge>local</Badge>} />
       <Split>
-        <Rail groups={railWith('Ask')} />
+        <Rail groups={railWith('All sources')} />
         <Main>
           <Panel>
             <div className="flex items-baseline gap-2">
