@@ -476,6 +476,8 @@
 
 **Type:** Story
 
+**Human review:** copy — this ticket renders wording a user reads, specified in `docs/ux/`. The runner stops and quotes it before the pull request is merged.
+
 **User Story**
 - **Actor:** someone looking at a near-miss and wondering whether to loosen the threshold.
 - **User Need:** the control, with the honest consequence attached.

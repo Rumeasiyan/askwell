@@ -84,6 +84,8 @@
 
 **Type:** Story
 
+**Human review:** copy — this ticket renders wording a user reads, specified in `docs/ux/`. The runner stops and quotes it before the pull request is merged.
+
 **User Story**
 - **Actor:** someone on an older machine below the minimum.
 - **User Need:** to be warned honestly and allowed to try.
@@ -193,6 +195,8 @@ This ticket builds the window and nothing else. Dialogs, supervision and signing
 ### M7-TAURI-FE-182 — Native file dialogs for root registration and relocating a moved file
 
 **Type:** Story
+
+**Human review:** copy — this ticket renders wording a user reads, specified in `docs/ux/`. The runner stops and quotes it before the pull request is merged.
 
 **User Story**
 - **Actor:** someone pointing Askwell at forty gigabytes of case files that are not moving anywhere.
@@ -727,6 +731,8 @@ Apple notarisation is the substantial half: the signed artefact is submitted to 
 
 **Type:** Story
 
+**Human review:** copy — this ticket renders wording a user reads, specified in `docs/ux/`. The runner stops and quotes it before the pull request is merged.
+
 **User Story**
 - **Actor:** someone wondering why answers take fifteen seconds.
 - **User Need:** to see their profile, their model and real numbers.
@@ -883,6 +889,8 @@ Apple notarisation is the substantial half: the signed artefact is submitted to 
 ### M7-SET-FE-149 — Settings: about, licence, source and reporting a problem
 
 **Type:** Task
+
+**Human review:** copy — this ticket renders wording a user reads, specified in `docs/ux/`. The runner stops and quotes it before the pull request is merged.
 
 **User Story**
 - **Actor:** someone who wants to check the claim that this is open source.
@@ -1442,6 +1450,8 @@ Apple notarisation is the substantial half: the signed artefact is submitted to 
 
 **Type:** Story
 
+**Human review:** copy — this ticket renders wording a user reads, specified in `docs/ux/`. The runner stops and quotes it before the pull request is merged.
+
 **User Story**
 - **Actor:** someone who chose this product for sovereignty and intends to check.
 - **User Need:** a complete export in open formats and a genuine way to delete everything.
@@ -1590,6 +1600,8 @@ Apple notarisation is the substantial half: the signed artefact is submitted to 
 
 **Type:** Story
 
+**Human review:** copy — this ticket renders wording a user reads, specified in `docs/ux/`. The runner stops and quotes it before the pull request is merged.
+
 **User Story**
 - **Actor:** someone who swapped in their own model three weeks ago and has forgotten.
 - **User Need:** to know, while reading an answer, that this model's citation and abstention behaviour was never verified.
@@ -1643,6 +1655,8 @@ Cold start. Ask a question on the shipped model — no marker. Open settings, pl
 > **C9 applies.** Every bundled model must permit redistribution and commercial use and must not be access-gated. This ticket is where that is evidenced, not merely asserted.
 
 **Type:** Task
+
+**Human review:** copy — this ticket renders wording a user reads, specified in `docs/ux/`. The runner stops and quotes it before the pull request is merged.
 
 **User Story**
 - **Actor:** someone deciding whether they can use this at work.

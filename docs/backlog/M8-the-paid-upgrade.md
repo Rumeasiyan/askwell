@@ -133,6 +133,8 @@ The constraint already recorded for the second is that local logging continues i
 
 **Type:** Story
 
+**Human review:** copy — this ticket renders wording a user reads, specified in `docs/ux/`. The runner stops and quotes it before the pull request is merged.
+
 **User Story**
 - **Actor:** someone who enabled online AI last week and has forgotten.
 - **User Need:** a marker they cannot miss, and a statement of what will be sent before the first send.
@@ -328,6 +330,8 @@ The constraint already recorded for the second is that local logging continues i
 ### M8-CREDIT-FE-175 — Credits exhausted falls back to local and keeps working
 
 **Type:** Story
+
+**Human review:** copy — this ticket renders wording a user reads, specified in `docs/ux/`. The runner stops and quotes it before the pull request is merged.
 
 **User Story**
 - **Actor:** someone whose credit ran out mid-session.

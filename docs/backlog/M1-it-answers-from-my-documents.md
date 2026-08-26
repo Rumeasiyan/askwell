@@ -1224,6 +1224,8 @@ The disabled state must read as *not yet* rather than *broken*. `../ux/design-sy
 
 **Type:** Story
 
+**Human review:** copy — this ticket renders wording a user reads, specified in `docs/ux/`. The runner stops and quotes it before the pull request is merged.
+
 **User Story**
 - **Actor:** someone deciding whether to act on an answer without opening the file.
 - **User Need:** the evidence beside the claim, always, without clicking anything.
@@ -1643,6 +1645,8 @@ The disabled state must read as *not yet* rather than *broken*. `../ux/design-sy
 
 **Type:** Story
 
+**Human review:** copy — this ticket renders wording a user reads, specified in `docs/ux/`. The runner stops and quotes it before the pull request is merged.
+
 **User Story**
 - **Actor:** someone who has just installed Askwell and has nothing in it.
 - **User Need:** to be told what will be possible and given one action.
@@ -1694,6 +1698,8 @@ The disabled state must read as *not yet* rather than *broken*. `../ux/design-sy
 ### M1-LIB-FE-052 — First-run sequence: what this is, machine check, model, first question
 
 **Type:** Story
+
+**Human review:** copy — this ticket renders wording a user reads, specified in `docs/ux/`. The runner stops and quotes it before the pull request is merged.
 
 **User Story**
 - **Actor:** someone in the first ten minutes after downloading a free tool.
@@ -1807,6 +1813,8 @@ This ticket produces both values at composition time and writes them with the tu
 ### M1-CONV-FE-178 — Past turns collapse; an abstained turn shows no source count
 
 **Type:** Story
+
+**Human review:** copy — this ticket renders wording a user reads, specified in `docs/ux/`. The runner stops and quotes it before the pull request is merged.
 
 **User Story**
 - **Actor:** someone four questions into following a thread through their contracts.
@@ -1925,6 +1933,8 @@ Expansion restores what was stored, not what would be produced now. A citation t
 ### M1-CONV-FE-180 — Suggested follow-ups that fill the composer rather than sending
 
 **Type:** Story
+
+**Human review:** copy — this ticket renders wording a user reads, specified in `docs/ux/`. The runner stops and quotes it before the pull request is merged.
 
 **User Story**
 - **Actor:** someone who has just read an answer and can feel there is a next question but has not phrased it yet.

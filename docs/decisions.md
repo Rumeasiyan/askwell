@@ -22,6 +22,22 @@ Template:
 
 ---
 
+## 2026-08-26 — Copy-review marker, and the audit lineage resets per milestone
+
+**Decision:** Tickets that render wording a user reads carry `**Human review:** copy` under their `**Type:**` line — 26 of them. The build runner's audit and manual-test lineages reset at each milestone boundary rather than running as one session across all 198 tickets.
+
+**Why the marker is in the ticket and not in the runner:** a list of ticket ids held in a script is a second source of truth. It drifts the moment somebody adds a ticket with the same property and does not know the list exists, and the failure is silent — the gate runs, finds nothing, and reports clean.
+
+**What finding the right 26 actually taught, which is the part worth keeping:** the exact copy is not in the tickets. It lives in the `docs/ux/` specifications as quoted blocks, and tickets reference those by section. A detector written the obvious way — look for quoted text inside the ticket body — finds **exactly one** ticket and reports the other twenty-five as clean. That is worse than no detector, because it produces a green result for a check that never ran. The marker exists precisely because the property being detected is not visible in the thing being scanned.
+
+**Why the audit lineage resets per milestone:** the reason for a resumed audit session was to keep the auditor from relearning conventions on every ticket, while preserving the one property that matters — that it did not write the code. Both survive a reset at a milestone boundary. What does not survive is context from work three milestones old, and that is the thing worth losing: an auditor carrying stale assumptions about a subsystem that has since changed reviews against a codebase that no longer exists. A forgetful auditor asks; a stale one is confidently wrong.
+
+**Consequences:** session ids are keyed by milestone, so deleting one file restarts one milestone's lineage rather than all of them. The runner prints `copy review required` for the marked tickets and, per `build-runner.md` §9, must quote the wording into its own output — a gate that requires opening a file is a gate that gets skipped on the twentieth ticket.
+
+**Refs:** `build-runner.md` §9, §13; `backlog/README.md`; `scripts/build-runner.sh`; issue #40.
+
+---
+
 ## 2026-08-26 — Every open item resolved, deferred with a reason, or given an owner
 
 **Decision:** A sweep of all fourteen documents found roughly thirty items sitting in "Open" sections. Each is now decided and recorded where it belongs, deferred with a stated reason, or filed as a tracked issue with an owner. **No open item lives only in a document.**

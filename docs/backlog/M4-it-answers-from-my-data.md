@@ -180,6 +180,8 @@
 
 **Type:** Story
 
+**Human review:** copy — this ticket renders wording a user reads, specified in `docs/ux/`. The runner stops and quotes it before the pull request is merged.
+
 **User Story**
 - **Actor:** someone who does not know that a dump is executable.
 - **User Need:** to be told plainly what happens, once, without theatre.
@@ -432,6 +434,8 @@
 ### M4-CSV-FE-095 — CSV route with type and header review
 
 **Type:** Story
+
+**Human review:** copy — this ticket renders wording a user reads, specified in `docs/ux/`. The runner stops and quotes it before the pull request is merged.
 
 **User Story**
 - **Actor:** someone adding a spreadsheet they half remember the shape of.
@@ -1239,6 +1243,8 @@
 ### M4-RESULT-FE-111 — Database states: no connections, unreachable, zero rows, timeout, rejected
 
 **Type:** Story
+
+**Human review:** copy — this ticket renders wording a user reads, specified in `docs/ux/`. The runner stops and quotes it before the pull request is merged.
 
 **User Story**
 - **Actor:** someone whose data question did not produce data.

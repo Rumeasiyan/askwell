@@ -127,6 +127,8 @@
 
 **Type:** Story
 
+**Human review:** copy — this ticket renders wording a user reads, specified in `docs/ux/`. The runner stops and quotes it before the pull request is merged.
+
 **User Story**
 - **Actor:** someone reading an answer that is not an answer.
 - **User Need:** to see at a glance that this is a considered "no", not an error and not a hedged answer.

@@ -585,3 +585,18 @@ Stated so it is not discovered as a surprise.
 ### Support readiness
 
 Free and open sets a support expectation a single maintainer cannot meet. The boundary, the issue templates and the triage convention exist **before** the first release, not after it — that is M7-DOC-DOC-164, and it is Critical for that reason rather than because it is difficult.
+
+### The copy-review marker
+
+A ticket that renders wording a user reads carries, directly under its `**Type:**` line:
+
+```
+**Human review:** copy
+```
+
+**26 tickets carry it.** The rule is: if the exact words are specified in `docs/ux/` and a user reads them on a surface this ticket builds, it needs a human to read the copy before the pull request merges.
+
+It lives in the ticket rather than in a list held by the build runner, deliberately. A list in the script is a second source of truth, and it drifts the moment somebody adds a ticket with the same property and forgets the list exists (`../build-runner.md` §9).
+
+The runner detects it from the ticket body and **quotes the wording into its own output** — a gate that requires opening a file is a gate that gets skipped on the twentieth ticket.
+
