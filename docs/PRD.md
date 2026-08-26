@@ -120,7 +120,7 @@ The business is not the code. It is the credit service: the provider contracts, 
 - **Not a coding assistant.**
 - **Not a BI tool.** It answers questions; it does not build dashboards.
 - **Not a model trainer.** It runs existing open models. Your corrections are remembered as facts, not by retraining anything.
-- **Not multilingual yet.** English only in v1. Tamil, then possibly Sinhala, come later.
+- **Not multilingual yet.** English only in v1. Tamil, then possibly Sinhala, come later — and the components for both need re-sourcing, see `architecture.md`.
 
 ---
 

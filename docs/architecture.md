@@ -130,11 +130,27 @@ Two changes from the previous profiles, both from the repositioning: the floor d
 
 Model names are never hardcoded in application code. They come from configuration, selected by profile.
 
-**All four are Apache-2.0 and ungated**, verified against the model registry on 2026-08-26. That is a requirement, not a coincidence — Askwell bundles weights into a redistributable installer, so a model under restrictive or manually-gated terms cannot ship however well it performs (issue #26). Gemma 3 is excluded on exactly this basis.
+**A model the user supplies is not a validated default.** Shipped defaults pass the 155-task quality gate, including abstention at ≥ 0.90 and SQL safety at 1.00. A user-supplied model has passed none of it and can break C4 and C5 while the interface presents its answers identically. Swapping is permitted — this is a local, open product and model choice is a legitimate reason to pick one — but the consequence is stated and answers from an unvalidated model carry a persistent marker. Same pattern as the retrieval threshold: permit the dangerous change, state the consequence, never make it frictionless.
+
+**All four are Apache-2.0 and ungated**, verified against the model registry on 2026-08-26. That is **constraint C9**, not a coincidence — Askwell bundles weights into a redistributable installer, so a model under restrictive or manually-gated terms cannot ship however well it performs. Gemma 3 is excluded on exactly this basis: its weights are manually access-gated and carry Google's own terms rather than an OSI licence.
 
 `Qwen3.6 35B-A3B` is worth evaluating for high-RAM CPU machines — a mixture-of-experts model with roughly 3B active parameters behaves far better on CPU than its total size suggests. Not assigned to a profile until measured.
 
 **Profile floors remain estimates.** Nobody has measured tokens/second on real hardware, and the `workstation` VRAM floor against a 27B at Q4_K_M is tight. The eval gate, not this table, decides what actually ships as a default.
+
+## 6.1 v2 language components need re-sourcing
+
+Recorded here because anyone scoping v2 from the older documents would otherwise commit to a component that cannot ship. Verified 2026-08-26:
+
+| Component | Finding |
+| --------- | ------- |
+| Tamil speech synthesis | `facebook/mms-tts-tam` is **CC-BY-NC-4.0**. Non-commercial, so it fails C9 and cannot be bundled by a product with a paid credit tier. IndicTTS needs the same check before it is assumed |
+| Sinhala speech recognition | No production-grade option. The best available are research artefacts with double-digit download counts |
+| Tamil speech recognition | Whisper handles it, but quality degrades sharply below `medium`, which does not fit the 8GB `light` floor |
+
+This does not change v1, which is English-only and settled. It means the **v2 plan as written rests on an unusable component**, and it strengthens the original deferral — that decision was argued on schedule risk and voice quality, and the harder reasons turn out to be licensing and outright non-availability.
+
+The three v1 hedges are unaffected and remain correct: multilingual embeddings, the Tamil-aware full-text configuration, and bundled `tam` OCR traineddata all concern indexing rather than speech.
 
 ## 7. Data model
 

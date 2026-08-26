@@ -22,6 +22,36 @@ Template:
 
 ---
 
+## 2026-08-26 — C9: bundled models must be redistributable; a swapped model is marked unverified
+
+**Decision:** Two related calls. **C9** is added to `AGENTS.md` §3: a bundled model's licence must permit redistribution and commercial use, and the weights must not be access-gated. Separately, **swapping to a user-supplied model is permitted and marked** — settings distinguishes validated defaults from unverified models, and every answer produced by one carries a persistent marker.
+
+**Why C9:** Askwell bundles weights into a redistributable offline installer under Apache-2.0. Every model currently in the stack happens to be Apache-2.0 and ungated, which was luck rather than a requirement — nothing would have stopped a future change picking a better-performing model with terms that cannot ship, and the discovery would have come during Phase 7 packaging, which is phase-blocking.
+
+Two near-misses had already happened before the rule existed. Gemma 3 is manually access-gated and carries Google's own terms rather than an OSI licence; an installer cannot click through an access agreement. MMS-TTS Tamil is CC-BY-NC, non-commercial, against a product with a paid credit tier. Both were caught by checking rather than by any rule.
+
+A working rule in `architecture.md` was rejected over a constraint: constraints get enforcement points, working rules get forgotten, and the two near-misses happened precisely because there was nothing with teeth. Permitting gated models via user-initiated download was rejected because it breaks the offline install story that is central for the target user and would need an explicit C1 exception.
+
+The accepted cost is real and permanent: Gemma is excluded, and any future model under similar terms is excluded with it, however well it performs.
+
+**Why the marker rather than a list:** shipped defaults pass 155 eval tasks including abstention at ≥ 0.90 and SQL safety at 1.00. A user-supplied model has passed none of it and can fabricate citations or refuse to abstain while the provenance margin renders exactly as it always does. As specified before this decision, swapping silently opted the user out of both central guarantees with nothing saying so.
+
+Restricting swaps to a validated list was rejected outright: a local, open-source product that dictates which models may run is fighting its own audience, and model choice is a legitimate reason people choose a tool like this. Running the abstention subset locally against a user-supplied model is the better answer and is deferred — it needs the eval harness to run against an arbitrary model, which is its own body of work, and it is the same mechanism `success-metrics.md` §2 already wants for citation sampling.
+
+This follows the precedent set for the retrieval threshold in `ux/trace.md` §4: permit the dangerous change, state the consequence, never make it frictionless. A one-time warning in settings was judged insufficient because the decision is made once and its consequence persists for months — so the marker sits on the answer, where the consequence actually lands.
+
+**Consequences:**
+
+- Gemma 3 and any gated or non-commercial model are permanently out of the bundle. This narrows the field.
+- `M7-DOC-DOC-163` (licence and notices) becomes the place C9 is **evidenced**, not merely asserted.
+- New ticket `M7-SET-FE-146a` for the answer-surface marker; `M7-SET-FE-146` gains the validated/unverified distinction and a rule that the statement cannot be suppressed.
+- `ux/ask.md` gains an unvalidated-model state; `ux/settings.md` §2 carries the wording.
+- Running evals against a user-supplied model is now a named deferral rather than an unconsidered gap.
+
+**Refs:** `AGENTS.md` §3 (C9), `architecture.md` §6, `ux/settings.md` §2, `ux/ask.md` §5; issues #26, #28.
+
+---
+
 ## 2026-08-26 — Model names corrected; registry verification is now a rule
 
 **Decision:** Supersedes the 2026-08-10 entry "`institution` profile is Qwen3 32B, not a 'Qwen3.6 27B'". That entry was **wrong**. Profiles now use Qwen3.5 4B, Qwen3.5 9B and Qwen3.6 27B. Speech synthesis reverts to **Kokoro-82M**, replacing Piper. `AGENTS.md` §4 gains a rule requiring registry verification of every model, weight and traineddata name.

@@ -78,6 +78,7 @@ Every constraint has a mechanism. A rule with no enforcement point is a wish, an
 | C6 append-only and tamper-evident | No update or delete grant; hash chain; verification pass; staged disk budget; **never called immutable** | 014, 015, 153, 155, 156 |
 | C7 retrieved content is data | Delimitation plus the standing statement in versioned prompt files, extended to tool results; injection flagged in the trace | 037, 114 |
 | C8 secrets in environment | Ignore rules, an example file checked against what the code reads, log redaction, credential encryption at rest | 007, 098, 152 |
+| C9 bundled model licence | Every bundled model verified redistributable, commercial-use permitted and ungated; evidenced in the notices file | 144, 146, 146a, 163 |
 
 ---
 

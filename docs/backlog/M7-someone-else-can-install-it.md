@@ -500,6 +500,7 @@
 **Scope**
 - Profile display with expectations and a re-probe action.
 - Model display and swap, with the unavailability stated before it happens.
+- The validated-versus-unvalidated distinction, and the statement shown at the point of swapping.
 - Measured memory and throughput.
 - Threshold control with the consequence, identical to the trace panel's.
 
@@ -507,11 +508,11 @@
 - Model download — models are bundled or placed manually.
 
 **Acceptance Criteria**
-- **Acceptance Criteria:** The section shows the profile with what to expect, the model in use, real memory and throughput figures, and the threshold with its warning. Swapping a model states the brief unavailability first, and retrieval keeps working during it.
+- **Acceptance Criteria:** The section shows the profile with what to expect, the model in use, real memory and throughput figures, and the threshold with its warning. Swapping a model states the brief unavailability first, and retrieval keeps working during it. A shipped model is marked as **validated**; a user-supplied one is marked **unverified**, and swapping to it states plainly that citations and abstention are behaviours Askwell verifies only for models it ships. The swap is permitted regardless — the consequence is stated, never blocked.
 - **Edge Cases:** No alternative model present — swap says so and names where to place one. A swap that fails — the previous model is restored and the failure is named. Throughput unmeasured because no question has been asked — states that rather than showing zero.
 - **Permissions / Roles:** Single user — no roles. Not applicable.
 - **UI States:** `../ux/settings.md` §2 and §8 model swapping and model file missing; `../states-and-edge-cases.md` §6.
-- **Validation Rules:** The threshold control is never a frictionless slider.
+- **Validation Rules:** The threshold control is never a frictionless slider. Neither is the model swap: the unverified statement cannot be suppressed or remembered-dismissed.
 - **Audit / Logging Requirements:** Model swap and threshold change are decisions records.
 - **Analytics Events:** Local counters only — nothing transmitted (C1).
 
@@ -519,7 +520,7 @@
 - A user sees fourteen tokens per second, places a smaller model, swaps to it, and finds answers acceptable at twice the speed.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M7-PROBE-FE-138, M5-TRACE-FE-122, M7-OFFLINE-DEPLOY-144.
+- **Dependencies:** M7-PROBE-FE-138, M5-TRACE-FE-122, M7-OFFLINE-DEPLOY-144, M7-SET-FE-146a.
 - **API / Data Touchpoints:** `settings`; the inference client.
 - **Assumptions:** Throughput can be measured from real turns rather than a synthetic benchmark.
 
@@ -1343,7 +1344,61 @@
 
 ---
 
+### M7-SET-FE-146a — Persistent marker on answers from an unvalidated model
+
+**Type:** Story
+
+**User Story**
+- **Actor:** someone who swapped in their own model three weeks ago and has forgotten.
+- **User Need:** to know, while reading an answer, that this model's citation and abstention behaviour was never verified.
+- **Business Value:** the product's two central promises are verified behaviours, not properties of any model. Without a marker, swapping silently opts the user out of both while the interface looks identical.
+
+*As someone running my own model, I want answers from it to say so, so that I do not extend Askwell's guarantees to something that never earned them.*
+
+**Context / Background**
+**Detailed Description:** Shipped defaults pass the 155-task gate, including abstention at ≥ 0.90 and SQL safety at 1.00. A user-supplied model has passed none of it and can fabricate citations or refuse to abstain while every answer renders with the same confident provenance margin. A one-time warning in settings is not sufficient — the decision is made once and its consequence persists for months. The marker belongs where the consequence lands, which is on the answer.
+
+**Scope**
+- A persistent, unobtrusive marker on every answer produced by a user-supplied model.
+- Wording that names what is unverified rather than implying the answer is wrong.
+- The marker clears automatically when a validated default is restored.
+
+**Out of Scope**
+- Running evals against a user-supplied model — considered and deferred; it needs the harness to run locally against an arbitrary model, which is its own body of work.
+- Blocking or discouraging the swap.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** With a user-supplied model active, every answer carries the marker. With a shipped default active, no answer carries it. The marker names citations and abstention specifically rather than saying "unverified model" and leaving the user to guess what that costs.
+- **Edge Cases:** A conversation begun on a validated model and continued on an unvalidated one — later answers are marked, earlier ones are not, and the record reflects which model produced which. Reverting to a shipped model clears the marker for new answers only.
+- **Permissions / Roles:** Single user — no roles. Not applicable.
+- **UI States:** `../ux/ask.md` §5 unvalidated-model row; `../ux/settings.md` §2.
+- **Validation Rules:** The marker cannot be dismissed or suppressed. It is a fact about the answer, not a notification.
+- **Audit / Logging Requirements:** Which model produced a turn is already part of the interaction record; the marker reads from it rather than tracking its own state.
+- **Analytics Events:** None.
+
+**Real-World Example Scenarios**
+- A user swaps in a small local model to save memory, forgets, and two months later notices an answer with no citations. The marker is what tells them why, instead of the product looking broken.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M1-ASK-FE-041, M0-MODEL-BE-019.
+- **API / Data Touchpoints:** The interaction record's backend field; the answer surface.
+- **Assumptions:** Whether a model is a shipped default is knowable from configuration rather than requiring a registry lookup at answer time.
+
+**Testing Notes / Scenarios**
+Cold start. Ask a question on the shipped model — no marker. Open settings, place and swap to a different model, accept the unverified statement. Ask again — the answer carries the marker and it names citations and abstention. Reopen the earlier answer — still unmarked. Swap back; new answers are unmarked, the marked ones stay marked.
+
+**Known gaps:** No eval is run against the user's model; the marker states that behaviour is unverified, it does not measure it.
+
+**Effort & Granularity Check**
+- **Estimate:** 2–3 hours · **Priority:** High
+- **Labels / Component:** frontend, grounding, settings
+- Small because the model identity is already on the interaction record — this reads it and renders one persistent element.
+
+---
+
 ### M7-DOC-DOC-163 — Licence and notices file covering bundled model weights
+
+> **C9 applies.** Every bundled model must permit redistribution and commercial use and must not be access-gated. This ticket is where that is evidenced, not merely asserted.
 
 **Type:** Task
 

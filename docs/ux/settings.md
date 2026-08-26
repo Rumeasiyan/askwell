@@ -23,6 +23,13 @@ No search, no sub-navigation. If this needs a search box it has too many setting
 
 - Current profile from the hardware probe, with what it means: *16 GB, no GPU. Answers in about 15 seconds.*
 - Model in use, with swap. Swapping makes the assistant unavailable briefly; retrieval keeps working, and that is stated.
+- **Validated defaults are marked as such, and a user-supplied model is marked as unverified.** The shipped model for a profile has passed the quality gate — 155 tasks, abstention ≥ 0.90, SQL safety 1.00. A model the user points Askwell at has passed none of it.
+
+  Stated plainly at the point of swapping, not buried:
+
+  > This model has not been tested against Askwell's checks. Citations and "I don't know" are behaviours Askwell verifies for the models it ships. With your own model, they are not guaranteed.
+
+  Swapping is allowed. Answers produced by an unvalidated model carry a persistent marker (`ask.md`), so the state is visible where it matters rather than only in settings. Same pattern as the retrieval threshold — permit it, state the consequence, never make it frictionless.
 - Memory footprint and measured tokens/second — real numbers, not a rating.
 - **Retrieval threshold**, with the same warning as `trace.md` §4. Reachable here, never frictionless.
 
