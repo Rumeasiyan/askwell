@@ -117,6 +117,9 @@ def _missing_build(root: Path) -> HTMLResponse:
   <p>The API is running. It is looking for the built frontend at
      <code>{root}</code> and finding nothing there.</p>
   <p>Build it: <code>scripts/dev.sh web-build</code></p>
+  <p>If you just built it and are seeing this anyway, the build replaced the
+     directory and the container is still holding the old one. Recreate the
+     API: <code>podman compose up -d --force-recreate api</code></p>
   <p>Askwell&rsquo;s own health surface is at <code>/health</code> and works
      regardless — if you are diagnosing a broken install, start there.</p>
 </main>""",

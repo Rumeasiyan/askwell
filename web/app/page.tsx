@@ -1,75 +1,47 @@
-import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { VERSION } from "@/lib/version";
 
 /**
- * The token demonstration. Not a screen — screens arrive with M0-SHELL-FE-017.
+ * Ask — the empty state.
  *
- * It exists so that the affordances in `docs/ux/design-system.md` §7 can be
- * seen to survive a theme switch. Reading the CSS does not tell you whether a
- * raised surface still reads as raised on a dark ground; looking at it does.
+ * There is nothing to ask yet: retrieval arrives in M1. What is here is what
+ * `docs/states-and-edge-cases.md` calls the first state a user meets, and it
+ * says what to do next rather than showing a composer that cannot work.
+ *
+ * The token demonstration this replaced lives on in the design lab, which is
+ * where a demonstration belongs.
  */
-export default function TokenDemonstration() {
+export default function AskPage() {
   return (
-    <main className="mx-auto flex max-w-3xl flex-col gap-8 p-8">
-      <header className="flex items-start justify-between gap-4">
-        <div>
-          <h1 style={{ fontSize: "var(--t-display)", lineHeight: "var(--t-display-lh)" }}>
-            Askwell
-          </h1>
-          <p className="ask-micro mt-1">Design tokens · not a screen · v{VERSION}</p>
-        </div>
-        <ThemeToggle />
-      </header>
+    <section className="flex flex-col gap-4">
+      <div>
+        <h1 style={{ fontSize: "var(--t-display)", lineHeight: "var(--t-display-lh)" }}>
+          Ask your own material
+        </h1>
+        <p className="ask-micro mt-1">Askwell {VERSION} · nothing leaves this machine</p>
+      </div>
 
-      <section className="ask-prose">
-        Serif is for language. This is the face an answer, a document excerpt, or a question put
-        to the user is set in. Everything else on this page is mono, because everything else is
-        the machine talking about itself.
-      </section>
-
-      {/* A source card: the margin unit. Its left edge is the meaning-carrying
-          line, which is why --rule-strong and --provenance exist separately
-          from --rule. */}
-      <section
-        className="ask-carries-meaning p-4"
-        style={{ background: "var(--surface)", borderRadius: "var(--radius)" }}
-      >
-        <p className="ask-micro">contract.pdf · p.14</p>
-        <p className="ask-prose mt-2">
-          The exact retrieved passage sits here, in serif, because it is language the user can
-          go and check.
-        </p>
-      </section>
-
-      {/* §7 affordance: an input is inset, a primary action is filled. Both
-          use depth tokens, so both survive the theme switch. */}
-      <section className="flex flex-col gap-3">
-        <label className="ask-micro" htmlFor="demo">
-          An input is inset
-        </label>
-        <input id="demo" className="ask-input w-full px-3" placeholder="Ask a question" />
-        <button type="button" className="ask-action-primary px-4">
-          A primary action is filled
-        </button>
-        <button type="button" className="ask-navigates w-fit border px-3 py-2 text-left">
-          A navigating control lifts on hover
-        </button>
-      </section>
-
-      {/* Colour encodes epistemics. Each swatch is labelled in words as well as
-          hue, because §8 forbids colour being the only signal. */}
-      <section className="flex flex-col gap-2">
-        <p className="ask-micro">Colour encodes epistemics</p>
-        <p style={{ color: "var(--provenance)" }}>Traceable to a source</p>
-        <p style={{ color: "var(--inferred)" }}>Askwell guessed — correct me</p>
-        <p style={{ color: "var(--muted)" }}>Labels, metadata, timestamps</p>
-        <p style={{ color: "var(--alarm)" }}>Something broke — never abstention</p>
-      </section>
-
-      <hr style={{ borderTop: "1px solid var(--rule)" }} />
-      <p className="ask-micro">
-        Decorative hairline above. The card&rsquo;s left edge is not decorative.
+      <p className="ask-prose">
+        Askwell answers from documents and databases you have added, and cites what it
+        used. When nothing in your material answers a question, it says so instead of
+        guessing — which is the whole reason it is worth pointing at a confidential
+        corpus.
       </p>
-    </main>
+
+      <div
+        className="flex flex-col gap-2 px-4 py-3"
+        style={{
+          background: "var(--surface)",
+          border: "1px solid var(--rule)",
+          borderRadius: "var(--radius)",
+        }}
+      >
+        <p className="ask-micro">Nothing added yet</p>
+        <p className="ask-prose" style={{ color: "var(--muted)" }}>
+          There is nothing to ask about until you add a source. Adding files, a
+          spreadsheet, a database dump or a live connection arrives in the next
+          milestone — the shell, the stack and the assistant are what work today.
+        </p>
+      </div>
+    </section>
   );
 }

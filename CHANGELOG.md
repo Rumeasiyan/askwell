@@ -4,6 +4,20 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.1.20 — 2026-08-27
+
+`M0-SHELL-FE-017`. The application shell.
+
+### Added
+
+- The three-column layout: left rail, centre column, and the provenance margin **reserved even when empty** — its permanence is what makes an uncited claim visibly wrong.
+- Route stubs for Library, Memory and Settings, each with its empty state rather than a blank page.
+- A status banner that distinguishes Askwell not answering from the assistant not answering, names what still works, and says so plainly when health cannot be read at all.
+
+### Changed
+
+- The "interface not built" page now also covers the case where it *was* built and the container is holding a replaced directory — which is what actually happens when you rebuild the frontend with the stack up.
+
 ## 0.1.19 — 2026-08-27
 
 `M0-MODEL-BE-020`. The two causes of "the assistant is unavailable", kept apart.

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
 import "./globals.css";
+import { Shell } from "@/components/shell/shell";
 import { THEME_SCRIPT } from "./theme-script";
 
 export const metadata: Metadata = {
@@ -21,7 +22,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             in this repository — no user input reaches it. */}
         <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
       </head>
-      <body>{children}</body>
+      <body>
+        <Shell>{children}</Shell>
+      </body>
     </html>
   );
 }

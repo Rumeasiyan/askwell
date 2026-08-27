@@ -7,34 +7,30 @@
 
 ## Current phase
 
-**M0 — It runs. In progress: 19 of 21 tickets done.**
+**M0 — It runs. In progress: 20 of 21 tickets done.**
 
 The repository is no longer documentation only. `api/` exists: an image, manifests, the application, and 54 tests. The API starts, refuses bad configuration by name, and serves `GET /health` reporting five components separately. `podman compose up -d` brings up four services, the database carries the full v1 schema, and the interface loads at `http://127.0.0.1:8000`. `web/` builds to static assets and the API serves them — the `web` container is gone from the topology. The Compose stack, the database schema and the inference process do not exist yet — so all five health components correctly report `unreachable`.
 
-**Version:** `0.1.19` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
+**Version:** `0.1.20` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
 **Tracker:** `Rumeasiyan/askwell`. Working agreements in `AGENTS.md`. Backlog in `docs/backlog/`.
 
 ## Last completed
 
-**`M0-MODEL-BE-020`** — [#91](https://github.com/Rumeasiyan/askwell/issues/91). The two causes, kept apart.
-
-With the assistant stopped, `GET /assistant` says:
+**`M0-SHELL-FE-017`** — [#93](https://github.com/Rumeasiyan/askwell/issues/93). The shell.
 
 ```
-available: False | cause: stopped
-headline:  The assistant is not running.
-fix:       It runs on the host rather than in a container, because GPU
-           acceleration only works from there. Start it with:
-           scripts/dev.sh inference
-still works: Open and read your documents; Search your documents by
-             keyword; Add and manage sources
+/            200      /library/    200
+/memory/     200      /settings/   200
+/typo/       404
 ```
 
-The stack-down case needs no code: if the stack is down this endpoint is not there to answer, and that *is* the distinction. A test asserts no two causes share a headline — two states with the same words are two states the user cannot tell apart.
+**The margin is reserved even when empty**, and that is the whole point of it. Not a popover, not a drawer, not a toggle — its permanence is what makes an uncited claim visibly wrong: the claim sits in the column with nothing beside it and nothing pointing at it. The layout enforces C4 rather than trusting the model to, and collapsing it when empty would remove exactly the signal it exists to give.
 
-**The defect this found is the worst one this surface can have.** Killing the supervisor left the state file saying `ready`, and the API reported the assistant **available when it was not**. Nothing was keeping the file current: it was only written on a transition, and `SIGTERM` terminates Python without running a `finally`.
+The status banner keeps three things apart that a lazier surface would merge: Askwell not answering at all, a component being down, and the assistant being unavailable. Every unavailable case names what still works, because the instinct on reading "unavailable" is to assume nothing does.
 
-Two fixes, because one is not enough. The supervisor now handles `SIGTERM` and writes `stopped` on the way out. And it heartbeats every 10s while running, so a state older than three missed heartbeats is treated as stopped rather than believed — which is what covers `SIGKILL`, where nothing can be written at all. Verified live: the file still said `ready` at 43 seconds old and the surface correctly reported `stopped`.
+**Two things strict mode caught that are worth keeping.** `exactOptionalPropertyTypes` refused an optional `onNavigate` handed straight to `onClick` — a default no-op is clearer than the cast I would otherwise have written. And `react-hooks/set-state-in-effect` refused the first status poll being started synchronously inside the effect; it is scheduled now, which is still immediate to a person.
+
+**A dev-experience trap, now explained rather than suffered.** Rebuilding the frontend while the stack is up replaces `web/out`, which breaks the bind mount — and the API then says "the interface has not been built" when it plainly has. The page now names that case and gives the command.
 
 ## Next task
 
