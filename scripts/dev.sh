@@ -206,6 +206,10 @@ case "$cmd" in
     web-shell) in_web "${TTY_FLAGS[@]}" "$WEB_IMAGE" bash ;;
 
     db)
+        # askwell_internal, not askwell_default: the egress work (#78) split
+        # the stack onto an internal network with no route out and an egress
+        # one for the proxy alone. This broke silently for a while because CI
+        # uses host networking and never resolves a service name.
         [ -n "${ASKWELL_ENV_FILE:-}" ] || [ ! -f "$REPO_ROOT/.env" ] || ASKWELL_ENV_FILE="$REPO_ROOT/.env"
         # Alembic needs three things at once that no other command needs
         # together: the repository mounted so a generated migration lands in the
@@ -215,7 +219,7 @@ case "$cmd" in
         [ "$#" -gt 0 ] || die "db needs an alembic command, e.g. $SELF db upgrade head"
         _image_exists "$IMAGE" || build_image
         "$CONTAINER" run --rm "${TTY_FLAGS[@]}" \
-            --network "${ASKWELL_COMPOSE_NETWORK:-askwell_default}" \
+            --network "${ASKWELL_COMPOSE_NETWORK:-askwell_internal}" \
             ${ASKWELL_ENV_FILE:+--env-file "$ASKWELL_ENV_FILE"} \
             -e ASKWELL_DATABASE_URL="postgresql://$(_db_user):$(_db_password)@$(_db_host):5432/$(_db_name)" \
             -v "$REPO_ROOT":/app:z \
@@ -234,7 +238,7 @@ case "$cmd" in
         # never touches the development data and two runs cannot collide.
         _image_exists "$IMAGE" || build_image
         "$CONTAINER" run --rm "${TTY_FLAGS[@]}" \
-            --network "${ASKWELL_COMPOSE_NETWORK:-askwell_default}" \
+            --network "${ASKWELL_COMPOSE_NETWORK:-askwell_internal}" \
             -e TEST_DATABASE_URL="postgresql://$(_db_user):$(_db_password)@$(_db_host):5432/$(_db_name)" \
             -e TEST_APP_PASSWORD="$(_app_password)" \
             -v "$REPO_ROOT":/app:z \
