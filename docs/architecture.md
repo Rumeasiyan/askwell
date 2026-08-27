@@ -224,13 +224,21 @@ sources            id, kind(file|csv|dump|connection), name,
                    last_indexed_at, added_at
 
 documents          id, source_id, filename, path, mime, sha256, page_count,
-                   version, superseded_by, deleted_at, deleted_reason,
-                   status, ocr_confidence, missing_since, added_at        -- path/missing_since NEW
+                   anchor_kind, ocr_derived, version, superseded_by,
+                   deleted_at, deleted_reason, status, ocr_confidence,
+                   missing_since, added_at                                -- path/missing_since NEW
 
-document_pages     id, document_id, page_number, text, has_text, added_at -- NEW TABLE
+document_pages     id, document_id, page_number, text, has_text,
+                   anchor_label, added_at                                 -- NEW TABLE
                    -- extraction's own output, one row per page whether or not
                    -- it has text; chunking reads this rather than re-parsing
-                   -- the file. `M1-EXTRACT-ING-026`.
+                   -- the file. `M1-EXTRACT-ING-026`. `anchor_kind` on
+                   -- `documents` and `anchor_label` here say what the page
+                   -- number means for a given format (`M1-EXTRACT-ING-027`).
+                   -- `ocr_derived` marks a document whose text came from
+                   -- `M1-EXTRACT-ING-028`'s OCR pass rather than a text
+                   -- layer, so the source viewer knows to show the scan
+                   -- beside the text.
 
 chunks             id, document_id, ordinal, page_from, page_to, heading,
                    content, content_tsv, embedding vector(1024)

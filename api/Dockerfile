@@ -39,6 +39,20 @@ ENV PYTHONUNBUFFERED=1 \
 
 RUN pip install --no-cache-dir "uv>=0.4"
 
+# Tesseract itself, not a Python wheel: `pytesseract` only shells out to this
+# binary. `tesseract-ocr-osd` is the orientation/script-detection data
+# `M1-EXTRACT-ING-028` needs before recognition; `tesseract-ocr-eng` and
+# `tesseract-ocr-tam` are the two traineddata files Askwell ships — English
+# for real, Tamil as the hedge recorded in `docs/decisions.md` (recognised,
+# never presented as supported). Package names verified against
+# packages.debian.org/bookworm before writing them here (`AGENTS.md` §4).
+RUN apt-get update && apt-get install --no-install-recommends -y \
+        tesseract-ocr \
+        tesseract-ocr-eng \
+        tesseract-ocr-osd \
+        tesseract-ocr-tam \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Version first and on its own layer: it changes on nearly every commit, and

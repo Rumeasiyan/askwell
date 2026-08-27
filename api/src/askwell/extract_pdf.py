@@ -28,12 +28,20 @@ layouts — a real per-column reconstruction needs the character boxes
 granularity ("one format, one extractor") does not include. Known gap, not a
 silent one.
 
-**A document with no usable text anywhere raises `NeedsOCR` rather than
-finishing.** Chunking an empty document is C5's failure wearing a different
-hat: it would tell retrieval a document has nothing to say, when the truth is
-that nothing has read it yet. A *partly* usable document is not this case —
-see the module's per-page recording above — only a document where every page
-came back empty routes here.
+**A page with no usable text layer goes straight to OCR, in the same pass.**
+`M1-EXTRACT-ING-028`: `extract_ocr.ocr_page` renders that one page, detects
+its orientation and script, and recognises it — `NeedsOCR` no longer exists
+as a separate handoff (`docs/decisions.md`, this ticket supersedes the
+`M1-EXTRACT-ING-026` entry). A mixed document only pays the OCR cost for the
+pages that need it, per the ticket's own edge case.
+
+**A document with no usable text anywhere, even after OCR, is `EmptyDocument`
+rather than a document that finishes with nothing in it.** Chunking an empty
+document is C5's failure wearing a different hat: it would tell retrieval a
+document has something to say when it has nothing. This is no longer "nobody
+has read it yet" — OCR was given every page a fair try — so it is reported
+the same way every other extractor's C5 case is, via
+`extract_common.EmptyDocument`, not silently parked.
 """
 
 import asyncio
@@ -42,7 +50,9 @@ from typing import TYPE_CHECKING
 import pypdfium2 as pdfium
 from sqlalchemy import text
 
+from askwell import extract_ocr
 from askwell.db.engine import session_scope
+from askwell.extract_common import EmptyDocument
 from askwell.logging import get_logger
 
 if TYPE_CHECKING:
@@ -62,16 +72,6 @@ log = get_logger(__name__)
 # be treated as no usable text.
 _JUNK = "�"
 JUNK_RATIO_THRESHOLD = 0.3
-
-
-class NeedsOCR(Exception):
-    """This file has no usable text layer at all; only OCR can read it.
-
-    Not a failure — nothing is wrong with the PDF. Caught by
-    `askwell.ingest.process`, which parks the document naming
-    `M1-EXTRACT-ING-028` rather than marking it failed or, worse, `ready` with
-    nothing chunkable in it.
-    """
 
 
 def _page_text(document: pdfium.PdfDocument, index: int) -> str:  # type: ignore[no-any-unimported]
@@ -102,27 +102,46 @@ def _usable(page_text: str) -> bool:
 
 
 async def run(work: "Work", report: "Report", factory: "async_sessionmaker[AsyncSession]") -> None:
+    document_id = str(work.document_id)
     document = await asyncio.to_thread(pdfium.PdfDocument, work.path)
     try:
         page_count = len(document)
         pages: list[tuple[int, str | None, bool]] = []
+        ocr_used = False
 
         for index in range(page_count):
             raw = await asyncio.to_thread(_page_text, document, index)
-            usable = _usable(raw)
-            pages.append((index + 1, raw if raw.strip() else None, usable))
+            if _usable(raw):
+                pages.append((index + 1, raw, True))
+            else:
+                ocr_text, has_text, _language = await asyncio.to_thread(
+                    extract_ocr.ocr_page,
+                    document,
+                    index,
+                    document_id=document_id,
+                    filename=work.filename,
+                )
+                ocr_used = True
+                pages.append((index + 1, ocr_text, has_text))
             await report(index + 1, page_count)
     finally:
         document.close()
 
     usable_pages = sum(1 for _, _, has_text in pages if has_text)
 
+    if usable_pages == 0:
+        raise EmptyDocument(
+            "Askwell could not find any text in this document, even after OCR. "
+            "It may be a set of blank pages or photographs with no text."
+        )
+
     async with session_scope(factory) as session:
         await session.execute(
             text(
-                "UPDATE documents SET page_count = :page_count, anchor_kind = 'page' WHERE id = :id"
+                "UPDATE documents SET page_count = :page_count, anchor_kind = 'page', "
+                "ocr_derived = :ocr_derived WHERE id = :id"
             ),
-            {"page_count": page_count, "id": work.document_id},
+            {"page_count": page_count, "ocr_derived": ocr_used, "id": work.document_id},
         )
         for page_number, page_text, has_text in pages:
             await session.execute(
@@ -142,11 +161,9 @@ async def run(work: "Work", report: "Report", factory: "async_sessionmaker[Async
 
     log.info(
         "extract_pdf_completed",
-        document_id=str(work.document_id),
+        document_id=document_id,
         filename=work.filename,
         pages=page_count,
         pages_with_text=usable_pages,
+        ocr_derived=ocr_used,
     )
-
-    if page_count == 0 or usable_pages == 0:
-        raise NeedsOCR
