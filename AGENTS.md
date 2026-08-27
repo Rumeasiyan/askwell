@@ -191,7 +191,18 @@ Existing history uses `feat:` and `docs:`-style subjects, so this is an extensio
 
 **Errors** — fail loudly in development, degrade gracefully in production. A failed embedding job retries with backoff and surfaces in the admin console; it does not silently drop the document.
 
-**Tests** — no framework in the repo yet; `pytest` is the intent for Python. Retrieval, SQL validation, and agent-loop modules get tests before their implementation.
+**Tests** — `pytest`, in `api/tests/`, one module per source module (`test_health.py` for `health.py`). Retrieval, SQL validation and agent-loop modules get tests **before** their implementation.
+
+Two kinds, and the difference is enforced rather than conventional:
+
+| | |
+| --- | --- |
+| unmarked | runs in every `scripts/dev.sh test`, with **no network at all** |
+| `@pytest.mark.requires_db` | needs Postgres; run by `scripts/dev.sh test-db` |
+
+A database-backed test gets a database **created and migrated for that run alone**, then dropped — so it never touches development data, two runs cannot collide, and a crashed run's database is swept up by the next one. It must not assume any row it did not create.
+
+A test that needs something it has not got **fails**; it does not skip. A suite that quietly passes when it did not run prints the same summary line as one that did.
 
 ---
 

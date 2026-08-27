@@ -1,5 +1,16 @@
 """Shared fixtures.
 
+Where tests live, and what each kind guarantees:
+
+  `api/tests/test_<module>.py`   mirrors `api/src/askwell/<module>.py`
+  no marker                       runs with no network at all, in every run
+  `@pytest.mark.requires_db`      needs Postgres; run by `scripts/dev.sh test-db`
+
+A database-backed test gets a database created and migrated for that run alone,
+and dropped afterwards — see `conftest_db.py`. It must not assume any row it
+did not create.
+
+
 Every test that touches configuration builds `Settings` explicitly rather than
 letting it read the ambient environment. A test that passes because the
 developer happens to have `ASKWELL_DATABASE_URL` exported is not a test.
@@ -10,6 +21,9 @@ from collections.abc import Iterator
 import pytest
 
 from askwell.config import Settings
+
+# Re-exported so every test module sees them without importing anything.
+from tests.conftest_db import app_database_url, database_url  # noqa: F401
 
 
 @pytest.fixture(autouse=True)

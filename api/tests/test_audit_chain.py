@@ -12,7 +12,6 @@ audit write that fails takes the action down with it.
 
 import asyncio
 import json
-import os
 import uuid
 from collections.abc import AsyncIterator
 
@@ -26,22 +25,15 @@ from askwell.audit import GENESIS, Break, Store, record, verify
 
 pytestmark = pytest.mark.requires_db
 
-OWNER_URL = "TEST_DATABASE_URL"
 
-
-def _async_url() -> str:
-    value = os.environ.get(OWNER_URL)
-    if not value:
-        raise RuntimeError(
-            f"{OWNER_URL} is not set. The chain's round trip through jsonb can "
-            f"only be tested against a real Postgres. Run: scripts/dev.sh test-db"
-        )
-    return value.replace("postgresql://", "postgresql+psycopg://", 1)
+@pytest.fixture
+def async_url(database_url: str) -> str:
+    return database_url.replace("postgresql://", "postgresql+psycopg://", 1)
 
 
 @pytest_asyncio.fixture
-async def session() -> AsyncIterator[AsyncSession]:
-    engine = create_async_engine(_async_url())
+async def session(async_url: str) -> AsyncIterator[AsyncSession]:
+    engine = create_async_engine(async_url)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with factory() as opened:
         await opened.execute(text("TRUNCATE audit_decisions, audit_interactions"))
@@ -192,7 +184,9 @@ async def test_a_successful_action_and_its_record_commit_together(
     await session.commit()
 
 
-async def test_concurrent_writes_serialise_rather_than_fork(session: AsyncSession) -> None:
+async def test_concurrent_writes_serialise_rather_than_fork(
+    session: AsyncSession, async_url: str
+) -> None:
     """Two writes racing must not both chain to the same predecessor.
 
     A forked chain does not look broken. It looks like one of the two branches
@@ -202,7 +196,7 @@ async def test_concurrent_writes_serialise_rather_than_fork(session: AsyncSessio
     Each writer gets its own connection, because an advisory transaction lock
     taken twice on one connection is not a race.
     """
-    engine = create_async_engine(_async_url())
+    engine = create_async_engine(async_url)
     factory = async_sessionmaker(engine, expire_on_commit=False)
 
     async def write(index: int) -> None:
