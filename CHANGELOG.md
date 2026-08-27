@@ -4,6 +4,15 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.12 — 2026-08-28
+
+Chunking respects structure instead of cutting at a fixed length. `M1-INDEX-ING-031`.
+
+### Added
+
+- **A `chunk` stage, real for the first time.** `api/src/askwell/chunk.py` parses `document_pages.text` back into the headings, `[TABLE]`/`[/TABLE]` markers and list items the extractors already left in it, merges them into `chunks` rows up to a target size without ever crossing a hard maximum, and writes `document_id`, `ordinal`, `page_from`/`page_to`, `heading` and `content` — `embedding` stays null for `M1-INDEX-ING-032`. Wired into `ingest.STAGES`; a document now parks at `embed` instead of `chunk`.
+- **A table is never split from its header.** A table longer than the hard maximum is split by row with the header repeated on every part; a heading is carried as every following chunk's `heading` column until the next one; a single paragraph longer than the maximum splits at sentence boundaries with overlap so a sentence is never orphaned; a slide (`documents.anchor_kind = 'slide'`) is never merged with another slide into one chunk.
+
 ## 0.2.11 — 2026-08-28
 
 Extraction failures are named individually, and a password-protected PDF prompts rather than just failing. `M1-EXTRACT-VAL-030`.

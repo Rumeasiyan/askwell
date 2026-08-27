@@ -16,13 +16,14 @@ document ready is enough, and the source says so while the rest continue.
 dropped* — including that its reason survives, which is why the record is in
 Postgres rather than in the queue.
 
-Most of the pipeline still has no stage installed (`chunk` and `embed` are
-`M1-INDEX-ING-031` and `M1-INDEX-ING-032`), so most tests here install one of
-their own rather than exercise a real one. That is not a stand-in for the real
-thing: what is under test is the harness — claim, progress, failure, retry,
-resume — and a test stage is how you assert a harness without also asserting a
-PDF library. `extract` is real since `M1-EXTRACT-ING-026`; the tests naming it
-below exercise the installed stage directly.
+Part of the pipeline still has no stage installed (`embed` is
+`M1-INDEX-ING-032`), so most tests here install a stage of their own rather
+than exercise a real one. That is not a stand-in for the real thing: what is
+under test is the harness — claim, progress, failure, retry, resume — and a
+test stage is how you assert a harness without also asserting a PDF library.
+`extract` is real since `M1-EXTRACT-ING-026` and `chunk` is real since
+`M1-INDEX-ING-031`; the tests naming them below exercise the installed stages
+directly.
 """
 
 import io
@@ -340,12 +341,13 @@ async def test_a_job_parks_at_the_first_stage_that_has_not_been_built(
 ) -> None:
     """The honest resting place, and the sentence it produces.
 
-    `extract` is real since `M1-EXTRACT-ING-026`, so this document is actually
-    read — and it still must not be `ready`, because chunking has not run and
-    nothing is retrievable yet: that would tell retrieval it has passages it
-    does not have, the C4 failure wearing a progress bar. It must not be
-    `failed` either: nothing is wrong with the file. `parked`, naming `chunk`
-    and its ticket, is what lets the surface say what has to arrive next.
+    `extract` and `chunk` are real since `M1-EXTRACT-ING-026` and
+    `M1-INDEX-ING-031`, so this document is actually read and chunked — and it
+    still must not be `ready`, because nothing is embedded yet: that would
+    tell retrieval it has passages it does not have, the C4 failure wearing a
+    progress bar. It must not be `failed` either: nothing is wrong with the
+    file. `parked`, naming `embed` and its ticket, is what lets the surface
+    say what has to arrive next.
     """
     await nominate(session, str(tmp_path))
     written(tmp_path, "contract.pdf")
@@ -363,7 +365,7 @@ async def test_a_job_parks_at_the_first_stage_that_has_not_been_built(
         )
     ).one()
     assert row[0] == "parked"
-    assert row[1] == "chunk"
+    assert row[1] == "embed"
     assert row[2] == "queued"
 
     page = (
@@ -387,8 +389,8 @@ async def test_a_page_yielding_no_text_is_recorded_rather_than_skipped(
     A two-page document with a text layer on one page and not the other is
     the ticket's own edge case — "mixed handling per page, not per document".
     Because *something* extracted, the document is not routed to OCR; it
-    parks at `chunk` like any other extracted document, with the blank page on
-    record for `M1-EXTRACT-ING-028` to find later.
+    parks at `embed` like any other extracted-and-chunked document, with the
+    blank page on record for `M1-EXTRACT-ING-028` to find later.
     """
     await nominate(session, str(tmp_path))
     written(tmp_path, "mixed.pdf", _pdf("Page one has words on it.", None))
@@ -417,7 +419,7 @@ async def test_a_page_yielding_no_text_is_recorded_rather_than_skipped(
             {"id": documents[0]},
         )
     ).one()
-    assert row[0] == "chunk"
+    assert row[0] == "embed"
     assert row[1] == 2
 
 
@@ -600,7 +602,7 @@ async def test_a_password_protected_pdf_prompts_and_the_right_password_completes
     await session.commit()
     assert right.retried
     outcome = await ingest.process(factory, unreachable_queue, documents[0], password="letmein")
-    assert outcome == "parked"  # extract succeeded; chunk is not installed yet
+    assert outcome == "parked"  # extract and chunk succeeded; embed is not installed yet
 
     row = (
         await session.execute(
@@ -659,7 +661,7 @@ async def test_a_scanned_page_with_no_text_layer_is_read_by_ocr(
             {"id": documents[0]},
         )
     ).scalar_one()
-    assert awaiting == "chunk"
+    assert awaiting == "embed"
 
 
 async def test_an_upside_down_scanned_page_is_read_by_ocr(
@@ -1411,7 +1413,7 @@ async def test_a_document_parked_for_a_stage_still_unbuilt_is_left_alone(
 ) -> None:
     """The other half of #109's fix: reviving a `parked` row only when its
     stage is actually installed. Without the `awaiting` filter, a document
-    waiting on `chunk` would be re-claimed by `extract`, park again on the very
+    waiting on `embed` would be re-claimed by `chunk`, park again on the very
     next stage, forever — the bug this fix exists for, reproduced one stage
     later.
     """
@@ -1421,7 +1423,7 @@ async def test_a_document_parked_for_a_stage_still_unbuilt_is_left_alone(
 
     await session.execute(
         text(
-            "UPDATE ingest_jobs SET state = 'parked', stage = 'extract', awaiting = 'chunk' "
+            "UPDATE ingest_jobs SET state = 'parked', stage = 'chunk', awaiting = 'embed' "
             "WHERE document_id = :id"
         ),
         {"id": documents[0]},
@@ -1438,7 +1440,7 @@ async def test_a_document_parked_for_a_stage_still_unbuilt_is_left_alone(
         )
     ).one()
     assert row[0] == "parked"
-    assert row[1] == "chunk"
+    assert row[1] == "embed"
 
 
 async def test_reconcile_re_dispatches_work_the_queue_forgot(
@@ -1672,8 +1674,8 @@ async def test_the_snapshot_reports_queue_position_and_what_is_being_waited_for(
     assert [item["filename"] for item in state["next"]] == ["b.pdf", "c.pdf"]
     assert state["queue_length"] == 2
     assert state["awaiting"] == {
-        "stage": "chunk",
-        "ticket": "M1-INDEX-ING-031",
+        "stage": "embed",
+        "ticket": "M1-INDEX-ING-032",
         "documents": 1,
     }
     assert state["sources"][0]["askable"] is False

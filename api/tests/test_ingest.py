@@ -156,14 +156,15 @@ def test_the_whole_pipeline_is_declared_even_where_it_is_not_yet_built() -> None
     assert all(stage.ticket for stage in ingest.STAGES)
 
 
-def test_extraction_is_installed_and_chunking_and_embedding_are_not() -> None:
+def test_extraction_and_chunking_are_installed_and_embedding_is_not() -> None:
     """`installed()` is what `process` walks, and a stage that reports itself
     built while doing nothing would mark documents `ready` that nothing has
     read — which is the C4 failure, dressed as progress. `M1-EXTRACT-ING-026`
-    installed `extract`; delete this test's second assertion when
-    `M1-INDEX-ING-031` installs `chunk` and it stops being true.
+    installed `extract` and `M1-INDEX-ING-031` installed `chunk`; delete this
+    test's assertion when `M1-INDEX-ING-032` installs `embed` and it stops
+    being true.
     """
-    assert [stage.name for stage in ingest.installed()] == ["extract"]
+    assert [stage.name for stage in ingest.installed()] == ["extract", "chunk"]
 
 
 def test_a_queue_that_cannot_be_reached_delays_rather_than_loses(

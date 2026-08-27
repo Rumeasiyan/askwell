@@ -22,13 +22,14 @@ about. Dispatch failing is a delay; it is never a loss.
 The pipeline is declared in full — extract, chunk, embed — and at the time this
 was written none of it existed: those are `M1-EXTRACT-ING-026`,
 `M1-INDEX-ING-031` and `M1-INDEX-ING-032`, and `M1-ADD-ING-025`'s own scope put
-them out of it. `M1-EXTRACT-ING-026` has since installed `extract`, so a job
-now runs it for real and parks at `chunk`. A PDF with no usable text layer no
-longer parks separately — `M1-EXTRACT-ING-028` put OCR inside `extract` itself,
-so that document still parks at `chunk` too, just later than a text-layer PDF.
-It does not mark the document `ready`, which would tell the library a file is
-searchable when nothing has chunked it yet; and it does not mark it failed,
-which would fill a fresh install with red for a file nothing is wrong with.
+them out of it. `M1-EXTRACT-ING-026` and `M1-INDEX-ING-031` have since
+installed `extract` and `chunk`, so a job now runs both for real and parks at
+`embed`. A PDF with no usable text layer no longer parks separately —
+`M1-EXTRACT-ING-028` put OCR inside `extract` itself, so that document still
+parks at `embed` too, just later than a text-layer PDF. It does not mark the
+document `ready`, which would tell the library a file is searchable when
+nothing has embedded it yet; and it does not mark it failed, which would fill
+a fresh install with red for a file nothing is wrong with.
 `docs/states-and-edge-cases.md` §3 asks for exactly this sentence — "files
 queued but nothing indexed yet ... an honest sentence, not a progress bar that
 never moves" — and `awaiting` is what lets the surface name what has to arrive
@@ -65,7 +66,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from askwell import extract
+from askwell import chunk, extract
 from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
@@ -165,7 +166,7 @@ class Stage:
 # ticket fills in `run` and changes nothing else here.
 STAGES: tuple[Stage, ...] = (
     Stage("extract", "M1-EXTRACT-ING-026", extract.run),
-    Stage("chunk", "M1-INDEX-ING-031"),
+    Stage("chunk", "M1-INDEX-ING-031", chunk.run),
     Stage("embed", "M1-INDEX-ING-032"),
 )
 
@@ -785,8 +786,8 @@ async def resume(session: AsyncSession) -> int:
     as failed for having been interrupted three times.
 
     A `parked` row is also returned to the queue, but only when the stage it
-    is `awaiting` now has a `run` — otherwise a document parked for `chunk`
-    would be re-claimed by `extract` and re-park on the very next stage,
+    is `awaiting` now has a `run` — otherwise a document parked for `embed`
+    would be re-claimed by `chunk` and re-park on the very next stage,
     forever. `M1-ADD-ING-025` declared the pipeline in full and installed none
     of it; without this, every document parked before `M1-EXTRACT-ING-026`
     landed would still be parked after it, discovered only by whoever notices
