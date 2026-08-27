@@ -42,6 +42,27 @@ egress_proxy  reachable
 - One container — the inference bridge — has host networking. `docs/architecture.md` §5 names it rather than glossing it.
 - The 8 GB "slow but usable" claim is still unmeasured ([#49](https://github.com/Rumeasiyan/askwell/issues/49)).
 
+## Before M1 starts
+
+**The build runner's gate was a stub that returned success.** It printed *"gate commands are read from what M0 produced"* and `return 0` — so running M1 through it would have rubber-stamped every ticket while looking like it checked them. Worse than no gate: it converts "nobody checked" into "something checked and approved".
+
+It now runs six rows and fails on the absence of a summary line rather than on an exit code:
+
+| row | matches |
+| --- | --- |
+| lint | `All checks passed!` |
+| format | `files already formatted` |
+| typecheck | `Success: no issues found in` |
+| tests | `N passed`, **N > 0** |
+| web | `frontend checks passed` |
+| db-tests | `N passed`, **N > 0**, needs the stack |
+
+`scripts/dev.sh check` is deliberately **not** a row: it prints ruff's `All checks passed!` several steps before it finishes, and matching that reports success while format, typecheck and tests are still to run. That is what put `main` red on 2026-08-27, and there is now a test asserting no row does it.
+
+`db-tests` is its own row because `test` deselects them — a green `test` says nothing about the 36 tests that assert what the database refuses. It is skipped loudly and named when the stack is down, never silently.
+
+`scripts/gate.test.sh` — 22 tests. `docs/build-runner.md` §7.3 is filled from real output.
+
 ## Next task
 
 **`M0-FOUND-DOC-008`** (version, changelog and release-note discipline — largely already practised, needs writing down and enforcing), then the STACK epic (`010` egress proxy, `011` refused-request count, `012` localhost binding), SHELL and MODEL.
