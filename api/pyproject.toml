@@ -20,6 +20,7 @@ dependencies = [
     "pydantic>=2.9",
     "pydantic-settings>=2.5",
     "pypdfium2>=5.0",
+    "pytesseract>=0.3.13",
     "python-docx>=1.1",
     "python-pptx>=1.0",
     "sqlalchemy[asyncio]>=2.0",
@@ -103,6 +104,12 @@ ignore_missing_imports = true
 # values immediately.
 [[tool.mypy.overrides]]
 module = ["docx", "docx.*", "pptx", "pptx.*", "openpyxl", "openpyxl.*", "bs4"]
+ignore_missing_imports = true
+
+# Same reasoning again, for M1-EXTRACT-ING-028: pytesseract ships no stubs
+# either, and is touched at exactly one module boundary, `extract_ocr.py`.
+[[tool.mypy.overrides]]
+module = "pytesseract"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

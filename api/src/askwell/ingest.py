@@ -23,11 +23,12 @@ The pipeline is declared in full — extract, chunk, embed — and at the time t
 was written none of it existed: those are `M1-EXTRACT-ING-026`,
 `M1-INDEX-ING-031` and `M1-INDEX-ING-032`, and `M1-ADD-ING-025`'s own scope put
 them out of it. `M1-EXTRACT-ING-026` has since installed `extract`, so a job
-now runs it for real and parks at `chunk` — or, for a PDF with no usable text
-layer anywhere, parks naming `M1-EXTRACT-ING-028` instead. It does not mark the
-document `ready`, which would tell the library a file is searchable when
-nothing has chunked it yet; and it does not mark it failed, which would fill a
-fresh install with red for a file nothing is wrong with.
+now runs it for real and parks at `chunk`. A PDF with no usable text layer no
+longer parks separately — `M1-EXTRACT-ING-028` put OCR inside `extract` itself,
+so that document still parks at `chunk` too, just later than a text-layer PDF.
+It does not mark the document `ready`, which would tell the library a file is
+searchable when nothing has chunked it yet; and it does not mark it failed,
+which would fill a fresh install with red for a file nothing is wrong with.
 `docs/states-and-edge-cases.md` §3 asks for exactly this sentence — "files
 queued but nothing indexed yet ... an honest sentence, not a progress bar that
 never moves" — and `awaiting` is what lets the surface name what has to arrive
@@ -63,7 +64,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from askwell import extract, extract_pdf
+from askwell import extract
 from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
@@ -149,14 +150,6 @@ class Stage:
     name: str
     ticket: str
     run: StageFn | None = None
-
-
-# Not a pipeline step — OCR is inside `extract`'s own scope
-# (`M1-EXTRACT-ING-026`'s "Detection of a PDF with no usable text layer,
-# handing off to OCR"), not a fourth entry in `STAGES`. It exists here so a
-# document with no usable text layer at all can park naming it, when
-# `extract_pdf.run` raises `extract_pdf.NeedsOCR`.
-OCR_STAGE = Stage("ocr", "M1-EXTRACT-ING-028")
 
 
 # The pipeline, in order. Declared in full and installed in part: naming the
@@ -518,13 +511,6 @@ async def process(
 
         try:
             await stage.run(work, report, factory)
-        except extract_pdf.NeedsOCR:
-            # Not a failure: the file is fine and `M1-EXTRACT-ING-028` is what
-            # has to arrive before it has anything to chunk. Parked the same
-            # way a missing `Stage.run` is, so the surface renders both
-            # identically — naming the stage and its ticket.
-            await _park(factory, work, reached=reached, awaiting=OCR_STAGE)
-            return "parked"
         except Exception as error:  # a stage may raise anything at all
             await _fail(factory, settings, work, stage=stage, attempts=attempts, error=error)
             return "failed"
@@ -931,7 +917,7 @@ async def snapshot(session: AsyncSession, settings: Settings) -> dict[str, Any]:
     )
 
     parked = waiting_on.first()
-    stage_tickets = {stage.name: stage.ticket for stage in (*STAGES, OCR_STAGE)}
+    stage_tickets = {stage.name: stage.ticket for stage in STAGES}
 
     return {
         "counts": counts,

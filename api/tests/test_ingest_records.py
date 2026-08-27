@@ -25,12 +25,14 @@ PDF library. `extract` is real since `M1-EXTRACT-ING-026`; the tests naming it
 below exercise the installed stage directly.
 """
 
+import io
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import pytest
 import pytest_asyncio
+from PIL import Image, ImageDraw, ImageFont
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -75,6 +77,61 @@ def _pdf(*pages: str | None, rotate: int = 0) -> bytes:
             b"" if page is None else f"BT /F1 12 Tf 72 700 Td ({page}) Tj ET".encode("latin-1")
         )
         objects.append(b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream")
+
+    body = bytearray(b"%PDF-1.7\n")
+    offsets = []
+    for number, obj in enumerate(objects, start=1):
+        offsets.append(len(body))
+        body += f"{number} 0 obj\n".encode() + obj + b"\nendobj\n"
+    xref_offset = len(body)
+    body += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode()
+    for offset in offsets:
+        body += f"{offset:010d} 00000 n \n".encode()
+    body += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n".encode()
+    body += f"startxref\n{xref_offset}\n%%EOF".encode()
+    return bytes(body)
+
+
+def _scanned_pdf(*lines: str, rotate: int = 0) -> bytes:
+    """A one-page PDF with an image XObject and no text layer at all —
+    `M1-EXTRACT-ING-028`'s own case, as opposed to `_pdf`'s vector text.
+
+    `lines` are drawn onto a plain white bitmap and embedded as a JPEG
+    (`/Filter /DCTDecode`, which every PDF reader including pdfium decodes
+    natively, so no extra decoding step belongs in this helper). No `lines`
+    at all is the "photograph with no text" edge case. `rotate` bakes the
+    rotation into the *pixels*, unlike `_pdf`'s `/Rotate` entry — a scanner
+    does not know a page is upside down, so there is no PDF-level hint for
+    `extract_ocr` to lean on; it has to be detected from the image itself.
+    """
+    image = Image.new("RGB", (1000, 300 + 60 * max(len(lines) - 1, 0)), "white")
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default(size=36)
+    for index, line in enumerate(lines):
+        draw.text((20, 40 + index * 60), line, fill="black", font=font)
+    if rotate:
+        image = image.rotate(rotate, expand=True)
+
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=90)
+    jpeg = buffer.getvalue()
+    width, height = image.size
+
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        f"<< /Type /Page /Parent 2 0 R /Resources << /XObject << /Im1 5 0 R >> >> "
+        f"/MediaBox [0 0 {width} {height}] /Contents 4 0 R >>".encode(),
+    ]
+    content = f"q {width} 0 0 {height} 0 0 cm /Im1 Do Q".encode()
+    objects.append(b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream")
+    objects.append(
+        f"<< /Type /XObject /Subtype /Image /Width {width} /Height {height} "
+        f"/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode "
+        f"/Length {len(jpeg)} >>\nstream\n".encode()
+        + jpeg
+        + b"\nendstream"
+    )
 
     body = bytearray(b"%PDF-1.7\n")
     offsets = []
@@ -361,49 +418,223 @@ async def test_a_page_yielding_no_text_is_recorded_rather_than_skipped(
     assert row[1] == 2
 
 
-async def test_a_pdf_with_no_usable_text_anywhere_parks_for_ocr(
+async def test_a_pdf_with_no_usable_text_anywhere_even_after_ocr_fails(
     factory: async_sessionmaker[AsyncSession],
     session: AsyncSession,
     tmp_path: Path,
     unreachable_queue: Settings,
 ) -> None:
-    """No text layer at all is not a failure — it is a document that needs a
-    stage this ticket explicitly puts out of scope: OCR, `M1-EXTRACT-ING-028`.
+    """No text layer and nothing OCR can find either — a stack of blank
+    pages or photographs with no text in them — is `EmptyDocument`, the same
+    C5 failure every other extractor reports when nothing came back.
 
-    Chunking a document with nothing extracted would tell retrieval a scanned
-    contract has no content, when the truth is nobody has read it with OCR
-    yet — the C5 failure with a different cause.
+    Before `M1-EXTRACT-ING-028` this parked awaiting `ocr` rather than
+    failing, because nothing had tried to read it yet. Now OCR has been given
+    every page a fair try, so "parked forever waiting for a ticket that will
+    never arrive" would be the C5 failure with a different cause.
     """
     await nominate(session, str(tmp_path))
-    written(tmp_path, "scan.pdf", _pdf(None, None))
+    written(tmp_path, "scan.pdf", _scanned_pdf())
     documents = await recorded(session, tmp_path, "scan.pdf")
 
-    assert await ingest.process(factory, unreachable_queue, documents[0]) == "parked"
+    for _ in range(ingest.MAX_ATTEMPTS):
+        assert await ingest.process(factory, unreachable_queue, documents[0]) == "failed"
 
     row = (
         await session.execute(
             text(
-                "SELECT j.state, j.awaiting, d.status FROM ingest_jobs j "
+                "SELECT j.state, j.error, d.status FROM ingest_jobs j "
                 "JOIN documents d ON d.id = j.document_id WHERE j.document_id = :id"
             ),
             {"id": documents[0]},
         )
     ).one()
-    assert row[0] == "parked"
-    assert row[1] == "ocr"
-    assert row[2] == "queued"
+    assert row[0] == "failed"
+    assert row[1] is not None and "text" in row[1].lower()
 
-    has_text = (
-        (
-            await session.execute(
-                text("SELECT has_text FROM document_pages WHERE document_id = :id"),
-                {"id": documents[0]},
-            )
-        )
-        .scalars()
-        .all()
+
+async def test_a_scanned_page_with_no_text_layer_is_read_by_ocr(
+    factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    tmp_path: Path,
+    unreachable_queue: Settings,
+) -> None:
+    """The ticket's own headline case: a page with no text layer at all is
+    rendered to an image and read by Tesseract, and the document is marked
+    OCR-derived for the source viewer to show the scan beside the text."""
+    await nominate(session, str(tmp_path))
+    written(
+        tmp_path,
+        "scan.pdf",
+        _scanned_pdf("Either party may terminate on ninety", "days written notice."),
     )
-    assert has_text == [False, False]
+    documents = await recorded(session, tmp_path, "scan.pdf")
+
+    assert await ingest.process(factory, unreachable_queue, documents[0]) == "parked"
+
+    page = (
+        await session.execute(
+            text("SELECT has_text, text FROM document_pages WHERE document_id = :id"),
+            {"id": documents[0]},
+        )
+    ).one()
+    assert page[0] is True
+    assert page[1] == "Either party may terminate on ninety\ndays written notice."
+
+    document = (
+        await session.execute(
+            text("SELECT ocr_derived, page_count FROM documents WHERE id = :id"),
+            {"id": documents[0]},
+        )
+    ).one()
+    assert document[0] is True
+    assert document[1] == 1
+
+    awaiting = (
+        await session.execute(
+            text("SELECT awaiting FROM ingest_jobs WHERE document_id = :id"),
+            {"id": documents[0]},
+        )
+    ).scalar_one()
+    assert awaiting == "chunk"
+
+
+async def test_an_upside_down_scanned_page_is_read_by_ocr(
+    factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    tmp_path: Path,
+    unreachable_queue: Settings,
+) -> None:
+    """The ticket's title: orientation detection, not just recognition. A
+    scanned page's rotation lives in the pixels, not a PDF `/Rotate` entry a
+    scanner never wrote — `extract_ocr` has to find it itself."""
+    await nominate(session, str(tmp_path))
+    written(
+        tmp_path,
+        "upside-down.pdf",
+        _scanned_pdf(
+            "Either party may terminate on ninety",
+            "days written notice to the other side.",
+            rotate=180,
+        ),
+    )
+    documents = await recorded(session, tmp_path, "upside-down.pdf")
+
+    await ingest.process(factory, unreachable_queue, documents[0])
+
+    page_text = (
+        await session.execute(
+            text("SELECT text FROM document_pages WHERE document_id = :id"),
+            {"id": documents[0]},
+        )
+    ).scalar_one()
+    assert (
+        page_text == "Either party may terminate on ninety\ndays written notice to the other side."
+    )
+
+
+async def test_a_mixed_document_only_ocrs_the_pages_that_need_it(
+    factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    tmp_path: Path,
+    unreachable_queue: Settings,
+) -> None:
+    """The stated edge case: a text-layer page and a scanned page in the same
+    document. Only the scanned one costs an OCR pass, and the document still
+    parks at `chunk` like an ordinary text-layer PDF — mixing sources within
+    one document is not a special pipeline state.
+
+    Built directly rather than composed from `_pdf` and `_scanned_pdf`: each
+    of those builds a complete, independent object graph, and a real
+    two-page document needs one shared `/Pages` tree with both kinds of page
+    as siblings in it.
+    """
+    image = Image.new("RGB", (1000, 360), "white")
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default(size=36)
+    draw.text((20, 40), "The supplier warrants the goods", fill="black", font=font)
+    draw.text((20, 100), "for twelve months.", fill="black", font=font)
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=90)
+    jpeg = buffer.getvalue()
+    width, height = image.size
+
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+        b"<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 8 0 R >> >> "
+        b"/MediaBox [0 0 612 792] /Contents 5 0 R >>",
+        f"<< /Type /Page /Parent 2 0 R /Resources << /XObject << /Im1 7 0 R >> >> "
+        f"/MediaBox [0 0 {width} {height}] /Contents 6 0 R >>".encode(),
+    ]
+    text_content = (
+        b"BT /F1 12 Tf 72 700 Td (Either party may terminate on ninety days written notice.) Tj ET"
+    )
+    objects.append(
+        b"<< /Length %d >>\nstream\n" % len(text_content) + text_content + b"\nendstream"
+    )
+    image_content = f"q {width} 0 0 {height} 0 0 cm /Im1 Do Q".encode()
+    objects.append(
+        b"<< /Length %d >>\nstream\n" % len(image_content) + image_content + b"\nendstream"
+    )
+    objects.append(
+        f"<< /Type /XObject /Subtype /Image /Width {width} /Height {height} "
+        f"/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode "
+        f"/Length {len(jpeg)} >>\nstream\n".encode()
+        + jpeg
+        + b"\nendstream"
+    )
+    objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+
+    body = bytearray(b"%PDF-1.7\n")
+    offsets = []
+    for number, obj in enumerate(objects, start=1):
+        offsets.append(len(body))
+        body += f"{number} 0 obj\n".encode() + obj + b"\nendobj\n"
+    xref_offset = len(body)
+    body += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode()
+    for offset in offsets:
+        body += f"{offset:010d} 00000 n \n".encode()
+    body += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n".encode()
+    body += f"startxref\n{xref_offset}\n%%EOF".encode()
+
+    await nominate(session, str(tmp_path))
+    written(tmp_path, "mixed-source.pdf", bytes(body))
+    documents = await recorded(session, tmp_path, "mixed-source.pdf")
+
+    assert await ingest.process(factory, unreachable_queue, documents[0]) == "parked"
+
+    pages = (
+        await session.execute(
+            text(
+                "SELECT page_number, has_text, text FROM document_pages "
+                "WHERE document_id = :id ORDER BY page_number"
+            ),
+            {"id": documents[0]},
+        )
+    ).all()
+    assert (pages[0][0], pages[0][1]) == (1, True)
+    assert pages[0][2] == "Either party may terminate on ninety days written notice."
+    assert (pages[1][0], pages[1][1]) == (2, True)
+    ocr_text = pages[1][2]
+    assert ocr_text is not None
+    assert ocr_text.split() == [
+        "The",
+        "supplier",
+        "warrants",
+        "the",
+        "goods",
+        "for",
+        "twelve",
+        "months.",
+    ]
+
+    ocr_derived = (
+        await session.execute(
+            text("SELECT ocr_derived FROM documents WHERE id = :id"), {"id": documents[0]}
+        )
+    ).scalar_one()
+    assert ocr_derived is True
 
 
 async def test_a_rotated_page_is_read_in_the_correct_orientation(

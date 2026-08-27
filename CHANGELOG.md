@@ -4,6 +4,20 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.9 — 2026-08-28
+
+A scanned PDF with no text layer is now actually read. `M1-EXTRACT-ING-028`.
+
+### Added
+
+- **OCR fallback with orientation detection.** A page whose text layer fails extraction's usability check is rendered to an image and read by Tesseract — orientation and script detected first, so an upside-down or sideways scan still reads correctly. Runs per page, so a mixed document only pays the OCR cost on the pages that actually need it.
+- **`documents.ocr_derived`**, so the source viewer can later show the scanned image beside the text for a document that used OCR.
+- **Tamil OCR as the same hedge everywhere else in the product**: the bundled `tam` traineddata recognises Tamil script when Tesseract's own script detection identifies it, but the language is never presented as supported.
+
+### Changed
+
+- **A PDF that never gets any text — not from a text layer, not from OCR — now fails with a reason**, the same C5 failure every other extractor already reports, instead of parking forever awaiting a ticket that has now landed.
+
 ## 0.2.8 — 2026-08-28
 
 Word, PowerPoint, spreadsheet, plain text, Markdown and HTML now extract for real. `M1-EXTRACT-ING-027`.
