@@ -408,7 +408,16 @@ run_agent() {   # run_agent <lineage> <prompt-file> <log-file> [model] [effort]
   # is worse than a forgetful one. The property that matters — it did not write
   # the code — survives a reset.
   local sid="$RUNNER_STATE/session/${lineage}.${MILESTONE:-none}.id"
-  local args; args="--print"
+  # An unattended queue cannot answer a permission prompt, and in --print mode
+  # a prompt is a refusal rather than a pause — the first live run produced a
+  # perfectly reasoned design document and not one edited file, because every
+  # write was denied.
+  #
+  # `acceptEdits` rather than bypassing every check: the containment here is
+  # not the permission dialog, it is that the runner works on a branch, pushes
+  # nothing, opens no PR, and hands back a diff for a person to read. Setting
+  # AGENT_PERMISSION_MODE overrides it for anyone who disagrees.
+  local args; args="--print --permission-mode ${AGENT_PERMISSION_MODE:-acceptEdits}"
   [ -n "$model" ]  && args="$args --model $model"
   [ -n "$effort" ] && args="$args --effort $effort"
   if [ "$lineage" != "build" ] && [ -s "$sid" ]; then
@@ -626,7 +635,7 @@ main() {
   fi
   # Spend is recorded once the work happened, not before. Recording up front
   # would charge the ceiling for a run that died in preflight.
-  guard_record_spend "$est" || exit 1
+  guard_record_spend "$TICKET" "$est" || exit 1
 
   # --- gate, with one chance to fix ---------------------------------------
   local attempt=1 gate_ok=0
@@ -652,7 +661,7 @@ main() {
     PHASE="fix"
     run_agent build "$fix" "$RUNNER_STATE/logs/${TICKET}.fix.$attempt.log" \
       || die "The fix attempt failed to run. See $build_log"
-    guard_record_spend 1 || exit 1
+    guard_record_spend "$TICKET" 1 || exit 1
     attempt=$((attempt + 1))
   done
 
