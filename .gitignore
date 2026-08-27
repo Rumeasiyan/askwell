@@ -40,3 +40,7 @@ web/.next/
 web/out/
 next-env.d.ts
 web/tsconfig.tsbuildinfo
+
+# The host-side inference socket, bind-mounted into the containers
+.run/
+api/.venv-host/

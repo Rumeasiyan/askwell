@@ -26,6 +26,7 @@ askwell-api = "askwell.app:main"
 askwell-worker = "askwell.worker:main"
 askwell-verify = "askwell.audit:main"
 askwell-egress-proxy = "askwell.egress:main"
+askwell-inference-bridge = "askwell.inference.bridge:main"
 
 [dependency-groups]
 # Toolchain only. Runtime dependencies arrive with the code that needs them.

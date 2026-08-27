@@ -113,6 +113,8 @@ This costs a container on someone's laptop, which the topology rule otherwise re
 
 The sandbox Postgres has no route to the proxy at all (C3).
 
+**One container is outside this, and it is named rather than glossed.** The inference bridge runs with host networking, because inference is a native process and SELinux refuses a `container_t` process connecting to a socket owned by an `unconfined_t` one. It can therefore reach the internet, and no network rule stops it — what stops it is that its entire program connects to `127.0.0.1` and nothing else, which is a guarantee you get by reading fifty lines. Every service that touches the user's material stays internal. See `docs/decisions.md`.
+
 ### 5.0 Reachability, and how it is checked
 
 The API publishes to `127.0.0.1` and no other service publishes at all. `"8000:8000"` and `"127.0.0.1:8000:8000"` differ by nine characters and produce the same working product on the developer's machine — the first one puts the user's entire corpus on whatever network they are on. Nothing about that difference is visible from inside Askwell, which is why `scripts/verify-localhost-binding.sh` checks from outside it and is part of the release checklist.

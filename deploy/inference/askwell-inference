@@ -1,0 +1,320 @@
+#!/usr/bin/env python3
+"""Askwell's inference supervisor. Runs on the host, natively.
+
+Three things forced this to be a standalone, dependency-free script rather than
+part of the `askwell` package, and each was discovered by trying the other way.
+
+**GPU acceleration only works from the host** on all three platforms, which is
+why llama.cpp is native rather than containerised.
+
+**A containerised API cannot start a host process.** `M0-MODEL-DEPLOY-018` said
+the API would supervise this; it cannot, so supervision lives here.
+
+**The host's Python is not ours to choose.** This machine runs 3.14 and the
+package pins 3.12; a user's machine will be something else again. So this
+imports nothing but the standard library and runs on whatever is there. That
+is not a workaround — a host-side component that dictates the host's Python
+version is a component that does not install.
+
+It does **not** own the Unix socket the containers reach inference through, and
+that was the second surprise. SELinux refuses `connectto` when a `container_t`
+process dials a socket listened on by an `unconfined_t` one — the file label is
+irrelevant, it is the *listener's process* label that decides. So the socket is
+owned by a tiny bridge container instead, and this script only supervises the
+model. See `docs/decisions.md`.
+
+Configuration comes from the environment, with the same ASKWELL_ names the
+application uses.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import os
+import shutil
+import signal
+import sys
+import time
+from pathlib import Path
+
+# States the API reads back out of state.json. Kept in step with
+# askwell.inference.state.ProcessState, and a test asserts they have not
+# drifted — this file cannot import that one, so the check has to be explicit.
+STARTING = "starting"
+READY = "ready"
+MODEL_MISSING = "model_missing"
+LOAD_FAILED = "load_failed"
+CRASHED = "crashed"
+UNAVAILABLE = "unavailable"
+STOPPED = "stopped"
+
+# Backoff between restarts, then it stops. Restarting forever turns one problem
+# into a log nobody reads and a machine that never settles, and by then the
+# reason is more useful to the user than another attempt would be.
+BACKOFF_SECONDS = (1, 2, 5, 15, 30)
+READY_TIMEOUT_SECONDS = 300
+
+
+def env(name: str, default: str) -> str:
+    return os.environ.get(name, default)
+
+
+class Supervisor:
+    def __init__(self) -> None:
+        self.binary = env("ASKWELL_INFERENCE_BINARY", "llama-server")
+        self.model = Path(env("ASKWELL_INFERENCE_MODEL_PATH", "")).expanduser()
+        self.upstream_port = int(env("ASKWELL_INFERENCE_UPSTREAM_PORT", "8080"))
+        self.context_size = int(env("ASKWELL_INFERENCE_CONTEXT_SIZE", "8192"))
+        self.socket_path = Path(env("ASKWELL_INFERENCE_SOCKET", "/run/askwell/inference.sock"))
+        self.state_path = self.socket_path.parent / "state.json"
+
+        self.process: asyncio.subprocess.Process | None = None
+
+        # Two counters, because they answer different questions. `restarts` is
+        # cumulative and is what the user is shown: "this has restarted eleven
+        # times today" is a fact worth knowing. `consecutive` drives the
+        # backoff and resets on a successful start, and showing it instead
+        # would report 0 for a process that has been flapping all morning.
+        self.restarts = 0
+        self.consecutive = 0
+        self.acceleration = "cpu"
+        self._write(STOPPED)
+
+    # --- what the API reads -------------------------------------------------
+
+    def _write(self, state: str, reason: str | None = None) -> None:
+        """Publish the state where the API can read it.
+
+        A file rather than an endpoint, because the API cannot reach this
+        process except through the socket, and the socket belongs to
+        llama.cpp's HTTP rather than to the supervisor. It is written to a
+        temporary file and moved, so a reader never sees half of it.
+        """
+        payload = {
+            "state": state,
+            "model": self.model.name if self.model.name else None,
+            "acceleration": self.acceleration if state == READY else None,
+            "reason": reason,
+            "restarts": self.restarts,
+            "consecutive_failures": self.consecutive,
+            "updated_at": time.time(),
+        }
+        try:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.state_path.with_suffix(".partial")
+            temporary.write_text(json.dumps(payload), encoding="utf-8")
+            os.replace(temporary, self.state_path)
+            os.chmod(self.state_path, 0o644)
+        except OSError as error:
+            print(f"askwell-inference: could not write state: {error}", file=sys.stderr)
+
+        print(f"askwell-inference: {state}" + (f" — {reason}" if reason else ""), flush=True)
+
+    # --- the process --------------------------------------------------------
+
+    def command(self) -> list[str]:
+        """No model name is written here.
+
+        Profiles select models (docs/architecture.md §6). A name in code is a
+        name that cannot change without a release.
+        """
+        return [
+            self.binary,
+            "--model", str(self.model),
+            "--host", "127.0.0.1",
+            "--port", str(self.upstream_port),
+            "--ctx-size", str(self.context_size),
+            "--no-webui",
+        ]
+
+    async def start_once(self) -> bool:
+        if not self.model.is_file():
+            # Never a crash loop. Retrying cannot help: the file is not there,
+            # and only the user can put it there.
+            self._write(
+                MODEL_MISSING,
+                f"No model file at {self.model}. Askwell does not download "
+                f"models. Put one there, or set ASKWELL_INFERENCE_MODEL_PATH.",
+            )
+            return False
+
+        if shutil.which(self.binary) is None:
+            self._write(
+                UNAVAILABLE,
+                f"{self.binary!r} is not on PATH. Askwell runs llama.cpp "
+                f"natively so that GPU acceleration works; it is not bundled "
+                f"in the container images.",
+            )
+            return False
+
+        self._write(STARTING)
+        self.process = await asyncio.create_subprocess_exec(
+            *self.command(),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        return True
+
+    async def wait_until_ready(self) -> bool:
+        """Ready means it answers, not that it said something.
+
+        The first version watched stdout for a "server is listening" line and
+        timed out after five minutes on a model that had in fact loaded in
+        thirty seconds — llama.cpp block-buffers its output when stdout is a
+        pipe rather than a terminal, so the line existed and had not arrived.
+
+        Polling asks the only question that matters. The output is still read,
+        in parallel, because it is where the useful failures explain
+        themselves: "the model did not fit in memory" is something a user can
+        act on, and "it never answered" is not.
+        """
+        process = self.process
+        if process is None:
+            return False
+
+        recent: list[str] = []
+        reader = asyncio.create_task(self._read_output(recent))
+        try:
+            async with asyncio.timeout(READY_TIMEOUT_SECONDS):
+                while True:
+                    if process.returncode is not None:
+                        self._write(
+                            LOAD_FAILED,
+                            self._explain(recent)
+                            or f"Exited with {process.returncode} while loading.",
+                        )
+                        return False
+                    if await self._answers():
+                        self._detect_acceleration(recent)
+                        self._write(READY)
+                        return True
+                    await asyncio.sleep(0.5)
+        except TimeoutError:
+            self._write(
+                LOAD_FAILED,
+                self._explain(recent)
+                or f"The model did not answer within {READY_TIMEOUT_SECONDS}s.",
+            )
+            return False
+        finally:
+            reader.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await reader
+
+    async def _answers(self) -> bool:
+        """One TCP connection: cheaper than an HTTP request, and at this stage
+        it asks the same question — is it serving yet."""
+        try:
+            _, writer = await asyncio.open_connection("127.0.0.1", self.upstream_port)
+        except OSError:
+            return False
+        writer.close()
+        with contextlib.suppress(OSError):
+            await writer.wait_closed()
+        return True
+
+    async def _read_output(self, recent: list[str]) -> None:
+        """Keep the last lines, for explaining a failure."""
+        process = self.process
+        if process is None or process.stdout is None:
+            return
+        while True:
+            raw = await process.stdout.readline()
+            if not raw:
+                return
+            recent.append(raw.decode("utf-8", "replace").rstrip())
+            del recent[:-200]
+
+    @staticmethod
+    def _explain(recent: list[str]) -> str | None:
+        """The reason, from what the process said before it stopped."""
+        for line in reversed(recent):
+            lowered = line.lower()
+            if "out of memory" in lowered or "failed to allocate" in lowered:
+                return (
+                    "The model did not fit in memory. This is memory, not a "
+                    "crash — a smaller profile or a smaller quantisation will load."
+                )
+            if "failed to load model" in lowered or "error loading model" in lowered:
+                return line
+        return None
+
+    def _detect_acceleration(self, recent: list[str]) -> None:
+        for line in recent:
+            lowered = line.lower()
+            if ("offloading" in lowered and "layers to gpu" in lowered) or "cuda0" in lowered:
+                self.acceleration = "gpu"
+                return
+        self.acceleration = "cpu"
+
+    async def drain(self) -> None:
+        """Keep reading while it runs.
+
+        A process whose stdout buffer fills stops, silently, and looks like a
+        hang rather than a mistake in the thing watching it.
+        """
+        process = self.process
+        if process is None or process.stdout is None:
+            return
+        while await process.stdout.readline():
+            pass
+
+    async def supervise(self) -> None:
+        while True:
+            if not await self.start_once():
+                return
+
+            if await self.wait_until_ready():
+                self.consecutive = 0
+                await self.drain()
+
+            code = await self.process.wait() if self.process else None
+
+            if self.consecutive >= len(BACKOFF_SECONDS):
+                self._write(
+                    UNAVAILABLE,
+                    f"Stopped after {self.consecutive} restarts in a row; the last exit was "
+                    f"{code}. Askwell is not retrying — by now the reason is "
+                    f"more useful to you than another attempt.",
+                )
+                return
+
+            delay = BACKOFF_SECONDS[self.consecutive]
+            self.consecutive += 1
+            self.restarts += 1
+            self._write(CRASHED, f"Exited with {code}. Restarting in {delay}s.")
+            await asyncio.sleep(delay)
+
+    async def stop(self) -> None:
+        process = self.process
+        if process is not None and process.returncode is None:
+            process.send_signal(signal.SIGTERM)
+            with contextlib.suppress(TimeoutError):
+                async with asyncio.timeout(10):
+                    await process.wait()
+            if process.returncode is None:
+                process.kill()
+        self._write(STOPPED)
+
+
+async def main() -> int:
+    supervisor = Supervisor()
+
+    # The socket comes up first and stays up. If it appeared only once the
+    # model had loaded, the health surface could not tell "the supervisor is
+    # not running" from "the model is still loading" — and those need
+    # different things from the user.
+    try:
+        await supervisor.supervise()
+    finally:
+        await supervisor.stop()
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(asyncio.run(main()))
+    except KeyboardInterrupt:
+        print("askwell-inference: stopped", flush=True)

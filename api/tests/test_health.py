@@ -19,7 +19,9 @@ EXPECTED = {"database", "queue", "worker", "inference", "egress_proxy"}
 
 # The worker is not probed by opening a socket — see test_the_worker_is_not_
 # probed_by_opening_a_socket. Tests that patch the connection exclude it.
-SOCKET_PROBED = EXPECTED - {"worker"}
+# Inference is a Unix socket, not a TCP one — it runs on the host and the
+# containers have no route there.
+SOCKET_PROBED = EXPECTED - {"worker", "inference"}
 
 
 async def test_every_component_is_reported_separately(settings: Settings) -> None:
@@ -83,7 +85,7 @@ async def test_answers_even_when_every_component_hangs(
 
     assert len(results) == len(EXPECTED)
     assert all(item.state is ComponentState.UNREACHABLE for item in results)
-    assert len(SOCKET_PROBED) == 4
+    assert len(SOCKET_PROBED) == 3
     # Serial would be ~2.0s. Concurrent is ~0.4s.
     assert elapsed < 1.0, f"probes appear to be serial: {elapsed:.2f}s for 5 components"
 
@@ -108,7 +110,7 @@ async def test_a_broken_probe_blames_the_probe_not_the_component(
         raise RuntimeError("the probe itself is broken")
 
     monkeypatch.setattr("askwell.health.asyncio.open_connection", explode)
-    results = [item for item in await check_components(settings) if item.name != "worker"]
+    results = [item for item in await check_components(settings) if item.name in SOCKET_PROBED]
     assert results, "the socket-probed components should not be empty"
     assert all(item.state is ComponentState.UNKNOWN for item in results)
     assert all("Probe failed" in (item.reason or "") for item in results)
@@ -123,10 +125,10 @@ async def test_an_unresolvable_host_says_so_rather_than_may_be_starting(
     may still be starting when the name does not exist sends them to watch a
     container that is never going to appear.
     """
-    missing = settings.model_copy(update={"inference_host": "inference.invalid"})
+    missing = settings.model_copy(update={"egress_proxy_host": "egress.invalid"})
     results = {item.name: item for item in await check_components(missing)}
-    assert results["inference"].state is ComponentState.UNREACHABLE
-    reason = results["inference"].reason or ""
+    assert results["egress_proxy"].state is ComponentState.UNREACHABLE
+    reason = results["egress_proxy"].reason or ""
     assert "does not resolve" in reason
     assert "starting" not in reason
 
@@ -242,10 +244,19 @@ async def test_a_slow_name_lookup_does_not_orphan_its_exception(
 
 
 async def test_report_carries_the_address_and_a_duration(settings: Settings) -> None:
-    results = await check_components(settings)
-    for item in results:
-        assert ":" in item.address
+    """Every component says where it looked.
+
+    "Unreachable" without an address sends the reader to guess which host and
+    port Askwell had in mind. Inference is a socket path rather than a
+    host and port, which is the whole point of it — see docs/decisions.md.
+    """
+    results = {item.name: item for item in await check_components(settings)}
+    for name, item in results.items():
+        assert item.address, f"{name} reports no address"
         assert item.duration_ms >= 0
+        if name != "inference":
+            assert ":" in item.address, f"{name} should be host:port"
+    assert results["inference"].address.endswith(".sock")
 
 
 def test_as_dict_shape_is_stable() -> None:

@@ -106,6 +106,35 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  inference-bridge:
+    image: localhost/askwell-api:dev
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    command: ["askwell-inference-bridge"]
+    environment:
+      ASKWELL_DATABASE_URL: postgresql://askwell_app:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in .env}@127.0.0.1:5432/${POSTGRES_DB:-askwell}
+      ASKWELL_INFERENCE_SOCKET: /run/askwell/inference.sock
+      ASKWELL_INFERENCE_UPSTREAM_PORT: ${ASKWELL_INFERENCE_UPSTREAM_PORT:-8080}
+      ASKWELL_ENVIRONMENT: ${ASKWELL_ENVIRONMENT:-development}
+      ASKWELL_LOG_LEVEL: ${ASKWELL_LOG_LEVEL:-INFO}
+    volumes:
+      - ${ASKWELL_RUN_DIR:-./.run}:/run/askwell:z
+    # The one container with host networking, and it is a real widening of the
+    # claim above rather than a technicality.
+    #
+    # It exists because SELinux refuses `connectto` when a container_t process
+    # dials a socket listened on by an unconfined_t one — the file label is
+    # irrelevant, the listener's process label decides. The host supervisor is
+    # unconfined, so the socket has to be owned by a container.
+    #
+    # Its entire program dials 127.0.0.1 and nothing else, which is a guarantee
+    # you get by reading fifty lines rather than one the network enforces.
+    # Everything that touches the user's material — api, worker, postgres,
+    # redis — stays internal with no route out.
+    network_mode: host
+    restart: unless-stopped
+
   api:
     image: localhost/askwell-api:dev
     build:
@@ -125,6 +154,7 @@ services:
       ASKWELL_PROFILE: ${ASKWELL_PROFILE:-balanced}
       ASKWELL_LOG_LEVEL: ${ASKWELL_LOG_LEVEL:-INFO}
       ASKWELL_WEB_ASSETS_DIR: /app/web/out
+      ASKWELL_INFERENCE_SOCKET: /run/askwell/inference.sock
       # Anything that respects these gets refused *with a log naming it*.
       # Anything that ignores them gets no route at all, because `internal`
       # has none — refused either way, but only the first way is diagnosable,
@@ -136,6 +166,11 @@ services:
       NO_PROXY: localhost,127.0.0.1,postgres,redis,worker
       no_proxy: localhost,127.0.0.1,postgres,redis,worker
     volumes:
+      # The socket the host-side inference supervisor listens on. Inference is
+      # native so GPU acceleration works, and this network has no route off the
+      # machine — so a socket file is what joins them, with no route involved in
+      # either direction. See docs/decisions.md.
+      - ${ASKWELL_RUN_DIR:-./.run}:/run/askwell:z
       # The built interface, read-only: the API serves these files and has no
       # reason to be able to change them.
       - ./web/out:/app/web/out:ro,z
@@ -162,6 +197,7 @@ services:
       # askwell_app, NOT the owner. See deploy/postgres/10-roles.sh.
       ASKWELL_DATABASE_URL: postgresql://askwell_app:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-askwell}
       ASKWELL_REDIS_HOST: redis
+      ASKWELL_INFERENCE_SOCKET: /run/askwell/inference.sock
       ASKWELL_ENVIRONMENT: ${ASKWELL_ENVIRONMENT:-development}
       ASKWELL_LOG_LEVEL: ${ASKWELL_LOG_LEVEL:-INFO}
       HTTP_PROXY: http://egress-proxy:3128
@@ -170,6 +206,8 @@ services:
       https_proxy: http://egress-proxy:3128
       NO_PROXY: localhost,127.0.0.1,postgres,redis
       no_proxy: localhost,127.0.0.1,postgres,redis
+    volumes:
+      - ${ASKWELL_RUN_DIR:-./.run}:/run/askwell:z
     networks: [internal]
     depends_on:
       postgres:
