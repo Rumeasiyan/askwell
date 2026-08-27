@@ -43,6 +43,21 @@ has read it yet" — OCR was given every page a fair try — so it is reported
 the same way every other extractor's C5 case is, via
 `extract_common.EmptyDocument`, not silently parked.
 
+**A PDF pdfium cannot even open is classified before any page is touched.**
+`M1-EXTRACT-VAL-030`: pdfium reports *why* a document failed to load as
+`PdfiumError.err_code`, not just that it did — `FPDF_ERR_PASSWORD` and
+`FPDF_ERR_SECURITY` are an encrypted document, everything else under
+`FPDF_ERR_FORMAT`/`FPDF_ERR_UNKNOWN` is a corrupt one. `work.password` carries
+whatever the user has just supplied for *this* attempt only — it is never
+read from or written to a database row (a stored PDF password needs the
+credential encryption path M4 adds, per this ticket's own assumption) and
+never appears in a log line, because it is never named as a value in one.
+Whether the failure reads as "needs a password" or "wrong password" depends
+on nothing but whether one was supplied for this attempt: pdfium raises the
+identical `FPDF_ERR_PASSWORD` for both, so the distinction the ticket asks
+for ("a wrong password is reported as wrong, with another attempt allowed")
+is made here, not by pdfium.
+
 **Confidence is measured, not judged, here.** `M1-EXTRACT-ING-029`:
 `documents.ocr_confidence` is the mean of every OCR'd page's own score, and
 `document_pages.ocr_confidence` keeps the per-page figures the aggregate was
@@ -62,7 +77,7 @@ from sqlalchemy import text
 
 from askwell import extract_ocr
 from askwell.db.engine import session_scope
-from askwell.extract_common import EmptyDocument
+from askwell.extract_common import CorruptDocument, EmptyDocument, PasswordProtected, WrongPassword
 from askwell.logging import get_logger
 
 if TYPE_CHECKING:
@@ -111,9 +126,34 @@ def _usable(page_text: str) -> bool:
     return (junk / len(stripped)) < JUNK_RATIO_THRESHOLD
 
 
+_PASSWORD_CODES = frozenset({pdfium.raw.FPDF_ERR_PASSWORD, pdfium.raw.FPDF_ERR_SECURITY})
+
+
+def _classify_open_failure(  # type: ignore[no-any-unimported]
+    error: pdfium.PdfiumError, *, filename: str, password_supplied: bool
+) -> Exception:
+    """Turn pdfium's own error code into the exception a person reads.
+
+    Never called with the password's value — only whether one was supplied
+    — so a wrong password cannot leak into the message this becomes.
+    """
+    if error.err_code in _PASSWORD_CODES:
+        if password_supplied:
+            return WrongPassword(f"The password entered for {filename} was incorrect.")
+        return PasswordProtected(
+            f"{filename} is password-protected. Enter its password to continue."
+        )
+    return CorruptDocument(f"{filename} could not be read — its contents look corrupted.")
+
+
 async def run(work: "Work", report: "Report", factory: "async_sessionmaker[AsyncSession]") -> None:
     document_id = str(work.document_id)
-    document = await asyncio.to_thread(pdfium.PdfDocument, work.path)
+    try:
+        document = await asyncio.to_thread(pdfium.PdfDocument, work.path, work.password)
+    except pdfium.PdfiumError as error:
+        raise _classify_open_failure(
+            error, filename=work.filename, password_supplied=work.password is not None
+        ) from error
     try:
         page_count = len(document)
         pages: list[tuple[int, str | None, bool, float | None]] = []

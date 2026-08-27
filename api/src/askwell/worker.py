@@ -58,17 +58,26 @@ async def ping(ctx: dict[str, Any], sent_at: str) -> dict[str, str]:
     return {"pong": sent_at, "worker_version": __version__}
 
 
-async def ingest_document(ctx: dict[str, Any], document_id: str) -> str:
+async def ingest_document(
+    ctx: dict[str, Any], document_id: str, password: str | None = None
+) -> str:
     """Take one document as far through the pipeline as exists.
 
     Thin on purpose. Everything about what ingestion *is* lives in
     `askwell.ingest`; this is the seam where the queue hands over, and the
     reason it is separate is that the pipeline has to be testable without a
     Redis, a worker process and a job serialiser in the way.
+
+    `password` exists for a single retry a person asked for from the
+    password prompt (`M1-EXTRACT-VAL-030`) — arq's job payload is the only
+    place it lives, and it is never logged: this function never names it as a
+    field on its own.
     """
     from askwell import ingest
 
-    return await ingest.process(ctx["sessions"], ctx["settings"], uuid.UUID(document_id))
+    return await ingest.process(
+        ctx["sessions"], ctx["settings"], uuid.UUID(document_id), password=password
+    )
 
 
 async def reconcile_queue(ctx: dict[str, Any]) -> int:

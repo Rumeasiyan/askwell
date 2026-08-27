@@ -56,11 +56,12 @@ import asyncio
 import json
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -68,6 +69,7 @@ from askwell import extract
 from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
+from askwell.extract_common import PasswordProtected, WrongPassword
 from askwell.logging import get_logger
 
 log = get_logger(__name__)
@@ -126,6 +128,11 @@ class Work:
     filename: str
     mime: str | None
     sha256: str
+    # Supplied for one retry attempt only, from a request the user made just
+    # now — never read from or written to a database row. `M1-EXTRACT-VAL-030`:
+    # storing a document password needs the credential encryption path M4
+    # adds, so until then it exists only for the lifetime of this attempt.
+    password: str | None = None
 
 
 Report = Callable[[int, int], Awaitable[None]]
@@ -206,6 +213,7 @@ async def dispatch(
     attempt: int = 0,
     delay_seconds: float | None = None,
     unique: bool = True,
+    password: str | None = None,
 ) -> int:
     """Ask a worker to pick these up now, rather than at the next reconcile.
 
@@ -224,14 +232,18 @@ async def dispatch(
     has seen recently, and a retry resets the attempt count, so the id it would
     otherwise reuse is exactly the one the first attempt already burned — the
     retry would be accepted by the API and silently dropped by the queue.
+
+    `password` rides the Redis job payload — the same transport every other
+    job argument already uses — and never touches Postgres. `M1-EXTRACT-VAL-030`:
+    a document password is not stored anywhere unless the user explicitly asks,
+    and until the credential encryption path (M4) exists that ask is not even
+    offered, so this is a one-attempt value only.
     """
     if not document_ids:
         return 0
 
     # Deferred: `askwell.worker` imports this module for its job table, so a
     # module-level import here would be a cycle.
-    from dataclasses import replace
-
     from arq import create_pool
     from redis.exceptions import RedisError
 
@@ -255,6 +267,7 @@ async def dispatch(
             job = await pool.enqueue_job(
                 "ingest_document",
                 str(document_id),
+                password,
                 _job_id=f"ingest:{document_id}:{attempt}" if unique else None,
                 _defer_by=delay_seconds,
             )
@@ -393,7 +406,16 @@ async def _fail(
     survive Redis being flushed.
     """
     reason = f"{type(error).__name__}: {error}"
-    again = attempts < MAX_ATTEMPTS
+    # A password failure is terminal until the user does something about it.
+    # The automatic retry carries no password — `dispatch` below cannot forward
+    # one, because the password was never stored — so retrying is guaranteed to
+    # fail, and it fails *differently*: a wrong password becomes
+    # `PasswordProtected` on the way through, overwriting "the password entered
+    # was incorrect" with the generic "this file is password-protected". The
+    # user is then told to supply a password they just supplied, and the one
+    # sentence that said what was wrong is gone. Waiting for them is not a
+    # missed retry; it is the only thing that can possibly change the outcome.
+    again = attempts < MAX_ATTEMPTS and not isinstance(error, (PasswordProtected, WrongPassword))
 
     async with session_scope(factory) as session:
         await session.execute(
@@ -474,11 +496,17 @@ async def process(
     document_id: uuid.UUID,
     *,
     clock: Callable[[], float] | None = None,
+    password: str | None = None,
 ) -> str:
     """Take one document through as much of the pipeline as exists.
 
     Returns what happened, as a word, because a caller that awaited the job
     wants to know and because it is what the worker log carries.
+
+    `password` is never read from `_claim`'s row — it exists only for a
+    single attempt somebody just asked for (`POST
+    /ingest/documents/{id}/password`), so it is applied to `work` here rather
+    than being a column `_claim` could load on the next ordinary retry.
     """
     tick = clock if clock is not None else asyncio.get_running_loop().time
 
@@ -488,6 +516,8 @@ async def process(
         return "unclaimable"
 
     work, attempts = claimed
+    if password is not None:
+        work = replace(work, password=password)
     log.info(
         "ingest_started",
         document_id=str(document_id),
@@ -1124,6 +1154,18 @@ async def retry(session: AsyncSession, document_id: uuid.UUID, settings: Setting
     return Retried(retried=True, state="queued", source_id=row[0])
 
 
+class PasswordRequest(BaseModel):
+    """One password, for one retry of one document.
+
+    Not remembered anywhere: `M1-EXTRACT-VAL-030`'s own assumption is that
+    storage is not offered until the credential encryption path (M4) exists,
+    so this model carries nothing but the value itself and nowhere for an
+    opt-in flag to go yet.
+    """
+
+    password: str = Field(min_length=1, max_length=1024)
+
+
 def register_ingest(
     app: FastAPI, settings: Settings, factory: async_sessionmaker[AsyncSession]
 ) -> None:
@@ -1213,4 +1255,35 @@ def register_ingest(
         # pressing a button after fixing whatever was wrong, and a retry that
         # is deduplicated against the attempt it is retrying does nothing.
         await dispatch(settings, [document_id], unique=False)
+        return JSONResponse({"document_id": str(document_id), "state": "queued"}, status_code=202)
+
+    @app.post("/ingest/documents/{document_id}/password")
+    async def ingest_password(document_id: uuid.UUID, body: PasswordRequest) -> JSONResponse:
+        """Retry a failed document with a password, for exactly this attempt.
+
+        Reuses `retry`'s own reset — attempts forgiven, the same as an
+        ordinary retry — because a wrong password is not a defect in the
+        file that should keep counting against `MAX_ATTEMPTS`; it is a person
+        about to try again with the right one.
+        """
+        async with session_scope(factory) as db:
+            outcome = await retry(db, document_id, settings)
+
+        if outcome.state is None:
+            return JSONResponse(
+                {"error": "Askwell has no ingestion job for that document."}, status_code=404
+            )
+        if not outcome.retried:
+            return JSONResponse(
+                {
+                    "error": (
+                        f"That document is not failed — it is {outcome.state}. "
+                        "A password can only be supplied for a document that failed to open."
+                    ),
+                    "state": outcome.state,
+                },
+                status_code=409,
+            )
+
+        await dispatch(settings, [document_id], unique=False, password=body.password)
         return JSONResponse({"document_id": str(document_id), "state": "queued"}, status_code=202)

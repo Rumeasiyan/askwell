@@ -23,6 +23,7 @@ Filed as a follow-up: issue #121.
 from typing import TYPE_CHECKING
 
 from askwell import extract_docx, extract_pdf, extract_pptx, extract_text, extract_xlsx
+from askwell.extract_common import check_readable
 from askwell.logging import get_logger
 
 if TYPE_CHECKING:
@@ -59,6 +60,7 @@ class UnsupportedForExtraction(Exception):
 
 
 async def run(work: "Work", report: "Report", factory: "async_sessionmaker[AsyncSession]") -> None:
+    check_readable(work)
     if work.mime == _PDF:
         await extract_pdf.run(work, report, factory)
     elif work.mime == _DOCX:

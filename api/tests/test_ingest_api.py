@@ -62,6 +62,25 @@ def test_retrying_requires_a_session(client: TestClient) -> None:
     assert response.status_code == 401
 
 
+def test_submitting_a_password_requires_a_session(client: TestClient) -> None:
+    with client:
+        response = client.post(
+            "/ingest/documents/00000000-0000-0000-0000-000000000000/password",
+            json={"password": "whatever"},
+        )
+    assert response.status_code == 401
+
+
+def test_an_empty_password_is_a_validation_error(client: TestClient) -> None:
+    with client:
+        with_session(client)
+        response = client.post(
+            "/ingest/documents/00000000-0000-0000-0000-000000000000/password",
+            json={"password": ""},
+        )
+    assert response.status_code == 422
+
+
 def test_a_malformed_document_id_is_a_validation_error_not_a_route_miss(
     client: TestClient,
 ) -> None:
@@ -141,6 +160,18 @@ def test_progress_is_readable_without_holding_the_request_that_started_the_work(
 
         missing = client.post("/ingest/documents/00000000-0000-0000-0000-000000000000/retry")
         assert missing.status_code == 404
+
+        refused_password = client.post(
+            f"/ingest/documents/{document_id}/password", json={"password": "letmein"}
+        )
+        assert refused_password.status_code == 409
+        assert refused_password.json()["state"] == "queued"
+
+        missing_password = client.post(
+            "/ingest/documents/00000000-0000-0000-0000-000000000000/password",
+            json={"password": "letmein"},
+        )
+        assert missing_password.status_code == 404
 
     with psycopg.connect(database_url, autocommit=True) as clean:
         clean.execute(f"TRUNCATE {TABLES} CASCADE")
