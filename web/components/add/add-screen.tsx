@@ -11,6 +11,7 @@ import {
   refusalLine,
 } from "@/lib/add-source";
 import { HOST_GIVES_PATHS, fromFiles } from "@/lib/selection";
+import { type Recorded as RecordedOutcome, duplicateLine, withOutcome } from "@/lib/sources";
 import { type Batch, type Item, laterIn, refusedIn, supportedIn, useAdd } from "./add-state";
 
 /**
@@ -231,11 +232,30 @@ function BatchCard({ batch }: { batch: Batch }) {
 
       {batch.phase === "locating" ? <Locate batch={batch} /> : null}
 
-      {batch.phase === "queued" ? (
+      {batch.phase === "recording" ? (
+        <p style={{ fontSize: "var(--t-meta)", lineHeight: "var(--t-meta-lh)" }}>
+          Recording {plural(supported.length, "file", "files")} from <code>{batch.folder}</code>{" "}
+          — Askwell is reading each one to work out what it is and whether it already has it.
+          Nothing is being copied.
+        </p>
+      ) : null}
+
+      {batch.recorded === null ? null : <Recorded recorded={batch.recorded} />}
+
+      {/* A batch that was entirely files Askwell already had is not "0 files
+          queued" — it is a drop where nothing needed doing, and the duplicate
+          block above has already said why. Saying both would read as a
+          failure. */}
+      {batch.phase === "queued" && (batch.recorded?.added ?? supported.length) === 0 ? (
+        <Note tone="muted" heading="Nothing new here">
+          Askwell already had everything in this drop. Nothing was added, nothing was changed
+          on disk, and your library is unchanged.
+        </Note>
+      ) : batch.phase === "queued" ? (
         <Note tone="provenance" heading="Queued">
-          {plural(supported.length, "file is", "files are")} queued from{" "}
-          <code>{batch.folder}</code>. Reading and indexing them is the next piece of work —
-          it arrives with background ingestion, and nothing in your material is searchable
+          {plural(batch.recorded?.added ?? supported.length, "file is", "files are")} queued
+          from <code>{batch.folder}</code>. Reading and indexing them is the next piece of work
+          — it arrives with background ingestion, and nothing in your material is searchable
           until it does. Nothing has been copied.
         </Note>
       ) : null}
@@ -266,6 +286,7 @@ function BatchCard({ batch }: { batch: Batch }) {
 const PHASE_LABELS: Record<Batch["phase"], string> = {
   detecting: "Detecting",
   locating: "Where are these?",
+  recording: "Recording",
   queued: "Queued",
   refused: "Refused",
   later: "Arrives later",
@@ -286,6 +307,62 @@ function summarise(items: Item[]): string {
     counts.set(format, (counts.get(format) ?? 0) + 1);
   }
   return [...counts.entries()].map(([format, count]) => `${count} × ${format}`).join(" · ");
+}
+
+/**
+ * What the API actually recorded, which is not always what the screen expected.
+ *
+ * The browser decided what each file was from its first 4 KB; the server opened
+ * the real file and decided again, and where the two differ **this** is the true
+ * one. Rendering it separately rather than folding it back into the detection
+ * lists is deliberate: "Askwell thought this was a PDF and it is not" and
+ * "Askwell already has this" are different sentences, and merging them would
+ * hide the second, which is the one this ticket exists to say.
+ */
+function Recorded({ recorded }: { recorded: RecordedOutcome }) {
+  const duplicates = withOutcome(recorded, "duplicate");
+  const refused = withOutcome(recorded, "refused");
+
+  return (
+    <>
+      {duplicates.length > 0 ? (
+        <Note
+          tone="inferred"
+          heading={`${plural(duplicates.length, "file", "files")} Askwell already had`}
+        >
+          {duplicates.slice(0, 5).map((file) => (
+            <span key={file.path} className="block">
+              {duplicateLine(file)}
+            </span>
+          ))}
+          {duplicates.length > 5 ? (
+            <span className="block">and {duplicates.length - 5} more.</span>
+          ) : null}
+          <span className="block mt-2">
+            Recognised by their contents, not their names — so the same document filed under
+            three names is indexed once, and an answer citing it names one page rather than
+            three. Nothing on disk was changed or removed.
+          </span>
+        </Note>
+      ) : null}
+
+      {refused.length > 0 ? (
+        <Note
+          tone="alarm"
+          heading={`${plural(refused.length, "file", "files")} Askwell could not record`}
+        >
+          {refused.slice(0, 5).map((file) => (
+            <span key={file.path} className="block">
+              {file.relative_path} — {file.reason ?? "Askwell could not read this file."}
+            </span>
+          ))}
+          {refused.length > 5 ? (
+            <span className="block">and {refused.length - 5} more.</span>
+          ) : null}
+        </Note>
+      ) : null}
+    </>
+  );
 }
 
 function Mismatches({ items }: { items: Item[] }) {

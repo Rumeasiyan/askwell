@@ -15,6 +15,7 @@ import {
 import { type Detection, detect } from "@/lib/add-source";
 import { type CoveringPrompt, askCovering, nominate } from "@/lib/roots";
 import type { Picked, Selection } from "@/lib/selection";
+import { type Recorded, recordSource } from "@/lib/sources";
 
 /**
  * The add queue, held once for the whole application.
@@ -32,12 +33,12 @@ import type { Picked, Selection } from "@/lib/selection";
  *
  * ## Where this stops, today
  *
- * A batch ends at `queued`. Nothing is extracted, embedded or made searchable:
- * the records and the background ingestion are `M1-ADD-BE-023` and
- * `M1-ADD-ING-025`, and this ticket is the screen. The screen says exactly
- * that rather than showing a spinner that will never finish, because a
- * progress bar that does not move is a bug report, and an honest sentence is
- * not.
+ * A batch ends at `queued`, and `queued` now means something durable: a source
+ * row and a document row per file, recorded by `POST /sources`
+ * (`M1-ADD-BE-023`). Nothing is extracted, embedded or searchable — that is
+ * background ingestion, `M1-ADD-ING-025` — and the screen says exactly that
+ * rather than showing a spinner that will never finish, because a progress bar
+ * that does not move is a bug report and an honest sentence is not.
  */
 
 /**
@@ -50,7 +51,14 @@ import type { Picked, Selection } from "@/lib/selection";
  * "Refused" tells somebody Askwell will not handle their material, which is
  * the sentence this ticket exists to stop Askwell saying wrongly.
  */
-export type Phase = "detecting" | "locating" | "queued" | "refused" | "later" | "empty";
+export type Phase =
+  | "detecting"
+  | "locating"
+  | "recording"
+  | "queued"
+  | "refused"
+  | "later"
+  | "empty";
 
 export interface Item {
   id: string;
@@ -73,6 +81,8 @@ export interface Batch {
   folder: string | null;
   /** The API's question when no nominated folder covers them. */
   prompt: CoveringPrompt | null;
+  /** What the API actually recorded. Null until it has answered. */
+  recorded: Recorded | null;
   failure: string | null;
 }
 
@@ -238,6 +248,7 @@ export function AddProvider({ children }: { children: ReactNode }) {
       bytes: selection.files.reduce((total, file) => total + file.size, 0),
       folder: null,
       prompt: null,
+      recorded: null,
       failure: null,
     };
     setBatches((queue) => [...queue, batch]);
@@ -332,12 +343,14 @@ export function AddProvider({ children }: { children: ReactNode }) {
     async (id: string, folder: string): Promise<void> => {
       const batch = current.current.find((one) => one.id === id);
       if (batch === undefined) return;
-      const first = supportedIn(batch)[0];
+      const supported = supportedIn(batch);
+      const first = supported[0];
       if (first === undefined) return;
 
-      // Counted once. Re-checking a queued batch — which happens when the user
-      // corrects the folder — must not add its files to the counter twice.
-      const alreadyCounted = batch.phase === "queued";
+      // Recorded once. Re-checking a batch that has already been recorded —
+      // which happens when the user corrects the folder — must not create the
+      // documents a second time.
+      if (batch.phase === "queued") return;
       const base = folder.trim().replace(/\/+$/, "");
       // One question, not one per file: a root covers a tree, so if it permits
       // the first file under this folder it permits all of them. Asking once
@@ -355,16 +368,42 @@ export function AddProvider({ children }: { children: ReactNode }) {
                   folder: base,
                   failure: null,
                   prompt: answer.covered ? null : answer.prompt,
-                  phase: answer.covered ? "queued" : "locating",
+                  phase: answer.covered ? "recording" : "locating",
                 },
           ),
         );
-        if (answer.covered && !alreadyCounted) countUp(supportedIn(batch).length);
+        if (!answer.covered) return;
+
+        // The files are named, never sent. Askwell opens them where they are —
+        // this request carries a folder and a list of relative paths, and if it
+        // ever carries bytes it has become an upload, which is a different
+        // product from the one this screen promises.
+        const recorded = await recordSource(
+          base,
+          supported.map((item) => item.relativePath),
+        );
+        setBatches((queue) =>
+          queue.map((one) =>
+            one.id !== id ? one : { ...one, recorded, phase: "queued", failure: null },
+          ),
+        );
+        // The server's count, not the screen's. A file the server recognised as
+        // one it already has was not added, and counting it would make the
+        // local tally drift upwards every time somebody re-added a folder.
+        countUp(recorded.added);
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Askwell could not check that folder.";
         setBatches((queue) =>
-          queue.map((one) => (one.id !== id ? one : { ...one, folder: base, failure: message })),
+          queue.map((one) =>
+            one.id !== id
+              ? one
+              : // Back to `locating`, not stuck on `recording`: the folder field
+                // has to still be there for someone whose first answer was
+                // wrong, and a spinner with no way out is the state this screen
+                // is written to avoid.
+                { ...one, folder: base, phase: "locating", failure: message },
+          ),
         );
       }
     },

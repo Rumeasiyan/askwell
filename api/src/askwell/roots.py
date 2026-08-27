@@ -539,16 +539,22 @@ async def covering(session: AsyncSession, candidate: str) -> Root | None:
     path, real = resolved
 
     candidates = await active(session)
-    index = await asyncio.to_thread(_first_covering, [r.path for r in candidates], path, real)
+    index = await asyncio.to_thread(first_covering, [r.path for r in candidates], path, real)
     return candidates[index] if index is not None else None
 
 
-def _first_covering(root_paths: list[str], path: str, real: str) -> int | None:
+def first_covering(root_paths: list[str], path: str, real: str) -> int | None:
     """Which root covers this path, by index. Synchronous, and deliberately so.
 
     Both `realpath` and the comparison touch the filesystem — a syscall per
     path component — so this is called through a thread rather than run on the
     event loop, for the same reason `probe` is.
+
+    Public because `askwell.sources` checks a whole batch against roots that
+    were read once. Going through `covering()` per file would re-read the
+    registry five thousand times to learn one fact that cannot change during a
+    request — and the check itself must not be copied, because a second copy is
+    a second place for the symlink half to be left out.
     """
     for index, root_path in enumerate(root_paths):
         # The root's real path, not its stored one, on the right-hand side.

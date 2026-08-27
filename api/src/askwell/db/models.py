@@ -47,8 +47,13 @@ from askwell.db.base import Base, created_at, uuid_pk
 # just as strict and the diff is readable.
 
 SOURCE_KINDS = ("file", "csv", "dump", "connection")
-SOURCE_STATUSES = ("indexing", "ready", "attention", "deleted")
-DOCUMENT_STATUSES = ("indexing", "ready", "attention", "deleted")
+# `queued` is the state a row is created in: recorded, hashed, and waiting for
+# an ingester that has not started on it. It is separate from `indexing`
+# because they are different answers to "what is happening to my file right
+# now" — one of them is "nothing yet, and here is what has to arrive first",
+# and rendering that as *Indexing* is a progress bar that does not move.
+SOURCE_STATUSES = ("queued", "indexing", "ready", "attention", "deleted")
+DOCUMENT_STATUSES = ("queued", "indexing", "ready", "attention", "deleted")
 NOTE_ORIGINS = ("user", "inferred")
 MEMORY_ORIGINS = ("clarification", "correction", "manual")
 CLARIFICATION_STATUSES = ("pending", "answered", "skipped", "dismissed")
@@ -172,9 +177,7 @@ class Source(Base):
     # sandbox Postgres, one database per source. This names that database.
     sandbox_db: Mapped[str | None] = mapped_column(Text)
 
-    status: Mapped[str] = mapped_column(
-        String(32), nullable=False, server_default=text("'indexing'")
-    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default=text("'queued'"))
     # `ux/library.md`'s single "needs attention" expands to a specific cause and
     # a specific fix, which needs somewhere to put the cause.
     last_error: Mapped[str | None] = mapped_column(Text)
@@ -190,6 +193,28 @@ class Document(Base):
         _one_of("status", DOCUMENT_STATUSES, "status"),
         Index("ix_documents_source_id", "source_id"),
         Index("ix_documents_sha256", "sha256"),
+        # One live version of a given content, per source. Created by the v1
+        # migration in raw SQL and declared here so the two agree: without this
+        # line the index exists in every database and in no model, and the next
+        # `--autogenerate` run proposes *dropping* it.
+        #
+        # The application also checks — `askwell.sources.add` looks the hash up
+        # across every live document, not just this source's — and the two are
+        # not the same check. The code path recognises a duplicate so the user
+        # is told which copy is indexed; the index makes storing one impossible
+        # when a later code path forgets to ask. A rule with one enforcement
+        # point lapses silently, because nothing looks wrong about two rows.
+        #
+        # Partial, over the live rows only. A file deleted and added again is an
+        # ordinary sequence, and so is a superseded version — a plain unique
+        # constraint would refuse both and blame the user for the earlier step.
+        Index(
+            "uq_documents_live_source_id_sha256",
+            "source_id",
+            "sha256",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL AND superseded_by IS NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = uuid_pk()
@@ -223,9 +248,7 @@ class Document(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     deleted_reason: Mapped[str | None] = mapped_column(Text)
 
-    status: Mapped[str] = mapped_column(
-        String(32), nullable=False, server_default=text("'indexing'")
-    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default=text("'queued'"))
 
     # A poor scan is flagged in the library, shown beside the image in the
     # source viewer, and can raise a clarification.
