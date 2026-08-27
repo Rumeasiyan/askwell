@@ -21,6 +21,7 @@
 #   scripts/dev.sh db <args>    alembic against the running stack
 #                               (e.g. `db upgrade head`, `db revision --autogenerate -m "..."`)
 #   scripts/dev.sh psql         a psql shell on the stack's database
+#   scripts/dev.sh test-db      the database-backed tests, against the stack
 #   scripts/dev.sh build       rebuild the image
 #   scripts/dev.sh shell       an interactive shell in the image
 #   scripts/dev.sh run ...     any command inside the image
@@ -53,6 +54,12 @@ _env_value() {
 }
 _db_user() { _env_value POSTGRES_USER askwell; }
 _db_name() { _env_value POSTGRES_DB askwell; }
+_app_password() {
+    local value
+    value="$(_env_value POSTGRES_APP_PASSWORD "")"
+    [ -n "$value" ] || die "POSTGRES_APP_PASSWORD is not set in .env. Copy .env.example and set it."
+    printf '%s' "$value"
+}
 _db_password() {
     local value
     value="$(_env_value POSTGRES_PASSWORD "")"
@@ -186,6 +193,21 @@ case "$cmd" in
             -v "$REPO_ROOT":/app:Z \
             -w /app/api \
             "$IMAGE" alembic "$@"
+        ;;
+
+    test-db)
+        # The invariants assert what the database refuses, so they need a real
+        # one. They are deselected from `test` because that runs with no
+        # network; here they are selected explicitly and fail — rather than
+        # skip — if the database is not there.
+        podman image exists "$IMAGE" || build_image
+        podman run --rm "${TTY_FLAGS[@]}" \
+            --network "${ASKWELL_COMPOSE_NETWORK:-askwell_default}" \
+            -e TEST_DATABASE_URL="postgresql://$(_db_user):$(_db_password)@postgres:5432/$(_db_name)" \
+            -e TEST_APP_DATABASE_URL="postgresql://askwell_app:$(_app_password)@postgres:5432/$(_db_name)" \
+            -v "$REPO_ROOT":/app:Z \
+            -w /app/api \
+            "$IMAGE" pytest -m requires_db "$@"
         ;;
 
     psql)

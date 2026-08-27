@@ -129,6 +129,9 @@ Everything runs through one entry point:
 | Format | `scripts/dev.sh format` / `scripts/dev.sh fmt-check` | **Verified** |
 | Typecheck (`mypy --strict`) | `scripts/dev.sh typecheck` | **Verified** |
 | Python tests | `scripts/dev.sh test` | **Verified** |
+| Database-backed tests | `scripts/dev.sh test-db` (needs the stack up) | **Verified** |
+| Alembic against the stack | `scripts/dev.sh db upgrade head` | **Verified** |
+| A psql shell | `scripts/dev.sh psql` | **Verified** |
 | Rebuild the image | `scripts/dev.sh build` | **Verified** |
 | Anything else inside the image | `scripts/dev.sh run <cmd>` / `scripts/dev.sh shell` | **Verified** |
 | Regenerate the lockfile | `scripts/dev.sh lock` | **Verified** |
@@ -137,7 +140,7 @@ Everything runs through one entry point:
 | Install frontend dependencies | `scripts/dev.sh web-install` | **Verified** |
 | Anything else in the frontend image | `scripts/dev.sh web-run <cmd>` / `web-shell` | **Verified** |
 | Build-runner guard tests | `bash scripts/guards.test.sh` | **Verified** |
-| Bring up the stack | `podman compose up -d` | M0-STACK-DEPLOY-009 |
+| Bring up the stack | `podman compose up -d` | **Verified** |
 | Eval suite | `python eval/bench.py --suite <name>` | M1 |
 
 Two things about `scripts/dev.sh` that are deliberate:

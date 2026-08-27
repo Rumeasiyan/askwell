@@ -75,5 +75,11 @@ warn_unreachable = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-addopts = "-q --strict-markers --strict-config"
+# Database-backed tests are deselected by default because the default run has
+# no network at all (C1, see scripts/dev.sh). They are not skipped silently:
+# `scripts/dev.sh test-db` selects them and fails if the database is not there.
+addopts = "-q --strict-markers --strict-config -m 'not requires_db'"
 asyncio_mode = "auto"
+markers = [
+    "requires_db: needs a live Postgres with the migration applied. Run with scripts/dev.sh test-db.",
+]

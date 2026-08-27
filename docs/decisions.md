@@ -22,6 +22,24 @@ Template:
 
 ---
 
+## 2026-08-27 — Askwell does not own its own tables
+
+**Decision:** The database has three roles. `askwell` owns the schema and runs migrations. `askwell_app` is what the application connects as, owns nothing, and has no `UPDATE`, `DELETE` or `TRUNCATE` grant on either audit table. `askwell_readonly` is independent of both and can only read. Role creation and passwords live in the Postgres initialisation hook (`deploy/postgres/10-roles.sh`); the grants live in the migration.
+
+**Why:** C6 says the audit log is append-only and tamper-evident, and the enforcement point named for it has always been "no `UPDATE`/`DELETE` grant for the app role". The obvious implementation — connect as the database user Compose already creates, then `REVOKE UPDATE ON audit_decisions` — does nothing whatsoever, because **a table owner bypasses its own grants**. The `REVOKE` succeeds. The privilege listing afterwards looks correct. And the application can still rewrite every audit record it has ever written. It would have shipped looking exactly like a working guarantee, and the only way to find out otherwise is to try it as the role that actually runs.
+
+So the constraint forces a second login role, which forces a second password, which is why the split exists: a password cannot go in a migration (C8), and grants belong with the schema they apply to. Both halves are idempotent, and the migration creates either role as a passwordless fallback so a database that missed the hook still gets a correct permission model — it just cannot be logged into, which is a loud failure rather than a quiet one.
+
+`askwell_readonly` is created now and unused until M4. It is C2's second line of defence: model-generated SQL is parsed and rejected by `sqlglot` **and** executed as a role that physically cannot write. One check is not a guarantee, and the user's real database is on the other side of it.
+
+**Rejected:** row-level security on the audit tables — the owner bypasses that too, and it is slower and harder to reason about. A `BEFORE UPDATE` trigger raising an exception — a trigger is application logic living in the database, and anyone with the owner's connection can drop it; it also cannot be described honestly as "no grant exists". Doing nothing and enforcing append-only in Python — that is precisely the thing C6 exists to not rely on.
+
+**Consequences:** `.env` now carries three passwords rather than one. Anyone pointing Askwell at their own existing Postgres must create the two roles themselves; the migration will make them, but without a login. The initialisation hook only runs on an empty data directory, so an existing development volume needs `podman compose down -v` once. Reversing this means accepting that the audit log's guarantee is advisory.
+
+**Refs:** [#65](https://github.com/Rumeasiyan/askwell/issues/65), `docs/architecture.md` §7, `deploy/postgres/10-roles.sh`, the `_grant_privileges` function in `api/src/askwell/db/migrations/versions/20260827_a8208099ef38_v1_schema.py`, `api/tests/test_invariants.py`.
+
+---
+
 ## 2026-08-26 — The toolchain lives in the image; the lockfile is the pin
 
 **Decision:** The API image pins Python 3.12 and carries `uv`, `ruff`, `mypy` and `pytest` inside it. Nothing but Podman is installed on the host, and the host's Python is never invoked. Dependency bounds live in `api/pyproject.toml`; the exact versions live in `api/uv.lock`, and the image installs with `uv sync --locked`. The package version is read from the root `VERSION` file at build time by `api/hatch_build.py` and at run time by `askwell._version`, so it is never typed twice.

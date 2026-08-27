@@ -32,8 +32,16 @@ services:
       # volume can also hold anything else the database needs later without
       # Postgres refusing to initialise into a non-empty directory.
       PGDATA: /var/lib/postgresql/data/pgdata
+      # Read by the initialisation hook below, not by Postgres itself.
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:?POSTGRES_APP_PASSWORD is not set. Copy .env.example to .env and set it (C8).}
+      POSTGRES_READONLY_PASSWORD: ${POSTGRES_READONLY_PASSWORD:-${POSTGRES_APP_PASSWORD}}
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      # Runs once, on an empty data directory, and creates the two non-owner
+      # roles. Askwell must not connect as the table owner: an owner bypasses
+      # its own grants, which would leave the audit log's append-only guarantee
+      # looking correct and doing nothing (C6).
+      - ./deploy/postgres:/docker-entrypoint-initdb.d:ro,z
     healthcheck:
       # -U and -d matter: the default `pg_isready` asks about a database named
       # after the current user, which reports healthy while the database the
@@ -78,7 +86,8 @@ services:
       dockerfile: api/Dockerfile
     command: ["askwell-api"]
     environment:
-      ASKWELL_DATABASE_URL: postgresql://${POSTGRES_USER:-askwell}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-askwell}
+      # askwell_app, NOT the owner. See deploy/postgres/10-roles.sh.
+      ASKWELL_DATABASE_URL: postgresql://askwell_app:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-askwell}
       ASKWELL_REDIS_HOST: redis
       # Inside the container the API must listen on all interfaces to be
       # reachable at all. What keeps it off the network is the port publishing
@@ -112,7 +121,8 @@ services:
       dockerfile: api/Dockerfile
     command: ["askwell-worker"]
     environment:
-      ASKWELL_DATABASE_URL: postgresql://${POSTGRES_USER:-askwell}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-askwell}
+      # askwell_app, NOT the owner. See deploy/postgres/10-roles.sh.
+      ASKWELL_DATABASE_URL: postgresql://askwell_app:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-askwell}
       ASKWELL_REDIS_HOST: redis
       ASKWELL_ENVIRONMENT: ${ASKWELL_ENVIRONMENT:-development}
       ASKWELL_LOG_LEVEL: ${ASKWELL_LOG_LEVEL:-INFO}
