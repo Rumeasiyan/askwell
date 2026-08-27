@@ -4,6 +4,19 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.1.11 — 2026-08-27
+
+`M0-FOUND-SEC-007`. The example environment file, and the check that keeps it true.
+
+### Added
+
+- A test that fails when a variable is read by the application, or referenced by `compose.yaml`, and is missing from `.env.example` — and in the other direction, when the file lists something nothing reads.
+- Ignore rules for real environment files in every shape people write them, and for generated credential material that does not exist yet. The alternative is adding the rule in the same commit that first writes a key, which is the commit most likely to be in a hurry.
+
+### Changed
+
+- `.env.example` now lists all 23 variables with what each is for. It listed five.
+
 ## 0.1.10 — 2026-08-27
 
 `M0-FOUND-DEPLOY-006`. Continuous integration.

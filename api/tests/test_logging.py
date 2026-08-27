@@ -98,3 +98,21 @@ def test_stdlib_logging_is_routed_to_the_same_stream() -> None:
     """uvicorn logs through stdlib. Two formats in one stream is not observability."""
     configure_logging(level="WARNING")
     assert logging.getLogger().level == logging.WARNING
+
+
+def test_a_path_is_not_redacted() -> None:
+    """A path is environment-specific, not secret, and hiding it costs the user.
+
+    "The interface has not been built" is useless without saying where Askwell
+    looked. Redaction that fires on anything environment-specific ends up
+    hiding the half of the message that makes it actionable.
+    """
+    result = redact_secrets(
+        None, "info", {"event": "interface_not_built", "directory": "/app/web/out"}
+    )
+    assert result["directory"] == "/app/web/out"
+
+
+def test_a_key_that_merely_sounds_technical_is_not_redacted() -> None:
+    result = redact_secrets(None, "info", {"event": "x", "keyboard_shortcut": "ctrl+k"})
+    assert result["keyboard_shortcut"] == "ctrl+k"
