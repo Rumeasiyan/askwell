@@ -42,6 +42,16 @@ document has something to say when it has nothing. This is no longer "nobody
 has read it yet" — OCR was given every page a fair try — so it is reported
 the same way every other extractor's C5 case is, via
 `extract_common.EmptyDocument`, not silently parked.
+
+**Confidence is measured, not judged, here.** `M1-EXTRACT-ING-029`:
+`documents.ocr_confidence` is the mean of every OCR'd page's own score, and
+`document_pages.ocr_confidence` keeps the per-page figures the aggregate was
+built from — a text-layer page carries neither, because it was never asked
+Tesseract's opinion. Whether that aggregate counts as *low* is a threshold
+read from configuration, applied where a source's status is computed
+(`askwell.ingest`), not decided in this module — a document that never used
+OCR gets no confidence at all, which is the ticket's own edge case ("no flag,
+not a false one").
 """
 
 import asyncio
@@ -106,15 +116,15 @@ async def run(work: "Work", report: "Report", factory: "async_sessionmaker[Async
     document = await asyncio.to_thread(pdfium.PdfDocument, work.path)
     try:
         page_count = len(document)
-        pages: list[tuple[int, str | None, bool]] = []
+        pages: list[tuple[int, str | None, bool, float | None]] = []
         ocr_used = False
 
         for index in range(page_count):
             raw = await asyncio.to_thread(_page_text, document, index)
             if _usable(raw):
-                pages.append((index + 1, raw, True))
+                pages.append((index + 1, raw, True, None))
             else:
-                ocr_text, has_text, _language = await asyncio.to_thread(
+                ocr_text, has_text, _language, confidence = await asyncio.to_thread(
                     extract_ocr.ocr_page,
                     document,
                     index,
@@ -122,12 +132,12 @@ async def run(work: "Work", report: "Report", factory: "async_sessionmaker[Async
                     filename=work.filename,
                 )
                 ocr_used = True
-                pages.append((index + 1, ocr_text, has_text))
+                pages.append((index + 1, ocr_text, has_text, confidence))
             await report(index + 1, page_count)
     finally:
         document.close()
 
-    usable_pages = sum(1 for _, _, has_text in pages if has_text)
+    usable_pages = sum(1 for _, _, has_text, _ in pages if has_text)
 
     if usable_pages == 0:
         raise EmptyDocument(
@@ -135,27 +145,45 @@ async def run(work: "Work", report: "Report", factory: "async_sessionmaker[Async
             "It may be a set of blank pages or photographs with no text."
         )
 
+    # The document-level figure the ticket asks for: the mean of every page
+    # Tesseract actually scored. `None` — not zero — when OCR ran but scored
+    # nothing, and when OCR never ran at all: both are "no OCR confidence
+    # exists here", not "OCR confidence is zero", which would read as the
+    # worst possible scan rather than as not applicable.
+    page_confidences = [confidence for _, _, _, confidence in pages if confidence is not None]
+    document_confidence = (
+        sum(page_confidences) / len(page_confidences) if page_confidences else None
+    )
+
     async with session_scope(factory) as session:
         await session.execute(
             text(
                 "UPDATE documents SET page_count = :page_count, anchor_kind = 'page', "
-                "ocr_derived = :ocr_derived WHERE id = :id"
+                "ocr_derived = :ocr_derived, ocr_confidence = :ocr_confidence WHERE id = :id"
             ),
-            {"page_count": page_count, "ocr_derived": ocr_used, "id": work.document_id},
+            {
+                "page_count": page_count,
+                "ocr_derived": ocr_used,
+                "ocr_confidence": document_confidence,
+                "id": work.document_id,
+            },
         )
-        for page_number, page_text, has_text in pages:
+        for page_number, page_text, has_text, confidence in pages:
             await session.execute(
                 text(
-                    "INSERT INTO document_pages (document_id, page_number, text, has_text) "
-                    "VALUES (:document_id, :page_number, :text, :has_text) "
+                    "INSERT INTO document_pages "
+                    "(document_id, page_number, text, has_text, ocr_confidence) "
+                    "VALUES (:document_id, :page_number, :text, :has_text, :ocr_confidence) "
                     "ON CONFLICT (document_id, page_number) "
-                    "DO UPDATE SET text = EXCLUDED.text, has_text = EXCLUDED.has_text"
+                    "DO UPDATE SET text = EXCLUDED.text, has_text = EXCLUDED.has_text, "
+                    "ocr_confidence = EXCLUDED.ocr_confidence"
                 ),
                 {
                     "document_id": work.document_id,
                     "page_number": page_number,
                     "text": page_text,
                     "has_text": has_text,
+                    "ocr_confidence": confidence,
                 },
             )
 
@@ -166,4 +194,5 @@ async def run(work: "Work", report: "Report", factory: "async_sessionmaker[Async
         pages=page_count,
         pages_with_text=usable_pages,
         ocr_derived=ocr_used,
+        ocr_confidence=document_confidence,
     )

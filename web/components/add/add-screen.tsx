@@ -18,8 +18,10 @@ import {
   queueSentence,
   subscribeIngest,
   failureSentence,
+  flaggedSentence,
   retryDocument,
   type FailedDocument,
+  type FlaggedDocument,
 } from "@/lib/ingest";
 import { HOST_GIVES_PATHS, fromFiles } from "@/lib/selection";
 import { type Recorded as RecordedOutcome, duplicateLine, withOutcome } from "@/lib/sources";
@@ -356,6 +358,7 @@ function Progress({ sourceId }: { sourceId: string | null }) {
         {source === undefined || source === null ? null : ` ${coverageSentence(source)}`}
       </span>
       <Failures failures={state.failures} />
+      <Flagged flagged={state.flagged} />
     </>
   );
 }
@@ -419,6 +422,31 @@ function Failures({ failures }: { failures: FailedDocument[] }) {
               {refused[failure.document_id]}
             </span>
           )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * A scan that read poorly, named — never presented as a failure.
+ *
+ * `M1-EXTRACT-ING-029`: the document is indexed and stays listed as such;
+ * this is the "needs attention" reason expanding, not a retry control. The
+ * re-scan clarification (`M3`) is out of scope here, so there is nothing to
+ * click — only something to read, the way `library.md` §2 describes a row
+ * expanding to its specific cause.
+ */
+function Flagged({ flagged }: { flagged: FlaggedDocument[] }) {
+  if (flagged.length === 0) {
+    return null;
+  }
+
+  return (
+    <ul className="mt-2 block list-none p-0">
+      {flagged.map((document) => (
+        <li key={document.document_id} className="ask-micro mt-1 block" style={{ color: "var(--inferred)" }}>
+          {flaggedSentence(document)}
         </li>
       ))}
     </ul>

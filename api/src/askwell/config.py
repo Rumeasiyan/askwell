@@ -144,6 +144,14 @@ class Settings(BaseSettings):
     # enqueue, or a machine that woke up without its queue.
     ingest_reconcile_seconds: int = Field(default=30, ge=5, le=3600)
 
+    # Below this, a document's OCR is flagged low confidence — still indexed,
+    # never a failure (`M1-EXTRACT-ING-029`). 0.60 is a starting point, not a
+    # measured figure: Tesseract's mean word confidence runs high on a clean
+    # scan and drops fast once a page is genuinely hard to read, so this is
+    # configuration precisely because the right cut line is a property of the
+    # scans a given install actually sees.
+    ocr_confidence_threshold: float = Field(default=0.60, ge=0, le=1)
+
     # Traces are the largest and fastest-growing of the three audit stores,
     # and the only one that fails open. 256 MB is a few thousand traces —
     # enough that "show me what happened" works for anything recent, and small

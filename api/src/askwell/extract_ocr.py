@@ -92,22 +92,45 @@ def _orientation_and_language(
     return rotation, language
 
 
+def _confidence(image: "Image", *, language: str) -> float | None:
+    """Tesseract's own per-word confidence, averaged. `M1-EXTRACT-ING-029`.
+
+    A second recognition pass over the same image rather than parsed out of
+    `image_to_string`'s plain-text return, which carries no confidence at
+    all — `image_to_data` is the call that does. `-1` is Tesseract's own
+    marker for "not a word" (a line break, a layout box) and is excluded
+    rather than averaged in, which would drag every page's score down by a
+    constant unrelated to how well it actually read. `None` when nothing
+    scored — a page whose text later turns out empty has nothing to average.
+    """
+    try:
+        data = pytesseract.image_to_data(image, lang=language, output_type=pytesseract.Output.DICT)
+    except pytesseract.TesseractError:
+        return None
+
+    scores = [int(raw) for raw in data.get("conf", []) if int(raw) >= 0]
+    if not scores:
+        return None
+    return (sum(scores) / len(scores)) / 100
+
+
 def ocr_page(  # type: ignore[no-any-unimported]
     document: "pdfium.PdfDocument",
     index: int,
     *,
     document_id: str,
     filename: str,
-) -> tuple[str | None, bool, str]:
+) -> tuple[str | None, bool, str, float | None]:
     """The blocking half: render, orient, recognise one page.
 
     Run through `asyncio.to_thread` by the caller, the same way
     `extract_pdf._page_text` is — a 900-page scan reports progress between
     pages only if control returns to the event loop between them.
 
-    Returns `(text, has_text, language)`. `text` is `None` when nothing came
-    back — the "photograph with no text" edge case, recorded rather than
-    treated as a fault of the page or the document.
+    Returns `(text, has_text, language, confidence)`. `text` is `None` when
+    nothing came back — the "photograph with no text" edge case, recorded
+    rather than treated as a fault of the page or the document. `confidence`
+    is `None` alongside it for the same reason: there is nothing to score.
     """
     page_number = index + 1
     image = _render(document, index)
@@ -132,6 +155,7 @@ def ocr_page(  # type: ignore[no-any-unimported]
 
     text = raw.strip()
     has_text = bool(text)
+    confidence = _confidence(image, language=language) if has_text else None
 
     log.info(
         "ocr_page_completed",
@@ -142,6 +166,7 @@ def ocr_page(  # type: ignore[no-any-unimported]
         rotation=rotation,
         language=language,
         supported=language in _SUPPORTED_LANGUAGES,
+        confidence=confidence,
     )
 
-    return (text if has_text else None), has_text, language
+    return (text if has_text else None), has_text, language, confidence

@@ -4,6 +4,19 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.10 — 2026-08-28
+
+Low-confidence OCR is flagged rather than silently indexed. `M1-EXTRACT-ING-029`.
+
+### Added
+
+- **OCR confidence, measured and stored.** Every OCR'd page's Tesseract confidence is kept (`document_pages.ocr_confidence`), and `documents.ocr_confidence` is their mean. A text-layer page or document carries no confidence at all — nothing to be false about, since Tesseract was never asked.
+- **A source shows `needs attention` for poor OCR, with a specific reason.** Below `ASKWELL_OCR_CONFIDENCE_THRESHOLD` (default `0.60`, configuration), a document is flagged — never a failure, and never removed from the index. A mixed document names the specific pages that read worst. The `/ingest` snapshot carries a `flagged` list and a local `documents_flagged` counter (C1: nothing transmitted).
+
+### Changed
+
+- **`sources.last_error` now names both causes when both are true** — failed files and flagged files in the same sentence, rather than one overwriting the other.
+
 ## 0.2.9 — 2026-08-28
 
 A scanned PDF with no text layer is now actually read. `M1-EXTRACT-ING-028`.

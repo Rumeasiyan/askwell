@@ -75,6 +75,58 @@ def test_a_source_that_finished_with_some_failures_needs_attention_and_stays_ask
     assert ingest.Coverage(total=60, ready=58, failed=2, running=0, outstanding=0).askable
 
 
+def test_a_source_with_a_flagged_document_needs_attention_even_though_all_ready() -> None:
+    """`M1-EXTRACT-ING-029`: low-confidence OCR is never a failure, but the
+    library still has to say so — a source that is otherwise wholly ready
+    still has one document that read poorly."""
+    assert (
+        ingest.source_status(total=20, ready=20, running=0, outstanding=0, failed=0, flagged=1)
+        == "attention"
+    )
+
+
+def test_a_flagged_document_does_not_wait_for_the_rest_of_the_import() -> None:
+    """Unlike a failure, a flag does not need `outstanding == 0` first — the
+    flagged document is already `ready`, and the rest of the source can still
+    be indexing."""
+    assert (
+        ingest.source_status(total=20, ready=5, running=1, outstanding=15, failed=0, flagged=1)
+        == "attention"
+    )
+
+
+def test_a_source_with_no_flagged_documents_is_unaffected() -> None:
+    assert (
+        ingest.source_status(total=5, ready=5, running=0, outstanding=0, failed=0, flagged=0)
+        == "ready"
+    )
+
+
+def test_the_attention_reason_names_both_causes_when_both_are_true() -> None:
+    assert (
+        ingest._attention_reason(failed=2, flagged=1, total=60)
+        == "2 of 60 files could not be indexed. 1 file scanned poorly and may be hard to search."
+    )
+
+
+def test_the_attention_reason_is_singular_for_one_flagged_file() -> None:
+    assert (
+        ingest._attention_reason(failed=0, flagged=1, total=20)
+        == "1 file scanned poorly and may be hard to search."
+    )
+
+
+def test_the_attention_reason_is_plural_for_more_than_one() -> None:
+    assert (
+        ingest._attention_reason(failed=0, flagged=3, total=20)
+        == "3 files scanned poorly and may be hard to search."
+    )
+
+
+def test_the_attention_reason_is_none_when_nothing_is_wrong() -> None:
+    assert ingest._attention_reason(failed=0, flagged=0, total=20) is None
+
+
 def test_one_indexed_document_makes_a_source_askable() -> None:
     """The partial-coverage marker. Waiting for all five hundred is the bug."""
     partial = ingest.Coverage(total=500, ready=80, failed=0, running=2, outstanding=420)
@@ -84,6 +136,14 @@ def test_one_indexed_document_makes_a_source_askable() -> None:
 
 def test_a_source_with_nothing_indexed_is_not_askable() -> None:
     assert not ingest.Coverage(total=12, ready=0, failed=0, running=0, outstanding=12).askable
+
+
+def test_coverage_carries_the_flagged_count_in_its_dict() -> None:
+    covered = ingest.Coverage(total=20, ready=20, failed=0, running=0, outstanding=0, flagged=1)
+    assert covered.as_dict()["flagged"] == 1
+    # Still askable and still ready-ish by every other measure — flagged is
+    # additive information, not a subtraction from what already works.
+    assert covered.askable
 
 
 def test_the_whole_pipeline_is_declared_even_where_it_is_not_yet_built() -> None:

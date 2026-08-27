@@ -38,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from askwell import ingest
 from askwell.config import Settings
+from askwell.db.engine import session_scope
 from askwell.ingest import Report, Stage, Work
 from askwell.sources import add
 
@@ -637,6 +638,174 @@ async def test_a_mixed_document_only_ocrs_the_pages_that_need_it(
     assert ocr_derived is True
 
 
+async def test_a_clean_scan_is_read_with_a_confidence_and_is_not_flagged(
+    factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    tmp_path: Path,
+    unreachable_queue: Settings,
+) -> None:
+    """`M1-EXTRACT-ING-029`'s own edge case, the good half: a clean scan reads
+    with a real confidence figure and stays plain `ready` — flagging is for
+    the poor scans, not a side effect of having been OCR'd at all."""
+    await nominate(session, str(tmp_path))
+    written(
+        tmp_path,
+        "clean.pdf",
+        _scanned_pdf("Either party may terminate on ninety", "days written notice."),
+    )
+    documents = await recorded(session, tmp_path, "clean.pdf")
+
+    await ingest.process(factory, unreachable_queue, documents[0])
+
+    confidence = (
+        await session.execute(
+            text("SELECT ocr_confidence FROM documents WHERE id = :id"), {"id": documents[0]}
+        )
+    ).scalar_one()
+    assert confidence is not None
+    assert 0 <= float(confidence) <= 1
+
+    page_confidence = (
+        await session.execute(
+            text("SELECT ocr_confidence FROM document_pages WHERE document_id = :id"),
+            {"id": documents[0]},
+        )
+    ).scalar_one()
+    assert page_confidence is not None
+
+
+async def test_a_text_layer_page_carries_no_ocr_confidence(
+    factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    tmp_path: Path,
+    unreachable_queue: Settings,
+) -> None:
+    """The other edge case named by the ticket: confidence unavailable for a
+    text-layer document is no flag, not a false one — there is nothing to be
+    false about, because Tesseract was never asked."""
+    await nominate(session, str(tmp_path))
+    written(tmp_path, "letter.pdf")
+    documents = await recorded(session, tmp_path, "letter.pdf")
+
+    await ingest.process(factory, unreachable_queue, documents[0])
+
+    confidence = (
+        await session.execute(
+            text("SELECT ocr_confidence FROM documents WHERE id = :id"), {"id": documents[0]}
+        )
+    ).scalar_one()
+    assert confidence is None
+
+
+async def test_a_document_flagged_for_poor_ocr_still_indexes_and_stays_searchable(
+    factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    tmp_path: Path,
+    unreachable_queue: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ticket's headline acceptance criterion, exercised against a fake
+    `extract` the way the harness tests above do — the real Tesseract
+    confidence path is proved separately, by the OCR tests around it; what is
+    under test here is what the pipeline *does* with a low confidence once
+    one exists: the document still reaches `ready`, and the source becomes
+    `attention` with a readable, specific reason.
+    """
+    await nominate(session, str(tmp_path))
+    written(tmp_path, "poor-scan.pdf")
+    documents = await recorded(session, tmp_path, "poor-scan.pdf")
+
+    async def poor_ocr(
+        work: Work, report: Report, factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_scope(factory) as inner:
+            await inner.execute(
+                text(
+                    "UPDATE documents SET ocr_derived = true, ocr_confidence = 0.30 WHERE id = :id"
+                ),
+                {"id": work.document_id},
+            )
+
+    monkeypatch.setattr(ingest, "STAGES", (Stage("extract", "M1-EXTRACT-ING-026", poor_ocr),))
+    assert await ingest.process(factory, unreachable_queue, documents[0]) == "done"
+
+    row = (
+        await session.execute(
+            text(
+                "SELECT d.status, s.status, s.last_error FROM documents d "
+                "JOIN sources s ON s.id = d.source_id WHERE d.id = :id"
+            ),
+            {"id": documents[0]},
+        )
+    ).one()
+    assert row[0] == "ready"
+    assert row[1] == "attention"
+    assert row[2] is not None
+    assert "scanned poorly" in row[2]
+
+    source_id = (
+        await session.execute(
+            text("SELECT source_id FROM documents WHERE id = :id"), {"id": documents[0]}
+        )
+    ).scalar_one()
+    covered = await ingest.coverage(session, source_id, unreachable_queue.ocr_confidence_threshold)
+    assert covered.flagged == 1
+    assert covered.ready == 1
+    assert covered.askable
+
+
+async def test_a_flagged_document_is_recognised_before_it_ever_reaches_ready(
+    factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    tmp_path: Path,
+    unreachable_queue: Settings,
+) -> None:
+    """`chunk` and `embed` are not built yet (`M1-INDEX-ING-031`/`-032`), so
+    every document parks at `queued` once the real `extract` finishes — this
+    ticket's own dependency is `M1-EXTRACT-ING-028` alone, and the flag must
+    not silently wait for milestones it does not depend on.
+    """
+    await nominate(session, str(tmp_path))
+    written(
+        tmp_path,
+        "poor-scan.pdf",
+        _scanned_pdf("Either party may terminate on ninety", "days written notice."),
+    )
+    documents = await recorded(session, tmp_path, "poor-scan.pdf")
+
+    assert await ingest.process(factory, unreachable_queue, documents[0]) == "parked"
+
+    # The real Tesseract confidence path is proved by the OCR tests around
+    # this one; what is under test here is that the pipeline still notices a
+    # low confidence on a document that never reached `ready` at all.
+    async with session_scope(factory) as inner:
+        await inner.execute(
+            text("UPDATE documents SET ocr_confidence = 0.30 WHERE id = :id"),
+            {"id": documents[0]},
+        )
+        source_id = (
+            await inner.execute(
+                text("SELECT source_id FROM documents WHERE id = :id"), {"id": documents[0]}
+            )
+        ).scalar_one()
+        await ingest.refresh_source(inner, source_id, unreachable_queue.ocr_confidence_threshold)
+
+    row = (
+        await session.execute(
+            text("SELECT status FROM documents WHERE id = :id"), {"id": documents[0]}
+        )
+    ).scalar_one()
+    assert row == "queued"
+
+    source_status = (
+        await session.execute(text("SELECT status FROM sources WHERE id = :id"), {"id": source_id})
+    ).scalar_one()
+    assert source_status == "attention"
+
+    covered = await ingest.coverage(session, source_id, unreachable_queue.ocr_confidence_threshold)
+    assert covered.flagged == 1
+
+
 async def test_a_rotated_page_is_read_in_the_correct_orientation(
     factory: async_sessionmaker[AsyncSession],
     session: AsyncSession,
@@ -857,7 +1026,7 @@ async def test_a_failed_document_can_be_retried_and_its_attempts_are_forgiven(
     for _ in range(ingest.MAX_ATTEMPTS):
         await ingest.process(factory, unreachable_queue, documents[0])
 
-    outcome = await ingest.retry(session, documents[0])
+    outcome = await ingest.retry(session, documents[0], unreachable_queue)
     await session.commit()
 
     assert outcome.retried
@@ -879,17 +1048,17 @@ async def test_a_failed_document_can_be_retried_and_its_attempts_are_forgiven(
 
 
 async def test_retrying_something_that_did_not_fail_is_refused_by_name(
-    session: AsyncSession, tmp_path: Path
+    session: AsyncSession, tmp_path: Path, settings: Settings
 ) -> None:
     await nominate(session, str(tmp_path))
     written(tmp_path, "contract.pdf")
     documents = await recorded(session, tmp_path, "contract.pdf")
 
-    already_queued = await ingest.retry(session, documents[0])
+    already_queued = await ingest.retry(session, documents[0], settings)
     assert not already_queued.retried
     assert already_queued.state == "queued"
 
-    unknown = await ingest.retry(session, uuid.uuid4())
+    unknown = await ingest.retry(session, uuid.uuid4(), settings)
     assert not unknown.retried
     assert unknown.state is None
 
@@ -1165,7 +1334,7 @@ async def test_a_source_is_askable_before_every_file_has_finished(
     await ingest.process(factory, unreachable_queue, documents[0])
 
     source_id = (await session.execute(text("SELECT id FROM sources LIMIT 1"))).scalar_one()
-    partial = await ingest.coverage(session, source_id)
+    partial = await ingest.coverage(session, source_id, unreachable_queue.ocr_confidence_threshold)
 
     assert partial.ready == 1
     assert partial.total == 3
