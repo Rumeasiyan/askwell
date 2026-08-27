@@ -63,7 +63,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from askwell import extract_pdf
+from askwell import extract, extract_pdf
 from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
@@ -164,7 +164,7 @@ OCR_STAGE = Stage("ocr", "M1-EXTRACT-ING-028")
 # waiting for instead of sitting at "queued" with no explanation. A later
 # ticket fills in `run` and changes nothing else here.
 STAGES: tuple[Stage, ...] = (
-    Stage("extract", "M1-EXTRACT-ING-026", extract_pdf.run),
+    Stage("extract", "M1-EXTRACT-ING-026", extract.run),
     Stage("chunk", "M1-INDEX-ING-031"),
     Stage("embed", "M1-INDEX-ING-032"),
 )
