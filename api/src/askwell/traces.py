@@ -78,7 +78,7 @@ class TraceRing:
             return None
         return loaded
 
-    def total_bytes(self) -> str:
+    def total_bytes(self) -> int:
         return sum(path.stat().st_size for path in self._files())
 
     def prune(self) -> int:
