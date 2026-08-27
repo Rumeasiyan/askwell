@@ -22,6 +22,20 @@ Template:
 
 ---
 
+## 2026-08-28 — SELinux does refuse the roots mount, and the answer is a consented relabel rather than disabling confinement
+
+**Decision:** The unverified SELinux risk recorded on 2026-08-27 is now measured and confirmed: on an enforcing Fedora host, a container reaching the `ASKWELL_ROOTS_MOUNT` bind mount is refused every file under it. The mount keeps `:ro` and keeps **no** `z` flag. The supported resolution is a one-off `chcon -R -t container_file_t <folder>` that the user runs themselves, surfaced in the refusal message and at root registration. `--security-opt label=disable` is rejected.
+
+**Why:** The 2026-08-27 entry chose to omit `z` because `z` relabels recursively and would silently rewrite SELinux labels across a user's entire material tree — slow on 40 GB, and a modification Askwell has no business making to files it only ever reads. That reasoning still holds; what was missing was whether the omission actually broke anything. It does. `podman exec askwell-api-1 ls -ln` on a mounted folder returns `-????????? ? ? ? ?` for every entry and `POST /sources` refuses all of them, so the cost of the decision is total: on the maintainer's own distribution Askwell can read zero files, and every ingestion ticket after M1-ADD-BE-023 would have been blocked by it.
+
+Three ways out were weighed. Adding `z` back is the automatic fix and was rejected again for the original reason — a tool that relabels a user's whole home directory as a side effect of being pointed at it is doing something the user did not ask for and cannot easily see. `--security-opt label=disable` looks cheaper because it is one line in `compose.yaml` and touches none of the user's files, and it is the worse trade: it removes SELinux confinement from precisely the two containers that hold the user's entire corpus and talk to the model, in order to fix a labelling problem scoped to one directory. Narrow problem, broad remedy, and invisible afterwards. The relabel keeps the blast radius at the folder the user nominated, and — unlike `z` — it is a command they type, so it is consented to rather than done to them.
+
+The accepted cost is a manual step on SELinux distributions. That is tolerable only if the product says so at the right moment, which is why the resolution is not "document it": the refusal message must carry the exact command with the folder substituted, and root registration should report the state before the user drops sixty contracts and watches all sixty be refused. `askwell.roots.probe()` already has an `unreadable` state to report it through.
+
+**Consequences:** Fedora/RHEL/CentOS users need one `chcon` per nominated tree before Askwell can read it. Until #107 lands, they get a refusal that names SELinux but not the command. The offline install bundle (Phase 7) has to carry this too, or first-run on an enforcing host fails silently for a whole class of users. Reversing this means either accepting recursive relabelling of user data or dropping container confinement — both were considered and rejected here.
+
+**Refs:** [#107](https://github.com/Rumeasiyan/askwell/issues/107); the 2026-08-27 entry on the roots mount; `compose.yaml` api and worker `volumes`; `api/src/askwell/roots.py` `probe()`; `api/src/askwell/sources.py` `UNREADABLE_REASON`.
+
 ## 2026-08-28 — Build-runner agents run with permissions bypassed, so they can run the toolchain
 
 **Decision.** `scripts/build-runner.sh` invokes its build, fix, audit and doc agents with `--permission-mode bypassPermissions` instead of `acceptEdits`. `AGENT_PERMISSION_MODE` still overrides it.
