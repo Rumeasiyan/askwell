@@ -7,30 +7,29 @@
 
 ## Current phase
 
-**M0 — It runs. In progress: 11 of 21 tickets done.**
+**M0 — It runs. In progress: 12 of 21 tickets done.**
 
 The repository is no longer documentation only. `api/` exists: an image, manifests, the application, and 54 tests. The API starts, refuses bad configuration by name, and serves `GET /health` reporting five components separately. `podman compose up -d` brings up four services, the database carries the full v1 schema, and the interface loads at `http://127.0.0.1:8000`. `web/` builds to static assets and the API serves them — the `web` container is gone from the topology. The Compose stack, the database schema and the inference process do not exist yet — so all five health components correctly report `unreachable`.
 
-**Version:** `0.1.11` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
+**Version:** `0.1.12` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
 **Tracker:** `Rumeasiyan/askwell`. Working agreements in `AGENTS.md`. Backlog in `docs/backlog/`.
 
 ## Last completed
 
-**`M0-FOUND-SEC-007`** — [#73](https://github.com/Rumeasiyan/askwell/issues/73). Secrets as environment variables, and the mechanism that keeps the example file honest.
+**`M0-FOUND-DOC-008`** — [#75](https://github.com/Rumeasiyan/askwell/issues/75). Version and changelog discipline, enforced rather than practised.
 
-`.env.example` existed for three tickets and was already wrong: **five variables listed out of nineteen**. That is the failure mode — it drifts silently while being read as authoritative. So the deliverable was never the file; it is the test that makes adding a variable without documenting it a build failure.
+The frontend previously satisfied §7 **by omission** — `web/package.json` had no version because I never added one, not because anything read the real file. It now reads root `VERSION` at build time, which is also what the About screen needs.
 
 Verified:
 
 | | |
 | --- | --- |
-| adding a setting without documenting it | fails, naming `ASKWELL_UNDOCUMENTED_NEW_THING` |
-| a variable used only by `compose.yaml` | still required to be listed |
-| a line in the file that nothing reads | fails — the direction that rots quietly |
-| every service log in the running stack | zero occurrences of either password |
-| logging the entire settings object inside an exception handler | still zero |
-| a path (`ASKWELL_WEB_ASSETS_DIR`) | **not** redacted — "the interface has not been built" is useless without saying where it looked |
-| `.env` / `.env.local` | ignored; `.env.example` deliberately not |
+| bumping `VERSION` without a changelog entry | fails, naming the missing heading |
+| a changelog entry out of order | fails, printing the sequence |
+| `"version": "9.9.9"` added to `web/package.json` | fails, explaining why two copies drift |
+| the built output | contains `0.1.11`, from the file |
+
+**The check found a real problem on its first run:** `0.1.0` had two changelog headings — the rewrite and the initial state, both legitimately at that version because no code existed at either. One version is one entry; someone looking up `0.1.0` should find all of it in one place. Merged into one heading with two subsections.
 
 ## Next task
 

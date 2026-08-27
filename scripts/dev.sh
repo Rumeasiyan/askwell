@@ -190,6 +190,7 @@ case "$cmd" in
         # invisible to whoever is not affected by them; an external URL breaks
         # C1 on a machine with no network, which is the machine this product is
         # for.
+        note "version discipline";     in_web "$WEB_IMAGE" pnpm check-version
         note "token hygiene";          in_web "$WEB_IMAGE" pnpm check-tokens
         note "contrast (both themes)"; in_web "$WEB_IMAGE" pnpm contrast
         note "no external hosts";      in_web "$WEB_IMAGE" pnpm check-offline
