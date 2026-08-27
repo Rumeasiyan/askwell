@@ -22,6 +22,42 @@ Template:
 
 ---
 
+## 2026-08-28 — A duplicate is recognised by the application and made impossible by the database
+
+**Decision:** `askwell.sources.add` looks a file's SHA-256 up across **every live document**, and a match is reported as a duplicate linked to the existing document rather than stored again. The partial unique index the v1 migration already created — `uq_documents_live_source_id_sha256`, over `(source_id, sha256) WHERE deleted_at IS NULL AND superseded_by IS NULL` — enforces a narrower rule underneath it. The two are deliberately not the same rule and neither replaces the other. `M1-ADD-BE-023`.
+
+**Why:** The recognition has to be global because the user's problem is global: the same contract in three folders is three *sources*, and a per-source check would recognise none of them — the ticket's own cold-start walkthrough, add a PDF then add the same PDF from a different folder, would produce two documents and two identical passages in every future answer.
+
+The index cannot be global, and that is not a compromise. A unique index over `(sha256)` alone would mean a second nominated folder containing a legitimate second copy could never be recorded at all, even by a later ticket that decides it should be — supersession (`M1-INDEX-BE-034`) and deletion (M2) both need room to move here, and an index is the wrong place to encode a product rule that is still being worked out. What the index *can* say without foreclosing anything is that one source never holds the same live content twice, which is exactly the invariant a retry, an import or a repair script would break by accident.
+
+So: the application check is what produces a sentence for the user, and the index is the floor under it. Enforcing only in application code was rejected because a rule with one enforcement point lapses the first time a second code path forgets to ask, and this one would lapse silently — nothing looks wrong about two rows. Enforcing only in the database was rejected because an `IntegrityError` is not an explanation, and "already present, here is where" is the whole user-facing point of the ticket.
+
+Partial over the live rows for the same reason `roots` is: a document the user deleted last week must be addable again, and a plain constraint would refuse and blame them for the deletion.
+
+**Consequences:** Every code path that inserts a document must expect the index and handle the duplicate case, rather than assuming inserts succeed. Supersession in `M1-INDEX-BE-034` must set `superseded_by` on the old row *before* or in the same statement as inserting the new one, or the index will refuse the new version — which is the correct behaviour and will be discovered as a failing test rather than as duplicated content. The global recognition means a file present under two nominated folders is recorded once, under whichever folder was added first; the second folder's source will not list it. That is the right answer for retrieval and the wrong answer for a library that wants to show what is in each folder, and it is the thing to revisit if the library screen makes it look like files are missing.
+
+One thing this pass *found* rather than decided: the index existed in every database and in no model, because the v1 migration created it in raw SQL. `askwell.db.models` now declares it. Nothing changes in any database — but an `--autogenerate` run compares the model to the schema, and until this it would have proposed dropping the invariant.
+
+**Refs:** `api/src/askwell/sources.py`, `api/src/askwell/db/models.py`, migration `a8208099ef38` (`_create_invariants`), migration `c3d9e1a45b76`, `docs/ux/add-source.md` §5, `docs/states-and-edge-cases.md` §3.
+
+---
+
+## 2026-08-28 — `queued` is a status, and the server re-detects what the browser already detected
+
+**Decision:** Two changes that arrived together with the record path. `queued` is added to both `SOURCE_STATUSES` and `DOCUMENT_STATUSES` and becomes the default; and `askwell.filetypes` re-implements the browser's content detection server-side, reading the file itself, with nothing the client says about a file's type ever reaching a row. `M1-ADD-BE-023`.
+
+**Why (the status):** The vocabulary had `indexing`, `ready`, `attention` and `deleted`, and none of them was true of a row this ticket creates. Nothing is reading these files — the ingester is `M1-ADD-ING-025` — so `indexing` would be a claim that work is underway, and the library would render a progress bar from it that never moves. `docs/states-and-edge-cases.md` §3 names that exact failure and asks for an honest sentence instead. Reusing `attention` was rejected: nothing is wrong. Leaving the status null was rejected: the column is not nullable, and a null status is a row nobody can filter on.
+
+**Why (the re-detection):** The duplication of the signature table between `web/lib/add-source.ts` and `api/src/askwell/filetypes.py` is real and is the price of a boundary that means anything. The browser is the only place with the bytes before anything is sent, so it is where the user is told what Askwell believes their files are while a drop is being read — but a record built from that answer would send a renamed executable to a document extractor, and the value of detecting by content evaporates at precisely the step where it would have had teeth. It is the same shape C2 warns about in the SQL case: a check performed where the thing being checked can influence it.
+
+Sending no type from the client and having the screen render one the server returns was rejected — it costs a round trip per file, and on a five-thousand-file drop the screen would say nothing for minutes about files it can already describe. Having the server trust the client was rejected for the reason above.
+
+**Consequences:** Two copies of one table, which will drift unless kept honest; `api/tests/test_filetypes.py` and `web/lib/add-source.test.ts` deliberately ask the same questions so a one-sided change fails a test rather than going unnoticed. One divergence exists already and is deliberate: the server refuses to take a file away from the files route on a delimiter or SQL-keyword heuristic when its own extension claims that route, because since `M1-ADD-VAL-024` a wrong route means a supported file is silently withheld with "arrives in M4". Fixing it server-side does not fix it for the user — the client decides what is sent at all — so the client half is an open item rather than a silent asymmetry. Anything reading `status` must now handle `queued`; the migration is reversible and moves existing `queued` rows to `indexing` on the way down, because a migration that cannot run backwards is not reversible in any sense worth the word.
+
+**Refs:** `api/src/askwell/filetypes.py`, `api/src/askwell/db/models.py`, migration `c3d9e1a45b76`, `docs/BRAIN.md` (open items).
+
+---
+
 ## 2026-08-27 — Detection answers three ways, because "not yet" is not "no"
 
 **Decision:** `detect()` returns a `verdict` of `supported`, `later` or `refused` instead of a `supported` boolean, and the `later` case carries the milestone its route arrives in. A CSV or a dump is now recognised, named, dated and **not queued**; only files on the `files` route reach the queue. The verdict is derived from `ROUTES[].arrives` — the same table the screen renders the three coming-later panels from — rather than written down a second time. `M1-ADD-VAL-024`.

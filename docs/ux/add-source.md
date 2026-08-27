@@ -89,7 +89,12 @@ Copy on refusal:
 | **Extraction failed** | Per-file reason and retry. Never silently dropped |
 | **Password-protected PDF** | Prompt for the password; not stored unless the user asks |
 | **Poor OCR** | Ingested, flagged, clarification raised |
+| **Recording** | The count and the folder, with the fact that each file is being read to work out what it is and whether Askwell already has it. Nothing is copied |
 | **Duplicate** | Recognised by content hash, linked to the existing source, not re-ingested |
+| **The same content under two names** | Both paths named — the one indexed and the one recognised — and the reason recognition is by content rather than by name |
+| **An empty file** | Refused by name with the reason. The rest of the drop carries on |
+| **A file still being written** | Re-read; if it never settles, named per file with what to do — close it, or wait for whatever is producing it |
+| **A drop Askwell already had, all of it** | Said as *nothing new here*, not as "0 files queued". Nothing needed doing, and a count of zero beside the word Queued reads as a failure |
 | **New version** | Offered as superseding, not duplicating. Old version stays queryable for history |
 | **Unsupported format** | Named per file — the file, then what its contents turned out to be, then why — with the supported list once beneath the block. The rest of the drop carries on |
 | **A format arriving in a later milestone** | Named as arriving, with the milestone, in its own block and its own colour. Never listed under "not added", never queued |

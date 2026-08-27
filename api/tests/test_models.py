@@ -132,6 +132,45 @@ def test_documents_keep_the_path_they_were_found_at() -> None:
     assert "missing_since" in documents.c
 
 
+def test_one_live_version_per_source_and_hash_is_a_partial_index() -> None:
+    """The duplicate rule's floor, and it has to be partial.
+
+    `askwell.sources.add` recognises a duplicate and says so; this index makes a
+    second live row impossible when a later code path forgets to ask. Over
+    *live* rows only — a document the user deleted last week must be addable
+    again, and a superseded version is ordinary history rather than a conflict.
+
+    Asserted against the *model* because the index has existed in every database
+    since the v1 migration and in no model until now: autogenerate compares the
+    two, so the missing declaration was a proposal to drop it waiting to happen.
+    """
+    name = "uq_documents_live_source_id_sha256"
+    index = next(item for item in table("documents").indexes if item.name == name)
+    assert index.unique
+    assert [column.name for column in index.columns] == ["source_id", "sha256"]
+    where = str(index.dialect_options["postgresql"]["where"])
+    assert "deleted_at IS NULL" in where
+    assert "superseded_by IS NULL" in where
+
+
+def test_queued_is_a_status_of_its_own_and_is_the_default() -> None:
+    """ "Recorded and waiting" is not "being read".
+
+    `docs/states-and-edge-cases.md` §3 asks for an honest sentence about files
+    that are queued and not indexed, rather than a progress bar that never
+    moves — and a row stored as `indexing` is what the library would render one
+    from.
+    """
+    for name in ("sources", "documents"):
+        constraint = next(
+            item for item in table(name).constraints if item.name in ("status", f"ck_{name}_status")
+        )
+        assert "'queued'" in str(constraint.sqltext)  # type: ignore[attr-defined]
+        default = table(name).c.status.server_default
+        assert default is not None
+        assert "'queued'" in str(default.arg)  # type: ignore[union-attr]
+
+
 def test_the_two_audit_tables_are_separate() -> None:
     """Different retention and different write-failure behaviour."""
     for name in ("audit_decisions", "audit_interactions"):
