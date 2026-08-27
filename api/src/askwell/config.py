@@ -91,11 +91,30 @@ class Settings(BaseSettings):
     # on a bind mount needs no route at all. See docs/decisions.md.
     inference_socket: Path = Path("/run/askwell/inference.sock")
 
-    # Used by the host-side supervisor only. The containers never see this.
+    # Three roles, three processes, three models. One llama.cpp process cannot
+    # serve all three: reranking needs `--reranking` and a reranker model,
+    # which is mutually exclusive with generation, and a generation model's
+    # embeddings are the wrong width for the schema entirely. Measured, not
+    # assumed — see issue #89.
+    #
+    # Used by the host-side supervisor only. The containers never see these;
+    # they reach all three through one socket.
     inference_binary: str = "llama-server"
+    inference_context_size: int = Field(default=8192, ge=512, le=1_048_576)
+
     inference_model_path: Path = Path("~/.local/share/askwell/models/model.gguf")
     inference_upstream_port: Port = 8080
-    inference_context_size: int = Field(default=8192, ge=512, le=1_048_576)
+
+    # bge-m3 at 1024 dimensions, matching chunks.embedding. A different model
+    # here is a different width, and the database will refuse the insert rather
+    # than silently storing something useless.
+    embedding_model_path: Path = Path("~/.local/share/askwell/models/embedding.gguf")
+    embedding_port: Port = 8081
+
+    # Reranking is a separate model and a separate process. It scores
+    # query-document pairs; it cannot generate and generation cannot rank.
+    reranker_model_path: Path = Path("~/.local/share/askwell/models/reranker.gguf")
+    reranker_port: Port = 8082
 
     egress_proxy_host: str = "egress-proxy"
     egress_proxy_port: Port = 3128

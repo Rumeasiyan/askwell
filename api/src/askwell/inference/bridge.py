@@ -34,6 +34,24 @@ log = get_logger(__name__)
 # The only address this program will ever connect to.
 UPSTREAM_HOST = "127.0.0.1"
 
+# Which upstream serves which path.
+#
+# One llama.cpp process cannot serve all three roles: `--reranking` needs a
+# reranker model and is mutually exclusive with generation, and a generation
+# model's embeddings are the wrong width for the schema entirely (issue #89).
+# So there are three processes, and one socket in front of them — the
+# containers should not have to know how many there are, or on which ports.
+#
+# Routed by path prefix rather than by parsing the whole request: the prefix is
+# in the first line, which is already read, and anything cleverer would be a
+# second HTTP implementation to keep correct.
+ROUTES: tuple[tuple[str, str, str], ...] = (
+    ("/v1/embeddings", "embedding", "ASKWELL_EMBEDDING_PORT"),
+    ("/embedding", "embedding", "ASKWELL_EMBEDDING_PORT"),
+    ("/v1/rerank", "reranking", "ASKWELL_RERANKER_PORT"),
+    ("/rerank", "reranking", "ASKWELL_RERANKER_PORT"),
+)
+
 
 async def _pump(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     try:
@@ -65,25 +83,67 @@ def _prepare_socket_path(path: Path) -> None:
         path.unlink()
 
 
+def _route(settings: Settings, request_line: bytes) -> tuple[int, str]:
+    """Which process should answer this, by path.
+
+    Generation is the default rather than an error, because llama.cpp serves a
+    good deal more than the three endpoints named here — `/health`, `/props`,
+    `/tokenize` — and refusing everything unrecognised would break them for no
+    benefit. A wrong guess reaches a process that answers 404 itself, which is
+    a better failure than this file inventing one.
+    """
+    try:
+        path = request_line.decode("latin-1").split(" ")[1]
+    except (UnicodeDecodeError, IndexError):
+        return settings.inference_upstream_port, "generation"
+
+    for prefix, role, variable in ROUTES:
+        if path.startswith(prefix):
+            port = (
+                settings.embedding_port
+                if variable == "ASKWELL_EMBEDDING_PORT"
+                else settings.reranker_port
+            )
+            return port, role
+
+    return settings.inference_upstream_port, "generation"
+
+
 async def serve(settings: Settings) -> None:
     path = Path(settings.inference_socket)
     _prepare_socket_path(path)
 
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        # The request line is read here rather than streamed straight through,
+        # because the path decides which process answers. It is put back in
+        # front of the rest of the stream afterwards, so nothing downstream
+        # sees a request with its first line missing.
         try:
-            upstream_reader, upstream_writer = await asyncio.open_connection(
-                UPSTREAM_HOST, settings.inference_upstream_port
-            )
+            async with asyncio.timeout(30):
+                request_line = await reader.readline()
+        except (TimeoutError, OSError):
+            writer.close()
+            with contextlib.suppress(OSError):
+                await writer.wait_closed()
+            return
+
+        port, role = _route(settings, request_line)
+
+        try:
+            upstream_reader, upstream_writer = await asyncio.open_connection(UPSTREAM_HOST, port)
         except OSError as error:
             # Inference is down. Closing is the honest answer: the supervisor's
             # state file already says why, and inventing an HTTP error here
             # would make this a second place that explains inference failures,
             # with less to go on.
-            log.warning("inference_upstream_down", error=str(error))
+            log.warning("inference_upstream_down", role=role, port=port, error=str(error))
             writer.close()
             with contextlib.suppress(OSError):
                 await writer.wait_closed()
             return
+
+        upstream_writer.write(request_line)
+        await upstream_writer.drain()
         await asyncio.gather(_pump(reader, upstream_writer), _pump(upstream_reader, writer))
 
     server = await asyncio.start_unix_server(handle, path=str(path))
@@ -95,7 +155,9 @@ async def serve(settings: Settings) -> None:
     log.info(
         "inference_bridge_listening",
         socket=str(path),
-        upstream=f"{UPSTREAM_HOST}:{settings.inference_upstream_port}",
+        generation=f"{UPSTREAM_HOST}:{settings.inference_upstream_port}",
+        embedding=f"{UPSTREAM_HOST}:{settings.embedding_port}",
+        reranking=f"{UPSTREAM_HOST}:{settings.reranker_port}",
     )
     async with server:
         await server.serve_forever()
