@@ -28,6 +28,7 @@ cd "$RUNNER_ROOT"
 
 # --- configuration (docs/build-runner.md §10) --------------------------------
 : "${AGENT_BIN:=claude}"
+: "${GATE_ATTEMPTS:=2}"   # one build, then one chance to fix what the gate rejected
 : "${BUILD_MODEL:=}"        # empty means the CLI's own default; never invent one
 : "${BUILD_EFFORT:=}"
 : "${AUDIT_MODEL:=}"
@@ -611,10 +612,76 @@ main() {
     say "  first if you want them to count: podman compose up -d"
   fi
 
-  die "Live build is wired but the agent invocation is still the next step.
-       The gate, the ledger and the prompts are all proved; what remains is
-       calling $AGENT_BIN with the rendered prompt and handling its result.
-       Use --dry to read the prompt that would be sent."
+  # --- build ------------------------------------------------------------
+  head2 "Build"
+  local build_log="$RUNNER_STATE/logs/${TICKET}.build.log"
+  PHASE="build"
+  if ! run_agent build "$bp" "$build_log"; then
+    die "The build agent exited non-zero or timed out. Its output is in
+       $build_log — read it before rerunning, because a rerun starts a fresh
+       session and will not remember what went wrong."
+  fi
+  # Spend is recorded once the work happened, not before. Recording up front
+  # would charge the ceiling for a run that died in preflight.
+  guard_record_spend "$est" || exit 1
+
+  # --- gate, with one chance to fix ---------------------------------------
+  local attempt=1 gate_ok=0
+  while [ "$attempt" -le "$GATE_ATTEMPTS" ]; do
+    head2 "Gate (attempt $attempt of $GATE_ATTEMPTS)"
+    if run_gate "$attempt"; then gate_ok=1; break; fi
+
+    if [ "$attempt" -ge "$GATE_ATTEMPTS" ]; then break; fi
+
+    # The agent is told what failed rather than asked to guess. A fix attempt
+    # without the failing output is the same prompt again, and produces the
+    # same work again.
+    head2 "Fix"
+    local fix="$RUNNER_STATE/prompts/${TICKET}.fix.$attempt.txt"
+    {
+      printf 'The gate rejected your work on %s. Fix it.\n\n' "$TICKET"
+      printf 'Do not change the gate, the tests, or their thresholds to make\n'
+      printf 'this pass. If a check is wrong, say so and stop — a weakened\n'
+      printf 'check is worse than a failing one, because it keeps reporting\n'
+      printf 'success afterwards.\n\nWhat failed:\n\n'
+      cat "$RUNNER_STATE/logs/${TICKET}.gate.${attempt}.log"
+    } > "$fix"
+    PHASE="fix"
+    run_agent build "$fix" "$RUNNER_STATE/logs/${TICKET}.fix.$attempt.log" \
+      || die "The fix attempt failed to run. See $build_log"
+    guard_record_spend 1 || exit 1
+    attempt=$((attempt + 1))
+  done
+
+  if [ "$gate_ok" != "1" ]; then
+    die "The gate still rejects this work after $GATE_ATTEMPTS attempts.
+       Stopping rather than committing it. The logs are in
+       $RUNNER_STATE/logs/${TICKET}.gate.*.log — and nothing has been
+       committed or pushed, so the branch is where you left it."
+  fi
+
+  # --- audit --------------------------------------------------------------
+  # A separate lineage that did not write the code. That is the whole property
+  # being bought here: an author reviewing their own work agrees with it.
+  head2 "Audit"
+  PHASE="audit"
+  local audit_log="$RUNNER_STATE/logs/${TICKET}.audit.log"
+  run_agent audit "$ap" "$audit_log" || say "  ${DIM}the auditor did not finish; its notes are in $audit_log${RESET}"
+
+  # --- manual-test document ------------------------------------------------
+  head2 "Manual test document"
+  PHASE="doc"
+  local doc_log="$RUNNER_STATE/logs/${TICKET}.doc.log"
+  run_agent doc "$dp" "$doc_log" || say "  ${DIM}the doc agent did not finish; see $doc_log${RESET}"
+
+  # --- hand back ------------------------------------------------------------
+  head2 "Done"
+  mark_done "$TICKET"
+  say "  $TICKET is recorded as done."
+  say ""
+  say "  Nothing was pushed and no PR was opened: the runner stops at the"
+  say "  branch so that a person reads the diff before it leaves the machine."
+  say "  ${BOLD}git diff main...HEAD${RESET}   then   ${BOLD}gh pr create --fill${RESET}"
 }
 
 main "$@"
