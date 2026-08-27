@@ -87,7 +87,7 @@ in_web() {
     podman image exists "$WEB_IMAGE" || { note "$WEB_IMAGE not built yet"; build_web_image; }
     podman run --rm \
         --network=none \
-        -v "$REPO_ROOT":/app:Z \
+        -v "$REPO_ROOT":/app:z \
         -w /app/web \
         "$@"
 }
@@ -95,18 +95,21 @@ in_web() {
 in_web_networked() {
     podman image exists "$WEB_IMAGE" || { note "$WEB_IMAGE not built yet"; build_web_image; }
     podman run --rm \
-        -v "$REPO_ROOT":/app:Z \
+        -v "$REPO_ROOT":/app:z \
         -w /app/web \
         "$@"
 }
 
-# :Z relabels for SELinux, which this machine enforces. Without it the
-# container reads nothing and the error does not mention SELinux.
+# :z, not :Z. Both relabel for SELinux, which this machine enforces — without
+# either, the container reads nothing and the error does not mention SELinux.
+# :Z applies a *private* label, so two containers sharing this directory
+# relabel it out from under each other; two test runs at once then fail with a
+# permission error that has nothing to do with either test.
 in_image() {
     image_exists || { note "$IMAGE not built yet"; build_image; }
     podman run --rm \
         --network=none \
-        -v "$REPO_ROOT":/app:Z \
+        -v "$REPO_ROOT":/app:z \
         -w /app/api \
         -e PYTHONDONTWRITEBYTECODE=1 \
         "$@"
@@ -119,7 +122,7 @@ in_image() {
 in_image_networked() {
     image_exists || { note "$IMAGE not built yet"; build_image; }
     podman run --rm \
-        -v "$REPO_ROOT":/app:Z \
+        -v "$REPO_ROOT":/app:z \
         -w /app/api \
         "$@"
 }
@@ -190,22 +193,26 @@ case "$cmd" in
             --network "${ASKWELL_COMPOSE_NETWORK:-askwell_default}" \
             --env-file "$REPO_ROOT/.env" \
             -e ASKWELL_DATABASE_URL="postgresql://$(_db_user):$(_db_password)@postgres:5432/$(_db_name)" \
-            -v "$REPO_ROOT":/app:Z \
+            -v "$REPO_ROOT":/app:z \
             -w /app/api \
             "$IMAGE" alembic "$@"
         ;;
 
     test-db)
-        # The invariants assert what the database refuses, so they need a real
-        # one. They are deselected from `test` because that runs with no
-        # network; here they are selected explicitly and fail — rather than
-        # skip — if the database is not there.
+        # These assert what the database refuses, so they need a real one. They
+        # are deselected from `test` because that runs with no network; here
+        # they are selected explicitly and fail — rather than skip — if the
+        # database is not there.
+        #
+        # TEST_DATABASE_URL names the server, not the database to use: the
+        # harness creates its own for the run and drops it afterwards, so a run
+        # never touches the development data and two runs cannot collide.
         podman image exists "$IMAGE" || build_image
         podman run --rm "${TTY_FLAGS[@]}" \
             --network "${ASKWELL_COMPOSE_NETWORK:-askwell_default}" \
             -e TEST_DATABASE_URL="postgresql://$(_db_user):$(_db_password)@postgres:5432/$(_db_name)" \
-            -e TEST_APP_DATABASE_URL="postgresql://askwell_app:$(_app_password)@postgres:5432/$(_db_name)" \
-            -v "$REPO_ROOT":/app:Z \
+            -e TEST_APP_PASSWORD="$(_app_password)" \
+            -v "$REPO_ROOT":/app:z \
             -w /app/api \
             "$IMAGE" pytest -m requires_db "$@"
         ;;

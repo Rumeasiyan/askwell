@@ -34,10 +34,22 @@ from sqlalchemy.dialects import postgresql
 
 from askwell.config import load_settings
 
-# The width of every embedding column. Read from configuration rather than
-# written here, because changing the embedding model is a configuration change
-# plus a re-embed, not a schema edit. bge-m3 gives 1024.
-EMBEDDING_DIMENSIONS = load_settings().embedding_dimensions
+
+def _embedding_dimensions() -> int:
+    """The width of every embedding column.
+
+    Read from configuration rather than written here, because changing the
+    embedding model is a configuration change plus a re-embed, not a schema
+    edit. bge-m3 gives 1024.
+
+    Read inside `upgrade()` rather than at import. A migration module is
+    imported whenever Alembic enumerates revisions — including by tooling that
+    has no reason to hold Askwell's configuration — and reading settings at
+    import turns "list the migrations" into "fail because the database
+    password is not set".
+    """
+    return load_settings().embedding_dimensions
+
 
 # English for v1. The Tamil configuration below exists so that adding Tamil
 # later is a change to this name, not a re-index of everyone's corpus.
@@ -63,6 +75,8 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    embedding_dimensions = _embedding_dimensions()
+
     _create_extensions()
     _create_text_search_configurations()
 
@@ -290,7 +304,7 @@ def upgrade() -> None:
         sa.Column("origin", sa.String(length=32), nullable=False),
         sa.Column("confidence", sa.Numeric(precision=4, scale=3), nullable=True),
         sa.Column("superseded_by", sa.UUID(), nullable=True),
-        sa.Column("embedding", pgvector.sqlalchemy.Vector(EMBEDDING_DIMENSIONS), nullable=True),
+        sa.Column("embedding", pgvector.sqlalchemy.Vector(embedding_dimensions), nullable=True),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -322,7 +336,7 @@ def upgrade() -> None:
         sa.Column("page_to", sa.Integer(), nullable=True),
         sa.Column("heading", sa.Text(), nullable=True),
         sa.Column("content", sa.Text(), nullable=True),
-        sa.Column("embedding", pgvector.sqlalchemy.Vector(EMBEDDING_DIMENSIONS), nullable=True),
+        sa.Column("embedding", pgvector.sqlalchemy.Vector(embedding_dimensions), nullable=True),
         sa.ForeignKeyConstraint(
             ["document_id"],
             ["documents.id"],

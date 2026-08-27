@@ -25,7 +25,15 @@ target_metadata = Base.metadata
 
 
 def _url() -> str:
-    """The connection string, from configuration and never from alembic.ini."""
+    """The connection string, from configuration and never from alembic.ini.
+
+    A caller may override it through Alembic's own config — which is how the
+    test harness migrates a disposable database without setting environment
+    variables for a process it does not own.
+    """
+    override = config.get_main_option("sqlalchemy.url", None)
+    if override:
+        return driver_url(override)
     return driver_url(load_settings().database_url.get_secret_value())
 
 

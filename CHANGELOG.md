@@ -4,6 +4,21 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.1.9 — 2026-08-27
+
+`M0-FOUND-TEST-005`. The test harness, and what it guarantees.
+
+### Added
+
+- A disposable database per run: created, migrated from empty, dropped. Two runs cannot collide, and a database orphaned by a crashed run is swept up by the next one — by age read from its name, so a live run is never taken.
+- `api/tests/test_harness.py` — the harness asserts its own promises, including that the migration chain applied from empty **with its invariants**, which creating the schema from model metadata would silently skip.
+- `AGENTS.md` §6 records the test convention.
+
+### Fixed
+
+- **`scripts/dev.sh` mounted the repository with `:Z`**, a *private* SELinux relabel, so two containers sharing it relabelled it out from under each other. Two test runs at once failed with a permission error naming a file neither test had touched. Now `:z`.
+- **A migration read configuration at import time**, which turned "enumerate the revisions" into "fail because the database password is not set". It is read inside `upgrade()`, where it is used.
+
 ## 0.1.8 — 2026-08-27
 
 `M0-DATA-OBS-015`. Hash-chained audit stores, and the trace ring buffer.

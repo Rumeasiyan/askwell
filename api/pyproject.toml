@@ -75,7 +75,7 @@ warn_unreachable = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 # Database-backed tests are deselected by default because the default run has
 # no network at all (C1, see scripts/dev.sh). They are not skipped silently:
 # `scripts/dev.sh test-db` selects them and fails if the database is not there.

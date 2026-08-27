@@ -90,3 +90,16 @@ def test_settings_are_frozen(settings: Settings) -> None:
 
 def test_prefix_is_what_the_messages_claim() -> None:
     assert ENV_PREFIX == "ASKWELL_"
+
+
+def test_the_api_binds_to_loopback_by_default() -> None:
+    """Not a preference. The whole corpus is on the other side of it.
+
+    `0.0.0.0` would put every document the user has ever added onto whatever
+    network they happen to be on. M0-STACK-SEC-012 proves the binding from
+    outside; this catches the default being changed by someone who thought it
+    was making local development easier.
+    """
+    from askwell.config import Settings
+
+    assert Settings.model_fields["host"].default == "127.0.0.1"

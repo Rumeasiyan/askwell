@@ -13,7 +13,6 @@ from Postgres, rather than quietly leaving deleted material in search results
 on somebody's machine.
 """
 
-import os
 import uuid
 from collections.abc import Iterator
 
@@ -22,38 +21,19 @@ import pytest
 
 pytestmark = pytest.mark.requires_db
 
-OWNER_URL = "TEST_DATABASE_URL"
-APP_URL = "TEST_APP_DATABASE_URL"
-
-
-def _url(name: str) -> str:
-    """The connection string, or a failure that says how to run these.
-
-    Deliberately not `pytest.skip`. A test that quietly passes when it did not
-    run is worse than one that fails, because the summary line says the same
-    thing either way.
-    """
-    value = os.environ.get(name)
-    if not value:
-        raise RuntimeError(
-            f"{name} is not set. These tests assert what the database refuses, "
-            f"so they need a real one. Run: scripts/dev.sh test-db"
-        )
-    return value
-
 
 @pytest.fixture
-def owner() -> Iterator[psycopg.Connection[tuple[object, ...]]]:
+def owner(database_url: str) -> Iterator[psycopg.Connection[tuple[object, ...]]]:
     """Connected as the table owner, for setting up rows."""
-    with psycopg.connect(_url(OWNER_URL), autocommit=True) as connection:
+    with psycopg.connect(database_url, autocommit=True) as connection:
         yield connection
         connection.execute("TRUNCATE sources, conversations CASCADE")
 
 
 @pytest.fixture
-def application() -> Iterator[psycopg.Connection[tuple[object, ...]]]:
+def application(app_database_url: str) -> Iterator[psycopg.Connection[tuple[object, ...]]]:
     """Connected as Askwell connects: `askwell_app`, which owns nothing."""
-    with psycopg.connect(_url(APP_URL), autocommit=True) as connection:
+    with psycopg.connect(app_database_url, autocommit=True) as connection:
         yield connection
 
 
