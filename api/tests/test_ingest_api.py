@@ -129,9 +129,10 @@ def test_progress_is_readable_without_holding_the_request_that_started_the_work(
         assert body["estimate"]["seconds"] is None
         assert body["concurrency"] == settings.ingest_concurrency
         assert body["sources"][0]["askable"] is False
-        # Nothing is built yet, and the surface says which ticket that is
-        # rather than showing an empty queue that appears to have finished.
-        assert [stage["built"] for stage in body["stages"]] == [False, False, False]
+        # `extract` is real since `M1-EXTRACT-ING-026`; `chunk` and `embed` are
+        # not, and the surface says which ticket that is rather than showing an
+        # empty queue that appears to have finished.
+        assert [stage["built"] for stage in body["stages"]] == [True, False, False]
 
         document_id = body["next"][0]["document_id"]
         refused = client.post(f"/ingest/documents/{document_id}/retry")

@@ -19,6 +19,7 @@ EXPECTED_TABLES = {
     "roots",
     "sources",
     "documents",
+    "document_pages",
     "ingest_jobs",
     "chunks",
     "schema_notes",
@@ -102,6 +103,29 @@ def test_a_citation_survives_the_deletion_of_its_document() -> None:
         "citations.chunk_id must not cascade: the chunk row exists so that an "
         "old citation still resolves after the document is deleted"
     )
+
+
+def test_a_page_is_unique_per_document_and_cascades_with_it() -> None:
+    """`M1-EXTRACT-ING-026`. One row per page, and no orphan when the file goes.
+
+    Unlike a citation's chunk, a page has nothing that needs to survive the
+    document — nobody cites "page 14 of a deleted file" independently of the
+    document citation that already names it — so this one does cascade.
+    """
+    pages = table("document_pages")
+    assert {"document_id", "page_number", "text", "has_text"} <= {c.name for c in pages.c}
+    assert pages.c.text.nullable
+    assert not pages.c.has_text.nullable
+
+    unique_columns = {
+        tuple(c.name for c in constraint.columns)
+        for constraint in pages.constraints
+        if constraint.__class__.__name__ == "UniqueConstraint"
+    }
+    assert ("document_id", "page_number") in unique_columns
+
+    document_fk = next(fk for fk in pages.foreign_keys if fk.column.table.name == "documents")
+    assert document_fk.ondelete == "CASCADE"
 
 
 def test_chunk_content_and_embedding_are_nullable_because_deletion_clears_them() -> None:

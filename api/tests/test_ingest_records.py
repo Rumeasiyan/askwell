@@ -16,11 +16,13 @@ document ready is enough, and the source says so while the rest continue.
 dropped* — including that its reason survives, which is why the record is in
 Postgres rather than in the queue.
 
-The pipeline has no stages installed yet (extraction is `M1-EXTRACT-ING-026`),
-so the tests that need one install their own. That is not a stand-in for the
-real thing: what is under test is the harness — claim, progress, failure,
-retry, resume — and a test stage is how you assert a harness without also
-asserting a PDF library.
+Most of the pipeline still has no stage installed (`chunk` and `embed` are
+`M1-INDEX-ING-031` and `M1-INDEX-ING-032`), so most tests here install one of
+their own rather than exercise a real one. That is not a stand-in for the real
+thing: what is under test is the harness — claim, progress, failure, retry,
+resume — and a test stage is how you assert a harness without also asserting a
+PDF library. `extract` is real since `M1-EXTRACT-ING-026`; the tests naming it
+below exercise the installed stage directly.
 """
 
 import uuid
@@ -41,9 +43,56 @@ pytestmark = pytest.mark.requires_db
 
 TABLES = "roots, sources, documents, ingest_jobs, audit_decisions"
 
-PDF = b"%PDF-1.7\nEither party may terminate on ninety days written notice.\n"
-OTHER = b"%PDF-1.7\nThe tenant shall pay rent monthly in advance.\n"
-THIRD = b"%PDF-1.7\nThe supplier warrants the goods for twelve months.\n"
+
+def _pdf(*pages: str | None, rotate: int = 0) -> bytes:
+    """A PDF pdfium can actually open: one object per page, `None` for a
+    blank one, an optional `/Rotate` on every page.
+
+    `M1-EXTRACT-ING-026` installed a real `extract` stage, so the bytes these
+    tests hand it have to be a document pdfium can parse — the placeholder
+    `%PDF-1.7\\n<text>` used before this ticket was enough to pass content
+    detection and nothing more. One builder covers this ticket's stated edge
+    cases: a mix of text and blank pages, a document with none at all, and a
+    page rotated in place.
+    """
+    count = len(pages)
+    font_number = 3 + count
+    rotate_entry = f"/Rotate {rotate} " if rotate else ""
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        f"<< /Type /Pages /Kids [{' '.join(f'{3 + i} 0 R' for i in range(count))}] "
+        f"/Count {count} >>".encode(),
+    ]
+    for page_index in range(count):
+        content_number = font_number + 1 + page_index
+        objects.append(
+            f"<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 {font_number} 0 R >> >> "
+            f"/MediaBox [0 0 612 792] {rotate_entry}/Contents {content_number} 0 R >>".encode()
+        )
+    objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    for page in pages:
+        content = (
+            b"" if page is None else f"BT /F1 12 Tf 72 700 Td ({page}) Tj ET".encode("latin-1")
+        )
+        objects.append(b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream")
+
+    body = bytearray(b"%PDF-1.7\n")
+    offsets = []
+    for number, obj in enumerate(objects, start=1):
+        offsets.append(len(body))
+        body += f"{number} 0 obj\n".encode() + obj + b"\nendobj\n"
+    xref_offset = len(body)
+    body += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode()
+    for offset in offsets:
+        body += f"{offset:010d} 00000 n \n".encode()
+    body += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n".encode()
+    body += f"startxref\n{xref_offset}\n%%EOF".encode()
+    return bytes(body)
+
+
+PDF = _pdf("Either party may terminate on ninety days written notice.")
+OTHER = _pdf("The tenant shall pay rent monthly in advance.")
+THIRD = _pdf("The supplier warrants the goods for twelve months.")
 
 
 @pytest.fixture
@@ -186,6 +235,7 @@ async def test_parking_a_whole_drop_does_not_flap_the_sources_status(
     session: AsyncSession,
     tmp_path: Path,
     unreachable_queue: Settings,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A source that never left `queued` writes no decisions records.
 
@@ -195,7 +245,13 @@ async def test_parking_a_whole_drop_does_not_flap_the_sources_status(
     files producing six audit records describing work that never happened. The
     status is read from the documents instead, and a document is only
     `indexing` once a stage is actually running over it.
+
+    `extract` is real now, so this test installs a pipeline of its own with
+    nothing built — the scenario it guards against is "the first stage has not
+    arrived yet", which `M1-EXTRACT-ING-026` moved one stage further along
+    rather than closed off; `chunk` is exactly that stage today.
     """
+    monkeypatch.setattr(ingest, "STAGES", (Stage("extract", "M1-EXTRACT-ING-026"),))
     await nominate(session, str(tmp_path))
     for name, body in (("a.pdf", PDF), ("b.pdf", OTHER), ("c.pdf", THIRD)):
         written(tmp_path, name, body)
@@ -224,11 +280,12 @@ async def test_a_job_parks_at_the_first_stage_that_has_not_been_built(
 ) -> None:
     """The honest resting place, and the sentence it produces.
 
-    Nothing has read the file, so the document must not be `ready` — that would
-    tell retrieval it has passages it does not have, which is the C4 failure
-    wearing a progress bar. It must not be `failed` either: nothing is wrong
-    with the file. `parked`, naming the stage and its ticket, is what lets the
-    surface say what has to arrive before these files are searchable.
+    `extract` is real since `M1-EXTRACT-ING-026`, so this document is actually
+    read — and it still must not be `ready`, because chunking has not run and
+    nothing is retrievable yet: that would tell retrieval it has passages it
+    does not have, the C4 failure wearing a progress bar. It must not be
+    `failed` either: nothing is wrong with the file. `parked`, naming `chunk`
+    and its ticket, is what lets the surface say what has to arrive next.
     """
     await nominate(session, str(tmp_path))
     written(tmp_path, "contract.pdf")
@@ -246,8 +303,131 @@ async def test_a_job_parks_at_the_first_stage_that_has_not_been_built(
         )
     ).one()
     assert row[0] == "parked"
-    assert row[1] == "extract"
+    assert row[1] == "chunk"
     assert row[2] == "queued"
+
+    page = (
+        await session.execute(
+            text("SELECT page_number, has_text FROM document_pages WHERE document_id = :id"),
+            {"id": documents[0]},
+        )
+    ).one()
+    assert page[0] == 1
+    assert page[1] is True
+
+
+async def test_a_page_yielding_no_text_is_recorded_rather_than_skipped(
+    factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    tmp_path: Path,
+    unreachable_queue: Settings,
+) -> None:
+    """The ticket's own validation rule: a blank page is a row, not a gap.
+
+    A two-page document with a text layer on one page and not the other is
+    the ticket's own edge case — "mixed handling per page, not per document".
+    Because *something* extracted, the document is not routed to OCR; it
+    parks at `chunk` like any other extracted document, with the blank page on
+    record for `M1-EXTRACT-ING-028` to find later.
+    """
+    await nominate(session, str(tmp_path))
+    written(tmp_path, "mixed.pdf", _pdf("Page one has words on it.", None))
+    documents = await recorded(session, tmp_path, "mixed.pdf")
+
+    assert await ingest.process(factory, unreachable_queue, documents[0]) == "parked"
+
+    pages = (
+        await session.execute(
+            text(
+                "SELECT page_number, has_text, text FROM document_pages "
+                "WHERE document_id = :id ORDER BY page_number"
+            ),
+            {"id": documents[0]},
+        )
+    ).all()
+    assert [(row[0], row[1]) for row in pages] == [(1, True), (2, False)]
+    assert pages[1][2] is None
+
+    row = (
+        await session.execute(
+            text(
+                "SELECT j.awaiting, d.page_count FROM ingest_jobs j "
+                "JOIN documents d ON d.id = j.document_id WHERE j.document_id = :id"
+            ),
+            {"id": documents[0]},
+        )
+    ).one()
+    assert row[0] == "chunk"
+    assert row[1] == 2
+
+
+async def test_a_pdf_with_no_usable_text_anywhere_parks_for_ocr(
+    factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    tmp_path: Path,
+    unreachable_queue: Settings,
+) -> None:
+    """No text layer at all is not a failure — it is a document that needs a
+    stage this ticket explicitly puts out of scope: OCR, `M1-EXTRACT-ING-028`.
+
+    Chunking a document with nothing extracted would tell retrieval a scanned
+    contract has no content, when the truth is nobody has read it with OCR
+    yet — the C5 failure with a different cause.
+    """
+    await nominate(session, str(tmp_path))
+    written(tmp_path, "scan.pdf", _pdf(None, None))
+    documents = await recorded(session, tmp_path, "scan.pdf")
+
+    assert await ingest.process(factory, unreachable_queue, documents[0]) == "parked"
+
+    row = (
+        await session.execute(
+            text(
+                "SELECT j.state, j.awaiting, d.status FROM ingest_jobs j "
+                "JOIN documents d ON d.id = j.document_id WHERE j.document_id = :id"
+            ),
+            {"id": documents[0]},
+        )
+    ).one()
+    assert row[0] == "parked"
+    assert row[1] == "ocr"
+    assert row[2] == "queued"
+
+    has_text = (
+        (
+            await session.execute(
+                text("SELECT has_text FROM document_pages WHERE document_id = :id"),
+                {"id": documents[0]},
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert has_text == [False, False]
+
+
+async def test_a_rotated_page_is_read_in_the_correct_orientation(
+    factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    tmp_path: Path,
+    unreachable_queue: Settings,
+) -> None:
+    """`/Rotate 90` is the stated edge case; pdfium's own text extraction
+    already accounts for it, so this asserts the behaviour rather than any
+    code in `extract_pdf` that would otherwise look unexercised."""
+    await nominate(session, str(tmp_path))
+    written(tmp_path, "rotated.pdf", _pdf("Upside down or not, this reads correctly.", rotate=90))
+    documents = await recorded(session, tmp_path, "rotated.pdf")
+
+    await ingest.process(factory, unreachable_queue, documents[0])
+
+    page_text = (
+        await session.execute(
+            text("SELECT text FROM document_pages WHERE document_id = :id"),
+            {"id": documents[0]},
+        )
+    ).scalar_one()
+    assert page_text == "Upside down or not, this reads correctly."
 
 
 async def test_an_installed_stage_runs_and_the_document_becomes_ready(
@@ -263,7 +443,9 @@ async def test_an_installed_stage_runs_and_the_document_becomes_ready(
 
     seen: list[str] = []
 
-    async def extract(work: Work, report: Report) -> None:
+    async def extract(
+        work: Work, report: Report, factory: async_sessionmaker[AsyncSession]
+    ) -> None:
         seen.append(work.filename)
         await report(len(PDF), len(PDF))
 
@@ -307,7 +489,7 @@ async def test_progress_moves_inside_a_single_enormous_file(
 
     observed: list[tuple[int | None, int | None]] = []
 
-    async def slow(work: Work, report: Report) -> None:
+    async def slow(work: Work, report: Report, factory: async_sessionmaker[AsyncSession]) -> None:
         for done in (250, 500, 1000):
             await report(done, 1000)
             async with factory() as watcher:
@@ -356,7 +538,7 @@ async def test_progress_writes_are_throttled(
     written(tmp_path, "scan.pdf")
     documents = await recorded(session, tmp_path, "scan.pdf")
 
-    async def chatty(work: Work, report: Report) -> None:
+    async def chatty(work: Work, report: Report, factory: async_sessionmaker[AsyncSession]) -> None:
         for done in (10, 20, 30, 40):
             await report(done, 100)
 
@@ -392,7 +574,9 @@ async def test_a_failing_stage_is_retried_and_then_left_failed_with_its_reason(
     written(tmp_path, "broken.pdf")
     documents = await recorded(session, tmp_path, "broken.pdf")
 
-    async def always_fails(work: Work, report: Report) -> None:
+    async def always_fails(
+        work: Work, report: Report, factory: async_sessionmaker[AsyncSession]
+    ) -> None:
         raise ValueError("the text layer is not readable")
 
     monkeypatch.setattr(ingest, "STAGES", (Stage("extract", "M1-EXTRACT-ING-026", always_fails),))
@@ -433,7 +617,9 @@ async def test_a_failed_document_can_be_retried_and_its_attempts_are_forgiven(
     written(tmp_path, "broken.pdf")
     documents = await recorded(session, tmp_path, "broken.pdf")
 
-    async def always_fails(work: Work, report: Report) -> None:
+    async def always_fails(
+        work: Work, report: Report, factory: async_sessionmaker[AsyncSession]
+    ) -> None:
         raise OSError("the drive is not connected")
 
     monkeypatch.setattr(ingest, "STAGES", (Stage("extract", "M1-EXTRACT-ING-026", always_fails),))
@@ -540,6 +726,81 @@ async def test_a_restart_returns_an_interrupted_job_to_the_queue(
     assert row[0] == "queued"
     assert row[1] == 0
     assert row[2] is None
+
+
+async def test_a_document_parked_before_extraction_landed_is_revived_at_startup(
+    session: AsyncSession, tmp_path: Path
+) -> None:
+    """#109: a document parked before its stage was built must not stay
+    parked forever after the stage lands.
+
+    `M1-ADD-ING-025` declared the pipeline with nothing installed, so anything
+    added before `M1-EXTRACT-ING-026` landed is sitting `parked` naming
+    `extract`. Nothing re-queues a `parked` row on its own — the reconcile
+    timer only re-dispatches `queued` ones — so without this, that document's
+    library entry stays "recorded and waiting" through the very upgrade meant
+    to fix it, discoverable only by someone noticing a library that never
+    reaches `ready`.
+    """
+    await nominate(session, str(tmp_path))
+    written(tmp_path, "contract.pdf")
+    documents = await recorded(session, tmp_path, "contract.pdf")
+
+    await session.execute(
+        text(
+            "UPDATE ingest_jobs SET state = 'parked', stage = NULL, awaiting = 'extract' "
+            "WHERE document_id = :id"
+        ),
+        {"id": documents[0]},
+    )
+    await session.commit()
+
+    assert await ingest.resume(session) == 1
+    await session.commit()
+
+    row = (
+        await session.execute(
+            text("SELECT state, awaiting FROM ingest_jobs WHERE document_id = :id"),
+            {"id": documents[0]},
+        )
+    ).one()
+    assert row[0] == "queued"
+    assert row[1] is None
+
+
+async def test_a_document_parked_for_a_stage_still_unbuilt_is_left_alone(
+    session: AsyncSession, tmp_path: Path
+) -> None:
+    """The other half of #109's fix: reviving a `parked` row only when its
+    stage is actually installed. Without the `awaiting` filter, a document
+    waiting on `chunk` would be re-claimed by `extract`, park again on the very
+    next stage, forever — the bug this fix exists for, reproduced one stage
+    later.
+    """
+    await nominate(session, str(tmp_path))
+    written(tmp_path, "contract.pdf")
+    documents = await recorded(session, tmp_path, "contract.pdf")
+
+    await session.execute(
+        text(
+            "UPDATE ingest_jobs SET state = 'parked', stage = 'extract', awaiting = 'chunk' "
+            "WHERE document_id = :id"
+        ),
+        {"id": documents[0]},
+    )
+    await session.commit()
+
+    assert await ingest.resume(session) == 0
+    await session.commit()
+
+    row = (
+        await session.execute(
+            text("SELECT state, awaiting FROM ingest_jobs WHERE document_id = :id"),
+            {"id": documents[0]},
+        )
+    ).one()
+    assert row[0] == "parked"
+    assert row[1] == "chunk"
 
 
 async def test_reconcile_re_dispatches_work_the_queue_forgot(
@@ -664,7 +925,9 @@ async def test_a_source_is_askable_before_every_file_has_finished(
         written(tmp_path, name, body)
     documents = await recorded(session, tmp_path, "a.pdf", "b.pdf", "c.pdf")
 
-    async def extract(work: Work, report: Report) -> None:
+    async def extract(
+        work: Work, report: Report, factory: async_sessionmaker[AsyncSession]
+    ) -> None:
         await report(1, 1)
 
     monkeypatch.setattr(ingest, "STAGES", (Stage("extract", "M1-EXTRACT-ING-026", extract),))
@@ -700,7 +963,9 @@ async def test_a_source_changing_status_is_a_decisions_record(
         written(tmp_path, name, body)
     documents = await recorded(session, tmp_path, "a.pdf", "b.pdf")
 
-    async def extract(work: Work, report: Report) -> None:
+    async def extract(
+        work: Work, report: Report, factory: async_sessionmaker[AsyncSession]
+    ) -> None:
         await report(1, 1)
 
     monkeypatch.setattr(ingest, "STAGES", (Stage("extract", "M1-EXTRACT-ING-026", extract),))
@@ -769,8 +1034,8 @@ async def test_the_snapshot_reports_queue_position_and_what_is_being_waited_for(
     assert [item["filename"] for item in state["next"]] == ["b.pdf", "c.pdf"]
     assert state["queue_length"] == 2
     assert state["awaiting"] == {
-        "stage": "extract",
-        "ticket": "M1-EXTRACT-ING-026",
+        "stage": "chunk",
+        "ticket": "M1-INDEX-ING-031",
         "documents": 1,
     }
     assert state["sources"][0]["askable"] is False
@@ -793,7 +1058,9 @@ async def test_the_snapshot_counts_are_this_machines_own_and_nothing_leaves_it(
         written(tmp_path, name, body)
     documents = await recorded(session, tmp_path, "a.pdf", "b.pdf")
 
-    async def extract(work: Work, report: Report) -> None:
+    async def extract(
+        work: Work, report: Report, factory: async_sessionmaker[AsyncSession]
+    ) -> None:
         if work.filename == "b.pdf":
             raise ValueError("encrypted")
         await report(1, 1)

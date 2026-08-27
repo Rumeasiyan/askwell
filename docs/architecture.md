@@ -227,6 +227,11 @@ documents          id, source_id, filename, path, mime, sha256, page_count,
                    version, superseded_by, deleted_at, deleted_reason,
                    status, ocr_confidence, missing_since, added_at        -- path/missing_since NEW
 
+document_pages     id, document_id, page_number, text, has_text, added_at -- NEW TABLE
+                   -- extraction's own output, one row per page whether or not
+                   -- it has text; chunking reads this rather than re-parsing
+                   -- the file. `M1-EXTRACT-ING-026`.
+
 chunks             id, document_id, ordinal, page_from, page_to, heading,
                    content, content_tsv, embedding vector(1024)
 

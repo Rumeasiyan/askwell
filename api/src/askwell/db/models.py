@@ -24,6 +24,7 @@ from typing import Any
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -262,6 +263,35 @@ class Document(Base):
     # A poor scan is flagged in the library, shown beside the image in the
     # source viewer, and can raise a clarification.
     ocr_confidence: Mapped[float | None] = mapped_column(Numeric(4, 3))
+    added_at: Mapped[datetime] = created_at()
+
+
+class DocumentPage(Base):
+    """One page's text, as extraction left it. `M1-EXTRACT-ING-026`.
+
+    A row exists for every page, whether or not extraction found text on it —
+    `has_text = false` is the record the OCR ticket reads to know which pages
+    it owns, and a page silently skipped here would be a page OCR never learns
+    it needs to look at. Chunking (`M1-INDEX-ING-031`) reads this table rather
+    than re-parsing the file, which is also what lets extraction and chunking
+    be different jobs.
+    """
+
+    __tablename__ = "document_pages"
+    __table_args__ = (
+        UniqueConstraint(
+            "document_id", "page_number", name="uq_document_pages_document_id_page_number"
+        ),
+        Index("ix_document_pages_document_id", "document_id"),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), nullable=False
+    )
+    page_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str | None] = mapped_column(Text)
+    has_text: Mapped[bool] = mapped_column(Boolean, nullable=False)
     added_at: Mapped[datetime] = created_at()
 
 

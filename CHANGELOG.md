@@ -4,6 +4,21 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.7 — 2026-08-28
+
+The ingestion pipeline's first real stage. `M1-EXTRACT-ING-026`.
+
+### Added
+
+- **PDF text-layer extraction, page by page.** `pypdfium2` reads each page of a digital PDF and records its text with a page number that matches what a person sees at the bottom of the printed page. `documents.page_count` is set from the real page count, not a guess.
+- **`document_pages`, one row per page whether or not it has text.** A blank page is recorded rather than skipped, so the OCR ticket (`M1-EXTRACT-ING-028`) can find exactly the pages it owns without extraction having decided anything on its behalf.
+- **A PDF with no usable text layer anywhere parks naming `M1-EXTRACT-ING-028`**, the same way a document waiting on chunking parks naming that ticket — not indexed empty, not failed. A document with a text layer on some pages and not others is not this case: it proceeds, with its blank pages on record.
+- **A document parked before this version is revived, not stranded.** Anything added before this ticket landed was sitting `parked` waiting for `extract`; the worker now returns those to the queue at startup instead of leaving them parked forever. Issue [#109](https://github.com/Rumeasiyan/askwell/issues/109).
+
+### Changed
+
+- A pipeline stage now receives a database session of its own, not only the file and a progress callback — the shape every real stage needs, `extract` being the first to use it.
+
 ## 0.2.6 — 2026-08-28
 
 Indexing stops belonging to the page you are looking at. `M1-ADD-ING-025`.

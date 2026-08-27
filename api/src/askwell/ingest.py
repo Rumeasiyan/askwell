@@ -19,16 +19,19 @@ holding it — and each of those loses work the user believes is underway. So
 about. Dispatch failing is a delay; it is never a loss.
 
 **A stage that has not been built is `parked`, not finished and not failed.**
-The pipeline is declared in full — extract, chunk, embed — and today none of it
-exists: those are `M1-EXTRACT-ING-026`, `M1-INDEX-ING-031` and
-`M1-INDEX-ING-032`, and this ticket's own scope puts them out of it. A job
-therefore runs, reaches `extract`, finds nothing installed and stops there,
-saying so. It does not mark the document `ready`, which would tell the library a
-file is searchable when nothing has read it; and it does not mark it failed,
-which would fill a fresh install with red. `docs/states-and-edge-cases.md` §3
-asks for exactly this sentence — "files queued but nothing indexed yet ... an
-honest sentence, not a progress bar that never moves" — and `awaiting` is what
-lets the surface name what has to arrive first.
+The pipeline is declared in full — extract, chunk, embed — and at the time this
+was written none of it existed: those are `M1-EXTRACT-ING-026`,
+`M1-INDEX-ING-031` and `M1-INDEX-ING-032`, and `M1-ADD-ING-025`'s own scope put
+them out of it. `M1-EXTRACT-ING-026` has since installed `extract`, so a job
+now runs it for real and parks at `chunk` — or, for a PDF with no usable text
+layer anywhere, parks naming `M1-EXTRACT-ING-028` instead. It does not mark the
+document `ready`, which would tell the library a file is searchable when
+nothing has chunked it yet; and it does not mark it failed, which would fill a
+fresh install with red for a file nothing is wrong with.
+`docs/states-and-edge-cases.md` §3 asks for exactly this sentence — "files
+queued but nothing indexed yet ... an honest sentence, not a progress bar that
+never moves" — and `awaiting` is what lets the surface name what has to arrive
+first.
 
 **Progress is measured inside a file as well as between them.** A single 900-page
 scan is hours, and a count of "3 of 12" that does not move for two of them is
@@ -60,6 +63,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from askwell import extract_pdf
 from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
@@ -126,7 +130,10 @@ class Work:
 Report = Callable[[int, int], Awaitable[None]]
 """How a stage says how far into a file it is: bytes done, bytes total."""
 
-StageFn = Callable[[Work, Report], Awaitable[None]]
+StageFn = Callable[[Work, Report, async_sessionmaker[AsyncSession]], Awaitable[None]]
+"""What a stage is handed: the file, a way to report progress, and a session
+factory of its own — every real stage writes something durable (pages, chunks,
+embeddings), and `Work` alone is not enough to do that."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,12 +151,20 @@ class Stage:
     run: StageFn | None = None
 
 
+# Not a pipeline step — OCR is inside `extract`'s own scope
+# (`M1-EXTRACT-ING-026`'s "Detection of a PDF with no usable text layer,
+# handing off to OCR"), not a fourth entry in `STAGES`. It exists here so a
+# document with no usable text layer at all can park naming it, when
+# `extract_pdf.run` raises `extract_pdf.NeedsOCR`.
+OCR_STAGE = Stage("ocr", "M1-EXTRACT-ING-028")
+
+
 # The pipeline, in order. Declared in full and installed in part: naming the
 # steps that do not exist yet is what lets a queued document say what it is
 # waiting for instead of sitting at "queued" with no explanation. A later
 # ticket fills in `run` and changes nothing else here.
 STAGES: tuple[Stage, ...] = (
-    Stage("extract", "M1-EXTRACT-ING-026"),
+    Stage("extract", "M1-EXTRACT-ING-026", extract_pdf.run),
     Stage("chunk", "M1-INDEX-ING-031"),
     Stage("embed", "M1-INDEX-ING-032"),
 )
@@ -502,7 +517,14 @@ async def process(
                 await refresh_source(session, work.source_id)
 
         try:
-            await stage.run(work, report)
+            await stage.run(work, report, factory)
+        except extract_pdf.NeedsOCR:
+            # Not a failure: the file is fine and `M1-EXTRACT-ING-028` is what
+            # has to arrive before it has anything to chunk. Parked the same
+            # way a missing `Stage.run` is, so the surface renders both
+            # identically — naming the stage and its ticket.
+            await _park(factory, work, reached=reached, awaiting=OCR_STAGE)
+            return "parked"
         except Exception as error:  # a stage may raise anything at all
             await _fail(factory, settings, work, stage=stage, attempts=attempts, error=error)
             return "failed"
@@ -686,7 +708,8 @@ async def refresh_source(session: AsyncSession, source_id: uuid.UUID) -> str | N
 
 
 async def resume(session: AsyncSession) -> int:
-    """Return work a dead worker was holding to the queue.
+    """Return work a dead worker was holding to the queue, and revive what a
+    newly-installed stage unblocks.
 
     Run at worker startup, where it is safe: there is one worker on one
     machine, so anything still marked `running` when it starts is by definition
@@ -694,6 +717,14 @@ async def resume(session: AsyncSession) -> int:
     a machine that slept mid-import has not made the file any harder to read,
     and spending a retry on it would eventually mark a perfectly good document
     as failed for having been interrupted three times.
+
+    A `parked` row is also returned to the queue, but only when the stage it
+    is `awaiting` now has a `run` — otherwise a document parked for `chunk`
+    would be re-claimed by `extract` and re-park on the very next stage,
+    forever. `M1-ADD-ING-025` declared the pipeline in full and installed none
+    of it; without this, every document parked before `M1-EXTRACT-ING-026`
+    landed would still be parked after it, discovered only by whoever notices
+    a library that never reaches `ready` (#109).
     """
     result = await session.execute(
         text(
@@ -703,9 +734,26 @@ async def resume(session: AsyncSession) -> int:
         )
     )
     interrupted = [row[0] for row in result.all()]
+
+    ready_for = [stage.name for stage in installed()]
+    revived: list[uuid.UUID] = []
+    if ready_for:
+        revived_result = await session.execute(
+            text(
+                "UPDATE ingest_jobs SET state = 'queued', stage = NULL, awaiting = NULL, "
+                "started_at = NULL, finished_at = NULL "
+                "WHERE state = 'parked' AND awaiting = ANY(:names) "
+                "RETURNING document_id"
+            ),
+            {"names": ready_for},
+        )
+        revived = [row[0] for row in revived_result.all()]
+
     if interrupted:
         log.info("ingest_resumed_interrupted", documents=len(interrupted))
-    return len(interrupted)
+    if revived:
+        log.info("ingest_revived_parked", documents=len(revived), stages=ready_for)
+    return len(interrupted) + len(revived)
 
 
 async def pending(session: AsyncSession, limit: int = 500) -> list[uuid.UUID]:
@@ -883,7 +931,7 @@ async def snapshot(session: AsyncSession, settings: Settings) -> dict[str, Any]:
     )
 
     parked = waiting_on.first()
-    stage_tickets = {stage.name: stage.ticket for stage in STAGES}
+    stage_tickets = {stage.name: stage.ticket for stage in (*STAGES, OCR_STAGE)}
 
     return {
         "counts": counts,
