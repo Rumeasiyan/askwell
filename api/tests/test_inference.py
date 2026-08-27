@@ -168,3 +168,94 @@ def test_no_model_name_is_written_into_the_code() -> None:
             if pattern.search(line) and "llama.cpp" not in line and "llama-server" not in line:
                 offenders.append(f"{path.relative_to(root)}:{number}")
     assert not offenders, f"a model name appears in application code: {offenders}"
+
+
+# --- three roles ------------------------------------------------------------
+
+
+def test_each_role_is_read_back_separately(tmp_path: Path) -> None:
+    """Generation, embedding and reranking are three processes.
+
+    One llama.cpp cannot serve all three: `--reranking` needs its own model and
+    is mutually exclusive with generation, and a generation model's embeddings
+    are the wrong width for the schema entirely (issue #89).
+    """
+    write_state(
+        tmp_path,
+        state="ready",
+        model="generation.gguf",
+        roles={
+            "generation": {"state": "ready", "model": "generation.gguf"},
+            "embedding": {"state": "ready", "model": "bge-m3-FP16.gguf"},
+            "reranking": {"state": "model_missing", "reason": "No model file at /x.gguf."},
+        },
+    )
+    state = read(tmp_path / "state.json")
+
+    assert state.roles["embedding"].state is ProcessState.READY
+    assert state.roles["embedding"].model == "bge-m3-FP16.gguf"
+    assert state.roles["reranking"].state is ProcessState.MODEL_MISSING
+
+
+def test_generation_is_what_the_top_level_reports(tmp_path: Path) -> None:
+    """ "The assistant" means generation to a user: they cannot ask a question
+    without it. Retrieval losing its reranker is a different sentence, and
+    reporting the assistant down for it would be false."""
+    write_state(
+        tmp_path,
+        state="ready",
+        model="generation.gguf",
+        roles={
+            "generation": {"state": "ready", "model": "generation.gguf"},
+            "reranking": {"state": "crashed"},
+        },
+    )
+    state = read(tmp_path / "state.json")
+    assert state.usable
+    assert state.roles["reranking"].state is ProcessState.CRASHED
+
+
+def test_a_stale_role_is_not_believed_either(tmp_path: Path) -> None:
+    """The same rule as the top level, applied per role.
+
+    A supervisor killed outright cannot write anything on the way out, and one
+    role's entry going stale must not read as that role being fine.
+    """
+    import time
+
+    write_state(
+        tmp_path,
+        state="ready",
+        roles={
+            "generation": {"state": "ready", "updated_at": time.time()},
+            "embedding": {"state": "ready", "updated_at": time.time() - 3600},
+        },
+    )
+    state = read(tmp_path / "state.json")
+    assert state.roles["embedding"].state is ProcessState.STOPPED
+
+
+def test_a_state_file_from_before_three_roles_still_reads(tmp_path: Path) -> None:
+    """The single-process shape, which every M0 install wrote.
+
+    Reading it as "no roles" rather than failing is what stops an upgrade from
+    reporting the assistant missing on the first launch after it.
+    """
+    write_state(tmp_path, state="ready", model="generation.gguf")
+    state = read(tmp_path / "state.json")
+    assert state.usable
+    assert state.roles == {}
+
+
+def test_the_supervisor_defines_the_three_roles() -> None:
+    """The host script cannot import ROLES — it is stdlib-only by necessity.
+
+    So the two lists are checked against each other, as with the state names.
+    """
+    import re
+
+    source = SUPERVISOR.read_text(encoding="utf-8")
+    declared = set(re.findall(r'^\s+\("(\w+)", "ASKWELL_', source, re.MULTILINE))
+    from askwell.inference.state import ROLES
+
+    assert declared == set(ROLES), "the supervisor's roles have drifted from ROLES"

@@ -7,61 +7,41 @@
 
 ## Current phase
 
-**M0 — It runs. COMPLETE, 21 of 21.** `0.2.0`.
+**M1 — It answers from my documents. In progress.** `0.2.1`. M0 complete, 21 of 21.
 
 The repository is no longer documentation only. `api/` exists: an image, manifests, the application, and 54 tests. The API starts, refuses bad configuration by name, and serves `GET /health` reporting five components separately. `podman compose up -d` brings up four services, the database carries the full v1 schema, and the interface loads at `http://127.0.0.1:8000`. `web/` builds to static assets and the API serves them — the `web` container is gone from the topology. The Compose stack, the database schema and the inference process do not exist yet — so all five health components correctly report `unreachable`.
 
-**Version:** `0.2.0` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
+**Version:** `0.2.1` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
 **Tracker:** `Rumeasiyan/askwell`. Working agreements in `AGENTS.md`. Backlog in `docs/backlog/`.
 
 ## Last completed
 
-**M0 — It runs. All twenty-one tickets.**
+**[#89](https://github.com/Rumeasiyan/askwell/issues/89)** — inference is three processes. This blocked M1 retrieval and is now cleared.
 
 ```
-podman compose up -d      four containers, plus the inference bridge
-scripts/dev.sh inference  llama.cpp, natively, on the host
-http://127.0.0.1:8000     the shell, on loopback and nowhere else
-
-database      reachable      assistant: ready
-queue         reachable      model:     Qwen3.5-4B-Q4_K_M.gguf
-worker        reachable      acceleration: cpu
-inference     reachable
-egress_proxy  reachable
+generation  ready   Qwen3.5-4B-Q4_K_M.gguf
+embedding   ready   bge-m3-FP16.gguf              1024 dimensions
+reranking   ready   bge-reranker-v2-m3-FP16.gguf
 ```
 
-216 tests, 36 of them against a real Postgres created and dropped per run. CI runs all of it on every push.
+Through the client, from inside the API container, over one socket:
 
-**The claims are checked rather than asserted.** An attempt to reach the internet is refused and counted. The API answers on loopback and nowhere else, proved from outside its own network namespace. The audit log cannot be rewritten by the application because it does not hold the grant. Every schema invariant is enforced by the database rather than by remembering.
+```
+generate: 8 tokens
+embed:    2 vectors of 1024 dimensions
+rerank:   "how much notice to end the lease?"
+  -2.419  Either party may terminate on ninety days written notice.
+  -7.846  The tenant shall pay rent monthly in advance.
+ -11.028  The premises shall be used for office purposes only.
+```
 
-**What running it caught that reading it would not have.** The audit log's append-only guarantee was decorative, because the application owned the tables and an owner bypasses its own grants. The worker was reported down while running perfectly, because an arq worker listens on nothing. A killed inference supervisor left the API reporting the assistant available. `.env.example` listed five variables out of nineteen. The changelog had two `0.1.0` headings. Rootless podman has no bridge interface on the host, and SELinux refuses a container connecting to an unconfined listener — between them those reshaped the whole inference design.
+The reranker puts the right passage first by a wide margin, which is the signal retrieval needs. **The scores are raw logits, not probabilities** — negative and unbounded — so only their order means anything, and the client returns them sorted rather than inviting a threshold on the number.
 
-**Three things known and written down rather than left to be discovered.**
+**Why this was necessary rather than tidy.** Embeddings from the generation model came back at 2560 dimensions where `chunks.embedding` is `vector(1024)`. They would not have been merely poor for retrieval — the database would have refused the insert. And `--reranking` needs its own model and is mutually exclusive with generation.
 
-- Inference needs three native processes, not one ([#89](https://github.com/Rumeasiyan/askwell/issues/89)). Embeddings from the generation model are 2560 dimensions where the schema is `vector(1024)`, and reranking needs its own model. **Blocks M1 retrieval.**
-- One container — the inference bridge — has host networking. `docs/architecture.md` §5 names it rather than glossing it.
-- The 8 GB "slow but usable" claim is still unmeasured ([#49](https://github.com/Rumeasiyan/askwell/issues/49)).
+Each role is supervised independently: one model missing does not stop the others, because a user with no reranker can still ask questions and reporting the assistant down for it would be false. Three supervisors share one state file, written under a lock — without it they read-modify-write over each other and a role's entry vanishes, which the API would read as that role never having reported.
 
-## Before M1 starts
-
-**The build runner's gate was a stub that returned success.** It printed *"gate commands are read from what M0 produced"* and `return 0` — so running M1 through it would have rubber-stamped every ticket while looking like it checked them. Worse than no gate: it converts "nobody checked" into "something checked and approved".
-
-It now runs six rows and fails on the absence of a summary line rather than on an exit code:
-
-| row | matches |
-| --- | --- |
-| lint | `All checks passed!` |
-| format | `files already formatted` |
-| typecheck | `Success: no issues found in` |
-| tests | `N passed`, **N > 0** |
-| web | `frontend checks passed` |
-| db-tests | `N passed`, **N > 0**, needs the stack |
-
-`scripts/dev.sh check` is deliberately **not** a row: it prints ruff's `All checks passed!` several steps before it finishes, and matching that reports success while format, typecheck and tests are still to run. That is what put `main` red on 2026-08-27, and there is now a test asserting no row does it.
-
-`db-tests` is its own row because `test` deselects them — a green `test` says nothing about the 36 tests that assert what the database refuses. It is skipped loudly and named when the stack is down, never silently.
-
-`scripts/gate.test.sh` — 22 tests. `docs/build-runner.md` §7.3 is filled from real output.
+Both models verified against the registry before their names were written down (C9): `bge-m3` is MIT with 36M downloads, `bge-reranker-v2-m3` is Apache-2.0 with 18M. Both ungated.
 
 ## Next task
 

@@ -197,6 +197,10 @@ class InferenceClient:
         if not isinstance(results, list):
             raise InferenceFailed("The assistant's ranking had no results in it.")
 
+        # The scores are raw logits, not probabilities — llama.cpp returns the
+        # reranker's output directly, so they are negative and unbounded. Only
+        # their order is meaningful, which is why this returns them sorted and
+        # the caller is not invited to threshold on the number itself.
         scored: list[tuple[int, float]] = []
         for item in results:
             if not isinstance(item, dict) or "index" not in item:

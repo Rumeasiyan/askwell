@@ -34,6 +34,7 @@ import contextlib
 import json
 import os
 import shutil
+import threading
 import signal
 import sys
 import time
@@ -62,16 +63,48 @@ HEARTBEAT_SECONDS = 10
 BACKOFF_SECONDS = (1, 2, 5, 15, 30)
 READY_TIMEOUT_SECONDS = 300
 
+# Three supervisors write one state file. Without this they read-modify-write
+# over each other and a role's entry vanishes — which the API would read as
+# that role having never reported.
+STATE_LOCK = threading.Lock()
+
 
 def env(name: str, default: str) -> str:
     return os.environ.get(name, default)
 
 
+# The three roles, and what makes each one different.
+#
+# One process cannot serve all three, which was measured rather than assumed
+# (issue #89). `--reranking` needs a reranker model and is mutually exclusive
+# with generation. And a generation model's embeddings are 2560 dimensions
+# where the schema is vector(1024), so they would not merely be poor for
+# retrieval — the database would refuse them.
+#
+# Each is (role, model env var, port env var, default port, extra flags).
+ROLES = (
+    ("generation", "ASKWELL_INFERENCE_MODEL_PATH", "ASKWELL_INFERENCE_UPSTREAM_PORT", "8080", ()),
+    ("embedding", "ASKWELL_EMBEDDING_MODEL_PATH", "ASKWELL_EMBEDDING_PORT", "8081",
+     ("--embeddings", "--pooling", "mean")),
+    ("reranking", "ASKWELL_RERANKER_MODEL_PATH", "ASKWELL_RERANKER_PORT", "8082",
+     ("--reranking",)),
+)
+
+
 class Supervisor:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        role: str = "generation",
+        model_var: str = "ASKWELL_INFERENCE_MODEL_PATH",
+        port_var: str = "ASKWELL_INFERENCE_UPSTREAM_PORT",
+        default_port: str = "8080",
+        extra_flags: tuple[str, ...] = (),
+    ) -> None:
+        self.role = role
+        self.extra_flags = extra_flags
         self.binary = env("ASKWELL_INFERENCE_BINARY", "llama-server")
-        self.model = Path(env("ASKWELL_INFERENCE_MODEL_PATH", "")).expanduser()
-        self.upstream_port = int(env("ASKWELL_INFERENCE_UPSTREAM_PORT", "8080"))
+        self.model = Path(env(model_var, "")).expanduser()
+        self.upstream_port = int(env(port_var, default_port))
         self.context_size = int(env("ASKWELL_INFERENCE_CONTEXT_SIZE", "8192"))
         self.socket_path = Path(env("ASKWELL_INFERENCE_SOCKET", "/run/askwell/inference.sock"))
         self.state_path = self.socket_path.parent / "state.json"
@@ -91,14 +124,20 @@ class Supervisor:
     # --- what the API reads -------------------------------------------------
 
     def _write(self, state: str, reason: str | None = None) -> None:
-        """Publish the state where the API can read it.
+        """Publish this role's state where the API can read it.
 
         A file rather than an endpoint, because the API cannot reach this
         process except through the socket, and the socket belongs to
-        llama.cpp's HTTP rather than to the supervisor. It is written to a
-        temporary file and moved, so a reader never sees half of it.
+        llama.cpp's HTTP rather than to the supervisor.
+
+        The file holds one entry per role plus a top-level view of generation,
+        which is what "the assistant" means to a user: they cannot ask a
+        question without it, and retrieval failing is a different sentence.
+        Written to a temporary file and moved, so a reader never sees half of
+        it — and read-modify-written under a lock, because three supervisors
+        share it.
         """
-        payload = {
+        mine = {
             "state": state,
             "model": self.model.name if self.model.name else None,
             "acceleration": self.acceleration if state == READY else None,
@@ -107,16 +146,34 @@ class Supervisor:
             "consecutive_failures": self.consecutive,
             "updated_at": time.time(),
         }
-        try:
-            self.state_path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = self.state_path.with_suffix(".partial")
-            temporary.write_text(json.dumps(payload), encoding="utf-8")
-            os.replace(temporary, self.state_path)
-            os.chmod(self.state_path, 0o644)
-        except OSError as error:
-            print(f"askwell-inference: could not write state: {error}", file=sys.stderr)
 
-        print(f"askwell-inference: {state}" + (f" — {reason}" if reason else ""), flush=True)
+        with STATE_LOCK:
+            try:
+                existing = json.loads(self.state_path.read_text(encoding="utf-8"))
+                roles = existing.get("roles", {}) if isinstance(existing, dict) else {}
+            except (OSError, json.JSONDecodeError):
+                roles = {}
+
+            roles[self.role] = mine
+            # Generation is promoted to the top level so that every reader
+            # written against the single-process shape keeps working, and so
+            # `askwell.inference.state.read` has one obvious thing to read.
+            payload = dict(roles.get("generation", mine))
+            payload["roles"] = roles
+
+            try:
+                self.state_path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = self.state_path.with_suffix(".partial")
+                temporary.write_text(json.dumps(payload), encoding="utf-8")
+                os.replace(temporary, self.state_path)
+                os.chmod(self.state_path, 0o644)
+            except OSError as error:
+                print(f"askwell-inference: could not write state: {error}", file=sys.stderr)
+
+        print(
+            f"askwell-inference[{self.role}]: {state}" + (f" — {reason}" if reason else ""),
+            flush=True,
+        )
 
     # --- the process --------------------------------------------------------
 
@@ -133,18 +190,7 @@ class Supervisor:
             "--port", str(self.upstream_port),
             "--ctx-size", str(self.context_size),
             "--no-webui",
-            # Serves /v1/embeddings alongside /completion. `mean` because the
-            # default pooling is `none`, which llama.cpp rejects on the
-            # OpenAI-shaped endpoint with a message about pooling that says
-            # nothing about what to do.
-            #
-            # This makes the *plumbing* work. It does not make these the right
-            # embeddings: docs/architecture.md §6 puts retrieval on bge-m3 at
-            # 1024 dimensions, and a generation model's vectors are neither
-            # that width nor trained for it. Retrieval needs its own process
-            # with its own model — see the note in that file.
-            "--embeddings",
-            "--pooling", "mean",
+            *self.extra_flags,
         ]
 
     async def start_once(self) -> bool:
@@ -336,7 +382,7 @@ class Supervisor:
 
 
 async def main() -> int:
-    supervisor = Supervisor()
+    supervisors = [Supervisor(*role) for role in ROLES]
 
     # SIGTERM is how anything stops this: a service manager, a Ctrl-C'd
     # wrapper, `kill`. Python does not raise on it, so without this the
@@ -348,20 +394,25 @@ async def main() -> int:
         with contextlib.suppress(NotImplementedError):
             loop.add_signal_handler(received, stopping.set)
 
-    # The socket comes up first and stays up. If it appeared only once the
-    # model had loaded, the health surface could not tell "the supervisor is
-    # not running" from "the model is still loading" — and those need
-    # different things from the user.
-    supervising = asyncio.create_task(supervisor.supervise())
+    # Every role supervised independently. One model missing must not stop the
+    # others: a user with no reranker can still ask questions, and telling them
+    # the assistant is down because retrieval cannot rank would be false.
+    running = [asyncio.create_task(s.supervise()) for s in supervisors]
     waiting = asyncio.create_task(stopping.wait())
+
     try:
-        await asyncio.wait({supervising, waiting}, return_when=asyncio.FIRST_COMPLETED)
+        await asyncio.wait([*running, waiting], return_when=asyncio.FIRST_COMPLETED)
+        # One role finishing is not a reason to stop the others — a model that
+        # is simply absent finishes immediately.
+        if not stopping.is_set():
+            await asyncio.wait([*running, waiting], return_when=asyncio.ALL_COMPLETED)
     finally:
-        for task in (supervising, waiting):
+        for task in (*running, waiting):
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
-        await supervisor.stop()
+        for supervisor in supervisors:
+            await supervisor.stop()
     return 0
 
 

@@ -4,6 +4,20 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.1 — 2026-08-28
+
+Inference is three processes, not one. [#89](https://github.com/Rumeasiyan/askwell/issues/89), which blocked M1 retrieval.
+
+### Added
+
+- The supervisor manages generation, embedding and reranking independently. One model missing does not stop the others — a user with no reranker can still ask questions.
+- `bge-m3` for embeddings (MIT) and `bge-reranker-v2-m3` for ranking (Apache-2.0), both verified against the registry before their names were written down (C9).
+- The bridge routes by path, so the containers reach all three through one socket and never learn how many there are.
+
+### Fixed
+
+- **Embeddings were 2560 dimensions where the schema is `vector(1024)`.** They would not have been merely poor for retrieval; the database would have refused them.
+
 ## 0.2.0 — 2026-08-27 — M0 lands: it runs
 
 Askwell starts on a clean machine and says it is ready.
