@@ -140,7 +140,7 @@ Planned, created phase by phase — **do not scaffold ahead**:
 
 | Path | Arrives |
 | ---- | ------- |
-| `compose.yaml`, `api/` (main, config, db), `.github/workflows/` | Phase 0 — `api/` **exists** (image, manifests, package, tests); the rest is in progress |
+| `compose.yaml`, `api/` (main, config, db), `.github/workflows/` | Phase 0 — **all three exist**; the remaining Phase 0 work is the shell, the session and the inference process |
 | `api/ingest/`, `api/retrieval/`, `worker/`, `eval/` | Phase 1 — `web/` **exists** (scaffold, tokens, static export); screens arrive later |
 | `api/memory/` | Phase 2 |
 | `api/sql/`, sandbox container | Phase 3 |

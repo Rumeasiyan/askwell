@@ -4,6 +4,20 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.1.10 — 2026-08-27
+
+`M0-FOUND-DEPLOY-006`. Continuous integration.
+
+### Added
+
+- `.github/workflows/ci.yml` — three jobs on every push and pull request: the API's checks, the database-backed suite, and the frontend. Everything runs through `scripts/dev.sh` inside the same images used locally, so a green run means the same thing in both places.
+- `scripts/dev.sh build-api` / `build-web`, and `ASKWELL_CONTAINER` to select podman or docker.
+
+### Changed
+
+- `_env_value` reads the process environment before `.env`, so CI supplies credentials without writing a file it would have to clean up.
+- The database host is a value rather than the literal Compose service name.
+
 ## 0.1.9 — 2026-08-27
 
 `M0-FOUND-TEST-005`. The test harness, and what it guarantees.

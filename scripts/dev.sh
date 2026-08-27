@@ -22,7 +22,7 @@
 #                               (e.g. `db upgrade head`, `db revision --autogenerate -m "..."`)
 #   scripts/dev.sh psql         a psql shell on the stack's database
 #   scripts/dev.sh test-db      the database-backed tests, against the stack
-#   scripts/dev.sh build       rebuild the image
+#   scripts/dev.sh build       rebuild both images (build-api / build-web for one)
 #   scripts/dev.sh shell       an interactive shell in the image
 #   scripts/dev.sh run ...     any command inside the image
 
@@ -41,18 +41,37 @@ TTY_FLAGS=()
 [ -t 0 ] && TTY_FLAGS=(-it)
 note() { printf '\033[36m==>\033[0m %s\n' "$*" >&2; }
 
-command -v podman >/dev/null 2>&1 \
-    || die "podman is not installed. It is the only thing this project needs on the host."
+# Podman locally; CI runners carry Docker and not always Podman. Same images,
+# same commands — the runtime is the one thing allowed to differ, because a CI
+# run that cannot use the project's own entry point ends up reimplementing it
+# and then drifting from it.
+CONTAINER="${ASKWELL_CONTAINER:-}"
+if [ -z "$CONTAINER" ]; then
+    if command -v podman >/dev/null 2>&1; then
+        CONTAINER=podman
+    elif command -v docker >/dev/null 2>&1; then
+        CONTAINER=docker
+    else
+        die "neither podman nor docker is installed. One of them is the only thing this project needs on the host."
+    fi
+fi
 
-# Read from .env rather than duplicated here. A second copy of the credentials
-# is how one of them ends up committed.
+# Read from the environment first, then .env, then the fallback. A second
+# hardcoded copy of the credentials is how one of them ends up committed; the
+# environment comes first so CI can supply them without writing a .env file it
+# would then have to clean up.
 _env_value() {
     local name="$1" fallback="$2"
-    local found
-    found="$(grep -E "^${name}=" "$REPO_ROOT/.env" 2>/dev/null | tail -1 | cut -d= -f2-)"
+    local found="${!name:-}"
+    if [ -z "$found" ]; then
+        found="$(grep -E "^${name}=" "$REPO_ROOT/.env" 2>/dev/null | tail -1 | cut -d= -f2-)"
+    fi
     printf '%s' "${found:-$fallback}"
 }
 _db_user() { _env_value POSTGRES_USER askwell; }
+# `postgres` is the Compose service name. CI reaches a service container on
+# loopback instead, and overrides this.
+_db_host() { _env_value ASKWELL_DB_HOST postgres; }
 _db_name() { _env_value POSTGRES_DB askwell; }
 _app_password() {
     local value
@@ -70,22 +89,25 @@ _db_password() {
 build_image() {
     note "building $IMAGE"
     # Context is the repository root: the version comes from root VERSION.
-    podman build -f "$REPO_ROOT/api/Dockerfile" -t "$IMAGE" "$REPO_ROOT"
+    "$CONTAINER" build -f "$REPO_ROOT/api/Dockerfile" -t "$IMAGE" "$REPO_ROOT"
 }
 
-image_exists() { podman image exists "$IMAGE"; }
+# `podman image exists` has no docker equivalent; `image inspect` works on both.
+_image_exists() { "$CONTAINER" image inspect "$1" >/dev/null 2>&1; }
+
+image_exists() { _image_exists "$IMAGE"; }
 
 build_web_image() {
     note "building $WEB_IMAGE"
-    podman build -f "$REPO_ROOT/web/Dockerfile" -t "$WEB_IMAGE" "$REPO_ROOT"
+    "$CONTAINER" build -f "$REPO_ROOT/web/Dockerfile" -t "$WEB_IMAGE" "$REPO_ROOT"
 }
 
 # Same shape as in_image, for the Node toolchain. Frontend commands run with
 # no network for the same reason the Python ones do: `install` is the only
 # step that has any business reaching a registry.
 in_web() {
-    podman image exists "$WEB_IMAGE" || { note "$WEB_IMAGE not built yet"; build_web_image; }
-    podman run --rm \
+    _image_exists "$WEB_IMAGE" || { note "$WEB_IMAGE not built yet"; build_web_image; }
+    "$CONTAINER" run --rm \
         --network=none \
         -v "$REPO_ROOT":/app:z \
         -w /app/web \
@@ -93,8 +115,8 @@ in_web() {
 }
 
 in_web_networked() {
-    podman image exists "$WEB_IMAGE" || { note "$WEB_IMAGE not built yet"; build_web_image; }
-    podman run --rm \
+    _image_exists "$WEB_IMAGE" || { note "$WEB_IMAGE not built yet"; build_web_image; }
+    "$CONTAINER" run --rm \
         -v "$REPO_ROOT":/app:z \
         -w /app/web \
         "$@"
@@ -107,7 +129,7 @@ in_web_networked() {
 # permission error that has nothing to do with either test.
 in_image() {
     image_exists || { note "$IMAGE not built yet"; build_image; }
-    podman run --rm \
+    "$CONTAINER" run --rm \
         --network=none \
         -v "$REPO_ROOT":/app:z \
         -w /app/api \
@@ -121,7 +143,7 @@ in_image() {
 # resolves from an index, and it opts back in explicitly.
 in_image_networked() {
     image_exists || { note "$IMAGE not built yet"; build_image; }
-    podman run --rm \
+    "$CONTAINER" run --rm \
         -v "$REPO_ROOT":/app:z \
         -w /app/api \
         "$@"
@@ -182,17 +204,18 @@ case "$cmd" in
     web-shell) in_web "${TTY_FLAGS[@]}" "$WEB_IMAGE" bash ;;
 
     db)
+        [ -n "${ASKWELL_ENV_FILE:-}" ] || [ ! -f "$REPO_ROOT/.env" ] || ASKWELL_ENV_FILE="$REPO_ROOT/.env"
         # Alembic needs three things at once that no other command needs
         # together: the repository mounted so a generated migration lands in the
         # working tree rather than inside a container, the stack's network so it
         # can reach Postgres, and the database URL. Hence its own entry point
         # rather than `run`, which is deliberately network-less.
         [ "$#" -gt 0 ] || die "db needs an alembic command, e.g. $SELF db upgrade head"
-        podman image exists "$IMAGE" || build_image
-        podman run --rm "${TTY_FLAGS[@]}" \
+        _image_exists "$IMAGE" || build_image
+        "$CONTAINER" run --rm "${TTY_FLAGS[@]}" \
             --network "${ASKWELL_COMPOSE_NETWORK:-askwell_default}" \
-            --env-file "$REPO_ROOT/.env" \
-            -e ASKWELL_DATABASE_URL="postgresql://$(_db_user):$(_db_password)@postgres:5432/$(_db_name)" \
+            ${ASKWELL_ENV_FILE:+--env-file "$ASKWELL_ENV_FILE"} \
+            -e ASKWELL_DATABASE_URL="postgresql://$(_db_user):$(_db_password)@$(_db_host):5432/$(_db_name)" \
             -v "$REPO_ROOT":/app:z \
             -w /app/api \
             "$IMAGE" alembic "$@"
@@ -207,10 +230,10 @@ case "$cmd" in
         # TEST_DATABASE_URL names the server, not the database to use: the
         # harness creates its own for the run and drops it afterwards, so a run
         # never touches the development data and two runs cannot collide.
-        podman image exists "$IMAGE" || build_image
-        podman run --rm "${TTY_FLAGS[@]}" \
+        _image_exists "$IMAGE" || build_image
+        "$CONTAINER" run --rm "${TTY_FLAGS[@]}" \
             --network "${ASKWELL_COMPOSE_NETWORK:-askwell_default}" \
-            -e TEST_DATABASE_URL="postgresql://$(_db_user):$(_db_password)@postgres:5432/$(_db_name)" \
+            -e TEST_DATABASE_URL="postgresql://$(_db_user):$(_db_password)@$(_db_host):5432/$(_db_name)" \
             -e TEST_APP_PASSWORD="$(_app_password)" \
             -v "$REPO_ROOT":/app:z \
             -w /app/api \
@@ -218,11 +241,13 @@ case "$cmd" in
         ;;
 
     psql)
-        podman compose exec "${TTY_FLAGS[@]}" postgres \
+        "$CONTAINER" compose exec "${TTY_FLAGS[@]}" postgres \
             psql -U "$(_db_user)" -d "$(_db_name)" "$@"
         ;;
 
-    build) build_image; build_web_image ;;
+    build)     build_image; build_web_image ;;
+    build-api) build_image ;;
+    build-web) build_web_image ;;
     shell) in_image "${TTY_FLAGS[@]}" "$IMAGE" bash ;;
     run)
         [ "$#" -gt 0 ] || die "run needs a command, e.g. $SELF run python -c 'import askwell'"

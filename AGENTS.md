@@ -142,6 +142,7 @@ Everything runs through one entry point:
 | Anything else in the frontend image | `scripts/dev.sh web-run <cmd>` / `web-shell` | **Verified** |
 | Build-runner guard tests | `bash scripts/guards.test.sh` | **Verified** |
 | Bring up the stack | `podman compose up -d` | **Verified** |
+| One image only | `scripts/dev.sh build-api` / `build-web` | **Verified** |
 | Eval suite | `python eval/bench.py --suite <name>` | M1 |
 
 Two things about `scripts/dev.sh` that are deliberate:
