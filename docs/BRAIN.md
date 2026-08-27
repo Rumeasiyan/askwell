@@ -7,42 +7,31 @@
 
 ## Current phase
 
-**M0 — It runs. In progress: 17 of 21 tickets done.**
+**M0 — It runs. In progress: 18 of 21 tickets done.**
 
 The repository is no longer documentation only. `api/` exists: an image, manifests, the application, and 54 tests. The API starts, refuses bad configuration by name, and serves `GET /health` reporting five components separately. `podman compose up -d` brings up four services, the database carries the full v1 schema, and the interface loads at `http://127.0.0.1:8000`. `web/` builds to static assets and the API serves them — the `web` container is gone from the topology. The Compose stack, the database schema and the inference process do not exist yet — so all five health components correctly report `unreachable`.
 
-**Version:** `0.1.17` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
+**Version:** `0.1.18` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
 **Tracker:** `Rumeasiyan/askwell`. Working agreements in `AGENTS.md`. Backlog in `docs/backlog/`.
 
 ## Last completed
 
-**`M0-MODEL-DEPLOY-018`** — [#86](https://github.com/Rumeasiyan/askwell/issues/86). Native inference, and **an answer generated end to end**.
+**`M0-MODEL-BE-019`** — [#88](https://github.com/Rumeasiyan/askwell/issues/88). The inference client.
+
+Verified from inside the API container, over the socket:
 
 ```
-API container -> Unix socket -> bridge container -> native llama.cpp -> answer
+generate: ok, 8 tokens
+embed:    ok, 1 vector of 2560 dimensions
 ```
 
-> *"A lease termination clause is a provision in a lease agreement that outlines
-> the specific conditions and procedures under which a tenant or landlord may
-> legally end the rental contract…"*
+**The distinction the module exists for:** `InferenceUnavailable` and `InferenceFailed` are separate exceptions. `docs/ux/ask.md` §5 degrades to browsing and search when the assistant is absent rather than showing an error, and it can only do that if callers can tell "not there" from "that request was bad". Availability is checked against the supervisor's state file *before* the request, so a caller gets *"No model file at /x.gguf"* rather than a connection error that says nothing anyone can act on.
 
-All five components `reachable`. M0's exit condition — the assistant reports itself available — is met.
+**A real finding, filed as [#89](https://github.com/Rumeasiyan/askwell/issues/89) and blocking M1.** `M0-MODEL-DEPLOY-018` says the native process serves generation, embeddings and reranking from the same process. **It cannot.** Reranking returns `501 ... Start it with --reranking`, which needs a reranker model and is mutually exclusive with generation. And embeddings from the generation model come back at **2560 dimensions** where `chunks.embedding` is `vector(1024)` — so they would not merely be poor, they would not insert. Askwell needs three native processes; the supervisor manages one.
 
-**Four things the ticket assumed, each wrong, each found by running it.**
+Nothing in M0 uses embeddings or reranking, so this blocks retrieval rather than M0.
 
-*The API would supervise the process.* A containerised API cannot start a host process. Supervision lives on the host, which is where M7's installer will run it anyway.
-
-*The supervisor could be part of the package.* `Package 'askwell' requires a different Python: 3.14.6 not in '==3.12.*'`. A host-side component that dictates the host's Python does not install. It is standard library only now.
-
-*The API could reach the host.* `host.containers.internal`, `host.docker.internal` and `10.0.2.2` all return `Network is unreachable` — this is rootless podman and the bridge gateway `network inspect` reports lives inside a user namespace, so it does not exist as a host interface at all.
-
-*A Unix socket would just work.* `AVC denied { connectto } scontext=container_t tcontext=unconfined_t`. The **listener's process label** decides, not the file's — relabelling changes nothing. The socket is owned by a container instead, verified with a throwaway listener before anything was built on it.
-
-**What it cost, stated plainly.** The bridge is the one container with host networking, so it is the one container that can reach the internet. `docs/architecture.md` §5 names it rather than glossing it. Its entire program dials `127.0.0.1` — a guarantee you get by reading fifty lines, not one the network enforces. Everything that touches the user's material stays internal.
-
-**A small honesty bug fixed on the way:** `restarts` reported the backoff counter, which resets on a successful start — so a process that had been flapping all morning reported zero. Two counters now: cumulative for the user, consecutive for the backoff.
-
-Verified: missing model names the path and does not loop; a missing binary says so; killing llama.cpp externally restarts it with backoff and retains the reason.
+**Tests use a real Unix socket serving canned responses** rather than a mocked httpx. Mocking httpx would test the mock; a socket tests the transport the containers actually use.
 
 ## Next task
 

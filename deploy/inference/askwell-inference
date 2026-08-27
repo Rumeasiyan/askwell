@@ -127,6 +127,18 @@ class Supervisor:
             "--port", str(self.upstream_port),
             "--ctx-size", str(self.context_size),
             "--no-webui",
+            # Serves /v1/embeddings alongside /completion. `mean` because the
+            # default pooling is `none`, which llama.cpp rejects on the
+            # OpenAI-shaped endpoint with a message about pooling that says
+            # nothing about what to do.
+            #
+            # This makes the *plumbing* work. It does not make these the right
+            # embeddings: docs/architecture.md §6 puts retrieval on bge-m3 at
+            # 1024 dimensions, and a generation model's vectors are neither
+            # that width nor trained for it. Retrieval needs its own process
+            # with its own model — see the note in that file.
+            "--embeddings",
+            "--pooling", "mean",
         ]
 
     async def start_once(self) -> bool:
