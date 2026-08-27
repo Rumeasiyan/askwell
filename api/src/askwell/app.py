@@ -14,9 +14,11 @@ from fastapi.responses import JSONResponse
 
 from askwell import __version__
 from askwell.config import ConfigurationError, Environment, Settings, load_settings
+from askwell.db.engine import build_engine, session_factory
 from askwell.health import ComponentState, check_components
 from askwell.interface import register_interface
 from askwell.logging import configure_logging, get_logger
+from askwell.middleware import register_session
 from askwell.network import read_activity
 
 log = get_logger(__name__)
@@ -54,6 +56,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         log.info("shutdown", version=__version__)
+        await app.state.engine.dispose()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -72,6 +75,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = resolved
+    app.state.engine = build_engine(resolved)
+    app.state.sessions = session_factory(app.state.engine)
+
+    register_session(app, resolved, app.state.sessions)
 
     @app.get("/health")
     async def health(request: Request) -> JSONResponse:

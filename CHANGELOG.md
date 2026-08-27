@@ -4,6 +4,17 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.1.16 — 2026-08-27
+
+`M0-SHELL-SESS-016`. The local session — which is not a login and must never become one.
+
+### Added
+
+- A signed session cookie established silently when the interface loads. No password, no roles, no recovery, **no sign-in screen anywhere**.
+- The signing secret lives in the `settings` table, generated on first use, so a session survives a stack restart and travels with the data it protects.
+- Cross-origin requests refused: another site's page reaching into Askwell with the user's own cookie is the reason the check exists.
+- `/health` is exempt and it is the only exemption — a test keeps the list at one entry.
+
 ## 0.1.15 — 2026-08-27
 
 `M0-STACK-SEC-012`. Loopback-only, proved from outside the machine.

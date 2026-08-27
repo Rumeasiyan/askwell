@@ -7,33 +7,33 @@
 
 ## Current phase
 
-**M0 — It runs. In progress: 15 of 21 tickets done.**
+**M0 — It runs. In progress: 16 of 21 tickets done.**
 
 The repository is no longer documentation only. `api/` exists: an image, manifests, the application, and 54 tests. The API starts, refuses bad configuration by name, and serves `GET /health` reporting five components separately. `podman compose up -d` brings up four services, the database carries the full v1 schema, and the interface loads at `http://127.0.0.1:8000`. `web/` builds to static assets and the API serves them — the `web` container is gone from the topology. The Compose stack, the database schema and the inference process do not exist yet — so all five health components correctly report `unreachable`.
 
-**Version:** `0.1.15` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
+**Version:** `0.1.16` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
 **Tracker:** `Rumeasiyan/askwell`. Working agreements in `AGENTS.md`. Backlog in `docs/backlog/`.
 
 ## Last completed
 
-**`M0-STACK-SEC-012`** — [#82](https://github.com/Rumeasiyan/askwell/issues/82). Loopback-only, proved from outside the machine.
+**`M0-SHELL-SESS-016`** — [#84](https://github.com/Rumeasiyan/askwell/issues/84). The local session.
 
-```
-pass  http://127.0.0.1:8000/health
-pass  bound to 127.0.0.1:8000
-pass  askwell-redis-1 / postgres-1 / egress-proxy-1 / worker-1 publish nothing to the host
-pass  askwell-api-1 publishes 127.0.0.1:8000->8000/tcp
-pass  refused at 192.168.1.111:8000
-pass  refused at 100.93.148.118:8000
-```
+Verified against the running stack:
 
-**The finding worth keeping.** With the API deliberately bound to every interface, the from-another-namespace probe found it reachable on this machine's **Tailscale** address and **refused on its LAN address** — whether a rootless container can route to a given host address depends on the container network, the host firewall and the interface.
+| | |
+| --- | --- |
+| `GET /` with `Accept: text/html` | 200, cookie set, **no prompt of any kind** |
+| `GET /network` with no cookie | 401, *"there is nothing to sign in to"* |
+| the same with the cookie | 200 |
+| `GET /health` with no cookie | 200 — the only exemption |
+| `Origin: https://evil.example` | 403 |
+| a forged signature | 401 |
+| API restart, then full stack down/up | session still valid |
+| the full token in the API log | 0 occurrences |
 
-A check relying on that probe alone would have passed a machine with no Tailscale. So `ss` is what decides, the probe corroborates, and `docs/architecture.md` §5.0 says so in that order. This is exactly how a security check becomes something people trust while it quietly proves nothing.
+**The exemption is a decision, not an oversight.** `/health` is the surface someone with a broken install needs most, it carries component states rather than any of the user's material, and locking it would make Askwell hardest to diagnose in exactly the situation where diagnosis matters. A test keeps that list at one entry, because the list existing at all is the risk.
 
-**A false-positive I had to fix before the check was usable.** It first reported `redis publishes 6379/tcp to a non-loopback address` — but a bare `5432/tcp` is an `EXPOSE` in the image, documentation of what the container listens on internally, with no host binding at all. Only an entry containing `->` is published. A check that always fails is a check nobody runs.
-
-Both the script and the static test were mutation-tested by changing the mapping to `"8000:8000"` and watching each fail.
+**A test I got wrong twice, the same way.** It scans for sign-in machinery and first failed on the session module's own prose explaining that none of it exists — my filter skipped lines *containing* a triple quote, which is not the same as lines *inside* a docstring. Now it strips comments and strings with `tokenize`, and it was mutation-tested by adding a `login(password_hash)` function and watching it name the line. **Second time this session that a word-scanning test caught its own explanation** — the pattern is worth remembering.
 
 ## Next task
 
