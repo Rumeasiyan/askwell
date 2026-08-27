@@ -1,7 +1,20 @@
 node_modules/
 dist/
+# Real environment files, in every shape people write them. Never the example.
 .env
-.env.local
+.env.*
+!.env.example
+
+# Generated credential material: keys, certificates, and anything a passphrase
+# derives. None of this exists yet — the encryption arrives in M4 — and the
+# ignore rule arriving first is deliberate. The alternative is adding it in the
+# same commit that first writes one, which is the commit most likely to be in a
+# hurry.
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
 *.log
 .DS_Store
 __pycache__/

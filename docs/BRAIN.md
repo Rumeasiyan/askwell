@@ -7,46 +7,34 @@
 
 ## Current phase
 
-**M0 — It runs. In progress: 10 of 21 tickets done.**
+**M0 — It runs. In progress: 11 of 21 tickets done.**
 
 The repository is no longer documentation only. `api/` exists: an image, manifests, the application, and 54 tests. The API starts, refuses bad configuration by name, and serves `GET /health` reporting five components separately. `podman compose up -d` brings up four services, the database carries the full v1 schema, and the interface loads at `http://127.0.0.1:8000`. `web/` builds to static assets and the API serves them — the `web` container is gone from the topology. The Compose stack, the database schema and the inference process do not exist yet — so all five health components correctly report `unreachable`.
 
-**Version:** `0.1.10` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
+**Version:** `0.1.11` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
 **Tracker:** `Rumeasiyan/askwell`. Working agreements in `AGENTS.md`. Backlog in `docs/backlog/`.
 
 ## Last completed
 
-**`M0-FOUND-DEPLOY-006`** — [#71](https://github.com/Rumeasiyan/askwell/issues/71). CI on every push. Three jobs, all green.
+**`M0-FOUND-SEC-007`** — [#73](https://github.com/Rumeasiyan/askwell/issues/73). Secrets as environment variables, and the mechanism that keeps the example file honest.
 
-```
-success  API — lint, format, typecheck, tests     113 passed, 36 deselected
-success  API — database-backed tests               36 passed
-success  Frontend — typecheck, lint, build,        frontend checks passed
-         contrast, offline
-```
+`.env.example` existed for three tickets and was already wrong: **five variables listed out of nineteen**. That is the failure mode — it drifts silently while being read as authoritative. So the deliverable was never the file; it is the test that makes adding a variable without documenting it a build failure.
 
-**Every failure kind was proven, not assumed.** Four deliberate breaks were pushed and watched, each naming its file and line:
+Verified:
 
-| break | what CI said |
+| | |
 | --- | --- |
-| unused import | `F401 'os' imported but unused` |
-| wrong return annotation | `traces.py:82: error: Incompatible return value type (got "int", expected "str")` |
-| wrong assertion | `AssertionError: assert 'retrieve' == 'deliberately-wrong'` at `tests/test_traces.py:26` |
-| frontend return type | `lib/utils.ts(6,3): error TS2322: Type 'string' is not assignable to type 'number'` |
-
-Each needed its own push, because steps stop at the first failure — correct behaviour, and it does mean one broken thing hides the next until it is fixed.
-
-**The database suite runs in CI**, which was the ticket's open question. Those 36 tests are where C6 and the schema invariants are actually asserted, so they are the ones most worth having run by something other than a person remembering. The workflow creates the two non-owner roles the same way `deploy/postgres/10-roles.sh` does — connecting as the owner would let them pass while asserting nothing.
-
-**Two things are deliberately uncached.** The API image build is where `uv sync --locked` runs, which is the check that the lockfile agrees with `pyproject.toml`; a layer cache keyed on anything looser skips exactly that. The frontend installs with `--frozen-lockfile` rather than restoring `node_modules`, which would hide a lockfile that no longer resolves.
-
-No secret is used or required.
+| adding a setting without documenting it | fails, naming `ASKWELL_UNDOCUMENTED_NEW_THING` |
+| a variable used only by `compose.yaml` | still required to be listed |
+| a line in the file that nothing reads | fails — the direction that rots quietly |
+| every service log in the running stack | zero occurrences of either password |
+| logging the entire settings object inside an exception handler | still zero |
+| a path (`ASKWELL_WEB_ASSETS_DIR`) | **not** redacted — "the interface has not been built" is useless without saying where it looked |
+| `.env` / `.env.local` | ignored; `.env.example` deliberately not |
 
 ## Next task
 
-**`M0-FOUND-SEC-007`** — secrets as environment variables, with `.env.example` kept current. The file exists (it had to, for the stack to come up); this ticket is the discipline that keeps it accurate, and a check that a variable added to the code without being added there is caught.
-
-Then `M0-FOUND-DOC-008` (version, changelog and release-note discipline — largely already practised, needs writing down and enforcing), then the STACK epic (`010` egress proxy, `011` refused-request count, `012` localhost binding), SHELL and MODEL.
+**`M0-FOUND-DOC-008`** (version, changelog and release-note discipline — largely already practised, needs writing down and enforcing), then the STACK epic (`010` egress proxy, `011` refused-request count, `012` localhost binding), SHELL and MODEL.
 
 Forward references outstanding: the configuration error message points at `.env.example` (`M0-FOUND-SEC-007`), no screen exists yet (`M0-SHELL-FE-017`), and built assets are not in the API image (M0-STACK-DEPLOY-009 / Phase 7).
 
