@@ -69,14 +69,27 @@ next_ticket() {
     return 1
   fi
 
-  printf '%s\n' "$listing" \
-    | while read -r id status; do
-        case "$id" in ''|'=='|Queue) continue ;; esac
-        [ "$status" = "ready" ] || continue
-        [ -z "$MILESTONE_FILTER" ] || case "$id" in "$MILESTONE_FILTER"-*) ;; *) continue ;; esac
-        printf '%s\n' "$id"
-        break
-      done
+  # A here-string, not a pipeline, and that is the whole bug.
+  #
+  # `printf | while ... break` makes the loop's `break` close the read end of
+  # the pipe while printf is still writing. printf takes SIGPIPE, exits 141,
+  # and `set -o pipefail` turns that into a failed pipeline — so finding a
+  # ticket reported failure and the queue announced it could not read the
+  # backlog.
+  #
+  # It is a race, which is why it looked fine when tested by hand: 200 short
+  # lines fit inside the pipe buffer, so printf usually finished before the
+  # break. A longer backlog, or a slower moment, loses.
+  local found=""
+  while read -r id status; do
+    case "$id" in ''|'=='|Queue) continue ;; esac
+    [ "$status" = "ready" ] || continue
+    [ -z "$MILESTONE_FILTER" ] || case "$id" in "$MILESTONE_FILTER"-*) ;; *) continue ;; esac
+    found="$id"
+    break
+  done <<< "$listing"
+
+  printf '%s\n' "$found"
 }
 
 branch_for() { printf 'feat/%s' "$(printf '%s' "$1" | tr 'A-Z' 'a-z')"; }
