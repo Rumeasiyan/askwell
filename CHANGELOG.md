@@ -4,6 +4,36 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.0 — 2026-08-27 — M0 lands: it runs
+
+Askwell starts on a clean machine and says it is ready.
+
+```
+podman compose up -d      four containers, plus a bridge
+scripts/dev.sh inference  llama.cpp, natively, on the host
+http://127.0.0.1:8000     the shell, on loopback and nowhere else
+
+database      reachable      assistant: ready
+queue         reachable      model:     Qwen3.5-4B-Q4_K_M.gguf
+worker        reachable
+inference     reachable
+egress_proxy  reachable
+```
+
+### Added in this release
+
+`M0-SHELL-FE-017a` — the left rail becomes a reachable drawer below the breakpoint, with a scrim that dismisses on click and on Escape, and focus that returns to the control on close. The rail is the only route to sources, memory and settings; hiding it without a way back strands the user.
+
+### What M0 leaves behind
+
+Twenty-one tickets, 216 tests, and a stack whose central claims are checked rather than asserted: an attempt to reach the internet is refused and counted, the API answers on loopback and nowhere else, the audit log cannot be rewritten by the application because it lacks the grant, and every schema invariant is enforced by the database rather than by remembering.
+
+### Known, and written down rather than discovered later
+
+- Inference needs three native processes, not one ([#89](https://github.com/Rumeasiyan/askwell/issues/89)) — embeddings from the generation model are the wrong dimension for the schema, and reranking needs its own model. Blocks M1 retrieval.
+- One container, the inference bridge, has host networking. `docs/architecture.md` §5 names it rather than glossing it.
+- The 8 GB "slow but usable" claim is still unmeasured ([#49](https://github.com/Rumeasiyan/askwell/issues/49)).
+
 ## 0.1.20 — 2026-08-27
 
 `M0-SHELL-FE-017`. The application shell.

@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { Rail } from "@/components/shell/rail";
+import { RailDrawer } from "@/components/shell/rail-drawer";
 import { StatusBanner } from "@/components/shell/status-banner";
 import { useStatus } from "@/lib/use-status";
 
@@ -37,8 +38,11 @@ export function Shell({ children }: { children: ReactNode }) {
         style={{ borderBottom: "1px solid var(--rule)" }}
       >
         <div className="flex items-center gap-3">
-          {/* M0-SHELL-FE-017a attaches the drawer control here. */}
-          <span id="askwell-chrome-start" />
+          {/* The app's own chrome, not the browser's: M7 hosts this in a
+              Tauri window where there is no browser chrome to borrow. */}
+          <span id="askwell-chrome-start">
+            <RailDrawer />
+          </span>
           <span style={{ fontSize: "var(--t-ui)" }}>Askwell</span>
           <StatusDot status={status} />
         </div>
