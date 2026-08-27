@@ -28,6 +28,7 @@ cd "$RUNNER_ROOT"
 
 # --- configuration (docs/build-runner.md §10) --------------------------------
 : "${AGENT_BIN:=claude}"
+: "${GATE_ATTEMPTS:=2}"   # one build, then one chance to fix what the gate rejected
 : "${BUILD_MODEL:=}"        # empty means the CLI's own default; never invent one
 : "${BUILD_EFFORT:=}"
 : "${AUDIT_MODEL:=}"
@@ -398,13 +399,25 @@ assert_prompt_intact() {
 
 # --- agent invocation --------------------------------------------------------
 run_agent() {   # run_agent <lineage> <prompt-file> <log-file> [model] [effort]
-  local lineage="$1" prompt="$2" log="$3" model="$4" effort="$5"
+  # Defaulted, not read positionally: the runner runs under `set -u`, and
+  # calling this with three arguments — which every caller does — otherwise
+  # dies on "$4: unbound variable" after the build has already been paid for.
+  local lineage="$1" prompt="$2" log="$3" model="${4:-}" effort="${5:-}"
   # Audit and doc lineages reset per milestone: a single session across 198
   # tickets carries context from work three milestones old, and a stale auditor
   # is worse than a forgetful one. The property that matters — it did not write
   # the code — survives a reset.
   local sid="$RUNNER_STATE/session/${lineage}.${MILESTONE:-none}.id"
-  local args; args="--print"
+  # An unattended queue cannot answer a permission prompt, and in --print mode
+  # a prompt is a refusal rather than a pause — the first live run produced a
+  # perfectly reasoned design document and not one edited file, because every
+  # write was denied.
+  #
+  # `acceptEdits` rather than bypassing every check: the containment here is
+  # not the permission dialog, it is that the runner works on a branch, pushes
+  # nothing, opens no PR, and hands back a diff for a person to read. Setting
+  # AGENT_PERMISSION_MODE overrides it for anyone who disagrees.
+  local args; args="--print --permission-mode ${AGENT_PERMISSION_MODE:-acceptEdits}"
   [ -n "$model" ]  && args="$args --model $model"
   [ -n "$effort" ] && args="$args --effort $effort"
   if [ "$lineage" != "build" ] && [ -s "$sid" ]; then
@@ -586,9 +599,126 @@ main() {
     exit 0
   fi
 
-  die "Live runs are not enabled in this build. Gate commands do not exist yet (M0
-       creates them), so a live run could not verify anything it produced.
-       Use --dry until M0 has landed and docs/build-runner.md §7.3 is filled in."
+  # The guard this replaces refused every live run while the gate was a stub
+  # that returned success. That is no longer true — M0 landed and §7.3 is
+  # filled from real output — but deleting the check outright would leave
+  # nothing standing between a broken gate and an unattended queue.
+  #
+  # So the gate is proved on the tree as it is, before the agent touches it.
+  # A gate that cannot pass on a clean checkout cannot tell good work from
+  # bad afterwards: everything it reports would be the tree's own failure
+  # wearing the ticket's name.
+  head2 "Proving the gate before trusting it"
+  say "  the gate must pass on this tree as it stands, or its verdict on new"
+  say "  work means nothing"
+  if ! run_gate "baseline"; then
+    die "The gate does not pass on the current tree, before this ticket has
+       changed anything. Fix that first — every failure it reported above
+       belongs to the tree, not to $TICKET, and a run started now would
+       attribute them to the ticket."
+  fi
+  if [ -n "$GATE_SKIPPED" ]; then
+    say ""
+    say "  ${BOLD}note:${RESET} skipped$GATE_SKIPPED"
+    say "  those checks will be skipped after the build too. Bring the stack up"
+    say "  first if you want them to count: podman compose up -d"
+  fi
+
+  # --- build ------------------------------------------------------------
+  head2 "Build"
+  local build_log="$RUNNER_STATE/logs/${TICKET}.build.log"
+  PHASE="build"
+  if ! run_agent build "$bp" "$build_log"; then
+    die "The build agent exited non-zero or timed out. Its output is in
+       $build_log — read it before rerunning, because a rerun starts a fresh
+       session and will not remember what went wrong."
+  fi
+  # Spend is recorded once the work happened, not before. Recording up front
+  # would charge the ceiling for a run that died in preflight.
+  guard_record_spend "$TICKET" "$est" || exit 1
+
+  # --- gate, with one chance to fix ---------------------------------------
+  local attempt=1 gate_ok=0
+  while [ "$attempt" -le "$GATE_ATTEMPTS" ]; do
+    head2 "Gate (attempt $attempt of $GATE_ATTEMPTS)"
+    if run_gate "$attempt"; then gate_ok=1; break; fi
+
+    if [ "$attempt" -ge "$GATE_ATTEMPTS" ]; then break; fi
+
+    # The agent is told what failed rather than asked to guess. A fix attempt
+    # without the failing output is the same prompt again, and produces the
+    # same work again.
+    head2 "Fix"
+    local fix="$RUNNER_STATE/prompts/${TICKET}.fix.$attempt.txt"
+    {
+      printf 'The gate rejected your work on %s. Fix it.\n\n' "$TICKET"
+      printf 'Do not change the gate, the tests, or their thresholds to make\n'
+      printf 'this pass. If a check is wrong, say so and stop — a weakened\n'
+      printf 'check is worse than a failing one, because it keeps reporting\n'
+      printf 'success afterwards.\n\nWhat failed:\n\n'
+      cat "$RUNNER_STATE/logs/${TICKET}.gate.${attempt}.log"
+    } > "$fix"
+    PHASE="fix"
+    run_agent build "$fix" "$RUNNER_STATE/logs/${TICKET}.fix.$attempt.log" \
+      || die "The fix attempt failed to run. See $build_log"
+    guard_record_spend "$TICKET" 1 || exit 1
+    attempt=$((attempt + 1))
+  done
+
+  if [ "$gate_ok" != "1" ]; then
+    die "The gate still rejects this work after $GATE_ATTEMPTS attempts.
+       Stopping rather than committing it. The logs are in
+       $RUNNER_STATE/logs/${TICKET}.gate.*.log — and nothing has been
+       committed or pushed, so the branch is where you left it."
+  fi
+
+  # --- audit --------------------------------------------------------------
+  # A separate lineage that did not write the code. That is the whole property
+  # being bought here: an author reviewing their own work agrees with it.
+  head2 "Audit"
+  PHASE="audit"
+  local audit_log="$RUNNER_STATE/logs/${TICKET}.audit.log"
+  run_agent audit "$ap" "$audit_log" || say "  ${DIM}the auditor did not finish; its notes are in $audit_log${RESET}"
+
+  # The verdict is read, not merely requested. Asking for one and ignoring it
+  # makes the audit theatre: the first real run produced work that passed every
+  # gate row and that the auditor rejected for four defects a gate cannot see —
+  # including a symlinked root that breaks the ticket's primary acceptance
+  # criterion. Marking that done would have buried it under a green tick.
+  local verdict="unclear"
+  if grep -qE '^AUDIT: *PASS' "$audit_log"; then
+    verdict="pass"
+  elif grep -qE '^AUDIT: *FAIL' "$audit_log"; then
+    verdict="fail"
+  fi
+
+  if [ "$verdict" != "pass" ]; then
+    head2 "Audit rejected the work"
+    grep -E '^###|^[0-9]+\.|^\*\*' "$audit_log" | head -20
+    say ""
+    say "  full audit: $audit_log"
+    die "The audit returned '$verdict'. $TICKET is NOT recorded as done and
+       nothing has been pushed. The work is on this branch — read the audit,
+       then either fix what it found or record why it is wrong.
+
+       An auditor that can be overruled silently is an auditor nobody needs."
+  fi
+  say "  audit: pass"
+
+  # --- manual-test document ------------------------------------------------
+  head2 "Manual test document"
+  PHASE="doc"
+  local doc_log="$RUNNER_STATE/logs/${TICKET}.doc.log"
+  run_agent doc "$dp" "$doc_log" || say "  ${DIM}the doc agent did not finish; see $doc_log${RESET}"
+
+  # --- hand back ------------------------------------------------------------
+  head2 "Done"
+  mark_done "$TICKET"
+  say "  $TICKET is recorded as done."
+  say ""
+  say "  Nothing was pushed and no PR was opened: the runner stops at the"
+  say "  branch so that a person reads the diff before it leaves the machine."
+  say "  ${BOLD}git diff main...HEAD${RESET}   then   ${BOLD}gh pr create --fill${RESET}"
 }
 
 main "$@"

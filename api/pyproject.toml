@@ -54,6 +54,15 @@ line-length = 100
 target-version = "py312"
 src = ["src", "tests"]
 
+[tool.ruff.lint.flake8-bugbear]
+# B008 forbids a function call in an argument default, because the call happens
+# once at definition time rather than per call — which is a real bug for
+# `list()` and a mutable default. FastAPI's `Depends` is built on exactly that
+# behaviour: the object in the default *is* the declaration, read once by the
+# framework. Flagging it means either four suppressions per router or writing
+# dependency injection the framework does not support.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Path", "fastapi.Header", "fastapi.Body"]
+
 [tool.ruff.lint]
 select = [
     "E", "W",    # pycodestyle

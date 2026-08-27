@@ -71,6 +71,12 @@ The core loop. Most of these states are reachable in the first five minutes of u
 | **Embedding job failed after retries** | Visible in the library with the error and a retry | AGENTS.md §6, explicitly |
 | **Document deleted** | Old citations resolve to "deleted on `<date>`" rather than breaking | Issue #11, Option A — tombstone. Content and embedding are cleared so it stops influencing retrieval; the row survives so the audit chain and old citations still resolve |
 | **Empty collection** | Empty state naming what it is for and how to add to it | — |
+| **File outside every nominated folder** | Asked to nominate its folder, with the consequence explained. Not a bare rejection | Askwell indexes in place, so it has to be told which folders it may open. `ux/add-source.md` §7 |
+| **Folder nominated, not yet mounted** | Accepted, with the configuration line and that the stack has to come up again — said now, not discovered | A container's mounts cannot be changed while it runs. Refusing would make a fresh install unable to nominate anything |
+| **Nominated folder not connected** | Its sources report **unavailable**: a drive unplugged, a share disconnected | **Never rendered as deleted, and never as moved.** A whole folder being absent is not forty files having moved, and offering to relocate each would be forty wrong questions |
+| **Nominated folder cannot be read** | Named, with its permissions and SELinux labelling as the two causes | Root inside the image ignores the mode bits, so this is the case that actually bites on a Linux host |
+| **Nominated folder removed** | Its sources stay listed, saying the folder was removed and that nothing was deleted | The registry tombstones rather than deletes, so "you removed this" is distinguishable from "no folder ever covered this" |
+| **Folder is a network share** | Permitted, warned: indexing is slow, and the share must be connected for a citation to reopen its page | Refusing would exclude a real way of working; saying nothing would surprise someone hours in |
 
 ---
 

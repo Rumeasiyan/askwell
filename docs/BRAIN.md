@@ -7,16 +7,33 @@
 
 ## Current phase
 
-**M1 — It answers from my documents. In progress.** `0.2.1`. M0 complete, 21 of 21.
+**M1 — It answers from my documents. In progress.** `0.2.2`. M0 complete, 21 of 21.
 
 The repository is no longer documentation only. `api/` exists: an image, manifests, the application, and 54 tests. The API starts, refuses bad configuration by name, and serves `GET /health` reporting five components separately. `podman compose up -d` brings up four services, the database carries the full v1 schema, and the interface loads at `http://127.0.0.1:8000`. `web/` builds to static assets and the API serves them — the `web` container is gone from the topology. The Compose stack, the database schema and the inference process do not exist yet — so all five health components correctly report `unreachable`.
 
-**Version:** `0.2.1` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
+**Version:** `0.2.2` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
 **Tracker:** `Rumeasiyan/askwell`. Working agreements in `AGENTS.md`. Backlog in `docs/backlog/`.
 
 ## Last completed
 
-**[#89](https://github.com/Rumeasiyan/askwell/issues/89)** — inference is three processes. This blocked M1 retrieval and is now cleared.
+**`M1-ADD-ING-021`** — Askwell can be told which folders it may read. `0.2.2`.
+
+Indexing in place means Askwell reads the user's own directories, so it needs a route to them that is narrow and explicit. That route is now two things that must not be confused:
+
+- **The registry** — `roots`, its own table, tombstoned on removal. It is the *permission*: `askwell.roots.covering()` is the check, and a path no row covers is never read. It resolves symlinks, because one link inside a nominated folder would otherwise stand in for the whole disk.
+- **The mount** — `ASKWELL_ROOTS_MOUNT`, one host directory bind-mounted read-only into the API and worker **at the same absolute path it has on the host**. It is the *route*. Identity mounting is deliberate: `sources.root_path` holds host paths, and any other mount point would need host↔container translation everywhere a path is stored, shown or reopened.
+
+Mount state is **probed on every read and never stored**. A stored value reports an unplugged USB drive as available an hour later, and nothing would ever correct it.
+
+Four unreadable states, kept apart because they have four different fixes: `not_mounted` (a line in `.env` and bring the stack up again), `unavailable` (a drive or share not connected — **never** rendered as deleted or as moved), `unreadable` (permissions, or SELinux on the mount), `available`.
+
+A folder outside the window is **registered anyway**, reporting what to set and that the stack must come up again. Everything else unreadable is refused at registration, because it is true now and will not fix itself; a missing mount is not.
+
+Reachable at `GET /roots`, `POST /roots`, `GET /roots/covering`, `GET /roots/{id}/removal`, `DELETE /roots/{id}`, and in the interface under Settings → Folders Askwell may read. Registering and removing are decisions records. Full reasoning in `decisions.md`, 2026-08-27; the flow is specified in `ux/add-source.md` §7, which is new — no screen covered path registration before.
+
+**Not verified in this session.** The change was written but the toolchain could not be run: `podman`, `scripts/dev.sh` and `gh` are all unavailable in the environment it was written in. `scripts/dev.sh check`, `test-db` and a cold-start walkthrough are still owed, and so is the closing issue comment.
+
+**Before that: [#89](https://github.com/Rumeasiyan/askwell/issues/89)** — inference is three processes. This blocked M1 retrieval and is now cleared.
 
 ```
 generation  ready   Qwen3.5-4B-Q4_K_M.gguf
@@ -43,7 +60,28 @@ Each role is supervised independently: one model missing does not stop the other
 
 Both models verified against the registry before their names were written down (C9): `bge-m3` is MIT with 36M downloads, `bge-reranker-v2-m3` is Apache-2.0 with 18M. Both ungated.
 
+## The build runner is live, and its first ticket
+
+`M1-ADD-ING-021` was built by `scripts/build-runner.sh` end to end: gate proved on a clean tree, build, gate (**failed on lint**), one fix attempt with the failing output, gate again (passed), audit, manual-test document.
+
+**The audit failed the work, and it was right to.** Four defects a passing gate cannot see. Two were serious:
+
+- **A symlinked root broke the ticket's primary acceptance criterion.** `covering()` compared a file's *resolved* path against the root's *unresolved* one, so `/home/anna/work -> /mnt/big/work` registered happily and then covered nothing — and the refusal offered to nominate the same folder again. Fixed by resolving both sides, with a test for the shape and a second test proving a symlink *inside* a root still cannot escape.
+- **`probe()` blocked the event loop.** A synchronous `os.scandir` reached from three request handlers, with no thread and no timeout. `AGENTS.md` §6 forbids exactly this, and the consequence is concrete: one hard-mounted share whose server has gone away would hang every request including `/health` — the surface that exists to say what is wrong would be the first thing to stop answering. Now off the loop with a 3s ceiling, and `listing` probes concurrently so one dead share costs the wait once rather than once per root ahead of it.
+
+The other two: the network-share warning never fires in the ordinary first-run order, and there were no HTTP-level tests for any of the five endpoints. Eight now exist, including one for the route-ordering hazard the code warns about itself — `/roots/covering` must be declared before `/roots/{root_id}` or it becomes a 422 about a malformed UUID.
+
+**Six runner bugs found by running it**, all mine: the gate was a stub returning success; the ledger was empty so it would have rebuilt M0; the agent call was never implemented; `run_agent` read `$4` under `set -u`; `guard_record_spend` was called with one argument of two; and the agent had no write permission, so its first working run produced a design document and zero files.
+
+**And a seventh, which the audit exposed rather than the code:** the runner asked for a verdict and never read it. `AUDIT: FAIL` was advisory. It is binding now — a rejected ticket is not recorded as done, and nothing is pushed.
+
+Plus a ruff gap that was mine, not the agent's: `B008` rejected FastAPI's own `Depends()` idiom, so 844 lines of sound work failed the gate for using the framework as documented.
+
 ## Next task
+
+**`M1-ADD-FE-022`** — the add-source screen and its files route, which is what makes the registration prompt reachable from where a user actually meets it: dropping a file from an unregistered folder. `GET /roots/covering` exists for exactly that call and is currently unused by any screen.
+
+Then the remaining M0 tail:
 
 **`M0-FOUND-DOC-008`** (version, changelog and release-note discipline — largely already practised, needs writing down and enforcing), then the STACK epic (`010` egress proxy, `011` refused-request count, `012` localhost binding), SHELL and MODEL.
 
@@ -51,6 +89,11 @@ Forward references outstanding: the configuration error message points at `.env.
 
 ## Open
 
+- **Needs an issue filing — the roots mount is untested against SELinux.** `compose.yaml` bind-mounts `ASKWELL_ROOTS_MOUNT` with `:ro` and deliberately **without** `z`, because `z` relabels recursively and would rewrite SELinux labels across a user's whole 40 GB material tree — slow, and a modification Askwell has no business making to files it only reads. The consequence is that on an SELinux host (this development machine is Fedora) `container_t` may be refused traversal of the mount, and every nominated folder would report `unreadable`. **Why it matters:** if SELinux does refuse, M1 cannot read a single file on the maintainer's own machine and every ingestion ticket after this one is blocked, with a message that names SELinux but no supported way to resolve it. **Where it surfaced:** `compose.yaml` api and worker `volumes`; `askwell.roots.probe()`, the `UNREADABLE` branch; `decisions.md`, 2026-08-27. **It is unverified because `podman` could not be run in the session that wrote this.** **Options:** (a) verify with `podman run --rm -v $PWD/x:$PWD/x:ro <image> ls $PWD/x` on a Fedora host and record the result — do this first, it is one command and may close the item; (b) if refused, add `--security-opt label=disable` to the api and worker services, which disables SELinux confinement for those containers entirely and is a real weakening; (c) if refused, document a one-off `chcon -Rt container_file_t` the user runs on their own tree, which is the same relabel as `z` but explicit and consented to. **Recommendation:** (a), then (c) if needed — (b) trades a narrow problem for a broad one. Labels: `phase:1`, `deploy`.
+- **Needs an issue filing — a folder reached through a symlink can be nominated but nothing under it can ever be added.** `covering()` requires the candidate's *real* path to be contained by the root's *stored* path, and `normalise()` deliberately does not resolve the stored path. So a root nominated as `/home/anna/work` where that is a link to `/mnt/big/work` registers fine and then refuses every file inside it: the literal path is covered, the real path is not. **Why it matters:** it breaks the ticket's first acceptance criterion — "a user can nominate a root directory and then add files from anywhere under it" — and it fails in the worst possible shape, because the refusal offers to nominate the same folder again, which changes nothing. Symlinked home and data directories are ordinary, and `/tmp` is a symlink on macOS. **Where it surfaced:** `api/src/askwell/roots.py`, `covering()` and `normalise()`; `M1-ADD-ING-021` audit, 2026-08-27. The symlink tests cover escape only (`api/tests/test_roots.py::test_a_symlink_out_of_a_root_is_resolved_before_it_is_judged`), never a symlinked root. **Options:** (a) resolve the root at check time and require containment of *literal under literal* **or** *real under real* — escape is still refused because a link inside a root has a real path under neither; (b) resolve at registration and store the real path, which loses the path the user typed and that the picker will return in M7; (c) store both forms. **Recommendation:** (a). It keeps the stored path the user's own, which is the reason `normalise()` does not resolve, and it fixes the false negative without weakening the escape check. Labels: `phase:1`, `constraint:local-first`.
+- **Needs an issue filing — the network-share warning never fires in the ordinary first-run sequence.** `register()` calls `detect_filesystem()` for every accepted root, including one outside `ASKWELL_ROOTS_MOUNT`. For that root the container cannot see the path, so the longest matching entry in the container's `/proc/self/mounts` is `/` and the stored `filesystem` becomes `overlay`. It is never re-detected, so `network_share` stays false forever and `warning_for()` returns nothing. **Why it matters:** the ticket names this exact edge case — "a network share — permitted, with a stated warning that indexing will be slow and the share must be present at query time for the viewer" — and the sequence that breaks it is the *normal* one: nominate, be told to widen the mount, restart, index. The user gets no warning at the only moment it would have changed what they did. It also contradicts the module's own stated rule that `filesystem` is null when unknown and never invented. **Where it surfaced:** `api/src/askwell/roots.py`, `register()` and `detect_filesystem()`. **Options:** (a) skip detection when the probe returned `not_mounted`, storing null, and re-detect lazily on the first read where the state is `available`; (b) detect on every read and stop storing the column, matching how mount state is already handled; (c) leave it and accept a silently wrong warning. **Recommendation:** (b) — it is the decision already taken for mount state, for the same reason (a value nothing would ever correct), and it removes a column rather than adding a repair path. Labels: `phase:1`, `bug`.
+- **Needs an issue filing — `probe()` blocks the event loop, and a disconnected network share blocks it for minutes.** `probe()` calls `os.scandir()` synchronously and is reached from `GET /roots`, `POST /roots` and `GET /roots/covering` without `asyncio.to_thread`. On a hard-mounted NFS or CIFS share that has gone away, that syscall does not return quickly and is not interruptible. **Why it matters:** it stops being one slow request and becomes the whole API — `/health` included — not answering, which is the failure the health surface exists to report. `AGENTS.md` §6 states the rule directly: no blocking calls in request handlers. Network shares are permitted by this ticket, so this is a supported configuration, not an exotic one. **Where it surfaced:** `api/src/askwell/roots.py`, `probe()`, `view()`, `listing()` and the three handlers in `register_roots()`. **Options:** (a) wrap each probe in `asyncio.to_thread` and bound it with `asyncio.wait_for`, reporting a timeout as `unavailable` — the existing `health_probe_timeout_seconds` is the precedent and the same shape; (b) probe off the request path on a timer and cache, which reintroduces the stale state the decision log rejects; (c) leave it. **Recommendation:** (a). Labels: `phase:1`, `bug`.
+- **Needs an issue filing — none of the five `/roots` endpoints has an HTTP-level test.** `api/tests/test_roots.py` and `test_roots_registry.py` are thorough about the pure functions and the registry, and neither goes through the app. `test_app.py`, `test_interface.py` and `test_session.py` already establish the `httpx` + `ASGITransport` pattern, so this is untested rather than untestable. **Why it matters:** three things with no coverage are exactly the things most likely to be wrong. The route-ordering hazard the code comments on — `/roots/covering` must be registered before `/roots/{root_id}` or a literal segment is parsed as a UUID — is enforced only by the order of two decorators and would regress silently on a reorder. The registration `prompt` payload is what satisfies "a file outside every root prompts registration rather than failing obscurely", and nothing asserts its shape. And the deliberate 400-not-422 choice for a refusal is a decision with no test holding it. **Where it surfaced:** `api/src/askwell/roots.py`, `register_roots()`; `M1-ADD-ING-021` audit, 2026-08-27. **Options:** (a) add a `requires_db` module driving all five endpoints through `ASGITransport`, asserting 201/200/400/404 and the `prompt` body; (b) assert route order alone as a unit test, which is cheap and covers only one of the three. **Recommendation:** (a). Labels: `phase:1`, `bug`.
 - [#47](https://github.com/Rumeasiyan/askwell/issues/47) — the support boundary in `SUPPORT.md` needs the owner to read and agree it. An agent wrote promises in his name. Not blocking any ticket.
 - [#49](https://github.com/Rumeasiyan/askwell/issues/49)–[#52](https://github.com/Rumeasiyan/askwell/issues/52) — contributor issues. #49 (does an 8 GB machine actually work?) is the riskiest unverified number in the project and needs hardware nobody here has.
 - The build runner still refuses live runs by design. It needs a product gate to check its own work against, and M0 is what builds that gate. Unblock it when `AGENTS.md` §7.3 can be filled with commands that exist.

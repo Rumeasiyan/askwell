@@ -157,6 +157,10 @@ services:
       ASKWELL_LOG_LEVEL: ${ASKWELL_LOG_LEVEL:-INFO}
       ASKWELL_WEB_ASSETS_DIR: /app/web/out
       ASKWELL_INFERENCE_SOCKET: /run/askwell/inference.sock
+      # The window onto the user's own files. Empty means there is none yet,
+      # which is the correct state on a fresh install — nominating a folder
+      # then tells the user exactly what to set here.
+      ASKWELL_ROOTS_MOUNT: ${ASKWELL_ROOTS_MOUNT:-}
       # Anything that respects these gets refused *with a log naming it*.
       # Anything that ignores them gets no route at all, because `internal`
       # has none — refused either way, but only the first way is diagnosable,
@@ -176,6 +180,30 @@ services:
       # The built interface, read-only: the API serves these files and has no
       # reason to be able to change them.
       - ./web/out:/app/web/out:ro,z
+      # The user's own files. Askwell indexes in place and copies nothing, so
+      # the containers need a route to the folders being indexed — and this is
+      # deliberately one narrow route rather than open filesystem access.
+      #
+      # Mounted at the *same absolute path* inside the container as outside.
+      # That identity is load-bearing: `sources.root_path` and
+      # `documents.path` hold host paths, which is what the user sees, what
+      # the native picker returns in M7, and what a citation has to reopen. A
+      # different mount point would need a translation layer in every one of
+      # those places, and one missed translation is a file that cannot be
+      # found for reasons nobody can see.
+      #
+      # Read-only, and without `z`. `z` relabels recursively — pointed at a
+      # 40 GB tree of the user's own material that is slow, and it changes
+      # SELinux labels on files Askwell has no business modifying. The cost is
+      # that on an SELinux host the containers may be refused; that surfaces as
+      # a root in the `unreadable` state naming SELinux, rather than as an
+      # empty folder. Whether it does refuse is unverified — see BRAIN.md.
+      #
+      # Unset by default. Podman would otherwise have to invent a directory,
+      # so the placeholder is an empty path under /tmp that exists to be inert:
+      # no root can be nominated under it, so every root reports `not_mounted`
+      # with the fix stated — which is exactly true on a fresh install.
+      - ${ASKWELL_ROOTS_MOUNT:-/tmp/askwell-no-roots-mount}:${ASKWELL_ROOTS_MOUNT:-/tmp/askwell-no-roots-mount}:ro
     networks: [internal]
     ports:
       # 127.0.0.1 is load-bearing, not decoration. "8000:8000" would publish on
@@ -200,6 +228,9 @@ services:
       ASKWELL_DATABASE_URL: postgresql://askwell_app:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-askwell}
       ASKWELL_REDIS_HOST: redis
       ASKWELL_INFERENCE_SOCKET: /run/askwell/inference.sock
+      # The worker is what actually reads and indexes the files, so it needs
+      # the same window as the API and on the same terms. See the api service.
+      ASKWELL_ROOTS_MOUNT: ${ASKWELL_ROOTS_MOUNT:-}
       ASKWELL_ENVIRONMENT: ${ASKWELL_ENVIRONMENT:-development}
       ASKWELL_LOG_LEVEL: ${ASKWELL_LOG_LEVEL:-INFO}
       HTTP_PROXY: http://egress-proxy:3128
@@ -210,6 +241,7 @@ services:
       no_proxy: localhost,127.0.0.1,postgres,redis
     volumes:
       - ${ASKWELL_RUN_DIR:-./.run}:/run/askwell:z
+      - ${ASKWELL_ROOTS_MOUNT:-/tmp/askwell-no-roots-mount}:${ASKWELL_ROOTS_MOUNT:-/tmp/askwell-no-roots-mount}:ro
     networks: [internal]
     depends_on:
       postgres:
