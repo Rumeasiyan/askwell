@@ -4,6 +4,15 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.11 — 2026-08-28
+
+Extraction failures are named individually, and a password-protected PDF prompts rather than just failing. `M1-EXTRACT-VAL-030`.
+
+### Added
+
+- **Extraction failures classified by cause**: a file missing from disk (`MissingSource`), unreadable due to permissions (`UnreadableSource`), corrupt (`CorruptDocument`), or password-protected (`PasswordProtected`/`WrongPassword`) each carry their own reason naming the file, instead of a raw library exception surfacing as the message. `MissingSource`/`UnreadableSource` are checked once, ahead of every format's own parser, so a file that vanished between add and extraction reads distinctly from one that opened and turned out broken.
+- **A password-protected PDF prompts for its password.** `POST /ingest/documents/{id}/password` retries a failed document with a password for that one attempt — never written to a database row or a log line, since storage needs the credential encryption path M4 adds and is not offered until then. A wrong password is reported as wrong and the file stays listed as failed, not dropped; the right one completes ingestion.
+
 ## 0.2.10 — 2026-08-28
 
 Low-confidence OCR is flagged rather than silently indexed. `M1-EXTRACT-ING-029`.

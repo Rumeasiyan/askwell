@@ -13,10 +13,22 @@ with nothing in it.** `EmptyDocument` is raised, not swallowed, when not one
 anchor came back with text — C5's abstention promise starts here: a document
 `chunk` can find nothing in later is the same lie whether it came from a
 missing text layer or from extraction skipping the check.
+
+**A document a person cannot even open gets classified before extraction
+sees its bytes.** `M1-EXTRACT-VAL-030`: "extraction failed" is not one fact,
+it is four — corrupt, encrypted, password-protected, or gone from disk — and
+`docs/states-and-edge-cases.md` §3 asks each to read distinctly, by file
+name, rather than as one grey "failed". `check_readable` is the one check
+every extractor shares (a file that vanished between add and extraction is
+the same fact whether it was going to be read by pdfium or by
+`python-docx`); the encrypted/password-protected split is PDF-specific
+(`extract_pdf`), because that is the only format the sandboxed libraries here
+can even ask the question of.
 """
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sqlalchemy import text
@@ -36,6 +48,52 @@ class EmptyDocument(Exception):
     Exception` is exactly the failure path this belongs to, with this
     exception's own message as the reason a person reads.
     """
+
+
+class MissingSource(Exception):
+    """The file this document pointed to is no longer at its recorded path.
+
+    Distinct from `CorruptDocument` on purpose — `docs/states-and-edge-cases.md`
+    §3's own edge case: a file deleted between add and extraction is "missing
+    at the recorded path", not a document that opened and turned out broken.
+    """
+
+
+class UnreadableSource(Exception):
+    """The file exists but the filesystem refused to read it (permissions,
+    a bad SELinux label, a device that went away mid-read)."""
+
+
+class CorruptDocument(Exception):
+    """The bytes at this path do not form a valid document of the kind its
+    signature declared."""
+
+
+class PasswordProtected(Exception):
+    """This document is encrypted and needs a password before it can be
+    read. No password was supplied for this attempt."""
+
+
+class WrongPassword(Exception):
+    """A password was supplied for this document and did not open it."""
+
+
+def check_readable(work: "Work") -> None:
+    """The one filesystem check every extractor needs before its own parser
+    ever sees the bytes, so "missing" and "unreadable" read the same way
+    regardless of which format failed.
+    """
+    try:
+        with Path(work.path).open("rb"):
+            pass
+    except FileNotFoundError as error:
+        raise MissingSource(
+            f"{work.filename} is no longer at {work.path}. It may have been "
+            "moved or deleted since it was added."
+        ) from error
+    except OSError as error:
+        detail = error.strerror or str(error)
+        raise UnreadableSource(f"{work.filename} could not be read from disk: {detail}.") from error
 
 
 @dataclass(frozen=True, slots=True)

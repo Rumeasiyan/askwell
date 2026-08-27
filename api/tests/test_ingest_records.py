@@ -30,15 +30,17 @@ import uuid
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
+import pypdfium2 as pdfium
 import pytest
 import pytest_asyncio
 from PIL import Image, ImageDraw, ImageFont
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from askwell import ingest
+from askwell import extract_pdf, ingest
 from askwell.config import Settings
 from askwell.db.engine import session_scope
+from askwell.extract_common import WrongPassword
 from askwell.ingest import Report, Stage, Work
 from askwell.sources import add
 
@@ -452,6 +454,166 @@ async def test_a_pdf_with_no_usable_text_anywhere_even_after_ocr_fails(
     ).one()
     assert row[0] == "failed"
     assert row[1] is not None and "text" in row[1].lower()
+
+
+async def test_a_missing_file_is_reported_as_missing_not_corrupt(
+    factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    tmp_path: Path,
+    unreachable_queue: Settings,
+) -> None:
+    """`M1-EXTRACT-VAL-030`'s own edge case: deleted between add and
+    extraction, reported by name at its recorded path rather than as a
+    document that opened and turned out broken."""
+    await nominate(session, str(tmp_path))
+    written(tmp_path, "vanishing.pdf")
+    documents = await recorded(session, tmp_path, "vanishing.pdf")
+    (tmp_path / "vanishing.pdf").unlink()
+
+    for _ in range(ingest.MAX_ATTEMPTS):
+        assert await ingest.process(factory, unreachable_queue, documents[0]) == "failed"
+
+    row = (
+        await session.execute(
+            text(
+                "SELECT j.error, d.status FROM ingest_jobs j "
+                "JOIN documents d ON d.id = j.document_id WHERE j.document_id = :id"
+            ),
+            {"id": documents[0]},
+        )
+    ).one()
+    assert "vanishing.pdf" in row[0]
+    assert "moved or deleted" in row[0]
+    assert row[1] == "attention"
+
+
+async def test_a_corrupt_pdf_is_reported_as_corrupt_by_name(
+    factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    tmp_path: Path,
+    unreachable_queue: Settings,
+) -> None:
+    """A real garbage-after-the-header PDF, not a mock — this proves pdfium's
+    own `FPDF_ERR_FORMAT` reaches the user as `CorruptDocument`, not as a
+    library traceback."""
+    await nominate(session, str(tmp_path))
+    written(tmp_path, "broken.pdf", b"%PDF-1.7\nthis is not a real pdf body at all")
+    documents = await recorded(session, tmp_path, "broken.pdf")
+
+    for _ in range(ingest.MAX_ATTEMPTS):
+        assert await ingest.process(factory, unreachable_queue, documents[0]) == "failed"
+
+    row = (
+        await session.execute(
+            text(
+                "SELECT j.error, d.status FROM ingest_jobs j "
+                "JOIN documents d ON d.id = j.document_id WHERE j.document_id = :id"
+            ),
+            {"id": documents[0]},
+        )
+    ).one()
+    assert "broken.pdf" in row[0]
+    assert "corrupted" in row[0].lower()
+    assert row[1] == "attention"
+
+
+async def test_a_password_protected_pdf_prompts_and_the_right_password_completes_it(
+    factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    tmp_path: Path,
+    unreachable_queue: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cold-start walkthrough this ticket names: a password-protected
+    PDF prompts, a wrong password is reported as wrong with another attempt
+    allowed, and the right one completes ingestion.
+
+    pdfium has no free way here to build a real encrypted PDF, so what is
+    faked is only the one call pdfium itself makes the decision on —
+    `PdfDocument`'s own password check — while every other byte the pipeline
+    reads (page count, text) comes from the real `_pdf()` document real
+    pdfium parses.
+    """
+    await nominate(session, str(tmp_path))
+    written(tmp_path, "secret.pdf")
+    documents = await recorded(session, tmp_path, "secret.pdf")
+
+    real_open = pdfium.PdfDocument
+
+    def fake_open(
+        path: str, password: str | None = None, *args: object, **kwargs: object
+    ) -> object:
+        if password != "letmein":
+            raise pdfium.PdfiumError(
+                "Failed to load document.", err_code=pdfium.raw.FPDF_ERR_PASSWORD
+            )
+        return real_open(path)
+
+    monkeypatch.setattr(extract_pdf.pdfium, "PdfDocument", fake_open)
+
+    # No password supplied at all: prompted, not just failed. Once, not three
+    # times — a password failure does not auto-retry, because the retry carries
+    # no password and so fails identically while overwriting the reason. See
+    # `test_a_wrong_password_is_not_overwritten_by_an_automatic_retry`.
+    assert await ingest.process(factory, unreachable_queue, documents[0]) == "failed"
+
+    row = (
+        await session.execute(
+            text(
+                "SELECT j.error, d.status FROM ingest_jobs j "
+                "JOIN documents d ON d.id = j.document_id WHERE j.document_id = :id"
+            ),
+            {"id": documents[0]},
+        )
+    ).one()
+    assert "secret.pdf" in row[0]
+    assert "password-protected" in row[0].lower()
+    assert row[1] == "attention"
+
+    # Wrong password: reported as wrong, and the file stays listed as
+    # failed rather than being dropped.
+    wrong = await ingest.retry(session, documents[0], unreachable_queue)
+    await session.commit()
+    assert wrong.retried
+    # Once. The loop this replaced supplied the password on every pass, which is
+    # why it never caught #132: the automatic retry in production supplies none,
+    # so it failed as `PasswordProtected` and overwrote "incorrect" — the one
+    # word telling the user their password was the problem.
+    result = await ingest.process(factory, unreachable_queue, documents[0], password="nope")
+    assert result == "failed"
+
+    row = (
+        await session.execute(
+            text(
+                "SELECT j.error, d.status FROM ingest_jobs j "
+                "JOIN documents d ON d.id = j.document_id WHERE j.document_id = :id"
+            ),
+            {"id": documents[0]},
+        )
+    ).one()
+    assert "secret.pdf" in row[0]
+    assert "incorrect" in row[0].lower()
+    assert row[1] == "attention"
+
+    # The correct password completes ingestion.
+    right = await ingest.retry(session, documents[0], unreachable_queue)
+    await session.commit()
+    assert right.retried
+    outcome = await ingest.process(factory, unreachable_queue, documents[0], password="letmein")
+    assert outcome == "parked"  # extract succeeded; chunk is not installed yet
+
+    row = (
+        await session.execute(
+            text(
+                "SELECT j.state, j.error, d.status FROM ingest_jobs j "
+                "JOIN documents d ON d.id = j.document_id WHERE j.document_id = :id"
+            ),
+            {"id": documents[0]},
+        )
+    ).one()
+    assert row[0] == "parked"
+    assert row[1] is None
+    assert row[2] == "queued"
 
 
 async def test_a_scanned_page_with_no_text_layer_is_read_by_ocr(
@@ -1000,6 +1162,82 @@ async def test_a_failing_stage_is_retried_and_then_left_failed_with_its_reason(
     assert row[3] == "extract"
     assert row[4] == "attention"
     assert row[5] == "attention"
+
+
+async def test_a_wrong_password_is_not_overwritten_by_an_automatic_retry(
+    factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    tmp_path: Path,
+    unreachable_queue: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The one sentence that told the user what to do has to survive.
+
+    An automatic retry carries no password — none was stored — so it cannot
+    open the file and it fails *differently*: a wrong password becomes
+    `PasswordProtected`, which overwrites "the password entered was incorrect"
+    with "this file is password-protected". The user is then told to supply a
+    password they just supplied, and nothing on screen says it was wrong.
+
+    So a password failure does not auto-retry. It waits, because the user doing
+    something is the only thing that can change the outcome.
+    """
+    await nominate(session, str(tmp_path))
+    written(tmp_path, "locked.pdf")
+    documents = await recorded(session, tmp_path, "locked.pdf")
+
+    async def wrong_password(
+        work: Work, report: Report, factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        raise WrongPassword("The password entered for locked.pdf was incorrect.")
+
+    monkeypatch.setattr(ingest, "STAGES", (Stage("extract", "M1-EXTRACT-ING-026", wrong_password),))
+
+    assert await ingest.process(factory, unreachable_queue, documents[0]) == "failed"
+
+    row = (
+        await session.execute(
+            text("SELECT state, attempts, error FROM ingest_jobs WHERE document_id = :id"),
+            {"id": documents[0]},
+        )
+    ).one()
+    # Failed after one attempt rather than queued for another: with attempts at
+    # 1 and MAX_ATTEMPTS at 3, the old code would have re-queued it here.
+    assert row[0] == "failed", "a password failure must not sit queued for a retry that cannot work"
+    assert row[1] == 1
+    assert "was incorrect" in row[2], "the wrong-password sentence is the whole point"
+
+
+async def test_a_failure_that_a_retry_could_fix_still_retries(
+    factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    tmp_path: Path,
+    unreachable_queue: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The password case is the exception, not a change to retrying generally.
+
+    A drive that was briefly unplugged is exactly what the retry exists for.
+    """
+    await nominate(session, str(tmp_path))
+    written(tmp_path, "flaky.pdf")
+    documents = await recorded(session, tmp_path, "flaky.pdf")
+
+    async def transient(
+        work: Work, report: Report, factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        raise OSError("the drive went away")
+
+    monkeypatch.setattr(ingest, "STAGES", (Stage("extract", "M1-EXTRACT-ING-026", transient),))
+
+    assert await ingest.process(factory, unreachable_queue, documents[0]) == "failed"
+    row = (
+        await session.execute(
+            text("SELECT state FROM ingest_jobs WHERE document_id = :id"),
+            {"id": documents[0]},
+        )
+    ).one()
+    assert row[0] == "queued", "an ordinary failure is still worth trying again"
 
 
 async def test_a_failed_document_can_be_retried_and_its_attempts_are_forgiven(
