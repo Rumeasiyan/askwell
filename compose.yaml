@@ -157,6 +157,10 @@ services:
       ASKWELL_LOG_LEVEL: ${ASKWELL_LOG_LEVEL:-INFO}
       ASKWELL_WEB_ASSETS_DIR: /app/web/out
       ASKWELL_INFERENCE_SOCKET: /run/askwell/inference.sock
+      # Read here only to say how long a queue will take. The worker is what
+      # honours it; both must agree or the estimate is arithmetic over a number
+      # nothing is using.
+      ASKWELL_INGEST_CONCURRENCY: ${ASKWELL_INGEST_CONCURRENCY:-2}
       # The window onto the user's own files. Empty means there is none yet,
       # which is the correct state on a fresh install — nominating a folder
       # then tells the user exactly what to set here.
@@ -231,6 +235,11 @@ services:
       # The worker is what actually reads and indexes the files, so it needs
       # the same window as the API and on the same terms. See the api service.
       ASKWELL_ROOTS_MOUNT: ${ASKWELL_ROOTS_MOUNT:-}
+      # How many files are indexed at once. The ceiling exists because this
+      # machine is also running the user's browser.
+      ASKWELL_INGEST_CONCURRENCY: ${ASKWELL_INGEST_CONCURRENCY:-2}
+      ASKWELL_INGEST_JOB_TIMEOUT_SECONDS: ${ASKWELL_INGEST_JOB_TIMEOUT_SECONDS:-3600}
+      ASKWELL_INGEST_RECONCILE_SECONDS: ${ASKWELL_INGEST_RECONCILE_SECONDS:-30}
       ASKWELL_ENVIRONMENT: ${ASKWELL_ENVIRONMENT:-development}
       ASKWELL_LOG_LEVEL: ${ASKWELL_LOG_LEVEL:-INFO}
       HTTP_PROXY: http://egress-proxy:3128

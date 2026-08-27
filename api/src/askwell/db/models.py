@@ -23,9 +23,11 @@ from typing import Any
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Identity,
     Index,
     Integer,
     Numeric,
@@ -57,6 +59,13 @@ DOCUMENT_STATUSES = ("queued", "indexing", "ready", "attention", "deleted")
 NOTE_ORIGINS = ("user", "inferred")
 MEMORY_ORIGINS = ("clarification", "correction", "manual")
 CLARIFICATION_STATUSES = ("pending", "answered", "skipped", "dismissed")
+# What one document's trip through the ingestion pipeline can be doing.
+# `parked` is the one that needs saying out loud: the job ran, it reached a
+# stage that has not been built yet, and it stopped there rather than claiming
+# to have finished. It is not a failure and it is not success, and collapsing
+# it into either would make the library render a lie in one direction or the
+# other. See `askwell.ingest`.
+INGEST_STATES = ("queued", "running", "parked", "failed", "done")
 CONVERSATION_MODES = ("text", "voice")
 AI_BACKENDS = ("local", "online")
 MESSAGE_ROLES = ("user", "assistant", "system")
@@ -254,6 +263,85 @@ class Document(Base):
     # source viewer, and can raise a clarification.
     ocr_confidence: Mapped[float | None] = mapped_column(Numeric(4, 3))
     added_at: Mapped[datetime] = created_at()
+
+
+class IngestJob(Base):
+    """One document's place in the ingestion queue, and how far it has got.
+
+    The queue is durable because the reason it exists is that somebody added
+    five hundred papers and closed their laptop. Redis carries the *dispatch* —
+    `arq` is what wakes a worker — but a job that exists only in Redis is a job
+    that a `podman compose down -v`, a crash mid-run or a failed enqueue loses
+    silently. This table is the record; the queue is the transport, and the two
+    are reconciled rather than trusted to agree (`askwell.ingest`).
+
+    One row per document, not one per attempt. A retry increments `attempts`
+    and clears `error` rather than accumulating history: what the library has to
+    render is "this file failed, here is why, retry" — and a per-attempt table
+    would be a growing log nothing reads to answer that question.
+
+    `seq` rather than `enqueued_at` for ordering. Two documents from one drop
+    are enqueued inside the same transaction and share a timestamp to the
+    microsecond, so a timestamp cannot order them and a queue position computed
+    from one would jump about between reads.
+    """
+
+    __tablename__ = "ingest_jobs"
+    __table_args__ = (
+        _one_of("state", INGEST_STATES, "state"),
+        # One live job per document. A second row would be a second worker
+        # extracting the same file into the same chunks.
+        UniqueConstraint("document_id", name="uq_ingest_jobs_document_id"),
+        # The dispatcher's query: the next queued job in order. Partial,
+        # because the finished rows are the ones that accumulate and none of
+        # them is ever the answer.
+        Index(
+            "ix_ingest_jobs_pending",
+            "seq",
+            postgresql_where=text("state IN ('queued', 'running')"),
+        ),
+        Index("ix_ingest_jobs_source_id", "source_id"),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+
+    # Ordering. `Identity` rather than a Python-side counter for the same
+    # reason every default here is a server default: a row inserted by a repair
+    # script or a `psql` session must get one too.
+    seq: Mapped[int] = mapped_column(BigInteger, Identity(), nullable=False, unique=True)
+
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), nullable=False
+    )
+    # Denormalised from the document deliberately. Every read of this table is
+    # "how far has this source got", and a join per poll — twice a second, for
+    # as long as an import runs — buys nothing on a laptop that is also running
+    # a model.
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("sources.id", ondelete="CASCADE"), nullable=False
+    )
+
+    state: Mapped[str] = mapped_column(String(32), nullable=False, server_default=text("'queued'"))
+    # The last stage that completed, and the first stage that has not been
+    # built. `awaiting` is what turns "nothing is happening to my files" into a
+    # sentence naming what has to arrive first.
+    stage: Mapped[str | None] = mapped_column(String(32))
+    awaiting: Mapped[str | None] = mapped_column(String(32))
+
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    error: Mapped[str | None] = mapped_column(Text)
+
+    # Progress *inside* one file, so a single enormous PDF does not look hung.
+    # Nullable rather than zero: "no stage has said how big this is" and "none
+    # of it is done" are different facts, and a progress bar rendered from the
+    # second when the first is true is the untimed spinner this ticket exists
+    # to remove.
+    bytes_done: Mapped[int | None] = mapped_column(BigInteger)
+    bytes_total: Mapped[int | None] = mapped_column(BigInteger)
+
+    enqueued_at: Mapped[datetime] = created_at()
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Chunk(Base):

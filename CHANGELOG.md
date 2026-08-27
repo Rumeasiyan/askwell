@@ -4,6 +4,35 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.6 — 2026-08-28
+
+Indexing stops belonging to the page you are looking at. `M1-ADD-ING-025`.
+
+Three defects the audit found before this shipped are fixed here rather than filed for later: the browser opened one event stream per drop and stalled the tab after six, a failed file reached the screen as a bare count, and a queue that had lost a worker could not restart itself for an hour.
+
+### Added
+
+- **Ingestion is a background job.** Recording a drop now writes a queue row per document in the same transaction as the document itself, and a worker picks them up. The add request ends; the work does not. Navigating away, closing the tab and restarting the browser leave the import running.
+- **A durable queue, not just a Redis one.** `ingest_jobs` is the record and Redis is the transport. A worker killed mid-job has its work returned to the queue at startup; a Redis that was flushed, unreachable, or asleep with the laptop is repaired by a reconcile that runs every half minute. Nothing that was committed is lost by the queue being unavailable — it is delayed.
+- **Progress per file and inside a file.** `GET /ingest` is a snapshot and `GET /ingest/stream` is the same payload as server-sent events, pushed only when something changes. Both carry the running count, each queued file's position, and the bytes done and total for whatever is being read — so one 900-page scan shows movement rather than an untimed spinner.
+- **An estimate that says what it is based on, or refuses to give one.** Before anything has finished indexing on this machine there is no throughput history, so the answer is no number and a sentence saying why. A measured estimate carries the count and average it was extrapolated from.
+- **Partial coverage, so a source is askable early.** Every source reports how many of its documents are indexed and whether it can be asked about at all. Eighty of five hundred papers is eighty papers' worth of answers, not a wait.
+- **A failed document is visible with its reason and a retry.** Three attempts, then it rests as failed with the error stored where the library can render it — in Postgres, so it survives the queue. `POST /ingest/documents/{id}/retry` forgives the attempts and puts it back.
+- **Concurrency is configuration and defaults to two.** `ASKWELL_INGEST_CONCURRENCY`, because this laptop is also running the user's browser. `ASKWELL_INGEST_JOB_TIMEOUT_SECONDS` defaults to an hour: OCR over a long scan is genuinely that slow, and the queue's five-minute default would call a slow file a failed one.
+- Documents recorded before this version — by `M1-ADD-BE-023`, when there was no queue — are enqueued by the migration. They would otherwise have waited forever for a worker that had nothing to tell it they existed.
+
+### Changed
+
+- The add screen's *Queued* panel is live. It says what the queue is doing, what position a file is in, and — while the pipeline is incomplete — what has to arrive before anything is searchable, instead of promising that background ingestion is coming.
+- A source's status is derived from its documents rather than set by hand, and a change is a decisions record naming what moved and how much of the source was ready at the time.
+
+### Known gaps
+
+- **Nothing is extracted, chunked or embedded yet, so no document reaches `ready` on its own.** Those three stages are declared in the pipeline, named with their tickets, and not built: `M1-EXTRACT-ING-026`, `M1-INDEX-ING-031`, `M1-INDEX-ING-032`. A job runs, reaches extraction, finds nothing installed and parks there saying so. The queue, the progress, the failure handling and the resume are real and are exercised by tests that install a stage of their own; what a fresh install sees today is an honest "recorded and waiting", not a progress bar.
+- Documents already parked when a stage is later installed are not automatically re-queued. Issue [#109](https://github.com/Rumeasiyan/askwell/issues/109).
+- Hashing still happens inside the add request. The queue that would move it now exists — issue [#105](https://github.com/Rumeasiyan/askwell/issues/105).
+- Disk budget refusal is not implemented. M7.
+
 ## 0.2.5 — 2026-08-28
 
 Askwell remembers what it was given, and notices when it has been given it before. `M1-ADD-BE-023`.

@@ -10,6 +10,17 @@ import {
   plural,
   refusalLine,
 } from "@/lib/add-source";
+import {
+  type IngestState,
+  coverageSentence,
+  estimateSentence,
+  fetchIngest,
+  queueSentence,
+  subscribeIngest,
+  failureSentence,
+  retryDocument,
+  type FailedDocument,
+} from "@/lib/ingest";
 import { HOST_GIVES_PATHS, fromFiles } from "@/lib/selection";
 import { type Recorded as RecordedOutcome, duplicateLine, withOutcome } from "@/lib/sources";
 import { type Batch, type Item, laterIn, refusedIn, supportedIn, useAdd } from "./add-state";
@@ -254,9 +265,9 @@ function BatchCard({ batch }: { batch: Batch }) {
       ) : batch.phase === "queued" ? (
         <Note tone="provenance" heading="Queued">
           {plural(batch.recorded?.added ?? supported.length, "file is", "files are")} queued
-          from <code>{batch.folder}</code>. Reading and indexing them is the next piece of work
-          — it arrives with background ingestion, and nothing in your material is searchable
-          until it does. Nothing has been copied.
+          from <code>{batch.folder}</code>. Indexing runs in the background — you can leave
+          this page and it carries on. Nothing has been copied.
+          <Progress sourceId={batch.recorded?.source?.id ?? null} />
         </Note>
       ) : null}
 
@@ -280,6 +291,137 @@ function BatchCard({ batch }: { batch: Batch }) {
         </Note>
       )}
     </article>
+  );
+}
+
+/**
+ * What the queue is doing, live, under a drop that has just been recorded.
+ *
+ * Subscribed rather than polled, and unsubscribed on unmount — closing this
+ * page stops the *watching*. The import is on the worker and does not notice,
+ * which is the whole point of the ticket and is the sentence above it.
+ *
+ * A snapshot is fetched first. Waiting for the stream's first message would
+ * leave the panel blank for as long as it takes to connect, which on the one
+ * screen where somebody is definitely watching reads as nothing having
+ * happened.
+ */
+function Progress({ sourceId }: { sourceId: string | null }) {
+  const [state, setState] = useState<IngestState | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let live = true;
+
+    fetchIngest(controller.signal)
+      .then((first) => {
+        if (live) setState(first);
+      })
+      .catch((error: unknown) => {
+        if (live && !controller.signal.aborted) setFailure(String(error));
+      });
+
+    const stop = subscribeIngest((next) => {
+      if (live) setState(next);
+    });
+
+    return () => {
+      live = false;
+      controller.abort();
+      stop();
+    };
+  }, []);
+
+  if (failure !== null) {
+    return (
+      <span className="ask-micro mt-2 block">
+        Askwell is not answering about the queue. Your files were recorded — nothing was lost.
+      </span>
+    );
+  }
+  if (state === null) {
+    return null;
+  }
+
+  const source = sourceId === null ? null : state.sources.find((item) => item.id === sourceId);
+
+  return (
+    <>
+      <span className="ask-micro mt-2 block">
+        {queueSentence(state)}
+        {state.estimate.seconds === null && state.queue_length === 0
+          ? null
+          : ` ${estimateSentence(state.estimate)}`}
+        {source === undefined || source === null ? null : ` ${coverageSentence(source)}`}
+      </span>
+      <Failures failures={state.failures} />
+    </>
+  );
+}
+
+/**
+ * The files that could not be read, each with its reason and a way to try again.
+ *
+ * `M1-ADD-ING-025` names this as an edge case in its own right: a job that
+ * fails is "visible with its error and a retry, never silently dropped". A
+ * count on its own is the silent drop — somebody whose two scans failed among
+ * sixty learns that two failed and nothing else, and has no way to act.
+ *
+ * Retry is per file rather than a single "retry all" because the reasons
+ * differ: one file is open in Word and one is on a drive that is no longer
+ * plugged in, and fixing the first should not require pretending to fix the
+ * second.
+ */
+function Failures({ failures }: { failures: FailedDocument[] }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [refused, setRefused] = useState<Record<string, string>>({});
+
+  if (failures.length === 0) {
+    return null;
+  }
+
+  return (
+    <ul className="mt-2 block list-none p-0">
+      {failures.map((failure) => (
+        <li key={failure.document_id} className="ask-micro mt-1 block">
+          <span style={{ color: "var(--alarm)" }}>{failureSentence(failure)}</span>{" "}
+          <button
+            type="button"
+            disabled={busy === failure.document_id}
+            onClick={() => {
+              setBusy(failure.document_id);
+              retryDocument(failure.document_id)
+                .then(() => {
+                  // The row is gone from `failures` on the next stream message,
+                  // so there is nothing to clear here — the list is the state.
+                  setRefused((was) => {
+                    const { [failure.document_id]: _removed, ...rest } = was;
+                    return rest;
+                  });
+                })
+                .catch((error: unknown) => {
+                  setRefused((was) => ({ ...was, [failure.document_id]: String(error) }));
+                })
+                .finally(() => setBusy(null));
+            }}
+            className="ask-navigates px-2 py-1"
+            style={{
+              border: "1px solid var(--rule)",
+              color: "var(--muted)",
+              fontSize: "var(--t-meta)",
+            }}
+          >
+            {busy === failure.document_id ? "Trying again…" : "Try again"}
+          </button>
+          {refused[failure.document_id] === undefined ? null : (
+            <span className="ask-micro mt-1 block" style={{ color: "var(--alarm)" }}>
+              {refused[failure.document_id]}
+            </span>
+          )}
+        </li>
+      ))}
+    </ul>
   );
 }
 
