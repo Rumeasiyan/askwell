@@ -11,6 +11,7 @@ than diagnosable.
 """
 
 import json
+import time
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -85,6 +86,22 @@ UNKNOWN_REASON = (
     "a container — start it with: scripts/dev.sh inference"
 )
 
+STALE_REASON = (
+    "The inference supervisor stopped reporting. Its last state is too old to "
+    "trust, so Askwell is treating the assistant as not running rather than "
+    "believing a file nothing is keeping current."
+)
+
+# The supervisor rewrites its state every 10s while running. Three missed
+# heartbeats is stopped — long enough that a slow machine is not called dead,
+# short enough that "available" never outlives the process by much.
+#
+# This exists because a supervisor killed with SIGKILL cannot write anything on
+# the way out, and a state file saying `ready` forever afterwards would make
+# the API confidently report an assistant that is not there. That is the worst
+# thing this surface can do.
+STALE_AFTER_SECONDS = 35.0
+
 
 def read(state_path: Path) -> InferenceState:
     """The supervisor's state, or an honest statement that it has not reported.
@@ -110,6 +127,16 @@ def read(state_path: Path) -> InferenceState:
             reason=f"The supervisor reported a state this build does not know: "
             f"{payload.get('state')!r}.",
         )
+
+    updated_at = payload.get("updated_at")
+    if state is ProcessState.READY and isinstance(updated_at, (int, float)):
+        if time.time() - float(updated_at) > STALE_AFTER_SECONDS:
+            return InferenceState(
+                state=ProcessState.STOPPED,
+                model=payload.get("model"),
+                reason=STALE_REASON,
+                restarts=int(payload.get("restarts", 0)),
+            )
 
     return InferenceState(
         state=state,
