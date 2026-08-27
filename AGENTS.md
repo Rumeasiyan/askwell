@@ -132,6 +132,7 @@ Everything runs through one entry point:
 | Database-backed tests | `scripts/dev.sh test-db` (needs the stack up) | **Verified** |
 | Alembic against the stack | `scripts/dev.sh db upgrade head` | **Verified** |
 | A psql shell | `scripts/dev.sh psql` | **Verified** |
+| Verify the audit chains | `podman compose exec api askwell-verify` | **Verified** |
 | Rebuild the image | `scripts/dev.sh build` | **Verified** |
 | Anything else inside the image | `scripts/dev.sh run <cmd>` / `scripts/dev.sh shell` | **Verified** |
 | Regenerate the lockfile | `scripts/dev.sh lock` | **Verified** |

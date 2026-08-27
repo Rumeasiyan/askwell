@@ -4,6 +4,22 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.1.8 — 2026-08-27
+
+`M0-DATA-OBS-015`. Hash-chained audit stores, and the trace ring buffer.
+
+### Added
+
+- `askwell.audit` — both database-backed stores chain each record to the hash of the previous one, written in the caller's transaction so a decision that cannot be recorded does not happen. Verification walks the chain and names the record where it breaks.
+- `askwell.traces` — a capped file ring buffer that never fails an action. Losing a trace costs nothing visible, because citations are a real table and do not rotate.
+- `askwell-verify` — runs the chain check across both stores and exits non-zero on a break. The settings surface arrives in M7.
+- 28 database-backed tests and 15 pure ones, including the `jsonb` round trip, racing writes, and a guard that the word "immutable" is only ever used to deny it.
+
+### Fixed
+
+- **A chain whose first record was deleted reported as intact.** `MISSING_GENESIS` has no single record to name, `first_break` was therefore `None`, and `intact` was derived from it. A verifier that says "fine" about a chain whose start was removed is worse than no verifier.
+- **Verification read the chain in timestamp order** and reported perfectly good chains as broken when two records landed close together. It follows the links now: a chain defines its own order, and every available ordering column is worse.
+
 ## 0.1.7 — 2026-08-27
 
 `M0-DATA-DB-014`. The invariants, in the migration that creates the tables.
