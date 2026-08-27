@@ -25,9 +25,9 @@ services:
     # image and a build step on every user's machine.
     image: docker.io/pgvector/pgvector:pg18
     environment:
-      POSTGRES_USER: ${ASKWELL_DB_USER:-askwell}
-      POSTGRES_PASSWORD: ${ASKWELL_DB_PASSWORD:?ASKWELL_DB_PASSWORD is not set. Copy .env.example to .env and set it. It is never committed (C8).}
-      POSTGRES_DB: ${ASKWELL_DB_NAME:-askwell}
+      POSTGRES_USER: ${POSTGRES_USER:-askwell}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is not set. Copy .env.example to .env and set it. It is never committed (C8).}
+      POSTGRES_DB: ${POSTGRES_DB:-askwell}
       # Askwell's own data lives in a subdirectory of the volume so that the
       # volume can also hold anything else the database needs later without
       # Postgres refusing to initialise into a non-empty directory.
@@ -39,7 +39,7 @@ services:
       # after the current user, which reports healthy while the database the
       # application actually connects to is still being created on first boot.
       test:
-        ["CMD-SHELL", "pg_isready -U ${ASKWELL_DB_USER:-askwell} -d ${ASKWELL_DB_NAME:-askwell}"]
+        ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-askwell} -d ${POSTGRES_DB:-askwell}"]
       interval: 2s
       timeout: 3s
       retries: 30
@@ -78,7 +78,7 @@ services:
       dockerfile: api/Dockerfile
     command: ["askwell-api"]
     environment:
-      ASKWELL_DATABASE_URL: postgresql://${ASKWELL_DB_USER:-askwell}:${ASKWELL_DB_PASSWORD:?set ASKWELL_DB_PASSWORD in .env}@postgres:5432/${ASKWELL_DB_NAME:-askwell}
+      ASKWELL_DATABASE_URL: postgresql://${POSTGRES_USER:-askwell}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-askwell}
       ASKWELL_REDIS_HOST: redis
       # Inside the container the API must listen on all interfaces to be
       # reachable at all. What keeps it off the network is the port publishing
@@ -112,7 +112,7 @@ services:
       dockerfile: api/Dockerfile
     command: ["askwell-worker"]
     environment:
-      ASKWELL_DATABASE_URL: postgresql://${ASKWELL_DB_USER:-askwell}:${ASKWELL_DB_PASSWORD:?set ASKWELL_DB_PASSWORD in .env}@postgres:5432/${ASKWELL_DB_NAME:-askwell}
+      ASKWELL_DATABASE_URL: postgresql://${POSTGRES_USER:-askwell}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-askwell}
       ASKWELL_REDIS_HOST: redis
       ASKWELL_ENVIRONMENT: ${ASKWELL_ENVIRONMENT:-development}
       ASKWELL_LOG_LEVEL: ${ASKWELL_LOG_LEVEL:-INFO}

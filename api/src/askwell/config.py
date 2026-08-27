@@ -92,6 +92,12 @@ class Settings(BaseSettings):
     egress_proxy_host: str = "egress-proxy"
     egress_proxy_port: Port = 3128
 
+    # The embedding model's output dimension, and therefore the width of
+    # chunks.embedding. It is configuration rather than a literal in the
+    # migration because changing the model is a configuration change plus a
+    # re-embed, not a schema edit. bge-m3 gives 1024.
+    embedding_dimensions: int = Field(default=1024, ge=1, le=16000)
+
     # Where the built frontend lives. The default is the path inside the API
     # image; a source checkout points it at web/out.
     web_assets_dir: Path = Path("/app/web/out")

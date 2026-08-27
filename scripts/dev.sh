@@ -17,6 +17,10 @@
 #   scripts/dev.sh web-build    build the frontend to web/out
 #   scripts/dev.sh web-check    typecheck, lint, build, contrast, offline scan
 #   scripts/dev.sh web-run ...  any command inside the frontend image
+#
+#   scripts/dev.sh db <args>    alembic against the running stack
+#                               (e.g. `db upgrade head`, `db revision --autogenerate -m "..."`)
+#   scripts/dev.sh psql         a psql shell on the stack's database
 #   scripts/dev.sh build       rebuild the image
 #   scripts/dev.sh shell       an interactive shell in the image
 #   scripts/dev.sh run ...     any command inside the image
@@ -38,6 +42,23 @@ note() { printf '\033[36m==>\033[0m %s\n' "$*" >&2; }
 
 command -v podman >/dev/null 2>&1 \
     || die "podman is not installed. It is the only thing this project needs on the host."
+
+# Read from .env rather than duplicated here. A second copy of the credentials
+# is how one of them ends up committed.
+_env_value() {
+    local name="$1" fallback="$2"
+    local found
+    found="$(grep -E "^${name}=" "$REPO_ROOT/.env" 2>/dev/null | tail -1 | cut -d= -f2-)"
+    printf '%s' "${found:-$fallback}"
+}
+_db_user() { _env_value POSTGRES_USER askwell; }
+_db_name() { _env_value POSTGRES_DB askwell; }
+_db_password() {
+    local value
+    value="$(_env_value POSTGRES_PASSWORD "")"
+    [ -n "$value" ] || die "POSTGRES_PASSWORD is not set in .env. Copy .env.example and set it."
+    printf '%s' "$value"
+}
 
 build_image() {
     note "building $IMAGE"
@@ -149,6 +170,28 @@ case "$cmd" in
         ;;
 
     web-shell) in_web "${TTY_FLAGS[@]}" "$WEB_IMAGE" bash ;;
+
+    db)
+        # Alembic needs three things at once that no other command needs
+        # together: the repository mounted so a generated migration lands in the
+        # working tree rather than inside a container, the stack's network so it
+        # can reach Postgres, and the database URL. Hence its own entry point
+        # rather than `run`, which is deliberately network-less.
+        [ "$#" -gt 0 ] || die "db needs an alembic command, e.g. $SELF db upgrade head"
+        podman image exists "$IMAGE" || build_image
+        podman run --rm "${TTY_FLAGS[@]}" \
+            --network "${ASKWELL_COMPOSE_NETWORK:-askwell_default}" \
+            --env-file "$REPO_ROOT/.env" \
+            -e ASKWELL_DATABASE_URL="postgresql://$(_db_user):$(_db_password)@postgres:5432/$(_db_name)" \
+            -v "$REPO_ROOT":/app:Z \
+            -w /app/api \
+            "$IMAGE" alembic "$@"
+        ;;
+
+    psql)
+        podman compose exec "${TTY_FLAGS[@]}" postgres \
+            psql -U "$(_db_user)" -d "$(_db_name)" "$@"
+        ;;
 
     build) build_image; build_web_image ;;
     shell) in_image "${TTY_FLAGS[@]}" "$IMAGE" bash ;;

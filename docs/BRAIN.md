@@ -7,43 +7,45 @@
 
 ## Current phase
 
-**M0 — It runs. In progress: 5 of 21 tickets done.**
+**M0 — It runs. In progress: 6 of 21 tickets done.**
 
-The repository is no longer documentation only. `api/` exists: an image, manifests, the application, and 54 tests. The API starts, refuses bad configuration by name, and serves `GET /health` reporting five components separately. `podman compose up -d` brings up four services and the interface loads at `http://127.0.0.1:8000`. `web/` builds to static assets and the API serves them — the `web` container is gone from the topology. The Compose stack, the database schema and the inference process do not exist yet — so all five health components correctly report `unreachable`.
+The repository is no longer documentation only. `api/` exists: an image, manifests, the application, and 54 tests. The API starts, refuses bad configuration by name, and serves `GET /health` reporting five components separately. `podman compose up -d` brings up four services, the database carries the full v1 schema, and the interface loads at `http://127.0.0.1:8000`. `web/` builds to static assets and the API serves them — the `web` container is gone from the topology. The Compose stack, the database schema and the inference process do not exist yet — so all five health components correctly report `unreachable`.
 
-**Version:** `0.1.5` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
+**Version:** `0.1.6` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
 **Tracker:** `Rumeasiyan/askwell`. Working agreements in `AGENTS.md`. Backlog in `docs/backlog/`.
 
 ## Last completed
 
-**`M0-STACK-DEPLOY-009`** — [#61](https://github.com/Rumeasiyan/askwell/issues/61). The Compose stack: api, postgres, redis, worker.
+**`M0-DATA-DB-013`** — [#63](https://github.com/Rumeasiyan/askwell/issues/63). The v1 schema: thirteen tables, one reversible migration.
 
-Verified against the running stack:
+Verified against the running database:
 
 | | |
 | --- | --- |
-| `podman compose up -d` | four services, all healthy, from a clean start |
-| `GET /health` | database, queue and worker all `reachable`; inference and egress correctly not |
-| `GET /` | the interface loads at `http://127.0.0.1:8000` |
-| enqueue `ping` from the API | worker returns `{'pong': 'from-the-api', 'worker_version': '0.1.4'}` |
-| write a row, `compose down`, `compose up` | the row is still there |
-| port 8000 occupied | `rootlessport listen tcp 127.0.0.1:8000: bind: address already in use` |
-| published ports | only `127.0.0.1:8000`. Postgres and Redis are not published at all |
-| versions logged | PostgreSQL 18.6, Redis 8.10.1, Askwell 0.1.5 |
+| `db upgrade head` | thirteen tables plus `alembic_version` |
+| organisations / users / roles | zero tables match |
+| `chunks.embedding`, `schema_notes.embedding` | `vector(1024)`, from configuration |
+| `chunks.content_tsv` | `attgenerated = 's'` — generated, not application-maintained |
+| full-text search | `to_tsquery('english','termination & notice')` finds the row |
+| `db downgrade base` | every table dropped; `alembic_version` alone remains |
+| applying twice | no-op, no error |
+| delete a document | content and embedding cleared, `content_tsv` empty; the citation still resolves |
 
-**A real defect, found only because a real worker was running beside it.** The health surface probed the worker by opening a TCP socket. An arq worker consumes a queue and listens on nothing, so a perfectly healthy worker was reported as down — a false alarm pointing at the wrong container, on the surface a confused user reads first. It now reads the health record arq publishes into Redis, which also separates "the queue is down" from "the queue is up and the worker has not checked in". Those need different actions.
+**A real defect, found by inserting a row by hand.** Column defaults were SQLAlchemy's Python-side `default=`, which applies only to rows the ORM inserts. A migration, a `psql` session or a repair script hits `null value in column "version" violates not-null constraint` on a column that looks like it has a default. They are `server_default` now, and `test_defaults_are_enforced_by_the_database_not_only_by_the_orm` asserts it.
 
-`health_check_interval` is 10s, not arq's default of an hour: a stopped worker that still looks fine for an hour is long enough for someone to conclude their ingest is merely slow.
+**A design choice worth knowing:** psycopg 3 for both the async application and Alembic's synchronous path. asyncpg is faster on paper but cannot do the sync half, so the alternative was two drivers, two sets of type adapters and two failure modes on a machine where nobody is watching.
 
-**The unknown-variable check caught a stale `ASKWELL_WORKER_HOST` in my own `compose.yaml`** and refused to start rather than ignoring it. That is the behaviour `M0-FOUND-BE-002` added, working on its first real chance.
+The model tests were mutation-tested: conflating `deleted_at` with `superseded_by`, and making `citations.chunk_id` cascade, were each introduced and each caught.
 
-**Ticket order corrected.** `M0-FOUND-TEST-005` depends on `M0-DATA-DB-013`, which depends on this ticket — the numbering implies an order the dependency graph contradicts. Remaining M0 order is `013 → 005 → 006`, then the rest.
+`ASKWELL_DB_*` were renamed to `POSTGRES_*`. They are read by Compose and the Postgres image, not by Askwell, and sharing the `ASKWELL_` prefix would have meant either weakening the unknown-variable check or maintaining an exception list. The check's whole value is that it needs neither — it caught this itself.
 
 ## Next task
 
-**`M0-DATA-DB-013`** — the first migration creating the v1 schema. Alembic against the running Postgres. `docs/architecture.md` §7 is the data model: 13 tables plus `citations` and `fact_usage`. `citations` is a real table rather than jsonb because C4 cannot be enforced or measured otherwise.
+**`M0-DATA-DB-014`** — the raw invariants, added to the **same** migration rather than a second one. `docs/architecture.md` §7 is explicit: "in the same migration that creates the tables, or there is a window where the invariant is unenforced". Amending is safe only because no installation has this migration yet, and that stops being true the moment one does.
 
-Then `M0-DATA-DB-014` (raw invariants in the same migration), then `M0-FOUND-TEST-005` (the harness, which needs a schema to make a disposable database from), then `M0-FOUND-DEPLOY-006` (CI).
+Five invariants: no `UPDATE`/`DELETE` grant on either audit table (C6); a partial unique index for one live version per `(source_id, sha256)`; a `CHECK` that a cleared chunk has a null embedding; a `CHECK` that `clarifications.answer` is non-null when answered; and the non-cascading citations foreign key, which is already in place.
+
+Then `M0-FOUND-TEST-005` (the harness, which needs a schema to make a disposable database from), then `M0-FOUND-DEPLOY-006` (CI).
 
 Forward references outstanding: the configuration error message points at `.env.example` (`M0-FOUND-SEC-007`), no screen exists yet (`M0-SHELL-FE-017`), and built assets are not in the API image (M0-STACK-DEPLOY-009 / Phase 7).
 

@@ -52,7 +52,7 @@ COPY VERSION /app/VERSION
 # a contributor nothing about why the lockfile matters. The glob matches
 # nothing when the file is absent — pyproject.toml keeps the pattern set
 # non-empty — and the check below gets to explain itself.
-COPY api/pyproject.toml api/hatch_build.py api/uv.loc[k] /app/api/
+COPY api/pyproject.toml api/hatch_build.py api/alembic.ini api/uv.loc[k] /app/api/
 
 WORKDIR /app/api
 RUN set -eu; \
