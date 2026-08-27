@@ -29,7 +29,14 @@ cd "$RUNNER_ROOT"
 # --- configuration (docs/build-runner.md §10) --------------------------------
 : "${AGENT_BIN:=claude}"
 : "${GATE_ATTEMPTS:=2}"   # one build, then one chance to fix what the gate rejected
-: "${BUILD_MODEL:=}"        # empty means the CLI's own default; never invent one
+# Which model each lineage runs on, and how hard it thinks. Empty means the
+# CLI's own default; never invent a name.
+#
+# These were declared before they were wired. For six tickets they configured
+# nothing — every agent ran on the default and the knobs read as a decision
+# somebody had made. A setting nothing reads is worse than no setting, because
+# the next person changes it and believes the result.
+: "${BUILD_MODEL:=}"
 : "${BUILD_EFFORT:=}"
 : "${AUDIT_MODEL:=}"
 : "${AUDIT_EFFORT:=}"
@@ -666,7 +673,7 @@ main() {
   head2 "Build"
   local build_log="$RUNNER_STATE/logs/${TICKET}.build.log"
   PHASE="build"
-  if ! run_agent build "$bp" "$build_log"; then
+  if ! run_agent build "$bp" "$build_log" "$BUILD_MODEL" "$BUILD_EFFORT"; then
     die "The build agent exited non-zero or timed out. Its output is in
        $build_log — read it before rerunning, because a rerun starts a fresh
        session and will not remember what went wrong."
@@ -724,6 +731,7 @@ main() {
     } > "$fix"
     PHASE="fix"
     run_agent build "$fix" "$RUNNER_STATE/logs/${TICKET}.fix.$attempt.log" \
+      "$BUILD_MODEL" "$BUILD_EFFORT" \
       || die "The fix attempt failed to run. See $build_log"
     guard_record_spend "$TICKET" 1 || exit 1
     attempt=$((attempt + 1))
@@ -742,7 +750,7 @@ main() {
   head2 "Audit"
   PHASE="audit"
   local audit_log="$RUNNER_STATE/logs/${TICKET}.audit.log"
-  run_agent audit "$ap" "$audit_log" || say "  ${DIM}the auditor did not finish; its notes are in $audit_log${RESET}"
+  run_agent audit "$ap" "$audit_log" "$AUDIT_MODEL" "$AUDIT_EFFORT" || say "  ${DIM}the auditor did not finish; its notes are in $audit_log${RESET}"
 
   # The verdict is read, not merely requested. Asking for one and ignoring it
   # makes the audit theatre: the first real run produced work that passed every
@@ -773,7 +781,7 @@ main() {
   head2 "Manual test document"
   PHASE="doc"
   local doc_log="$RUNNER_STATE/logs/${TICKET}.doc.log"
-  run_agent doc "$dp" "$doc_log" || say "  ${DIM}the doc agent did not finish; see $doc_log${RESET}"
+  run_agent doc "$dp" "$doc_log" "$DOC_MODEL" "$DOC_EFFORT" || say "  ${DIM}the doc agent did not finish; see $doc_log${RESET}"
 
   # --- hand back ------------------------------------------------------------
   head2 "Done"
