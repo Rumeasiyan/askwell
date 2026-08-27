@@ -22,6 +22,28 @@ Template:
 
 ---
 
+## 2026-08-27 — Detection answers three ways, because "not yet" is not "no"
+
+**Decision:** `detect()` returns a `verdict` of `supported`, `later` or `refused` instead of a `supported` boolean, and the `later` case carries the milestone its route arrives in. A CSV or a dump is now recognised, named, dated and **not queued**; only files on the `files` route reach the queue. The verdict is derived from `ROUTES[].arrives` — the same table the screen renders the three coming-later panels from — rather than written down a second time. `M1-ADD-VAL-024`.
+
+**Why:** The boolean was wrong in a way one viewport made visible. `M1-ADD-FE-022` shipped a screen that rendered "Spreadsheet or CSV — Arrives in M4" and, a few centimetres above it, queued a dropped CSV as though that route worked and counted it as added. Two statements contradicting each other in one glance, and the one a user believes is the one that named their file.
+
+The two ways of resolving that contradiction with a boolean are both worse than a third value. Marking CSV `supported: false` makes the screen consistent and makes it lie in the other direction: "unsupported format" is what somebody whose material is a folder of quarterly exports reads as *this product is not for me*, and they are exactly the user M4 is being built for. Leaving detection alone and filtering at the queue boundary keeps the truth in the module but scatters the milestone knowledge into whichever caller happens to remember — and the caller that forgets is the one that ships.
+
+Three values put the fact in the one place that has the evidence. Deriving them from `ROUTES` rather than hardcoding `"M4"` matters more than it looks: when M4 lands and `arrives` becomes null for the table and dump routes, every CSV already being detected becomes `supported` with no second edit and no chance of a stale milestone printed beside a working feature. A hardcoded date is the copy that gets forgotten.
+
+Rejected alongside: refusing the whole drop when any file in it is unsupported. That is one line of code cheaper and it is the behaviour the ticket names as the failure — one archive among sixty contracts must not take the contracts with it.
+
+The same pass added **Markdown and HTML**, which `docs/data-sources.md` §1 has listed as supported since it was written and which detection did not have. HTML is judged on its opening rather than its name and is checked *before* the delimiter test, because a saved page is full of rows and was being routed to the table route — which, under this decision, would have told somebody their web page arrives in M4. Markdown is the one case decided by the extension, since no byte distinguishes it from plain text; getting it wrong costs nothing, because both go to the same extractor and the user is told which one Askwell believed.
+
+**Consequences:** `Detection.supported` is gone; anything reading it must read `verdict`. The queue has two more terminal phases — `later` and `empty` — which exist so that "your CSVs arrive in M4" and "nothing was in that folder" are not both rendered as *Refused*. `M1-ADD-BE-023` must re-detect server-side from the same signature table: this whole module runs in the browser, so it is a courtesy to the user and not a boundary, and a source record built from a client-declared type would send a renamed executable to a document extractor. When M4 lands, the only change needed here is `arrives: null` on the table and dump routes — if a second edit turns out to be needed, this decision was implemented wrongly.
+
+Rejections are counted locally, in `localStorage`, alongside the added counter (C1: there is no transmission path and none is being built). They are **not** written to the operational log, because nothing is sent to the API for a file that was refused and this ticket adds no endpoint to send it to. That gap is tracked rather than papered over.
+
+**Refs:** `web/lib/add-source.ts`, `web/components/add/add-state.tsx`, `web/components/add/add-screen.tsx`, `docs/ux/add-source.md` §5, `docs/states-and-edge-cases.md` §3, `docs/data-sources.md` §1. Supersedes the queue behaviour recorded in the entry below.
+
+---
+
 ## 2026-08-27 — A dropped file is judged by its contents, and the browser is asked where it came from
 
 **Decision:** The add flow decides what a file is from its first 4 KB, using the extension only to tell the four zipped Office formats apart and to report a disagreement in the user's own terms. And because no browser will say where a dropped file actually lives, the screen asks once per drop which folder it came from — the same typed path `docs/ux/add-source.md` §7 already uses for nominating one — rather than pretending it knows. `M1-ADD-FE-022`'s stated assumption that "the browser's drop event gives usable paths under every supported platform" is **false on every platform**, and this records that rather than working around it quietly.

@@ -4,6 +4,27 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.4 — 2026-08-27
+
+An unsupported file is refused by name, and a CSV is told when its turn comes. `M1-ADD-VAL-024`.
+
+### Added
+
+- **Markdown and HTML are read.** `docs/data-sources.md` §1 has listed both since it was written and detection had neither: an HTML page is recognised by its opening rather than its name — before this a saved page full of tables was read as a CSV — and Markdown is named from its extension, which is the one place the name is better evidence than the bytes.
+- **A refusal names the file, what its contents turned out to be, and what would work.** Per file, with the supported list once beneath the block rather than repeated after each of five.
+- **A drop that expands to no files says so** — an empty folder, nothing changed. A cancelled file dialog still says nothing.
+- A local counter of files turned away, beside the one for files added. Same store, same absence of a wire (C1).
+
+### Changed
+
+- **A CSV or a dump is named as *arriving*, not as unsupported, and is no longer queued.** Detection now answers three ways — indexed today, arriving in a later milestone, refused — where it answered two. The screen previously said "Arrives in M4" in one panel while queueing a CSV as though it worked in another; the file's own route is what decides, read from the same table the panel is rendered from, so M4 flips both at once.
+- Rejection is per file throughout: one archive among sixty contracts refuses the archive and queues the contracts.
+
+### Known gaps
+
+- Detection still runs in the browser, and it is a courtesy rather than a boundary. `M1-ADD-BE-023` must re-detect server-side from the same signature table and treat anything the client says as a hint for the message only.
+- Rejections are counted locally but not written to the operational log — nothing is sent to the API for a file that was refused, and this ticket adds no endpoint to send it to.
+
 ## 0.2.3 — 2026-08-27
 
 Material can be handed to Askwell. `M1-ADD-FE-022`.

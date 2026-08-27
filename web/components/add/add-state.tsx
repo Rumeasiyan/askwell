@@ -40,7 +40,17 @@ import type { Picked, Selection } from "@/lib/selection";
  * not.
  */
 
-export type Phase = "detecting" | "locating" | "queued" | "refused";
+/**
+ * Where a batch has got to.
+ *
+ * `later` and `empty` are separate from `refused` because they are separate
+ * things to the person who dropped the files. A drop of CSV exports has not
+ * been rejected — its route is being built — and a drop that contained no
+ * files at all is not a judgement about anything. Collapsing either into
+ * "Refused" tells somebody Askwell will not handle their material, which is
+ * the sentence this ticket exists to stop Askwell saying wrongly.
+ */
+export type Phase = "detecting" | "locating" | "queued" | "refused" | "later" | "empty";
 
 export interface Item {
   id: string;
@@ -70,6 +80,8 @@ export interface AddApi {
   batches: Batch[];
   /** Sources added on this machine. Local, and there is nowhere to send it. */
   added: number;
+  /** Files refused on this machine. Same store, same absence of a wire. */
+  rejected: number;
   accept: (selection: Selection) => void;
   locate: (id: string, folder: string) => Promise<void>;
   nominateFolder: (id: string) => Promise<void>;
@@ -77,62 +89,70 @@ export interface AddApi {
 }
 
 /**
- * The local counter the ticket asks for.
+ * The local counters the ticket asks for.
  *
- * `window.localStorage` and nothing else. There is no transmission path for it
- * to take and none is being built (C1) — the number exists so the user can see
- * that Askwell has been given something, on the one machine that has it.
- */
-const COUNTER = "askwell.sources.added";
-
-/**
+ * `window.localStorage` and nothing else. There is no transmission path for
+ * either number to take and none is being built (C1) — they exist so the user
+ * can see what Askwell has been given and what it turned away, on the one
+ * machine that has them.
+ *
  * `localStorage` is the store, and React subscribes to it rather than copying
  * it into state on mount. Reading it in an effect and calling `setAdded` would
  * render the wrong number first and the right one a frame later; reading it
  * during render would disagree with the statically exported HTML, which is
  * what a hydration mismatch is. `useSyncExternalStore` is the shape React
- * provides for exactly this: `counterServerSnapshot` is what the export was
- * built with, and the real value arrives at hydration.
+ * provides for exactly this: the server snapshot is what the export was built
+ * with, and the real value arrives at hydration.
  */
-const counterListeners = new Set<() => void>();
+interface Counter {
+  subscribe: (listener: () => void) => () => void;
+  snapshot: () => number;
+  serverSnapshot: () => number;
+  add: (by: number) => void;
+}
 
 /**
  * `useSyncExternalStore` compares snapshots by identity and re-reads on every
- * render, so the read has to be memoised — parsing `localStorage` afresh each
- * time returns an equal number, but a store that re-reads on every render is
- * one storage hit per render for a value that only `addToCounter` changes.
+ * render, so each read has to be memoised — parsing `localStorage` afresh
+ * every time returns an equal number, but a store that re-reads on every
+ * render is one storage hit per render for a value only `add` changes.
  */
-let counterCache: number | null = null;
+function makeCounter(key: string): Counter {
+  const listeners = new Set<() => void>();
+  let cache: number | null = null;
 
-function readCounter(): number {
-  const raw = window.localStorage.getItem(COUNTER);
-  const stored = raw === null ? 0 : Number.parseInt(raw, 10);
-  return Number.isFinite(stored) && stored > 0 ? stored : 0;
-}
+  const read = (): number => {
+    const raw = window.localStorage.getItem(key);
+    const stored = raw === null ? 0 : Number.parseInt(raw, 10);
+    return Number.isFinite(stored) && stored > 0 ? stored : 0;
+  };
 
-function subscribeCounter(listener: () => void): () => void {
-  counterListeners.add(listener);
-  return () => {
-    counterListeners.delete(listener);
+  const snapshot = (): number => {
+    if (cache === null) cache = read();
+    return cache;
+  };
+
+  return {
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    snapshot,
+    // No storage on the server, and the export is built with none of either.
+    serverSnapshot: () => 0,
+    add: (by) => {
+      const next = snapshot() + by;
+      window.localStorage.setItem(key, String(next));
+      cache = next;
+      for (const listener of listeners) listener();
+    },
   };
 }
 
-function counterSnapshot(): number {
-  if (counterCache === null) counterCache = readCounter();
-  return counterCache;
-}
-
-/** No storage on the server, and the export is built with none added yet. */
-function counterServerSnapshot(): number {
-  return 0;
-}
-
-function addToCounter(by: number): void {
-  const next = counterSnapshot() + by;
-  window.localStorage.setItem(COUNTER, String(next));
-  counterCache = next;
-  for (const listener of counterListeners) listener();
-}
+const ADDED = makeCounter("askwell.sources.added");
+const REJECTED = makeCounter("askwell.sources.rejected");
 
 /** How many files are read at once before the loop hands the window back. */
 const CHUNK = 25;
@@ -142,7 +162,8 @@ const breathe = (): Promise<void> => new Promise((resolve) => setTimeout(resolve
 const UNREADABLE: Detection = {
   format: "a file Askwell could not open",
   route: "files",
-  supported: false,
+  verdict: "refused",
+  arrives: null,
   mismatch: null,
   refusal:
     "Askwell could not read this file. It may have been moved or renamed since it was dropped. Nothing on disk was changed.",
@@ -157,16 +178,26 @@ export function useAdd(): AddApi {
 }
 
 export function supportedIn(batch: Batch): Item[] {
-  return batch.items.filter((item) => item.detection?.supported === true);
+  return batch.items.filter((item) => item.detection?.verdict === "supported");
 }
 
 export function refusedIn(batch: Batch): Item[] {
-  return batch.items.filter((item) => item.detection !== null && !item.detection.supported);
+  return batch.items.filter((item) => item.detection?.verdict === "refused");
+}
+
+/** Recognised, and its route is being built. Never counted as added. */
+export function laterIn(batch: Batch): Item[] {
+  return batch.items.filter((item) => item.detection?.verdict === "later");
 }
 
 export function AddProvider({ children }: { children: ReactNode }) {
   const [batches, setBatches] = useState<Batch[]>([]);
-  const added = useSyncExternalStore(subscribeCounter, counterSnapshot, counterServerSnapshot);
+  const added = useSyncExternalStore(ADDED.subscribe, ADDED.snapshot, ADDED.serverSnapshot);
+  const rejected = useSyncExternalStore(
+    REJECTED.subscribe,
+    REJECTED.snapshot,
+    REJECTED.serverSnapshot,
+  );
 
   // `locate` and `nominateFolder` read the queue as it is when the user acts,
   // not as it was when the callback was created. Without this they would close
@@ -182,14 +213,18 @@ export function AddProvider({ children }: { children: ReactNode }) {
 
   const countUp = useCallback((by: number): void => {
     if (by <= 0) return;
-    addToCounter(by);
+    ADDED.add(by);
   }, []);
 
   const accept = useCallback((selection: Selection): void => {
-    if (selection.files.length === 0) return;
+    // A drop that expanded to nothing is only worth saying when there was
+    // something to expand: an empty folder is a real gesture that deserves an
+    // answer, whereas a cancelled file dialog hands back an empty list too and
+    // must stay silent. `folders` is what tells the two apart.
+    if (selection.files.length === 0 && selection.folders === 0) return;
     const batch: Batch = {
       id: crypto.randomUUID(),
-      phase: "detecting",
+      phase: selection.files.length === 0 ? "empty" : "detecting",
       items: selection.files.map((picked) => ({
         id: crypto.randomUUID(),
         name: picked.name,
@@ -225,6 +260,7 @@ export function AddProvider({ children }: { children: ReactNode }) {
     const id = pending.id;
 
     void (async () => {
+      let refused = 0;
       try {
         const items = pending.items;
         for (let start = 0; start < items.length; start += CHUNK) {
@@ -238,6 +274,7 @@ export function AddProvider({ children }: { children: ReactNode }) {
               }
             }),
           );
+          refused += detections.filter((one) => one.verdict === "refused").length;
           setBatches((queue) =>
             queue.map((batch) =>
               batch.id !== id
@@ -258,12 +295,26 @@ export function AddProvider({ children }: { children: ReactNode }) {
           await breathe();
         }
 
+        // Counted here rather than inside the updater above: React may call an
+        // updater more than once for the same state change, and a counter
+        // incremented from one would drift upwards on its own.
+        if (refused > 0) REJECTED.add(refused);
+
         setBatches((queue) =>
-          queue.map((batch) =>
-            batch.id !== id
-              ? batch
-              : { ...batch, phase: supportedIn(batch).length === 0 ? "refused" : "locating" },
-          ),
+          queue.map((batch): Batch => {
+            if (batch.id !== id) return batch;
+            // A batch with nothing to add still ends somewhere specific. Only
+            // a batch with files Askwell can index today goes on to ask where
+            // they are — asking about a folder of CSV exports would be a
+            // question whose answer changes nothing.
+            const phase: Phase =
+              supportedIn(batch).length > 0
+                ? "locating"
+                : laterIn(batch).length > 0
+                  ? "later"
+                  : "refused";
+            return { ...batch, phase };
+          }),
         );
       } finally {
         // Released before React commits the state change above, so the render
@@ -340,8 +391,8 @@ export function AddProvider({ children }: { children: ReactNode }) {
   );
 
   const api = useMemo<AddApi>(
-    () => ({ batches, added, accept, locate, nominateFolder, forget }),
-    [batches, added, accept, locate, nominateFolder, forget],
+    () => ({ batches, added, rejected, accept, locate, nominateFolder, forget }),
+    [batches, added, rejected, accept, locate, nominateFolder, forget],
   );
 
   return <AddContext.Provider value={api}>{children}</AddContext.Provider>;

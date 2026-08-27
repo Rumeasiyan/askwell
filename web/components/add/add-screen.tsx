@@ -4,13 +4,14 @@ import { useEffect, useRef, useState } from "react";
 
 import {
   ROUTES,
-  ROUTE_LABELS,
   SUPPORTED_SUMMARY,
   describeBatch,
+  laterLine,
   plural,
+  refusalLine,
 } from "@/lib/add-source";
 import { HOST_GIVES_PATHS, fromFiles } from "@/lib/selection";
-import { type Batch, type Item, refusedIn, supportedIn, useAdd } from "./add-state";
+import { type Batch, type Item, laterIn, refusedIn, supportedIn, useAdd } from "./add-state";
 
 /**
  * Add a source. `docs/ux/add-source.md` §1, §2 and §5.
@@ -25,7 +26,7 @@ import { type Batch, type Item, refusedIn, supportedIn, useAdd } from "./add-sta
  * is where it becomes an apology.
  */
 export function AddScreen() {
-  const { batches, added } = useAdd();
+  const { batches, added, rejected } = useAdd();
 
   return (
     <section className="flex flex-col gap-5">
@@ -36,8 +37,9 @@ export function AddScreen() {
         <p className="ask-micro mt-1">
           {added === 0
             ? "Nothing added on this machine yet"
-            : `${plural(added, "file", "files")} added on this machine`}{" "}
-          · this count is local and goes nowhere
+            : `${plural(added, "file", "files")} added on this machine`}
+          {rejected === 0 ? "" : `, ${plural(rejected, "file", "files")} turned away`}{" "}
+          · these counts are local and go nowhere
         </p>
       </div>
 
@@ -164,6 +166,7 @@ function BatchCard({ batch }: { batch: Batch }) {
   const detected = batch.items.filter((item) => item.detection !== null).length;
   const supported = supportedIn(batch);
   const refused = refusedIn(batch);
+  const later = laterIn(batch);
   const mismatches = batch.items.filter(
     (item) => item.detection !== null && item.detection.mismatch !== null,
   );
@@ -216,7 +219,15 @@ function BatchCard({ batch }: { batch: Batch }) {
       ) : null}
 
       {refused.length > 0 ? <Refusals items={refused} /> : null}
+      {later.length > 0 ? <Later items={later} /> : null}
       {mismatches.length > 0 ? <Mismatches items={mismatches} /> : null}
+
+      {batch.phase === "empty" ? (
+        <Note tone="muted" heading="Nothing in that drop">
+          Askwell found no files — an empty folder, or one holding only other empty folders.
+          Nothing was changed on disk. {SUPPORTED_SUMMARY}
+        </Note>
+      ) : null}
 
       {batch.phase === "locating" ? <Locate batch={batch} /> : null}
 
@@ -231,7 +242,15 @@ function BatchCard({ batch }: { batch: Batch }) {
 
       {batch.phase === "refused" ? (
         <Note tone="alarm" heading="Nothing here could be added">
-          Each file is listed above with the reason. {SUPPORTED_SUMMARY}
+          Each file is listed above with the reason, and nothing was added for any of them.
+          Nothing on disk was changed.
+        </Note>
+      ) : null}
+
+      {batch.phase === "later" ? (
+        <Note tone="inferred" heading="Askwell recognised these, and cannot read them yet">
+          Nothing was added, and nothing on disk was changed. These are not the wrong kind of
+          file — their route is being built, and the date is above.
         </Note>
       ) : null}
 
@@ -249,19 +268,24 @@ const PHASE_LABELS: Record<Batch["phase"], string> = {
   locating: "Where are these?",
   queued: "Queued",
   refused: "Refused",
+  later: "Arrives later",
+  empty: "Empty",
 };
 
-/** "12 PDF documents · 3 Word documents", by what the contents said. */
+/**
+ * "12 × a PDF document · 3 × a Word document", by what the contents said.
+ *
+ * Only ever given the files Askwell will index today — the ones for a later
+ * milestone are listed separately with their date, and mixing the two into one
+ * tally is what made the queue and the four-route list contradict each other.
+ */
 function summarise(items: Item[]): string {
   const counts = new Map<string, number>();
   for (const item of items) {
     const format = item.detection?.format ?? "an unrecognised file";
     counts.set(format, (counts.get(format) ?? 0) + 1);
   }
-  const routes = new Set(items.map((item) => item.detection?.route ?? "files"));
-  const parts = [...counts.entries()].map(([format, count]) => `${count} × ${format}`);
-  const named = routes.size > 1 ? ` (${[...routes].map((route) => ROUTE_LABELS[route]).join(", ")})` : "";
-  return parts.join(" · ") + named;
+  return [...counts.entries()].map(([format, count]) => `${count} × ${format}`).join(" · ");
 }
 
 function Mismatches({ items }: { items: Item[] }) {
@@ -277,12 +301,47 @@ function Mismatches({ items }: { items: Item[] }) {
   );
 }
 
+/**
+ * The rejection, per file, with the supported list once beneath.
+ *
+ * Per file because one bad file in a drop of sixty must not take the other
+ * fifty-nine with it — that is the whole of this ticket's third scope line, and
+ * it is why this is a list rather than a batch-level verdict. Each line names
+ * the file *and* what its contents turned out to be, because "not added" with
+ * no type is indistinguishable from a bug.
+ *
+ * The supported list sits at the bottom, once. Five files refused should not
+ * mean the same sentence five times: repetition is how the one line worth
+ * reading gets skipped.
+ */
 function Refusals({ items }: { items: Item[] }) {
   return (
     <Note tone="alarm" heading={`${plural(items.length, "file", "files")} not added`}>
       {items.slice(0, 5).map((item) => (
         <span key={item.id} className="block">
-          {item.relativePath} — {item.detection?.refusal}
+          {item.detection === null ? item.relativePath : refusalLine(item.relativePath, item.detection)}
+        </span>
+      ))}
+      {items.length > 5 ? <span className="block">and {items.length - 5} more.</span> : null}
+      <span className="block mt-2">{SUPPORTED_SUMMARY}</span>
+    </Note>
+  );
+}
+
+/**
+ * Recognised, and its route has not been built yet.
+ *
+ * Kept apart from `Refusals` in colour and in wording. A CSV listed under
+ * "not added" alongside a Windows executable tells somebody whose material is
+ * mostly exports that Askwell is not for them, which is false — and it is the
+ * one thing the four-route screen below is arranged to avoid saying.
+ */
+function Later({ items }: { items: Item[] }) {
+  return (
+    <Note tone="inferred" heading={`${plural(items.length, "file", "files")} for a later milestone`}>
+      {items.slice(0, 5).map((item) => (
+        <span key={item.id} className="block">
+          {item.detection === null ? item.relativePath : laterLine(item.relativePath, item.detection)}
         </span>
       ))}
       {items.length > 5 ? <span className="block">and {items.length - 5} more.</span> : null}

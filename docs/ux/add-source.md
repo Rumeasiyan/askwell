@@ -91,7 +91,9 @@ Copy on refusal:
 | **Poor OCR** | Ingested, flagged, clarification raised |
 | **Duplicate** | Recognised by content hash, linked to the existing source, not re-ingested |
 | **New version** | Offered as superseding, not duplicating. Old version stays queryable for history |
-| **Unsupported format** | Named, with the supported list and the CSV fallback where relevant |
+| **Unsupported format** | Named per file — the file, then what its contents turned out to be, then why — with the supported list once beneath the block. The rest of the drop carries on |
+| **A format arriving in a later milestone** | Named as arriving, with the milestone, in its own block and its own colour. Never listed under "not added", never queued |
+| **A drop with no files in it** | Said plainly, with the supported list. An empty folder is a gesture that deserves an answer; a cancelled file dialog is not |
 | **Dump too large / too slow** | Aborted at 5 GB or 10 minutes, sandbox dropped, reason given |
 | **Connection unreachable** | Distinguish wrong host from wrong credentials from firewall — three different fixes |
 | **Write-capable credentials** | Refused, with the SQL to create a read-only user |
