@@ -5,7 +5,6 @@ the caller was not affected.
 """
 
 import json
-import os
 import uuid
 from pathlib import Path
 
