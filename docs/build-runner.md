@@ -197,14 +197,37 @@ Exact invocations are fixed by M0 and must be read from what M0 produced rather 
 
 ### 7.3 Success signals, per command
 
-Fill this table from the real output of each command once M0 lands. **Every row must be a summary line, not an exit code** (§4.1).
+Filled from real output on 2026-08-27, when M0 landed. **Every row is a summary
+line, not an exit code** (§4.1).
 
 | Command | Match on | Not |
 | --- | --- | --- |
-| Lint | The tool's own "no issues" summary line | `$?` |
-| Typecheck | The "no issues found in N source files" line | `$?` — it exits 0 on some internal errors |
-| Tests | The pass/fail summary line, **and** a collected-count greater than zero | `$?` — a collection error exits 0 with nothing run |
-| Build | The final success line | `$?` |
+| `scripts/dev.sh lint` | `All checks passed!` | `$?` |
+| `scripts/dev.sh fmt-check` | `N files already formatted` | `$?` |
+| `scripts/dev.sh typecheck` | `Success: no issues found in N source files` | `$?` — mypy exits 0 on some internal errors |
+| `scripts/dev.sh test` | `N passed` **with N greater than zero** | `$?` — a collection error exits 0 with nothing run |
+| `scripts/dev.sh test-db` | `N passed` **with N greater than zero** | `$?`, and never a skip — these fail rather than skip when the database is absent |
+| `scripts/dev.sh web-check` | `frontend checks passed` | `$?` |
+
+The whole-suite line is `all checks passed`, printed by `scripts/dev.sh check`
+after every step. **Do not match on `All checks passed!`** for it: that is
+ruff's own lint message, printed several steps earlier, and matching it reports
+success while the format, typecheck or test steps are still to run — or have
+already failed.
+
+That is not hypothetical. It happened on 2026-08-27: a merge went to `main`
+red because `All checks passed!` was read as the overall result. The last line
+is the result.
+
+Two commands that look like gates and are not:
+
+`scripts/dev.sh test` deselects the database-backed tests, because the default
+run has no network at all. A green `test` says nothing about the 36 tests that
+assert what the database refuses — `test-db` is a separate gate row for that
+reason, and it needs the stack up.
+
+`podman compose up -d` succeeding says the containers started, not that
+anything works. `GET /health` reporting every component is the check.
 
 ### 7.4 Preconditions, verified before any ticket runs
 

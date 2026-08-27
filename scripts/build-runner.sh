@@ -422,23 +422,100 @@ run_agent() {   # run_agent <lineage> <prompt-file> <log-file> [model] [effort]
 # failure. See docs/build-runner.md §7.3.
 decolour() { sed -E 's/'"$(printf '\033')"'\[[0-9;]*[a-zA-Z]//g'; }
 
+# Each row is a command, the summary line that means it passed, and whether it
+# needs the stack up. Absence of the line is failure — see §7.3. Exit codes are
+# not consulted anywhere in here, on purpose: mypy exits 0 on some internal
+# errors, and pytest exits 0 when a collection error means nothing ran.
+#
+# `check` is deliberately not one row. It prints ruff's own "All checks
+# passed!" several steps before it is finished, and matching that reports
+# success while the format, typecheck and test steps are still to run. A merge
+# went to main red that way on 2026-08-27.
+GATE_ROWS='
+lint|scripts/dev.sh lint|All checks passed!|no
+format|scripts/dev.sh fmt-check|files already formatted|no
+typecheck|scripts/dev.sh typecheck|Success: no issues found in|no
+tests|scripts/dev.sh test|passed|no
+web|scripts/dev.sh web-check|frontend checks passed|no
+db-tests|scripts/dev.sh test-db|passed|yes
+'
+
 GATE_SKIPPED=""
-gate_skip() { GATE_SKIPPED="${GATE_SKIPPED} $1"; say "${DIM}  skip  $1 — not created yet (M0 builds it)${RESET}"; }
+gate_skip() { GATE_SKIPPED="${GATE_SKIPPED} $1"; say "${DIM}  skip  $1 — $2${RESET}"; }
+
+# The stack is up when the health surface answers. `compose ps` showing
+# containers is not the same thing: a container that started and is
+# crash-looping is "up" to compose and useless to a test.
+stack_is_up() {
+  curl -sf --max-time 5 "http://127.0.0.1:${ASKWELL_PORT:-8000}/health" >/dev/null 2>&1
+}
+
+# A pytest summary must also carry a non-zero count. "0 passed" and "no tests
+# ran" both contain the word `passed` in some versions, and a suite that
+# collected nothing is the failure most likely to look like a success.
+gate_count_is_positive() {   # gate_count_is_positive <log>
+  grep -oE '[0-9]+ passed' "$1" | head -1 | grep -qvE '^0 passed$'
+}
 
 run_gate() {   # run_gate <attempt>
   PHASE="gate"
-  local log="$RUNNER_STATE/logs/${TICKET}.gate.$1.log"
-  : > "$log"; GATE_SKIPPED=""
+  local log_dir="$RUNNER_STATE/logs"
+  mkdir -p "$log_dir"
+  local combined="$log_dir/${TICKET}.gate.$1.log"
+  : > "$combined"
+  GATE_SKIPPED=""
 
-  if [ ! -e "api/pyproject.toml" ] && [ ! -e "compose.yaml" ]; then
-    gate_skip "format"; gate_skip "lint"; gate_skip "typecheck"; gate_skip "tests"; gate_skip "build"
-    say "${DIM}  gate is not built yet — see docs/build-runner.md §7.1${RESET}"
+  if [ ! -e "api/pyproject.toml" ]; then
+    gate_skip "everything" "there is no api/ yet"
+    say "${DIM}  the gate is not built — see docs/build-runner.md §7.1${RESET}"
     return 0
   fi
 
-  say "  (gate commands are read from what M0 produced; fill §7.3 of the spec with"
-  say "   their real summary lines before trusting a green run)"
-  return 0
+  local failed=0 name command expect needs_stack row log
+  local IFS='
+'
+  for row in $GATE_ROWS; do
+    [ -n "$row" ] || continue
+    name="${row%%|*}";            row="${row#*|}"
+    command="${row%%|*}";         row="${row#*|}"
+    expect="${row%%|*}"
+    needs_stack="${row##*|}"
+
+    if [ "$needs_stack" = "yes" ] && ! stack_is_up; then
+      # Skipped loudly and named in the audit, never silently. A gate that
+      # quietly drops its database checks is a gate that passes code which
+      # violates every invariant in the schema.
+      gate_skip "$name" "the stack is not up (podman compose up -d)"
+      continue
+    fi
+
+    log="$log_dir/${TICKET}.gate.$1.${name}.log"
+    say "  ${DIM}$command${RESET}"
+    ( eval "$command" ) 2>&1 | decolour | tee -a "$combined" > "$log"
+
+    if ! grep -qF -- "$expect" "$log"; then
+      say "  ${BOLD}fail${RESET}  $name — no \"$expect\" in its output"
+      say "        $log"
+      failed=1
+      continue
+    fi
+
+    case "$name" in
+      tests|db-tests)
+        if ! gate_count_is_positive "$log"; then
+          say "  ${BOLD}fail${RESET}  $name — the summary says passed but nothing ran"
+          failed=1
+          continue
+        fi
+        ;;
+    esac
+
+    say "  pass  $name"
+  done
+  unset IFS
+
+  [ -n "$GATE_SKIPPED" ] && say "${DIM}  skipped:${GATE_SKIPPED}${RESET}"
+  return "$failed"
 }
 
 # --- main --------------------------------------------------------------------
