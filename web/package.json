@@ -10,6 +10,7 @@
     "dev": "next dev",
     "build": "next build",
     "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types lib/add-source.test.ts",
     "lint": "eslint .",
     "contrast": "node scripts/contrast.mjs",
     "check-offline": "node scripts/check-offline.mjs",

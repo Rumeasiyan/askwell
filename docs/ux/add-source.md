@@ -23,6 +23,8 @@ One screen, four routes, chosen by what the user has:
 
 Drag-and-drop is the primary path and works anywhere in the app, not just here. Askwell picks the route from the file type; the user should rarely need to choose.
 
+**The type comes from the file's contents, not its name.** The first 4 KB decide it; the extension is consulted only to tell the four zipped Office formats apart — they are all a zip and share their first bytes — and to say what the file was *called* when the two disagree. A `.pdf` that is really a PNG is indexed as a PNG and the screen says so, because the user learning that one of their documents is not what its name says is worth more than a silent correction.
+
 **Indexing is in place.** Files are read where they are, not copied into a library. Stated once, because someone about to add 40 GB of case files needs to know before they start, not after.
 
 That promise has a consequence the user meets on their first file: Askwell has to be told which folders it may open. §7 covers it.
@@ -94,6 +96,14 @@ Copy on refusal:
 | **Connection unreachable** | Distinguish wrong host from wrong credentials from firewall — three different fixes |
 | **Write-capable credentials** | Refused, with the SQL to create a read-only user |
 | **Disk budget reached** | Refused before starting, with what to free |
+| **Detecting** | The count and total size straight away, then per-file type detection with a running "N of M so far". Only the first 4 KB of each file is read, and the screen says so |
+| **Named one thing, contains another** | Routed by its contents and the disagreement stated — *named `.pdf`, contents are a PNG image*. Never silently re-routed |
+| **A program dropped** | Refused by name — a Linux, macOS or Windows program, or a script — with the fact that nothing was run and nothing was read past its first bytes |
+| **An archive dropped** | Refused with what to do instead: unpack it and add the files, so each document keeps its own name in citations |
+| **More files than one drop will take** | The first 5,000 are taken and the screen says the rest were left. A cap that truncates without saying so is worse than no cap |
+| **A drop while another is being read** | Queued behind it with its own count, never rejected. Detection runs one batch at a time so the window stays responsive |
+| **Queued, nothing indexed yet** | Said plainly, with what has to arrive before the files are searchable. Not a progress bar that never moves |
+| **The browser will not say where a file is** | One question per drop, not per file: which folder these came from, typed. The desktop shell answers it itself (§7 known gap) |
 | **File outside every nominated folder** | The folder to nominate, and why Askwell needs telling. Not a bare rejection (§7) |
 | **Folder nominated but not yet mounted** | Accepted, with the line to add and that the stack has to come up again. Said now, not discovered later |
 | **Nominated folder not connected** | Its sources report unavailable — a drive unplugged, a share disconnected. **Never** rendered as deleted or as moved |
@@ -161,6 +171,8 @@ They have four different fixes and are never collapsed into one message.
 
 ### Known gap
 
-Selection is by typed path. A browser cannot open a directory dialog, so until the desktop shell ships `M7-TAURI-FE-182` a folder the browser will not surface has to be typed. The screen says so rather than leaving it to be discovered. It is deliberately **not** a file-upload control: that copies bytes, and Askwell copies nothing.
+Selection is by typed path — and this is true of **adding files**, not only of nominating a folder. No browser reveals a file's absolute path, on any platform: it gives the name and the path *within* a dropped folder, and that is a sandbox rule rather than a missing API. So a drop is expanded and counted first, and then asked one question — *which folder is `clients` in?* — once for the whole drop rather than once per file. A root is a permission over a tree, so one answer settles all of them.
+
+Until the desktop shell ships `M7-TAURI-FE-182` a folder the browser will not surface has to be typed. The screen says so rather than leaving it to be discovered. It is deliberately **not** a file-upload control: that copies bytes, and Askwell copies nothing.
 
 The flow is shaped so the picker replaces the selection step alone. The registry, the validation, and what removing a folder does are untouched by that change.

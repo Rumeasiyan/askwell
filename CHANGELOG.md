@@ -4,6 +4,26 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.3 — 2026-08-27
+
+Material can be handed to Askwell. `M1-ADD-FE-022`.
+
+The add-source screen and its files route, and drag-and-drop that works anywhere in the application rather than only on that screen.
+
+### Added
+
+- **`/sources/add/`** — four routes, one working. Files is functional; spreadsheet-or-CSV, database dump and connect-a-database are shown with the milestone they arrive in rather than hidden, so someone whose material is a MySQL export can see it has a home here.
+- **Drop anywhere.** A folder of contracts dropped onto the Ask screen is taken and the flow follows it; the user does not navigate first. A folder is expanded, counted and shown before anything starts, and a drop that arrives while another is being read is **queued, never rejected**.
+- **Type detection by contents, not by name.** A `.pdf` that is really a PNG is indexed as a PNG and the disagreement is said out loud; a program is refused by name with the fact that nothing was run; an archive is refused with what to do instead. Only the first 4 KB of any file is read.
+- **The in-place statement**, once and at full size: nothing is copied, moved or uploaded — which is what someone about to add 40 GB of case files needs before they start.
+- A local counter of files added, in `localStorage`. There is no path for it to take off this machine and none is being built (C1).
+
+### Known gaps
+
+- **Nothing is extracted, embedded or searchable yet.** A batch ends at *queued* and says so plainly rather than showing progress that will not move. Records are `M1-ADD-BE-023`; background ingestion and per-file progress are `M1-ADD-ING-025`.
+- **A browser will not say where a file lives.** The ticket assumed the drop event gives usable paths; no browser gives them on any platform, so the screen asks once per drop which folder the files came from — the same typed path used to nominate a folder. `M7-TAURI-FE-182` removes the question rather than improving it.
+- The estimate is a count and a size, not a duration. Nothing here has yet measured how long embedding takes on a CPU, and an invented number is the one someone plans their afternoon around.
+
 ## 0.2.2 — 2026-08-27
 
 Askwell can be told which folders it may read. `M1-ADD-ING-021`.

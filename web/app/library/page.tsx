@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 /**
  * Library — a placeholder.
  *
@@ -13,16 +15,29 @@ export default function LibraryPage() {
       <p className="ask-prose" style={{ color: "var(--muted)" }}>
         Every source you have added lives here — files, spreadsheets, database dumps and live connections.
       </p>
-      <p
-        className="ask-prose px-4 py-3"
+      <div
+        className="flex flex-col gap-3 px-4 py-3"
         style={{
           background: "var(--surface)",
           borderRadius: "var(--radius)",
           border: "1px solid var(--rule)",
         }}
       >
-        Nothing has been added yet. Adding a source is the first thing Askwell asks you to do, and it arrives in M1.
-      </p>
+        <p className="ask-prose">
+          Nothing has been added yet. Drop files or a folder anywhere on this window, or add
+          them from the add-source screen. What has been added is not readable yet —
+          extraction and indexing are the next piece of work.
+        </p>
+        <div>
+          <Link
+            href="/sources/add/"
+            className="ask-navigates inline-block px-4 py-2"
+            style={{ border: "1px solid var(--rule-strong)", fontSize: "var(--t-ui)" }}
+          >
+            Add a source
+          </Link>
+        </div>
+      </div>
     </section>
   );
 }

@@ -2,6 +2,8 @@
 
 import type { ReactNode } from "react";
 
+import { AddProvider } from "@/components/add/add-state";
+import { DropTarget } from "@/components/add/drop-target";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { Rail } from "@/components/shell/rail";
 import { RailDrawer } from "@/components/shell/rail-drawer";
@@ -27,10 +29,29 @@ import { useStatus } from "@/lib/use-status";
  * The chrome bar is the app's own, not the browser's — M7 puts this inside a
  * Tauri window with no browser chrome at all, and `M0-SHELL-FE-017a` hangs the
  * narrow-window menu control on it.
+ *
+ * The add queue is provided here rather than by the add-source screen, because
+ * dropping files works anywhere in the application (`M1-ADD-FE-022`). A drop
+ * onto Ask navigates to `/sources/add/`, and a queue owned by that screen
+ * would be created *by* that navigation — always empty, every time.
  */
 export function Shell({ children }: { children: ReactNode }) {
   const status = useStatus();
 
+  return (
+    <AddProvider>
+      <ShellFrame status={status}>{children}</ShellFrame>
+    </AddProvider>
+  );
+}
+
+function ShellFrame({
+  status,
+  children,
+}: {
+  status: ReturnType<typeof useStatus>;
+  children: ReactNode;
+}) {
   return (
     <div className="@container flex h-dvh flex-col" style={{ background: "var(--paper)" }}>
       <header
@@ -79,6 +100,10 @@ export function Shell({ children }: { children: ReactNode }) {
           <p className="ask-micro p-4">Sources appear here, beside the claims they support.</p>
         </aside>
       </div>
+
+      {/* Outside the scrolling columns: the drop affordance covers the window,
+          because the window is what the user is dropping onto. */}
+      <DropTarget />
     </div>
   );
 }
