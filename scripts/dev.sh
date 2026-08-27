@@ -15,7 +15,7 @@
 #
 #   scripts/dev.sh web-install  install frontend dependencies (needs the network)
 #   scripts/dev.sh web-build    build the frontend to web/out
-#   scripts/dev.sh web-check    typecheck, lint, build, contrast, offline scan
+#   scripts/dev.sh web-check    typecheck, lint, tests, build, contrast, offline scan
 #   scripts/dev.sh web-run ...  any command inside the frontend image
 #
 #   scripts/dev.sh db <args>    alembic against the running stack
@@ -186,6 +186,11 @@ case "$cmd" in
     web-check)
         note "typecheck";  in_web "$WEB_IMAGE" pnpm typecheck
         note "lint";       in_web "$WEB_IMAGE" pnpm lint
+        # Node's own test runner, on the pure modules. The browser-facing halves
+        # are exercised by the cold-start walkthrough; what is unit-tested is
+        # what a build passing cannot tell you — that a file is judged by its
+        # contents rather than its name.
+        note "tests";      in_web "$WEB_IMAGE" pnpm test
         note "build";      in_web "$WEB_IMAGE" pnpm build
         # Both of these are constraints, not preferences. Contrast failures are
         # invisible to whoever is not affected by them; an external URL breaks

@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 import { VERSION } from "@/lib/version";
 
 /**
@@ -37,10 +39,20 @@ export default function AskPage() {
       >
         <p className="ask-micro">Nothing added yet</p>
         <p className="ask-prose" style={{ color: "var(--muted)" }}>
-          There is nothing to ask about until you add a source. Adding files, a
-          spreadsheet, a database dump or a live connection arrives in the next
-          milestone — the shell, the stack and the assistant are what work today.
+          There is nothing to ask about until you add a source. Drop files or a folder
+          anywhere on this window — you do not have to go anywhere first — or add them from
+          the screen below. Reading and indexing what you add arrives next; the shell, the
+          stack and the assistant are what work today.
         </p>
+        <div>
+          <Link
+            href="/sources/add/"
+            className="ask-navigates inline-block px-4 py-2"
+            style={{ border: "1px solid var(--rule-strong)", fontSize: "var(--t-ui)" }}
+          >
+            Add a source
+          </Link>
+        </div>
       </div>
     </section>
   );

@@ -22,6 +22,28 @@ Template:
 
 ---
 
+## 2026-08-27 — A dropped file is judged by its contents, and the browser is asked where it came from
+
+**Decision:** The add flow decides what a file is from its first 4 KB, using the extension only to tell the four zipped Office formats apart and to report a disagreement in the user's own terms. And because no browser will say where a dropped file actually lives, the screen asks once per drop which folder it came from — the same typed path `docs/ux/add-source.md` §7 already uses for nominating one — rather than pretending it knows. `M1-ADD-FE-022`'s stated assumption that "the browser's drop event gives usable paths under every supported platform" is **false on every platform**, and this records that rather than working around it quietly.
+
+**Why:**
+
+**Contents over extension, because the extension is a claim the user did not make.** Files arrive renamed, exported by tools that guess, or saved from a browser that appended the wrong suffix. Trusting the name means a mislabelled PDF reaches a PDF extractor, which fails somewhere deep in a library and surfaces as an error about the wrong thing entirely — and the user never learns the useful fact, which is that one of their documents is not what it says it is. The ticket asks for detection "by content as well as extension" and the honest reading of "as well as" is that both are consulted and the disagreement is reported: the file is routed by its contents and the screen says *named `.pdf`, contents are a PNG image*. The rejected alternative — route by contents and stay silent — is the one that loses information the user would want.
+
+**The extension is kept for the one job it is better at.** `.docx`, `.xlsx`, `.pptx` and every OpenDocument format are all a zip whose first four bytes are identical. Telling them apart from the bytes means reading the zip central directory, which is a real parser to maintain for a fact the filename already carries accurately in practice. The trade-off accepted: a `.docx` renamed to `.xlsx` is described wrongly. That is a narrower and less consequential error than the one being avoided, and the extractor will discover the truth in M1-EXTRACT.
+
+**A program is refused as a program, not as "an unsupported file".** ELF, Mach-O, PE and shebang scripts are named, with the sentence that nothing was run and nothing was read past the first few bytes. Somebody who has just dropped a folder containing a binary needs to know Askwell did not execute it — this is the same instinct that makes C3 put dumps in a sandbox, applied where a sandbox is not available because nothing is being executed at all.
+
+**Why the folder is typed, and why that is not a regression.** Browsers expose a file's name and its path *within a dropped folder*, and deliberately never its absolute path; that is a sandbox rule, not a missing API, and no flag or permission changes it. Three options existed. *Upload the bytes* — rejected outright: it is copying the user's material, which is the one thing this product promises not to do, and C1 makes the direction of travel irrelevant. *Guess the path from the file name and the nominated roots* — rejected: it produces a path that is right most of the time, and a citation that opens the wrong file is worse than one that opens nothing. *Ask once per drop* — chosen. It is one question for a whole folder of 60 contracts, it is the same field and the same seam as nominating a folder, and `M7-TAURI-FE-182` deletes the question rather than improving it, because the desktop shell already knows the path. `selection.ts` exists as its own module for exactly that swap: nothing downstream of it knows how a file was chosen.
+
+**One covering check per drop, not one per file.** A root is a permission over a tree, so if it covers the first file under a folder it covers all of them. Asking `GET /roots/covering` per file would be several thousand requests to learn one fact.
+
+**Why the estimate is not a duration.** The ticket asks for "an honest estimate". Nothing in this repository has yet measured embedding throughput on a CPU, so any minutes-and-hours figure here would be invented — and it would be read as measured, because it is printed next to a real count and a real size. The count and the size are shown, and the duration arrives with `M1-ADD-ING-025`, which is the first thing able to observe it.
+
+**Consequences:** Detection is a table of magic numbers that has to grow as formats are added, and it lives in `web/lib/add-source.ts` — on the *client*, which is the only place with the bytes before anything is sent. `M1-ADD-BE-023` will need its own check server-side: the client's answer is a courtesy to the user, never a security boundary, and the extractor must not trust it. The typed folder is one more thing to get wrong on a first run, mitigated by the drop being expanded and counted before it is asked. Reversing the typed-folder decision means a host that reports real paths, which is precisely what M7 delivers.
+
+**Refs:** `docs/backlog/M1-it-answers-from-my-documents.md` `M1-ADD-FE-022`; `web/lib/add-source.ts`, `web/lib/selection.ts`, `web/components/add/`; `docs/ux/add-source.md` §1, §2, §5, §7.
+
 ## 2026-08-27 — Nominated folders are mounted at their own paths, and mount state is never stored
 
 **Decision:** The folders Askwell may read live in their own table, `roots`, tombstoned on removal. One host directory — `ASKWELL_ROOTS_MOUNT` — is bind-mounted read-only into the API and the worker **at the same absolute path it has on the host**, and every nominated folder must lie under it. Whether a folder is currently readable is **probed on every read and never stored**. A folder outside the window is registered anyway, reporting `not_mounted` and the line to add.

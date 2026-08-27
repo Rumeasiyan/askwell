@@ -60,7 +60,13 @@ The core loop. Most of these states are reachable in the first five minutes of u
 
 | State | What the user sees | What the system does |
 | ----- | ------------------ | -------------------- |
-| **Upload in progress** | Per-file progress. Navigating away does not cancel it | Ingestion is a background job (`arq`), not a request |
+| **Add in progress** | Per-file progress. Navigating away does not cancel it | Ingestion is a background job (`arq`), not a request. Not an *upload*: nothing is copied anywhere |
+| **A drop being read** | The count and total size at once, then "N of M" as each file's type is worked out | Only the first 4 KB of each file is read, in chunks that hand the window back — a folder of several thousand files must not freeze it |
+| **A second drop while one is being read** | Queued behind the first, with its own count | Rejecting it would punish the user for Askwell being busy with their previous instruction |
+| **A file named one thing and containing another** | Routed by its contents, with the disagreement stated in the name they gave it | Silence here loses a fact worth having: one of their documents is not what it says it is |
+| **A program dropped among documents** | Refused by name, with the fact that nothing was run | The same instinct as C3's sandbox, applied where nothing is executed at all |
+| **More files in one drop than the cap** | The number taken, and that the rest were left | A cap that truncates silently reads as "everything was added" |
+| **Files queued but nothing indexed yet** | Said plainly, with what has to land before they are searchable | An honest sentence, not a progress bar that never moves |
 | **Queued behind a backlog** | Position and a realistic estimate | Embedding a large corpus on CPU takes hours. An untimed spinner suggests a hang |
 | **Extraction failed** (corrupt, encrypted, password-protected PDF) | The document is listed as failed with the reason. Retry available | Never silently drop it (AGENTS.md §6) |
 | **Scanned, OCR produced little or no text** | Flag as low-confidence. It is ingested but marked; it will retrieve poorly | Distinct from failure. The document exists but is nearly invisible to search, and the user needs to know |

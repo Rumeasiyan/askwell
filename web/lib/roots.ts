@@ -99,6 +99,40 @@ export async function nominate(path: string): Promise<void> {
   }
 }
 
+/** What to ask when a file lies outside every nominated folder. */
+export interface CoveringPrompt {
+  suggested_root: string;
+  headline: string;
+  explanation: string;
+}
+
+export interface Covering {
+  covered: boolean;
+  root: Root | null;
+  state: MountState;
+  reason: string | null;
+  /** Null when it is covered; the question to ask when it is not. */
+  prompt: CoveringPrompt | null;
+}
+
+/**
+ * Whether Askwell may read a path, and what to ask if it may not.
+ *
+ * The add-source screen calls this before it accepts anything, which is what
+ * turns "that file is outside every nominated folder" from an obscure failure
+ * into a question with an answer. The headline and the explanation are written
+ * by the API and shown verbatim: they are the same sentences the settings
+ * screen would use, and two copies of a promise about not copying the user's
+ * files is one copy too many.
+ */
+export async function askCovering(path: string): Promise<Covering> {
+  const response = await fetch(`/roots/covering?path=${encodeURIComponent(path)}`, {
+    cache: "no-store",
+  });
+  if (!response.ok) throw new Error(`Askwell answered with ${response.status}.`);
+  return (await response.json()) as Covering;
+}
+
 export async function previewRemoval(id: string): Promise<Removal> {
   const response = await fetch(`/roots/${id}/removal`, { cache: "no-store" });
   if (!response.ok) throw new Error(`Askwell answered with ${response.status}.`);
