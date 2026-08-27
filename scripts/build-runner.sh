@@ -417,11 +417,23 @@ run_agent() {   # run_agent <lineage> <prompt-file> <log-file> [model] [effort]
   # perfectly reasoned design document and not one edited file, because every
   # write was denied.
   #
-  # `acceptEdits` rather than bypassing every check: the containment here is
-  # not the permission dialog, it is that the runner works on a branch, pushes
-  # nothing, opens no PR, and hands back a diff for a person to read. Setting
-  # AGENT_PERMISSION_MODE overrides it for anyone who disagrees.
-  local args; args="--print --permission-mode ${AGENT_PERMISSION_MODE:-acceptEdits}"
+  # `acceptEdits` fixed the writes and left a quieter version of the same bug.
+  # It accepts *edits*; a Bash call is still a prompt, so it is still refused.
+  # The agent could write code and could not run one command — no formatter, no
+  # typecheck, no tests. M1-ADD-BE-023 failed the gate three times on formatting
+  # its own author had no way to apply, and said so in its handover: "the sandbox
+  # refused podman, node, python3 and gh. Nothing here has been executed."
+  #
+  # An agent that cannot run the toolchain cannot check its work, so every gate
+  # failure becomes a person's problem. That is the opposite of the point.
+  #
+  # So: `bypassPermissions`, which is a real loosening and worth naming. The
+  # agent can run arbitrary commands on this machine, not merely edit files.
+  # What contains it is unchanged and is not the dialog — it works on a branch,
+  # an audit agent that did not write the code reviews the diff, CI runs, and a
+  # person merges. Set AGENT_PERMISSION_MODE=acceptEdits to go back, and accept
+  # that the gate will then reject work the agent was never able to verify.
+  local args; args="--print --permission-mode ${AGENT_PERMISSION_MODE:-bypassPermissions}"
   [ -n "$model" ]  && args="$args --model $model"
   [ -n "$effort" ] && args="$args --effort $effort"
   if [ "$lineage" != "build" ] && [ -s "$sid" ]; then

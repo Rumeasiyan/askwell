@@ -22,6 +22,25 @@ Template:
 
 ---
 
+## 2026-08-28 — Build-runner agents run with permissions bypassed, so they can run the toolchain
+
+**Decision.** `scripts/build-runner.sh` invokes its build, fix, audit and doc agents with `--permission-mode bypassPermissions` instead of `acceptEdits`. `AGENT_PERMISSION_MODE` still overrides it.
+
+**Why.** `acceptEdits` accepts edits and nothing else. Every Bash call remains a permission prompt, and in `--print` mode a prompt is a refusal rather than a pause — so the agent could write code and could not run a single command. No formatter, no typechecker, no test runner, no `gh`.
+
+This stayed invisible for three tickets because the gate reports the *result*, not who produced it. It surfaced on `M1-ADD-BE-023`, which failed the gate three times on `lint` and `format` — checks its own author was structurally unable to run — and whose handover said plainly: "the sandbox refused `podman`, `node`, `python3` and `gh`. **Nothing here has been executed**." The fix agent, sandboxed identically, could not repair a formatting failure either, which is why attempt 2 failed on the same row as attempt 1.
+
+An agent that cannot run the toolchain cannot check its own work, so every failure it could have caught in a second becomes a person reading a diff instead — the opposite of what an unattended runner is for. On the salvage, the work needed one `ruff format` run to pass the entire gate.
+
+**What was rejected.** Keeping `acceptEdits` and having a person finish each ticket by hand. That is roughly half an hour of attention per ticket across the remaining backlog, and it makes the runner a code generator rather than a builder.
+
+**The trade-off accepted.** `bypassPermissions` lets these agents run arbitrary commands on the machine, not merely edit files. That is a genuine loosening, and the original comment's containment argument does not cover it — but that argument never rested on the dialog. What holds is unchanged: the runner works on a branch, an audit agent that did not write the code reviews the diff, CI runs, and a person merges. Reverting is one environment variable, at the price of a gate that rejects work the agent had no way to verify.
+
+**Consequences.** Build agents can now run `scripts/dev.sh`, so a gate failure comes to mean the agent could not fix something rather than could not attempt it. Anyone running the queue should know it executes agent-chosen commands unattended.
+
+**Refs.** `scripts/build-runner.sh` `run_agent`; issue #102, PR #103; `.build-runner/logs/M1-ADD-BE-023.*`.
+
+
 ## 2026-08-28 — A duplicate is recognised by the application and made impossible by the database
 
 **Decision:** `askwell.sources.add` looks a file's SHA-256 up across **every live document**, and a match is reported as a duplicate linked to the existing document rather than stored again. The partial unique index the v1 migration already created — `uq_documents_live_source_id_sha256`, over `(source_id, sha256) WHERE deleted_at IS NULL AND superseded_by IS NULL` — enforces a narrower rule underneath it. The two are deliberately not the same rule and neither replaces the other. `M1-ADD-BE-023`.
