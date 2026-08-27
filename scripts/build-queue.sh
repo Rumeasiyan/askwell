@@ -145,7 +145,16 @@ See docs/manual-tests/$ticket.md for what to try by hand." || return 1
   done
 
   if [ "$(gh run view "$run" --json conclusion --jq .conclusion)" != "success" ]; then
-    say "  ${BOLD}CI rejected $ticket.${RESET} The branch and its PR are left open."
+    # The runner marked it done when its own audit passed, which is correct
+    # for the runner's scope and wrong for the queue's: a ticket that never
+    # reached main is not done, and leaving the mark makes its dependents
+    # ready to build on work that is sitting on an unmerged branch.
+    #
+    # M1-ADD-BE-023 was in exactly that state — marked done, 2454 lines, CI
+    # red, PR open.
+    rm -f "$STATE/done/$ticket"
+    say "  ${BOLD}CI rejected $ticket.${RESET} The branch and its PR are left open,"
+    say "  and it is no longer marked done — nothing may build on it until it lands."
     return 1
   fi
 

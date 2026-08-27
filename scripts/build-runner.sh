@@ -448,13 +448,24 @@ decolour() { sed -E 's/'"$(printf '\033')"'\[[0-9;]*[a-zA-Z]//g'; }
 # passed!" several steps before it is finished, and matching that reports
 # success while the format, typecheck and test steps are still to run. A merge
 # went to main red that way on 2026-08-27.
+# name | command | must contain | must NOT contain | needs the stack
+#
+# The fourth column exists because a summary line is not always enough. ruff
+# prints "2 files would be reformatted, 50 files already formatted" when it
+# fails — which contains "files already formatted", so a gate matching only
+# that passes a tree the same tool would reject. It did: M1-ADD-BE-023 passed
+# every local gate row and CI rejected it on format.
+#
+# Same mistake as matching ruff's "All checks passed!" for the whole suite,
+# made twice. A substring that appears in the failure is not evidence of
+# success.
 GATE_ROWS='
-lint|scripts/dev.sh lint|All checks passed!|no
-format|scripts/dev.sh fmt-check|files already formatted|no
-typecheck|scripts/dev.sh typecheck|Success: no issues found in|no
-tests|scripts/dev.sh test|passed|no
-web|scripts/dev.sh web-check|frontend checks passed|no
-db-tests|scripts/dev.sh test-db|passed|yes
+lint|scripts/dev.sh lint|All checks passed!||no
+format|scripts/dev.sh fmt-check|files already formatted|would be reformatted|no
+typecheck|scripts/dev.sh typecheck|Success: no issues found in|error:|no
+tests|scripts/dev.sh test|passed|failed|no
+web|scripts/dev.sh web-check|frontend checks passed||no
+db-tests|scripts/dev.sh test-db|passed|failed|yes
 '
 
 GATE_SKIPPED=""
@@ -488,14 +499,15 @@ run_gate() {   # run_gate <attempt>
     return 0
   fi
 
-  local failed=0 name command expect needs_stack row log
+  local failed=0 name command expect forbid needs_stack row log
   local IFS='
 '
   for row in $GATE_ROWS; do
     [ -n "$row" ] || continue
     name="${row%%|*}";            row="${row#*|}"
     command="${row%%|*}";         row="${row#*|}"
-    expect="${row%%|*}"
+    expect="${row%%|*}";          row="${row#*|}"
+    forbid="${row%%|*}"
     needs_stack="${row##*|}"
 
     if [ "$needs_stack" = "yes" ] && ! stack_is_up; then
@@ -512,6 +524,16 @@ run_gate() {   # run_gate <attempt>
 
     if ! grep -qF -- "$expect" "$log"; then
       say "  ${BOLD}fail${RESET}  $name — no \"$expect\" in its output"
+      say "        $log"
+      failed=1
+      continue
+    fi
+
+    # The line that says it passed can be a substring of the line that says it
+    # failed. Checking for the failure too is what stops a green tick on a
+    # tree the same tool would reject.
+    if [ -n "$forbid" ] && grep -qF -- "$forbid" "$log"; then
+      say "  ${BOLD}fail${RESET}  $name — its output also contains \"$forbid\""
       say "        $log"
       failed=1
       continue

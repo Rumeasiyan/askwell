@@ -49,13 +49,15 @@ printf '\nEvery gate row is a real command with a real expectation\n'
 rows=$(printf '%s' "$GATE_ROWS" | grep -c '|' || true)
 check "there are gate rows at all" "$([ "$rows" -ge 5 ] && echo yes || echo no)" yes
 
-while IFS='|' read -r name command expect needs_stack; do
+while IFS='|' read -r name command expect forbid needs_stack; do
   [ -n "${name:-}" ] || continue
   case "$command" in
     scripts/dev.sh*) ok "$name runs a project command" ;;
     *) bad "$name runs '$command', which is not a scripts/dev.sh entry point" ;;
   esac
   [ -n "$expect" ] && ok "$name has a summary line to match" || bad "$name matches nothing"
+  # `forbid` may legitimately be empty — not every tool prints a failure line
+  # that contains its success line.
   case "$needs_stack" in
     yes|no) : ;;
     *) bad "$name does not say whether it needs the stack" ;;
@@ -82,6 +84,22 @@ check "there is a row needing the stack" \
 
 check "the plain tests row does not need the stack" \
   "$(printf '%s' "$GATE_ROWS" | grep '^tests|' | grep -c '|no$' || true)" 1
+
+printf '\nA passing line can be a substring of a failing one\n'
+
+# ruff prints "2 files would be reformatted, 50 files already formatted" when
+# it fails. A gate matching only "files already formatted" passes a tree the
+# same tool would reject — which is exactly what let M1-ADD-BE-023 through the
+# local gate and into a CI failure.
+check "the format row forbids the failure text" \
+  "$(printf '%s' "$GATE_ROWS" | grep '^format|' | grep -c 'would be reformatted' || true)" 1
+
+check "the tests row forbids a failure count" \
+  "$(printf '%s' "$GATE_ROWS" | grep '^tests|' | grep -c '|failed|' || true)" 1
+
+check "every row has five fields" \
+  "$(printf '%s' "$GATE_ROWS" | grep -c '|' || true)" \
+  "$(printf '%s' "$GATE_ROWS" | awk -F'|' 'NF==5' | grep -c . || true)"
 
 printf '\n%d passed, %d failed\n' "$PASSED" "$FAILED"
 [ "$FAILED" -eq 0 ]
