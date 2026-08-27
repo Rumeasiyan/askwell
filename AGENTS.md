@@ -129,6 +129,9 @@ Everything runs through one entry point:
 | Format | `scripts/dev.sh format` / `scripts/dev.sh fmt-check` | **Verified** |
 | Typecheck (`mypy --strict`) | `scripts/dev.sh typecheck` | **Verified** |
 | Python tests | `scripts/dev.sh test` | **Verified** |
+| Database-backed tests | `scripts/dev.sh test-db` (needs the stack up) | **Verified** |
+| Alembic against the stack | `scripts/dev.sh db upgrade head` | **Verified** |
+| A psql shell | `scripts/dev.sh psql` | **Verified** |
 | Rebuild the image | `scripts/dev.sh build` | **Verified** |
 | Anything else inside the image | `scripts/dev.sh run <cmd>` / `scripts/dev.sh shell` | **Verified** |
 | Regenerate the lockfile | `scripts/dev.sh lock` | **Verified** |
@@ -137,12 +140,12 @@ Everything runs through one entry point:
 | Install frontend dependencies | `scripts/dev.sh web-install` | **Verified** |
 | Anything else in the frontend image | `scripts/dev.sh web-run <cmd>` / `web-shell` | **Verified** |
 | Build-runner guard tests | `bash scripts/guards.test.sh` | **Verified** |
-| Bring up the stack | `podman compose up -d` | M0-STACK-DEPLOY-009 |
+| Bring up the stack | `podman compose up -d` | **Verified** |
 | Eval suite | `python eval/bench.py --suite <name>` | M1 |
 
 Two things about `scripts/dev.sh` that are deliberate:
 
-- **Every command runs with `--network=none`** except `lock`. C1 is cheapest to enforce where the toolchain runs, and a linter has no business reaching an index. `lock` is the one command that legitimately resolves from one, and it opts back in explicitly rather than the default being loose.
+- **Every command runs with `--network=none` unless it demonstrably needs a network**, and the exceptions are named rather than assumed. C1 is cheapest to enforce where the toolchain runs, and a linter has no business reaching an index. Four commands opt back in explicitly: `lock` and `web-install` resolve from a package registry, and `db`, `psql` and `test-db` join the stack's own network to reach Postgres — which is the local machine talking to itself, not egress.
 - **The lockfile is the pin, `pyproject.toml` holds only bounds.** The image installs with `uv sync --locked`, not `--frozen`: `--frozen` never reads `pyproject.toml`, so adding a dependency and forgetting to relock produces a build that succeeds while missing it, surfacing much later as an `ImportError` with no obvious cause. Widening a bound changes no build until you run `lock` deliberately and review the diff.
 
 Do not add a command to this table until it has been run and its output read.

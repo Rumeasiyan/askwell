@@ -7,45 +7,43 @@
 
 ## Current phase
 
-**M0 — It runs. In progress: 6 of 21 tickets done.**
+**M0 — It runs. In progress: 7 of 21 tickets done.**
 
 The repository is no longer documentation only. `api/` exists: an image, manifests, the application, and 54 tests. The API starts, refuses bad configuration by name, and serves `GET /health` reporting five components separately. `podman compose up -d` brings up four services, the database carries the full v1 schema, and the interface loads at `http://127.0.0.1:8000`. `web/` builds to static assets and the API serves them — the `web` container is gone from the topology. The Compose stack, the database schema and the inference process do not exist yet — so all five health components correctly report `unreachable`.
 
-**Version:** `0.1.6` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
+**Version:** `0.1.7` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
 **Tracker:** `Rumeasiyan/askwell`. Working agreements in `AGENTS.md`. Backlog in `docs/backlog/`.
 
 ## Last completed
 
-**`M0-DATA-DB-013`** — [#63](https://github.com/Rumeasiyan/askwell/issues/63). The v1 schema: thirteen tables, one reversible migration.
+**`M0-DATA-DB-014`** — [#65](https://github.com/Rumeasiyan/askwell/issues/65). The five invariants, in the same migration that creates the tables.
 
-Verified against the running database:
+**The thing that would have shipped wrong.** C6's enforcement point is "no `UPDATE`/`DELETE` grant for the app role". Askwell connected as the role that owns every table — and **a table owner bypasses its own grants**. The `REVOKE` succeeds, the privilege listing reads correctly, and the application can still rewrite every audit record it ever wrote. There is no way to notice from the code; the only way to find out is to try it as the role that actually runs.
+
+There are now three roles: `askwell` owns and migrates, `askwell_app` is what the application connects as and owns nothing, `askwell_readonly` can only read and is C2's second line of defence from M4.
+
+Verified against the running database, connecting as `askwell_app`:
 
 | | |
 | --- | --- |
-| `db upgrade head` | thirteen tables plus `alembic_version` |
-| organisations / users / roles | zero tables match |
-| `chunks.embedding`, `schema_notes.embedding` | `vector(1024)`, from configuration |
-| `chunks.content_tsv` | `attgenerated = 's'` — generated, not application-maintained |
-| full-text search | `to_tsquery('english','termination & notice')` finds the row |
-| `db downgrade base` | every table dropped; `alembic_version` alone remains |
-| applying twice | no-op, no error |
-| delete a document | content and embedding cleared, `content_tsv` empty; the citation still resolves |
+| `INSERT` into an audit table | allowed |
+| `UPDATE` / `DELETE` / `TRUNCATE` on either audit table | `permission denied` |
+| two live documents with the same `(source_id, sha256)` | `UniqueViolation` |
+| a deleted or superseded one sharing that hash | allowed — the index is partial for exactly this |
+| a chunk with cleared content keeping its embedding | `CheckViolation` |
+| a clarification marked answered with no answer | `CheckViolation` |
+| hard-deleting a cited document | `ForeignKeyViolation` — the chunk row must survive |
+| tombstoning it instead | citation still resolves |
 
-**A real defect, found by inserting a row by hand.** Column defaults were SQLAlchemy's Python-side `default=`, which applies only to rows the ORM inserts. A migration, a `psql` session or a repair script hits `null value in column "version" violates not-null constraint` on a column that looks like it has a default. They are `server_default` now, and `test_defaults_are_enforced_by_the_database_not_only_by_the_orm` asserts it.
+18 tests, run by `scripts/dev.sh test-db`. **Mutation-tested by pointing the application connection at the owner: all seven audit guarantees fail**, including the guard test that explains why they would.
 
-**A design choice worth knowing:** psycopg 3 for both the async application and Alembic's synchronous path. asyncpg is faster on paper but cannot do the sync half, so the alternative was two drivers, two sets of type adapters and two failure modes on a machine where nobody is watching.
-
-The model tests were mutation-tested: conflating `deleted_at` with `superseded_by`, and making `citations.chunk_id` cascade, were each introduced and each caught.
-
-`ASKWELL_DB_*` were renamed to `POSTGRES_*`. They are read by Compose and the Postgres image, not by Askwell, and sharing the `ASKWELL_` prefix would have meant either weakening the unknown-variable check or maintaining an exception list. The check's whole value is that it needs neither — it caught this itself.
+**A note for anyone with an existing volume:** the role hook runs only on an empty data directory, so `podman compose down -v` once.
 
 ## Next task
 
-**`M0-DATA-DB-014`** — the raw invariants, added to the **same** migration rather than a second one. `docs/architecture.md` §7 is explicit: "in the same migration that creates the tables, or there is a window where the invariant is unenforced". Amending is safe only because no installation has this migration yet, and that stops being true the moment one does.
+**`M0-DATA-OBS-015`** — hash-chained audit stores with fail-the-action write semantics. The grants are in place; this is the chain itself, and the rule that a decision which cannot be recorded does not happen.
 
-Five invariants: no `UPDATE`/`DELETE` grant on either audit table (C6); a partial unique index for one live version per `(source_id, sha256)`; a `CHECK` that a cleared chunk has a null embedding; a `CHECK` that `clarifications.answer` is non-null when answered; and the non-cascading citations foreign key, which is already in place.
-
-Then `M0-FOUND-TEST-005` (the harness, which needs a schema to make a disposable database from), then `M0-FOUND-DEPLOY-006` (CI).
+Then `M0-FOUND-TEST-005` (the harness — `test-db` already exists in embryo, and this formalises the disposable-database fixture), then `M0-FOUND-DEPLOY-006` (CI).
 
 Forward references outstanding: the configuration error message points at `.env.example` (`M0-FOUND-SEC-007`), no screen exists yet (`M0-SHELL-FE-017`), and built assets are not in the API image (M0-STACK-DEPLOY-009 / Phase 7).
 

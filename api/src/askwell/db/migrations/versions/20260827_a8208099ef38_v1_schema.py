@@ -8,13 +8,17 @@ now costs nothing.
 There are no `organisations`, `users` or roles. Their absence is a requirement,
 not an omission.
 
-Hand-edited after autogeneration, for four things Alembic cannot know:
+Hand-edited after autogeneration, for things Alembic cannot know:
 
   - the vector extension, and a readable failure when it is missing
   - the embedding dimension, which comes from configuration
   - `content_tsv` as a generated column rather than something the application
     maintains
   - the Tamil text search configuration, which is a hedge and not a feature
+  - the invariants the ORM will not express, which are in *this* migration
+    rather than a later one because a window in which an invariant is
+    unenforced is a window in which bad rows are written, on a machine nobody
+    can inspect
 
 Revision ID: a8208099ef38
 Revises:
@@ -39,6 +43,18 @@ EMBEDDING_DIMENSIONS = load_settings().embedding_dimensions
 # later is a change to this name, not a re-index of everyone's corpus.
 TEXT_SEARCH_CONFIG = "english"
 TAMIL_CONFIG = "askwell_tamil"
+
+# Askwell connects as this role, which owns nothing. A table owner bypasses its
+# own grants, so revoking UPDATE from the owner would leave the audit log's
+# append-only guarantee looking correct and doing nothing.
+APP_ROLE = "askwell_app"
+
+# Independent of the application role. Model-generated SQL is parsed and
+# rejected by sqlglot AND executed as a role that cannot write, because one
+# check is not a guarantee (C2).
+READONLY_ROLE = "askwell_readonly"
+
+AUDIT_TABLES = ("audit_decisions", "audit_interactions")
 
 revision: str = "a8208099ef38"
 down_revision: str | None = None
@@ -374,6 +390,9 @@ def upgrade() -> None:
     op.create_index("ix_citations_chunk_id", "citations", ["chunk_id"], unique=False)
     op.create_index("ix_citations_message_id", "citations", ["message_id"], unique=False)
 
+    _create_invariants()
+    _grant_privileges()
+
 
 def _create_extensions() -> None:
     """The vector extension, or a failure that says which extension is missing.
@@ -423,6 +442,98 @@ def _create_text_search_configurations() -> None:
     )
 
 
+def _create_invariants() -> None:
+    """The rules the ORM will not express.
+
+    Each of these exists because the alternative is a bug that writes a row
+    nobody notices until much later, on a user's own machine, where there is
+    nobody to notice.
+    """
+    # One live version per (source, content hash). Partial, so a superseded
+    # version and a deleted one may coexist with the same hash — which is the
+    # normal state after a re-index, not a conflict.
+    op.execute(
+        """
+        CREATE UNIQUE INDEX uq_documents_live_source_id_sha256
+        ON documents (source_id, sha256)
+        WHERE deleted_at IS NULL AND superseded_by IS NULL
+        """
+    )
+
+    # A tombstoned document must stop influencing retrieval. Deletion clears
+    # content and embedding together; this refuses the half-done version, where
+    # a document the user believes is gone still matches their queries and
+    # still returns a passage that no longer has any text to show.
+    op.execute(
+        """
+        ALTER TABLE chunks ADD CONSTRAINT ck_chunks_cleared_content_has_no_embedding
+        CHECK (content IS NOT NULL OR embedding IS NULL)
+        """
+    )
+
+    # "Answered" has to mean an answer exists. Without this, a skipped question
+    # marked answered by a bug is indistinguishable from one the user actually
+    # answered — and memory would then be built on it.
+    op.execute(
+        """
+        ALTER TABLE clarifications ADD CONSTRAINT ck_clarifications_answered_has_answer
+        CHECK (status <> 'answered' OR answer IS NOT NULL)
+        """
+    )
+
+
+def _grant_privileges() -> None:
+    """The permission model. C6 lives here, not in application code.
+
+    The application role is created here only as a fallback: it normally comes
+    from the database's initialisation hook, which is where its password
+    belongs (C8). A role created here has no password and cannot log in, which
+    is a loud failure rather than a quiet one.
+    """
+    for role in (APP_ROLE, READONLY_ROLE):
+        op.execute(
+            f"""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}') THEN
+                    CREATE ROLE {role} NOLOGIN;
+                END IF;
+            END
+            $$;
+            """
+        )
+
+    op.execute(f"GRANT USAGE ON SCHEMA public TO {APP_ROLE}, {READONLY_ROLE}")
+
+    # The application: full DML everywhere, and then the audit tables taken
+    # back below.
+    op.execute(f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {APP_ROLE}")
+    op.execute(f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {APP_ROLE}")
+
+    # C6: append-only and tamper-evident. Not immutable — the user owns the
+    # machine and can always delete a file, and claiming otherwise would be the
+    # same overclaim the injection guidance warns about. The honest guarantee
+    # is that the application never rewrites history, and this is what makes
+    # that true rather than merely intended: it is a grant, not a code path
+    # somebody could forget.
+    for audit_table in AUDIT_TABLES:
+        op.execute(f"REVOKE UPDATE, DELETE, TRUNCATE ON {audit_table} FROM {APP_ROLE}")
+        op.execute(f"GRANT SELECT, INSERT ON {audit_table} TO {APP_ROLE}")
+
+    op.execute(f"GRANT SELECT ON ALL TABLES IN SCHEMA public TO {READONLY_ROLE}")
+
+    # Tables created by later migrations inherit the same shape, so a table
+    # added in a year does not silently arrive with no grants — or, worse, with
+    # the audit tables' restrictions missing.
+    op.execute(
+        f"ALTER DEFAULT PRIVILEGES IN SCHEMA public "
+        f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {APP_ROLE}"
+    )
+    op.execute(
+        f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO {READONLY_ROLE}"
+    )
+
+
 def downgrade() -> None:
     op.drop_index("ix_citations_message_id", table_name="citations")
     op.drop_index("ix_citations_chunk_id", table_name="citations")
@@ -451,7 +562,18 @@ def downgrade() -> None:
     op.drop_index("ix_audit_decisions_occurred_at", table_name="audit_decisions")
     op.drop_table("audit_decisions")
 
+    op.execute(
+        f"ALTER DEFAULT PRIVILEGES IN SCHEMA public "
+        f"REVOKE SELECT, INSERT, UPDATE, DELETE ON TABLES FROM {APP_ROLE}"
+    )
+    op.execute(
+        f"ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE SELECT ON TABLES FROM {READONLY_ROLE}"
+    )
     op.execute(f"DROP TEXT SEARCH CONFIGURATION IF EXISTS {TAMIL_CONFIG}")
+
+    # The roles are deliberately not dropped. They may own objects elsewhere in
+    # the cluster, and a downgrade should undo what this migration did rather
+    # than what it happened to find.
     # The extension is deliberately not dropped. It may predate Askwell, and
     # another database in the same cluster may be using it — a downgrade should
     # undo what this migration did, not what it happened to find.

@@ -4,6 +4,21 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.1.7 — 2026-08-27
+
+`M0-DATA-DB-014`. The invariants, in the migration that creates the tables.
+
+### Added
+
+- Five invariants the ORM will not express: no `UPDATE`/`DELETE`/`TRUNCATE` grant on either audit table (C6); one live version per `(source_id, sha256)`; a chunk with cleared content cannot keep its embedding; a clarification marked answered must carry an answer; and the non-cascading citation foreign key.
+- `deploy/postgres/10-roles.sh` — creates `askwell_app` and `askwell_readonly`. Askwell connects as `askwell_app`, which owns nothing.
+- `scripts/dev.sh test-db` — 18 database-backed tests, deselected from the default run and failing rather than skipping when the database is absent.
+
+### Changed
+
+- **The application no longer connects as the table owner.** An owner bypasses its own grants, so the append-only guarantee would have been decorative — the `REVOKE` succeeds, the privilege listing looks right, and the application can still rewrite every audit record. See `docs/decisions.md`.
+- `.env.example` carries `POSTGRES_APP_PASSWORD` and `POSTGRES_READONLY_PASSWORD`.
+
 ## 0.1.6 — 2026-08-27
 
 `M0-DATA-DB-013`. The whole v1 schema in one reversible migration.
