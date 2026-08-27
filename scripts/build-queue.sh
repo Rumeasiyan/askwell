@@ -85,6 +85,11 @@ next_ticket() {
     case "$id" in ''|'=='|Queue) continue ;; esac
     [ "$status" = "ready" ] || continue
     [ -z "$MILESTONE_FILTER" ] || case "$id" in "$MILESTONE_FILTER"-*) ;; *) continue ;; esac
+    # Already tried and rejected in this run. A parked ticket stays "ready" to
+    # the runner — it is not marked done, by design — so without this the queue
+    # hands the same one back forever. It did: fourteen attempts at
+    # M1-ADD-ING-025 before anyone looked at the log.
+    case " $PARKED " in *" $id "*) continue ;; esac
     found="$id"
     break
   done <<< "$listing"
@@ -99,7 +104,9 @@ build_one() {   # build_one <ticket>
   local ticket="$1" branch; branch="$(branch_for "$ticket")"
 
   git checkout -q "$MAIN" && git pull -q || return 1
-  git checkout -q -B "$branch" || return 1
+  # -b first: resetting the branch would discard an earlier attempt's work,
+  # which is the one thing parking exists to keep.
+  git checkout -q -b "$branch" 2>/dev/null || git checkout -q -B "$branch" || return 1
 
   if ! SPEND_CEILING="$SPEND_CEILING" "$RUNNER" "$ticket"; then
     # The runner refuses to record a ticket its audit rejected, so an
@@ -149,7 +156,7 @@ See docs/manual-tests/$ticket.md for what to try by hand." || return 1
 }
 
 # --- the queue ----------------------------------------------------------------
-built=0; parked=""
+built=0; PARKED=""
 head1 "Working the backlog"
 say "  ceiling: ${SPEND_CEILING}h${MILESTONE_FILTER:+   milestone: $MILESTONE_FILTER}"
 say "  ${DIM}touch $STATE/STOP to stop after the ticket in flight${RESET}"
@@ -171,15 +178,15 @@ while :; do
   if build_one "$ticket"; then
     built=$((built + 1))
   else
-    parked="$parked $ticket"
+    PARKED="$PARKED $ticket"
     git checkout -q "$MAIN" 2>/dev/null
   fi
 done
 
 head1 "Done"
 say "  merged:  $built"
-if [ -n "$parked" ]; then
-  say "  parked: $parked"
+if [ -n "$PARKED" ]; then
+  say "  parked:$PARKED"
   say ""
   say "  Each is on its own branch with its audit beside it. Nothing depending"
   say "  on a parked ticket has been built, because a ticket the audit rejected"

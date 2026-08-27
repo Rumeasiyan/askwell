@@ -637,8 +637,34 @@ main() {
        $build_log — read it before rerunning, because a rerun starts a fresh
        session and will not remember what went wrong."
   fi
-  # Spend is recorded once the work happened, not before. Recording up front
-  # would charge the ceiling for a run that died in preflight.
+  # Did it actually do anything?
+  #
+  # The gate cannot answer this. A tree where nothing changed passes lint,
+  # format, typecheck and every test — perfectly, every time — so an agent that
+  # produced nothing looks exactly like one that produced flawless work.
+  # M1-ADD-ING-025 went through the entire pipeline that way and was caught
+  # only by the auditor reading `git log main..HEAD` and finding it empty.
+  #
+  # The ledger line is worse than the wasted run. The ledger is what decides
+  # what has been built, so six hours recorded against an empty branch makes
+  # every later ticket build on work that was never written.
+  local touched
+  touched="$(git status --porcelain | grep -vc "$RUNNER_STATE" || true)"
+  if [ "${touched:-0}" -eq 0 ]; then
+    die "The build agent changed nothing outside $RUNNER_STATE.
+
+       Its output is in $build_log. Nothing was recorded as spent and $TICKET
+       is not marked done — a ledger entry against an empty branch would make
+       the next ticket build on work that was never written.
+
+       The usual cause is the ticket not being buildable yet: read the log,
+       and check its dependencies are genuinely done rather than merely
+       marked."
+  fi
+
+  # Spend is recorded once the work exists, not before. Recording up front
+  # charges the ceiling for a run that died in preflight; recording it for an
+  # empty branch is the bug above.
   guard_record_spend "$TICKET" "$est" || exit 1
 
   # --- gate, with one chance to fix ---------------------------------------
