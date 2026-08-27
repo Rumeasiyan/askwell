@@ -35,6 +35,13 @@ and the alternative is a document whose content hash is a lie.
 `askwell.roots`, unchanged and re-used: the roots are read once and every path
 in the batch is checked against them, including its real path, so a symlink in a
 dropped folder cannot reach outside the tree the user nominated.
+
+Since `M1-ADD-ING-025` a fifth thing happens here: every document recorded gets
+an ingestion queue row, written in **this** transaction, and the worker is woken
+after the commit. The order matters in both directions. A document committed
+without a queue row is a file the user was told was queued and which nothing
+will ever pick up; a worker woken before the commit is a worker sent to collect
+rows that do not exist yet. See `askwell.ingest`.
 """
 
 import asyncio
@@ -51,8 +58,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from askwell import roots
+from askwell import ingest, roots
 from askwell.audit import Store, record
+from askwell.config import Settings
 from askwell.db.engine import session_scope
 from askwell.filetypes import HEAD_BYTES, Detection, Verdict, detect
 from askwell.logging import get_logger
@@ -184,6 +192,11 @@ class AddResult:
     source_status: str | None = None
     root_path: str | None = None
     created_source: bool = False
+    # The documents that now have a queue row. Carried out of `add` because
+    # waking a worker must happen *after* the transaction commits — dispatching
+    # inside it would ask a worker to pick up rows that do not exist yet, and on
+    # a rolled-back add would ask it to pick up rows that never will.
+    queued: list[uuid.UUID] = field(default_factory=list)
 
     def count(self, outcome: Outcome) -> int:
         return sum(1 for item in self.files if item.outcome is outcome)
@@ -524,6 +537,15 @@ async def add(
             )
         )
 
+    added = [item.document_id for item in files if item.document_id is not None]
+    if source is not None and added:
+        # In this transaction, deliberately. A document that exists with no
+        # queue row is a file the user was told was queued and which nothing
+        # will ever pick up — and the two writes being in one transaction is
+        # the only thing that makes that impossible rather than unlikely.
+        # Waking a worker is a separate matter and happens after the commit.
+        await ingest.enqueue(session, source[0], added)
+
     return AddResult(
         files=files,
         source_id=source[0] if source else None,
@@ -531,6 +553,7 @@ async def add(
         source_status=source[2] if source else None,
         root_path=root_path,
         created_source=created,
+        queued=added,
     )
 
 
@@ -636,7 +659,9 @@ class AddRequest(BaseModel):
     files: list[str] = Field(min_length=1, max_length=MAX_FILES)
 
 
-def register_sources(app: FastAPI, factory: async_sessionmaker[AsyncSession]) -> None:
+def register_sources(
+    app: FastAPI, settings: Settings, factory: async_sessionmaker[AsyncSession]
+) -> None:
     """Attach the sources surface. Register before the interface catch-all."""
 
     @app.post("/sources")
@@ -649,4 +674,10 @@ def register_sources(app: FastAPI, factory: async_sessionmaker[AsyncSession]) ->
             # to send, and what is wrong is the folder. A validation error would
             # tell the caller their JSON was malformed, which it was not.
             return JSONResponse({"error": str(refusal), "folder": body.folder}, status_code=400)
+
+        # After the commit, and never able to fail the request. The queue rows
+        # are already durable; this only saves the worker waiting for its next
+        # reconcile, so a Redis that is down costs half a minute rather than an
+        # import.
+        await ingest.dispatch(settings, result.queued)
         return JSONResponse(result.as_dict(), status_code=201)

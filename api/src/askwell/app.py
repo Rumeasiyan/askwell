@@ -17,6 +17,7 @@ from askwell.assistant import read as read_assistant
 from askwell.config import ConfigurationError, Environment, Settings, load_settings
 from askwell.db.engine import build_engine, session_factory
 from askwell.health import ComponentState, check_components
+from askwell.ingest import register_ingest
 from askwell.interface import register_interface
 from askwell.logging import configure_logging, get_logger
 from askwell.middleware import register_session
@@ -83,7 +84,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     register_session(app, resolved, app.state.sessions)
     register_roots(app, app.state.sessions)
-    register_sources(app, app.state.sessions)
+    register_sources(app, resolved, app.state.sessions)
+    register_ingest(app, resolved, app.state.sessions)
 
     @app.get("/health")
     async def health(request: Request) -> JSONResponse:

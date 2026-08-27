@@ -125,6 +125,25 @@ class Settings(BaseSettings):
     # re-embed, not a schema edit. bge-m3 gives 1024.
     embedding_dimensions: int = Field(default=1024, ge=1, le=16000)
 
+    # How many documents are ingested at once. Two, because this laptop is
+    # also running the user's browser and the answer they are waiting for:
+    # extraction and embedding are CPU-bound and will take every core they are
+    # given, and an import that makes the machine unusable is an import the
+    # user kills. Raise it on a workstation; it is configuration precisely
+    # because the right number is a property of the machine.
+    ingest_concurrency: int = Field(default=2, ge=1, le=32)
+
+    # How long one document may spend in the pipeline before the worker gives
+    # up on it. An hour, not the queue's default five minutes: OCR over a
+    # 900-page scan on CPU is genuinely that slow, and a timeout shorter than
+    # the work turns a slow file into a failed one.
+    ingest_job_timeout_seconds: int = Field(default=3600, ge=30, le=86400)
+
+    # How often the worker re-dispatches queued work the queue has forgotten.
+    # This is the path that recovers an import from a Redis flush, a failed
+    # enqueue, or a machine that woke up without its queue.
+    ingest_reconcile_seconds: int = Field(default=30, ge=5, le=3600)
+
     # Traces are the largest and fastest-growing of the three audit stores,
     # and the only one that fails open. 256 MB is a few thousand traces —
     # enough that "show me what happened" works for anything recent, and small

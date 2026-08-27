@@ -19,6 +19,7 @@ EXPECTED_TABLES = {
     "roots",
     "sources",
     "documents",
+    "ingest_jobs",
     "chunks",
     "schema_notes",
     "memory",
