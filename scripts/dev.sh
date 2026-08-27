@@ -21,6 +21,7 @@
 #   scripts/dev.sh db <args>    alembic against the running stack
 #                               (e.g. `db upgrade head`, `db revision --autogenerate -m "..."`)
 #   scripts/dev.sh psql         a psql shell on the stack's database
+#   scripts/dev.sh inference    the native inference supervisor, ON THE HOST
 #   scripts/dev.sh test-db      the database-backed tests, against the stack
 #   scripts/dev.sh build       rebuild both images (build-api / build-web for one)
 #   scripts/dev.sh shell       an interactive shell in the image
@@ -239,6 +240,29 @@ case "$cmd" in
             -v "$REPO_ROOT":/app:z \
             -w /app/api \
             "$IMAGE" pytest -m requires_db "$@"
+        ;;
+
+    inference)
+        # The one command that does not run in a container, and cannot. GPU
+        # acceleration only works from the host; a containerised API cannot
+        # start a host process; and the host's Python is not ours to choose —
+        # this machine runs 3.14 and the package pins 3.12. So the supervisor
+        # is a standalone stdlib-only script. See docs/decisions.md.
+        binary="$(_env_value ASKWELL_INFERENCE_BINARY llama-server)"
+        command -v "$binary" >/dev/null 2>&1 || die \
+            "$binary is not on PATH. Askwell runs llama.cpp natively so that GPU acceleration works; it is not in the container images."
+        command -v python3 >/dev/null 2>&1 || die "python3 is needed on the host to supervise inference"
+
+        mkdir -p "$REPO_ROOT/.run"
+        note "inference supervisor, on the host (not a container)"
+        note "socket: $REPO_ROOT/.run/inference.sock"
+
+        set -a
+        # shellcheck disable=SC1091
+        [ -f "$REPO_ROOT/.env" ] && . "$REPO_ROOT/.env"
+        set +a
+        ASKWELL_INFERENCE_SOCKET="$REPO_ROOT/.run/inference.sock" \
+            exec python3 "$REPO_ROOT/deploy/inference/askwell-inference" "$@"
         ;;
 
     psql)

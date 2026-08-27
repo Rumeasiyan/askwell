@@ -22,6 +22,37 @@ Template:
 
 ---
 
+## 2026-08-27 — Inference is native, supervised on the host, reached through a bridge container
+
+**Decision:** `llama.cpp` runs natively on the host, supervised by a standalone stdlib-only script (`deploy/inference/askwell-inference`). The API and worker reach it over a **Unix domain socket**, and that socket is owned by a small **bridge container running with host networking**, not by the host supervisor. `ASKWELL_INFERENCE_SOCKET` replaces the host-and-port pair.
+
+**Why:** Three constraints collided, and each one was only visible by running the thing.
+
+**C1 versus GPU.** Every service sits on a Compose network declared `internal`, which has no route off the machine — that is what makes bypassing the egress proxy impossible rather than discouraged. Inference must be native so GPU acceleration works on all three platforms. Those are incompatible as stated: a container with no external route cannot reach a host process. Verified: `host.containers.internal`, `host.docker.internal` and `10.0.2.2` all return `Network is unreachable`, and the bridge gateway `podman network inspect` reports does not exist as a host interface at all, because this is **rootless** podman and that gateway lives inside a user namespace.
+
+**The API cannot supervise it.** `M0-MODEL-DEPLOY-018` says the API starts, stops and supervises the native process. A containerised API cannot start a host process. Supervision has to live on the host regardless, which is also where M7's installer will run it — so the shape is the one that ships rather than a scaffold.
+
+**The host's Python is not ours to choose.** The first supervisor was part of the `askwell` package; installing it failed with `Package 'askwell' requires a different Python: 3.14.6 not in '==3.12.*'`. A host-side component that dictates the host's Python version is a component that does not install. It is now standard library only and runs on whatever is there.
+
+**And then SELinux.** The obvious arrangement — the host supervisor owns the socket, containers connect to it — is refused:
+
+```
+AVC denied { connectto } ... comm="askwell-api"
+  scontext=...container_t  tcontext=...unconfined_t  tclass=unix_stream_socket
+```
+
+The *file's* label is irrelevant; the **listener's process label** decides, and the host supervisor is unconfined. Relabelling the directory changes nothing. So the socket is owned by a container instead, and `container_t` connecting to `container_t` is allowed — verified with a throwaway listener before any of this was written.
+
+**What this costs, stated plainly.** The bridge is the one container with host networking, which means it is the one container that can reach the internet. That is a real widening of the claim in `docs/architecture.md` §5 rather than a technicality, and pretending otherwise would be the same overclaim C6's wording rules exist to prevent. It is mitigated by being fifty lines whose every connection is to `127.0.0.1` — a guarantee you get by reading it, not one the network enforces. Everything that touches the user's material — the API, the worker, the database, the queue — stays internal with no route out, and that part is still structural.
+
+**Rejected:** running `llama.cpp` in a container on the internal network — CPU-only on every platform Askwell targets, and the accelerated profiles are the entire reason the process is native. Adding an SELinux policy module — a change to the security policy of someone else's machine to accommodate our own IPC choice. Giving the API a second non-internal network — that is the internet back, for the component that holds the user's corpus. Adding the podman bridge to firewalld's trusted zone — same objection, and it would not have helped, since the interface does not exist.
+
+**Consequences:** The host now runs one Askwell process alongside the stack, which `AGENTS.md` §5's "Podman and nothing else" no longer covers — that claim is about the *toolchain*, and inference is native by design. Started with `scripts/dev.sh inference`. The health probe checks a socket rather than a TCP port. On Windows and macOS the SELinux constraint does not exist, so the bridge container may be unnecessary there; it is kept uniform for now and flagged for M7. Verified end to end on Linux: a completion request from inside the API container reached llama.cpp and returned an answer.
+
+**Refs:** [#86](https://github.com/Rumeasiyan/askwell/issues/86), `docs/architecture.md` §5, `deploy/inference/askwell-inference`, `api/src/askwell/inference/bridge.py`.
+
+---
+
 ## 2026-08-27 — Askwell does not own its own tables
 
 **Decision:** The database has three roles. `askwell` owns the schema and runs migrations. `askwell_app` is what the application connects as, owns nothing, and has no `UPDATE`, `DELETE` or `TRUNCATE` grant on either audit table. `askwell_readonly` is independent of both and can only read. Role creation and passwords live in the Postgres initialisation hook (`deploy/postgres/10-roles.sh`); the grants live in the migration.

@@ -17,6 +17,7 @@ developer happens to have `ASKWELL_DATABASE_URL` exported is not a test.
 """
 
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
@@ -52,8 +53,9 @@ def settings() -> Settings:
         # A key nothing writes, so the worker reads as not-checked-in by
         # default. Tests that want a live worker set it explicitly.
         worker_health_key="askwell-test:no-such-worker",
-        inference_host="127.0.0.1",
-        inference_port=1,
+        # A socket path that does not exist: inference reads as not running,
+        # which is the state before the host-side supervisor is started.
+        inference_socket=Path("/nonexistent/askwell-test/inference.sock"),
         egress_proxy_host="127.0.0.1",
         egress_proxy_port=1,
         health_probe_timeout_seconds=0.5,

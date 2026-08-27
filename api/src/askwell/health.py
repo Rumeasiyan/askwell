@@ -14,6 +14,7 @@ probes land with the clients that can make them.
 """
 
 import asyncio
+import contextlib
 import socket
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -21,6 +22,8 @@ from enum import StrEnum
 from typing import Any
 
 from askwell.config import Settings
+from askwell.inference import state as inference_state
+from askwell.inference.state import ProcessState
 
 
 class ComponentState(StrEnum):
@@ -45,15 +48,25 @@ class ComponentHealth:
     reason: str | None
     address: str
     duration_ms: float
+    detail: dict[str, object] | None = None
+    """Anything the component says about itself beyond reachable or not.
+
+    Only inference has any today: which model is loaded and whether
+    acceleration is in use. `M0-MODEL-DEPLOY-018` requires both, and neither
+    is answerable by opening a socket.
+    """
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "component": self.name,
             "state": str(self.state),
             "reason": self.reason,
             "address": self.address,
             "duration_ms": round(self.duration_ms, 1),
         }
+        if self.detail is not None:
+            payload["detail"] = self.detail
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,12 +77,16 @@ class _Target:
 
 
 def _targets(settings: Settings) -> list[_Target]:
-    """The components reachable by opening a socket. The worker is not one."""
+    """The components reachable by opening a TCP socket.
+
+    The worker is not one — it consumes a queue and listens on nothing.
+    Inference is not one either: it is a Unix socket, because it runs on the
+    host and the containers have no route there.
+    """
     database_host, database_port = settings.database_host_port
     return [
         _Target("database", database_host, database_port),
         _Target("queue", settings.redis_host, settings.redis_port),
-        _Target("inference", settings.inference_host, settings.inference_port),
         _Target("egress_proxy", settings.egress_proxy_host, settings.egress_proxy_port),
     ]
 
@@ -248,6 +265,71 @@ async def _probe(target: _Target, timeout: float) -> ComponentHealth:  # noqa: A
     return finish(ComponentState.REACHABLE, None)
 
 
+# ASYNC109 suppressed for the same reason as the two probes above: turning a
+# timeout into a per-component state with a reason attached is the job, and a
+# timeout raised in the caller would collapse five answers into one exception.
+async def _probe_inference(settings: Settings, timeout: float) -> ComponentHealth:  # noqa: ASYNC109
+    """Ask the inference socket whether it is there.
+
+    A socket, not a host and port. Inference runs natively so that GPU
+    acceleration works, and every container is on a network with no route off
+    the machine — so there is no address to dial and a socket file on a bind
+    mount is what joins them. See `docs/decisions.md`.
+
+    The socket's absence is the ordinary state before the supervisor has been
+    started, which is why the reason says how to start it rather than treating
+    it as a fault.
+    """
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    address = str(settings.inference_socket)
+
+    published = inference_state.read(settings.inference_socket.parent / "state.json")
+
+    def finish(state: ComponentState, reason: str | None) -> ComponentHealth:
+        return ComponentHealth(
+            name="inference",
+            state=state,
+            reason=reason,
+            address=address,
+            duration_ms=(loop.time() - started) * 1000,
+            # What the supervisor says about itself. Reachability alone cannot
+            # answer "which model" or "is the GPU being used", and both are
+            # required — a socket that opens says neither.
+            detail=published.as_dict(),
+        )
+
+    if not settings.inference_socket.exists():
+        return finish(
+            ComponentState.UNREACHABLE,
+            published.reason
+            or "The inference supervisor is not running. It runs on the host, "
+            "not in a container — start it with: scripts/dev.sh inference",
+        )
+
+    try:
+        async with asyncio.timeout(timeout):
+            _, writer = await asyncio.open_unix_connection(str(settings.inference_socket))
+    except (TimeoutError, OSError) as error:
+        return finish(
+            ComponentState.UNREACHABLE,
+            f"The socket is there but nothing is answering on it: {type(error).__name__}.",
+        )
+
+    writer.close()
+    with contextlib.suppress(OSError):
+        await writer.wait_closed()
+
+    # The socket answering is not the same as a model being loaded. The bridge
+    # comes up before llama.cpp does, deliberately — otherwise "the supervisor
+    # is not running" and "the model is still loading" look identical, and they
+    # need different things from the user.
+    if published.state is not ProcessState.READY:
+        return finish(ComponentState.UNREACHABLE, published.reason or str(published.state))
+
+    return finish(ComponentState.REACHABLE, None)
+
+
 async def check_components(settings: Settings) -> Sequence[ComponentHealth]:
     """Probe every component concurrently.
 
@@ -258,7 +340,11 @@ async def check_components(settings: Settings) -> Sequence[ComponentHealth]:
     """
     timeout = settings.health_probe_timeout_seconds
     socket_probes = [_probe(target, timeout) for target in _targets(settings)]
-    results = await asyncio.gather(*socket_probes, _probe_worker(settings, timeout))
+    results = await asyncio.gather(
+        *socket_probes,
+        _probe_worker(settings, timeout),
+        _probe_inference(settings, timeout),
+    )
     # Ordered as the shell reads them: the two the user can act on first.
     order = {"database": 0, "queue": 1, "worker": 2, "inference": 3, "egress_proxy": 4}
     return sorted(results, key=lambda item: order[item.name])

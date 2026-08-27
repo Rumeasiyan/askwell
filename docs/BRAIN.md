@@ -7,33 +7,42 @@
 
 ## Current phase
 
-**M0 — It runs. In progress: 16 of 21 tickets done.**
+**M0 — It runs. In progress: 17 of 21 tickets done.**
 
 The repository is no longer documentation only. `api/` exists: an image, manifests, the application, and 54 tests. The API starts, refuses bad configuration by name, and serves `GET /health` reporting five components separately. `podman compose up -d` brings up four services, the database carries the full v1 schema, and the interface loads at `http://127.0.0.1:8000`. `web/` builds to static assets and the API serves them — the `web` container is gone from the topology. The Compose stack, the database schema and the inference process do not exist yet — so all five health components correctly report `unreachable`.
 
-**Version:** `0.1.16` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
+**Version:** `0.1.17` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
 **Tracker:** `Rumeasiyan/askwell`. Working agreements in `AGENTS.md`. Backlog in `docs/backlog/`.
 
 ## Last completed
 
-**`M0-SHELL-SESS-016`** — [#84](https://github.com/Rumeasiyan/askwell/issues/84). The local session.
+**`M0-MODEL-DEPLOY-018`** — [#86](https://github.com/Rumeasiyan/askwell/issues/86). Native inference, and **an answer generated end to end**.
 
-Verified against the running stack:
+```
+API container -> Unix socket -> bridge container -> native llama.cpp -> answer
+```
 
-| | |
-| --- | --- |
-| `GET /` with `Accept: text/html` | 200, cookie set, **no prompt of any kind** |
-| `GET /network` with no cookie | 401, *"there is nothing to sign in to"* |
-| the same with the cookie | 200 |
-| `GET /health` with no cookie | 200 — the only exemption |
-| `Origin: https://evil.example` | 403 |
-| a forged signature | 401 |
-| API restart, then full stack down/up | session still valid |
-| the full token in the API log | 0 occurrences |
+> *"A lease termination clause is a provision in a lease agreement that outlines
+> the specific conditions and procedures under which a tenant or landlord may
+> legally end the rental contract…"*
 
-**The exemption is a decision, not an oversight.** `/health` is the surface someone with a broken install needs most, it carries component states rather than any of the user's material, and locking it would make Askwell hardest to diagnose in exactly the situation where diagnosis matters. A test keeps that list at one entry, because the list existing at all is the risk.
+All five components `reachable`. M0's exit condition — the assistant reports itself available — is met.
 
-**A test I got wrong twice, the same way.** It scans for sign-in machinery and first failed on the session module's own prose explaining that none of it exists — my filter skipped lines *containing* a triple quote, which is not the same as lines *inside* a docstring. Now it strips comments and strings with `tokenize`, and it was mutation-tested by adding a `login(password_hash)` function and watching it name the line. **Second time this session that a word-scanning test caught its own explanation** — the pattern is worth remembering.
+**Four things the ticket assumed, each wrong, each found by running it.**
+
+*The API would supervise the process.* A containerised API cannot start a host process. Supervision lives on the host, which is where M7's installer will run it anyway.
+
+*The supervisor could be part of the package.* `Package 'askwell' requires a different Python: 3.14.6 not in '==3.12.*'`. A host-side component that dictates the host's Python does not install. It is standard library only now.
+
+*The API could reach the host.* `host.containers.internal`, `host.docker.internal` and `10.0.2.2` all return `Network is unreachable` — this is rootless podman and the bridge gateway `network inspect` reports lives inside a user namespace, so it does not exist as a host interface at all.
+
+*A Unix socket would just work.* `AVC denied { connectto } scontext=container_t tcontext=unconfined_t`. The **listener's process label** decides, not the file's — relabelling changes nothing. The socket is owned by a container instead, verified with a throwaway listener before anything was built on it.
+
+**What it cost, stated plainly.** The bridge is the one container with host networking, so it is the one container that can reach the internet. `docs/architecture.md` §5 names it rather than glossing it. Its entire program dials `127.0.0.1` — a guarantee you get by reading fifty lines, not one the network enforces. Everything that touches the user's material stays internal.
+
+**A small honesty bug fixed on the way:** `restarts` reported the backoff counter, which resets on a successful start — so a process that had been flapping all morning reported zero. Two counters now: cumulative for the user, consecutive for the backoff.
+
+Verified: missing model names the path and does not loop; a missing binary says so; killing llama.cpp externally restarts it with backoff and retains the reason.
 
 ## Next task
 

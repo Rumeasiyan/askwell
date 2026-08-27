@@ -17,7 +17,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import Field, SecretStr, ValidationError
+from pydantic import Field, SecretStr, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Every Askwell variable carries this prefix. Without it, `extra="forbid"`
@@ -84,10 +84,18 @@ class Settings(BaseSettings):
     # read. The key expires, so its presence is also its freshness.
     worker_health_key: str = "arq:queue:health-check"
 
-    # llama.cpp runs as a native host process, not a container, so from inside
-    # the API container the host gateway is the address that reaches it.
-    inference_host: str = "host.containers.internal"
-    inference_port: Port = 8080
+    # Inference is a native host process — GPU acceleration only works from
+    # the host on all three platforms — and the containers reach it over a Unix
+    # socket rather than the network. Every service is on a network with no
+    # route off the machine (C1), so there is no address to dial; a socket file
+    # on a bind mount needs no route at all. See docs/decisions.md.
+    inference_socket: Path = Path("/run/askwell/inference.sock")
+
+    # Used by the host-side supervisor only. The containers never see this.
+    inference_binary: str = "llama-server"
+    inference_model_path: Path = Path("~/.local/share/askwell/models/model.gguf")
+    inference_upstream_port: Port = 8080
+    inference_context_size: int = Field(default=8192, ge=512, le=1_048_576)
 
     egress_proxy_host: str = "egress-proxy"
     egress_proxy_port: Port = 3128
@@ -113,6 +121,17 @@ class Settings(BaseSettings):
     # every component is down, so this is short and it is a ceiling per probe,
     # not for the whole surface.
     health_probe_timeout_seconds: float = Field(default=1.0, gt=0, le=10)
+
+    @field_validator("inference_model_path", "inference_socket", "trace_dir", mode="after")
+    @classmethod
+    def _expand(cls, value: Path) -> Path:
+        """`~` is how a person writes a path, and `Path` does not expand it.
+
+        Without this, `~/.local/share/...` becomes a directory literally named
+        `~` in the working directory — which exists, is empty, and produces a
+        "no model file" message pointing at a path that looks correct.
+        """
+        return value.expanduser()
 
     @property
     def database_host_port(self) -> tuple[str, int]:

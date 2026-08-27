@@ -4,6 +4,22 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.1.17 — 2026-08-27
+
+`M0-MODEL-DEPLOY-018`. Native inference, supervised on the host.
+
+### Added
+
+- `deploy/inference/askwell-inference` — a standalone, standard-library-only supervisor. It starts llama.cpp, restarts it with backoff, stops trying after five consecutive failures, and publishes what it knows to a state file.
+- `askwell.inference.bridge` — the Unix socket the containers reach inference through, owned by a container because SELinux refuses `container_t` connecting to an `unconfined_t` listener.
+- The health surface now reports the loaded model and whether acceleration is in use, which a socket that opens cannot say.
+- `scripts/dev.sh inference`.
+
+### Changed
+
+- `ASKWELL_INFERENCE_SOCKET` replaces `ASKWELL_INFERENCE_HOST` and `ASKWELL_INFERENCE_PORT`. Every service is on a network with no route off the machine, so there is no address to dial.
+- One container — the inference bridge — runs with host networking, and `docs/architecture.md` §5 now names it rather than glossing it.
+
 ## 0.1.16 — 2026-08-27
 
 `M0-SHELL-SESS-016`. The local session — which is not a login and must never become one.
