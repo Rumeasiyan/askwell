@@ -7,30 +7,40 @@
 
 ## Current phase
 
-**M0 — It runs. In progress: 20 of 21 tickets done.**
+**M0 — It runs. COMPLETE, 21 of 21.** `0.2.0`.
 
 The repository is no longer documentation only. `api/` exists: an image, manifests, the application, and 54 tests. The API starts, refuses bad configuration by name, and serves `GET /health` reporting five components separately. `podman compose up -d` brings up four services, the database carries the full v1 schema, and the interface loads at `http://127.0.0.1:8000`. `web/` builds to static assets and the API serves them — the `web` container is gone from the topology. The Compose stack, the database schema and the inference process do not exist yet — so all five health components correctly report `unreachable`.
 
-**Version:** `0.1.20` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
+**Version:** `0.2.0` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
 **Tracker:** `Rumeasiyan/askwell`. Working agreements in `AGENTS.md`. Backlog in `docs/backlog/`.
 
 ## Last completed
 
-**`M0-SHELL-FE-017`** — [#93](https://github.com/Rumeasiyan/askwell/issues/93). The shell.
+**M0 — It runs. All twenty-one tickets.**
 
 ```
-/            200      /library/    200
-/memory/     200      /settings/   200
-/typo/       404
+podman compose up -d      four containers, plus the inference bridge
+scripts/dev.sh inference  llama.cpp, natively, on the host
+http://127.0.0.1:8000     the shell, on loopback and nowhere else
+
+database      reachable      assistant: ready
+queue         reachable      model:     Qwen3.5-4B-Q4_K_M.gguf
+worker        reachable      acceleration: cpu
+inference     reachable
+egress_proxy  reachable
 ```
 
-**The margin is reserved even when empty**, and that is the whole point of it. Not a popover, not a drawer, not a toggle — its permanence is what makes an uncited claim visibly wrong: the claim sits in the column with nothing beside it and nothing pointing at it. The layout enforces C4 rather than trusting the model to, and collapsing it when empty would remove exactly the signal it exists to give.
+216 tests, 36 of them against a real Postgres created and dropped per run. CI runs all of it on every push.
 
-The status banner keeps three things apart that a lazier surface would merge: Askwell not answering at all, a component being down, and the assistant being unavailable. Every unavailable case names what still works, because the instinct on reading "unavailable" is to assume nothing does.
+**The claims are checked rather than asserted.** An attempt to reach the internet is refused and counted. The API answers on loopback and nowhere else, proved from outside its own network namespace. The audit log cannot be rewritten by the application because it does not hold the grant. Every schema invariant is enforced by the database rather than by remembering.
 
-**Two things strict mode caught that are worth keeping.** `exactOptionalPropertyTypes` refused an optional `onNavigate` handed straight to `onClick` — a default no-op is clearer than the cast I would otherwise have written. And `react-hooks/set-state-in-effect` refused the first status poll being started synchronously inside the effect; it is scheduled now, which is still immediate to a person.
+**What running it caught that reading it would not have.** The audit log's append-only guarantee was decorative, because the application owned the tables and an owner bypasses its own grants. The worker was reported down while running perfectly, because an arq worker listens on nothing. A killed inference supervisor left the API reporting the assistant available. `.env.example` listed five variables out of nineteen. The changelog had two `0.1.0` headings. Rootless podman has no bridge interface on the host, and SELinux refuses a container connecting to an unconfined listener — between them those reshaped the whole inference design.
 
-**A dev-experience trap, now explained rather than suffered.** Rebuilding the frontend while the stack is up replaces `web/out`, which breaks the bind mount — and the API then says "the interface has not been built" when it plainly has. The page now names that case and gives the command.
+**Three things known and written down rather than left to be discovered.**
+
+- Inference needs three native processes, not one ([#89](https://github.com/Rumeasiyan/askwell/issues/89)). Embeddings from the generation model are 2560 dimensions where the schema is `vector(1024)`, and reranking needs its own model. **Blocks M1 retrieval.**
+- One container — the inference bridge — has host networking. `docs/architecture.md` §5 names it rather than glossing it.
+- The 8 GB "slow but usable" claim is still unmeasured ([#49](https://github.com/Rumeasiyan/askwell/issues/49)).
 
 ## Next task
 

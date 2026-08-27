@@ -42,7 +42,7 @@ Four facts shape almost every decision here:
 
 > **History worth knowing.** Until 2026-08-10 this repository described a different product: an on-premise system sold to government ministries, with seat tiers, four user roles, an offline licence and a "Deployer" persona. It was repositioned to the above. Text about ministries, organisations, roles, licences or seats is leftover from that draft and is **wrong** — fix it rather than working around it.
 
-**Current state: Phase 0, not started.** The repository is documentation only — no application code, no manifests, no tests, no CI. Section 5 reflects that honestly.
+**Current state: M0 complete, `0.2.0`.** Askwell starts on a clean machine and says it is ready: four containers plus an inference bridge, `llama.cpp` natively on the host, the shell on loopback, all five components reachable. 216 tests, CI on every push. `docs/BRAIN.md` has the detail and the next task.
 
 ---
 
