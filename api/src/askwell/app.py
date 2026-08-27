@@ -17,6 +17,7 @@ from askwell.config import ConfigurationError, Environment, Settings, load_setti
 from askwell.health import ComponentState, check_components
 from askwell.interface import register_interface
 from askwell.logging import configure_logging, get_logger
+from askwell.network import read_activity
 
 log = get_logger(__name__)
 
@@ -92,6 +93,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "components": [item.as_dict() for item in components],
             }
         )
+
+    @app.get("/network")
+    async def network(request: Request) -> JSONResponse:
+        """What the egress proxy refused, according to the egress proxy.
+
+        A fact, not a warning. `docs/states-and-edge-cases.md` §1 forbids
+        rendering an offline notice — being offline is the design point, not a
+        degraded state — so there is no threshold here and no value that is
+        treated as alarming.
+
+        The counts are the proxy's. If they cannot be read the answer says so;
+        it never falls back to zero, because zero is the strongest claim the
+        product makes and it has to be earned.
+        """
+        current: Settings = request.app.state.settings
+        return JSONResponse((await read_activity(current)).as_dict())
 
     @app.exception_handler(Exception)
     async def unhandled(request: Request, error: Exception) -> JSONResponse:
