@@ -1,0 +1,141 @@
+# Lint, typecheck and tests, on every push and pull request.
+#
+# Everything runs through `scripts/dev.sh`, inside the same images used
+# locally, so a green run here means the same thing as a green run on a
+# laptop. A workflow that reimplements the project's own commands drifts from
+# them, and the drift is only ever discovered by someone trusting the wrong one.
+#
+# The whole suite runs regardless of what changed. Selective running hides
+# breakage, and there is one maintainer to be misled.
+#
+# No secret is used or required. Nothing here can leak one because there is
+# none to leak — the database password below is generated per run and exists
+# for the length of a job.
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# A second push to the same branch cancels the first: the older answer is not
+# useful once it is known to be about superseded code.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Docker on hosted runners; Podman locally. Same images, same commands.
+  ASKWELL_CONTAINER: docker
+
+jobs:
+  api:
+    name: API — lint, format, typecheck, tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the API image
+        # Deliberately uncached. The image build is where `uv sync --locked`
+        # runs, and that is the check that the lockfile agrees with
+        # pyproject.toml — restoring a layer cache keyed on anything looser
+        # than both files would skip exactly the failure this is here to catch.
+        run: scripts/dev.sh build-api
+
+      - name: Lint
+        run: scripts/dev.sh lint
+
+      - name: Format check
+        run: scripts/dev.sh fmt-check
+
+      - name: Typecheck
+        run: scripts/dev.sh typecheck
+
+      - name: Tests
+        run: scripts/dev.sh test
+
+  database:
+    name: API — database-backed tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        # pgvector's image, matching compose.yaml. A plain postgres image would
+        # pass the connection check and fail on the first vector column.
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: askwell
+          POSTGRES_PASSWORD: ci-only-never-leaves-this-job
+          POSTGRES_DB: askwell
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U askwell -d askwell"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+
+    env:
+      POSTGRES_USER: askwell
+      POSTGRES_PASSWORD: ci-only-never-leaves-this-job
+      POSTGRES_DB: askwell
+      POSTGRES_APP_PASSWORD: ci-only-app-password
+      # `host`, so the test container reaches the service on localhost. Locally
+      # this is the Compose network; the tests do not know the difference.
+      ASKWELL_COMPOSE_NETWORK: host
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the API image
+        run: scripts/dev.sh build-api
+
+      - name: Create the non-owner roles
+        # The same split as deploy/postgres/10-roles.sh: roles and passwords
+        # here, grants in the migration. Askwell must not connect as the table
+        # owner — an owner bypasses its own grants, which would make the audit
+        # log's append-only guarantee decorative and let these tests pass while
+        # asserting nothing.
+        run: |
+          docker run --rm --network host \
+            -e PGPASSWORD="$POSTGRES_PASSWORD" \
+            pgvector/pgvector:pg18 \
+            psql -h 127.0.0.1 -U askwell -d askwell -v ON_ERROR_STOP=1 -c "
+              CREATE ROLE askwell_app LOGIN PASSWORD '$POSTGRES_APP_PASSWORD';
+              CREATE ROLE askwell_readonly LOGIN PASSWORD '$POSTGRES_APP_PASSWORD';
+              GRANT CONNECT ON DATABASE askwell TO askwell_app, askwell_readonly;
+            "
+
+      - name: Database-backed tests
+        # These are where C6 and the schema invariants are actually asserted —
+        # the tests most worth having run by something other than a person
+        # remembering to. Each run creates and drops its own database.
+        run: scripts/dev.sh test-db
+        env:
+          ASKWELL_DB_HOST: 127.0.0.1
+
+  web:
+    name: Frontend — typecheck, lint, build, contrast, offline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the frontend image
+        run: scripts/dev.sh build-web
+
+      - name: Install dependencies
+        # The one step allowed to reach a registry (C1). `--frozen-lockfile`
+        # rather than a cache key: a cache that restores node_modules would
+        # hide a lockfile that no longer resolves, which is the failure worth
+        # catching on a dependency change.
+        run: scripts/dev.sh web-install --frozen-lockfile
+
+      - name: Typecheck, lint, build, contrast and offline scan
+        # Contrast and the external-host scan are constraints, not preferences:
+        # a contrast failure is invisible to whoever is not affected by it, and
+        # an external URL breaks C1 on the machine this product is for.
+        run: scripts/dev.sh web-check
