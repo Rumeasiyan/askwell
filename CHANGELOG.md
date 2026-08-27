@@ -4,6 +4,16 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.1.15 — 2026-08-27
+
+`M0-STACK-SEC-012`. Loopback-only, proved from outside the machine.
+
+### Added
+
+- `scripts/verify-localhost-binding.sh` — part of the release checklist. Checks what the port is bound to, what each container publishes, and whether the machine answers on its own addresses from another network namespace.
+- A static check on `compose.yaml`, so this runs on every push without a stack being up.
+- `docs/architecture.md` §5.0 records what the check does and why its three parts are in that order.
+
 ## 0.1.14 — 2026-08-27
 
 `M0-STACK-SEC-011`. The refusal count, as a fact rather than a reassurance.

@@ -113,6 +113,18 @@ This costs a container on someone's laptop, which the topology rule otherwise re
 
 The sandbox Postgres has no route to the proxy at all (C3).
 
+### 5.0 Reachability, and how it is checked
+
+The API publishes to `127.0.0.1` and no other service publishes at all. `"8000:8000"` and `"127.0.0.1:8000:8000"` differ by nine characters and produce the same working product on the developer's machine — the first one puts the user's entire corpus on whatever network they are on. Nothing about that difference is visible from inside Askwell, which is why `scripts/verify-localhost-binding.sh` checks from outside it and is part of the release checklist.
+
+It checks three things, and the order is deliberate:
+
+1. **What the port is bound to**, read from `ss`. This is what decides.
+2. **What each container publishes**, distinguishing a published mapping (`127.0.0.1:8000->8000/tcp`) from an `EXPOSE` in the image (`5432/tcp`), which has no host binding at all.
+3. **Whether the machine answers on its own addresses from another network namespace.**
+
+The third is corroboration rather than the primary check, and that ordering was earned. With the API deliberately bound to every interface, the namespace probe found it reachable on this machine's Tailscale address and **refused on its LAN address** — whether a rootless container can route to a given host address depends on the container network, the host firewall and the interface. A check relying on that probe alone would have passed a machine with no Tailscale.
+
 ### 5.1 How it is built, and how a destination would be authorised
 
 Implemented in M0-STACK-SEC-010. Two halves, and both are needed:

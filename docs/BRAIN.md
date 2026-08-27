@@ -7,33 +7,33 @@
 
 ## Current phase
 
-**M0 — It runs. In progress: 14 of 21 tickets done.**
+**M0 — It runs. In progress: 15 of 21 tickets done.**
 
 The repository is no longer documentation only. `api/` exists: an image, manifests, the application, and 54 tests. The API starts, refuses bad configuration by name, and serves `GET /health` reporting five components separately. `podman compose up -d` brings up four services, the database carries the full v1 schema, and the interface loads at `http://127.0.0.1:8000`. `web/` builds to static assets and the API serves them — the `web` container is gone from the topology. The Compose stack, the database schema and the inference process do not exist yet — so all five health components correctly report `unreachable`.
 
-**Version:** `0.1.14` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
+**Version:** `0.1.15` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
 **Tracker:** `Rumeasiyan/askwell`. Working agreements in `AGENTS.md`. Backlog in `docs/backlog/`.
 
 ## Last completed
 
-**`M0-STACK-SEC-011`** — [#80](https://github.com/Rumeasiyan/askwell/issues/80). `GET /network`: what the proxy refused, according to the proxy.
+**`M0-STACK-SEC-012`** — [#82](https://github.com/Rumeasiyan/askwell/issues/82). Loopback-only, proved from outside the machine.
 
-One rule shaped the whole design: **unreadable is not zero.** Zero and unknown look identical to whoever reads the settings screen and mean opposite things, and "nothing has tried to leave this machine" is the strongest claim Askwell makes.
+```
+pass  http://127.0.0.1:8000/health
+pass  bound to 127.0.0.1:8000
+pass  askwell-redis-1 / postgres-1 / egress-proxy-1 / worker-1 publish nothing to the host
+pass  askwell-api-1 publishes 127.0.0.1:8000->8000/tcp
+pass  refused at 192.168.1.111:8000
+pass  refused at 100.93.148.118:8000
+```
 
-Verified against the running stack:
+**The finding worth keeping.** With the API deliberately bound to every interface, the from-another-namespace probe found it reachable on this machine's **Tailscale** address and **refused on its LAN address** — whether a rootless container can route to a given host address depends on the container network, the host firewall and the interface.
 
-| | |
-| --- | --- |
-| a deliberate refused request | count goes 5 → 6, destination retrievable |
-| `podman compose down` then `up` | still 6 — cumulative for the install |
-| permitted | 0, and it is the proxy's zero, not the API's |
-| **the queue stopped** | `available: false`, `refused: null` — *"not the same as nothing having been refused"* |
-| **the proxy has never reported** | `available: false` — *"unknown rather than zero"* |
-| the proxy comes back | available again, count intact |
+A check relying on that probe alone would have passed a machine with no Tailscale. So `ss` is what decides, the probe corroborates, and `docs/architecture.md` §5.0 says so in that order. This is exactly how a security check becomes something people trust while it quietly proves nothing.
 
-There are two distinct unavailable cases and they needed different answers. The queue being unreachable is one. The queue being fine while the proxy has never registered is the other — its counters would read as absent, and absent renders as zero. The proxy now writes a reporting marker at startup, which is what lets the API tell "reported zero" from "never reported".
+**A false-positive I had to fix before the check was usable.** It first reported `redis publishes 6379/tcp to a non-loopback address` — but a bare `5432/tcp` is an `EXPOSE` in the image, documentation of what the container listens on internally, with no host binding at all. Only an entry containing `->` is published. A check that always fails is a check nobody runs.
 
-**A test I had to throw away.** The first version asserted the surface contained no alarming words, and failed on the module's own docstring explaining that alarming words do not apply. A test that cannot tell a denial from a use gets deleted the first time it is wrong. Replaced with an assertion on the payload: it carries a count and nothing that classifies the count.
+Both the script and the static test were mutation-tested by changing the mapping to `"8000:8000"` and watching each fail.
 
 ## Next task
 

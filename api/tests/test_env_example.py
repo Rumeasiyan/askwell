@@ -108,3 +108,27 @@ def test_the_variables_that_carry_credentials_are_documented_as_such(variable: s
     assert any(
         word in preceding for word in ("credential", "password", "connection string", "secret")
     ), f"{variable} is listed without saying it carries a credential"
+
+
+def test_only_the_api_publishes_a_port_and_only_to_loopback() -> None:
+    """`"8000:8000"` and `"127.0.0.1:8000:8000"` differ by nine characters.
+
+    Both produce a working product on the developer's machine. The first one
+    puts the user's entire corpus on whatever network they are on.
+
+    Checked statically here as well as from outside the machine by
+    `scripts/verify-localhost-binding.sh`, because this is the version that
+    runs on every push without a stack being up.
+    """
+    import re
+
+    compose = COMPOSE.read_text(encoding="utf-8")
+    mappings = re.findall(r'^\s*-\s*"([^"]*:\d+)"\s*$', compose, re.MULTILINE)
+    published = [m for m in mappings if ":" in m]
+
+    assert published, "no published port found — has the ports section moved?"
+    for mapping in published:
+        assert mapping.startswith("127.0.0.1:"), (
+            f"compose.yaml publishes {mapping!r}, which is not loopback. "
+            f"There is no configuration in v1 for exposing Askwell to a network."
+        )
