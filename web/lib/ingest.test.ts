@@ -21,12 +21,14 @@ import { test } from "node:test";
 import {
   type IngestState,
   type SourceCoverage,
+  type FlaggedDocument,
   coverageSentence,
   duration,
   estimateSentence,
   queueSentence,
   subscribeIngest,
   failureSentence,
+  flaggedSentence,
   retryDocument,
   type FailedDocument,
 } from "./ingest.ts";
@@ -36,12 +38,14 @@ function state(over: Partial<IngestState> = {}): IngestState {
     counts: { queued: 0, running: 0, parked: 0, failed: 0, done: 0 },
     documents_ingested: 0,
     documents_failed: 0,
+    documents_flagged: 0,
     queue_length: 0,
     concurrency: 2,
     estimate: { seconds: 0, basis: "nothing is waiting" },
     active: [],
     next: [],
     failures: [],
+    flagged: [],
     sources: [],
     awaiting: null,
     stages: [
@@ -63,6 +67,7 @@ function coverage(over: Partial<SourceCoverage> = {}): SourceCoverage {
     failed: 0,
     running: 2,
     outstanding: 420,
+    flagged: 0,
     askable: true,
     fraction: 0.16,
     ...over,
@@ -295,4 +300,40 @@ test("a retry that succeeds resolves", () => {
   return retryDocument("d1").finally(() => {
     globalThis.fetch = original;
   });
+});
+
+
+// --- a scan that read poorly, but is not a failure ---------------------------
+
+function flagged(over: Partial<FlaggedDocument> = {}): FlaggedDocument {
+  return {
+    document_id: "d1",
+    filename: "photocopy.pdf",
+    source_id: "s1",
+    confidence: 0.42,
+    poor_pages: [],
+    ...over,
+  };
+}
+
+test("a flagged document names the file and the confidence, never as a failure", () => {
+  const said = flaggedSentence(flagged());
+  assert.match(said, /photocopy\.pdf/);
+  assert.match(said, /42% confidence/);
+  assert.match(said, /indexed and searchable/);
+});
+
+test("a flagged document names the specific pages that read worst", () => {
+  const said = flaggedSentence(flagged({ poor_pages: [2, 5] }));
+  assert.match(said, /pages 2, 5 read worst/);
+});
+
+test("a flagged document with one poor page says page, singular", () => {
+  const said = flaggedSentence(flagged({ poor_pages: [3] }));
+  assert.match(said, /page 3 read worst/);
+});
+
+test("a flagged document with no page detail still names the confidence", () => {
+  const said = flaggedSentence(flagged({ poor_pages: [] }));
+  assert.doesNotMatch(said, /read worst/);
 });

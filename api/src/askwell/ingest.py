@@ -322,6 +322,7 @@ async def _claim(session: AsyncSession, document_id: uuid.UUID) -> tuple[Work, i
 
 async def _park(
     factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
     work: Work,
     *,
     reached: str | None,
@@ -346,7 +347,7 @@ async def _park(
             text("UPDATE documents SET status = 'queued' WHERE id = :id"),
             {"id": work.document_id},
         )
-        await refresh_source(session, work.source_id)
+        await refresh_source(session, work.source_id, settings.ocr_confidence_threshold)
 
     log.info(
         "ingest_parked",
@@ -357,7 +358,9 @@ async def _park(
     )
 
 
-async def _finish(factory: async_sessionmaker[AsyncSession], work: Work) -> None:
+async def _finish(
+    factory: async_sessionmaker[AsyncSession], settings: Settings, work: Work
+) -> None:
     async with session_scope(factory) as session:
         await session.execute(
             text(
@@ -370,7 +373,7 @@ async def _finish(factory: async_sessionmaker[AsyncSession], work: Work) -> None
             text("UPDATE documents SET status = 'ready' WHERE id = :id"),
             {"id": work.document_id},
         )
-        await refresh_source(session, work.source_id)
+        await refresh_source(session, work.source_id, settings.ocr_confidence_threshold)
     log.info("ingest_completed", document_id=str(work.document_id), filename=work.filename)
 
 
@@ -414,7 +417,7 @@ async def _fail(
                 text("UPDATE documents SET status = 'attention' WHERE id = :id"),
                 {"id": work.document_id},
             )
-        await refresh_source(session, work.source_id)
+        await refresh_source(session, work.source_id, settings.ocr_confidence_threshold)
 
     log.warning(
         "ingest_failed",
@@ -498,7 +501,7 @@ async def process(
 
     for stage in STAGES:
         if stage.run is None:
-            await _park(factory, work, reached=reached, awaiting=stage)
+            await _park(factory, settings, work, reached=reached, awaiting=stage)
             return "parked"
 
         if reached is None:
@@ -507,7 +510,7 @@ async def process(
                     text("UPDATE documents SET status = 'indexing' WHERE id = :id"),
                     {"id": document_id},
                 )
-                await refresh_source(session, work.source_id)
+                await refresh_source(session, work.source_id, settings.ocr_confidence_threshold)
 
         try:
             await stage.run(work, report, factory)
@@ -522,14 +525,16 @@ async def process(
                 {"stage": stage.name, "id": document_id},
             )
 
-    await _finish(factory, work)
+    await _finish(factory, settings, work)
     return "done"
 
 
 # --- the source's own state -------------------------------------------------
 
 
-def source_status(*, total: int, ready: int, running: int, outstanding: int, failed: int) -> str:
+def source_status(
+    *, total: int, ready: int, running: int, outstanding: int, failed: int, flagged: int = 0
+) -> str:
     """What a source's status is, given what its documents are doing.
 
     `indexing` covers partly-indexed deliberately: the library's four statuses
@@ -545,9 +550,18 @@ def source_status(*, total: int, ready: int, running: int, outstanding: int, fai
     rendered `ready` gives the user nothing to click. Askability is not lost by
     saying so: it is carried by `Coverage.askable`, which is a separate fact
     and stays true.
+
+    **A flagged document is not waited on the way a failed one is.**
+    `M1-EXTRACT-ING-029`: low-confidence OCR is never a failure, so it never
+    joins `outstanding` and never retries — the document is already `ready`
+    the moment it is flagged. Checked ahead of `ready == total` for exactly
+    that reason: a source that is otherwise wholly ready still has something
+    the library needs to say.
     """
     if total == 0:
         return "queued"
+    if flagged:
+        return "attention"
     if ready == total:
         return "ready"
     if outstanding == 0 and failed:
@@ -571,6 +585,10 @@ class Coverage:
     # decisions record for each, describing work that never happened.
     running: int
     outstanding: int
+    # `ready` documents whose OCR confidence fell below configuration's
+    # threshold. Counted separately from `failed` because it is not one:
+    # these are already askable, and stay that way. `M1-EXTRACT-ING-029`.
+    flagged: int = 0
 
     @property
     def askable(self) -> bool:
@@ -589,23 +607,34 @@ class Coverage:
             "failed": self.failed,
             "running": self.running,
             "outstanding": self.outstanding,
+            "flagged": self.flagged,
             "askable": self.askable,
             "fraction": round(self.ready / self.total, 4) if self.total else 0.0,
         }
 
 
-async def coverage(session: AsyncSession, source_id: uuid.UUID) -> Coverage:
+async def coverage(
+    session: AsyncSession, source_id: uuid.UUID, ocr_confidence_threshold: float
+) -> Coverage:
     result = await session.execute(
         text(
             "SELECT count(*) AS total, "
             "count(*) FILTER (WHERE d.status = 'ready') AS ready, "
             "count(*) FILTER (WHERE j.state = 'failed') AS failed, "
             "count(*) FILTER (WHERE d.status = 'indexing') AS running, "
-            "count(*) FILTER (WHERE j.state IN ('queued', 'running', 'parked')) AS outstanding "
+            "count(*) FILTER (WHERE j.state IN ('queued', 'running', 'parked')) AS outstanding, "
+            # Not gated on `status = 'ready'`: `chunk` and `embed` are not
+            # built yet (`M1-INDEX-ING-031`/`-032`), so every document parks
+            # at `queued` after a successful `extract` today. Confidence is
+            # a fact about how extraction went, not about how far the
+            # pipeline has otherwise progressed — a flag must not wait for
+            # milestones this ticket does not depend on.
+            "count(*) FILTER (WHERE d.ocr_confidence IS NOT NULL "
+            "AND d.ocr_confidence < :threshold) AS flagged "
             "FROM documents d LEFT JOIN ingest_jobs j ON j.document_id = d.id "
             "WHERE d.source_id = :id AND d.deleted_at IS NULL"
         ),
-        {"id": source_id},
+        {"id": source_id, "threshold": ocr_confidence_threshold},
     )
     row = result.one()
     return Coverage(
@@ -614,10 +643,30 @@ async def coverage(session: AsyncSession, source_id: uuid.UUID) -> Coverage:
         failed=int(row[2]),
         running=int(row[3]),
         outstanding=int(row[4]),
+        flagged=int(row[5]),
     )
 
 
-async def refresh_source(session: AsyncSession, source_id: uuid.UUID) -> str | None:
+def _attention_reason(*, failed: int, flagged: int, total: int) -> str | None:
+    """The sentence `sources.last_error` carries while a source needs attention.
+
+    Both causes named when both are true — a source can have two failed files
+    and a third read poorly, and collapsing that into one cause would hide
+    whichever it left out. Poor OCR is stated as what it is, not as a failure:
+    that distinction is the whole of `M1-EXTRACT-ING-029`.
+    """
+    parts = []
+    if failed:
+        parts.append(f"{failed} of {total} files could not be indexed")
+    if flagged:
+        noun = "file" if flagged == 1 else "files"
+        parts.append(f"{flagged} {noun} scanned poorly and may be hard to search")
+    return ". ".join(parts) + "." if parts else None
+
+
+async def refresh_source(
+    session: AsyncSession, source_id: uuid.UUID, ocr_confidence_threshold: float
+) -> str | None:
     """Recompute a source's status, and record it if it moved.
 
     Recorded rather than only logged: what Askwell will answer from changed,
@@ -633,13 +682,14 @@ async def refresh_source(session: AsyncSession, source_id: uuid.UUID) -> str | N
     if found is None:
         return None
 
-    counts = await coverage(session, source_id)
+    counts = await coverage(session, source_id, ocr_confidence_threshold)
     wanted = source_status(
         total=counts.total,
         ready=counts.ready,
         running=counts.running,
         outstanding=counts.outstanding,
         failed=counts.failed,
+        flagged=counts.flagged,
     )
     if wanted == found[0]:
         return wanted
@@ -658,10 +708,8 @@ async def refresh_source(session: AsyncSession, source_id: uuid.UUID) -> str | N
         {
             "status": wanted,
             "became_ready": wanted == "ready",
-            "last_error": (
-                f"{counts.failed} of {counts.total} files could not be indexed."
-                if counts.failed
-                else None
+            "last_error": _attention_reason(
+                failed=counts.failed, flagged=counts.flagged, total=counts.total
             ),
             "id": source_id,
         },
@@ -677,6 +725,7 @@ async def refresh_source(session: AsyncSession, source_id: uuid.UUID) -> str | N
             "ready": counts.ready,
             "total": counts.total,
             "failed": counts.failed,
+            "flagged": counts.flagged,
         },
     )
     log.info(
@@ -686,6 +735,7 @@ async def refresh_source(session: AsyncSession, source_id: uuid.UUID) -> str | N
         status=wanted,
         ready=counts.ready,
         total=counts.total,
+        flagged=counts.flagged,
     )
     return wanted
 
@@ -897,17 +947,37 @@ async def snapshot(session: AsyncSession, settings: Settings) -> dict[str, Any]:
             "WHERE j.state = 'failed' ORDER BY j.finished_at DESC"
         )
     )
+    # A page named rather than only a document, per the ticket's own edge
+    # case: a mixed scan is flagged at document level but the reason has to
+    # say *which* pages read poorly, and the aggregate alone cannot.
+    flagged = await session.execute(
+        text(
+            "SELECT d.id, d.filename, d.source_id, d.ocr_confidence, "
+            "array_agg(dp.page_number ORDER BY dp.page_number) FILTER ("
+            "WHERE dp.ocr_confidence IS NOT NULL AND dp.ocr_confidence < :threshold"
+            ") AS poor_pages "
+            "FROM documents d LEFT JOIN document_pages dp ON dp.document_id = d.id "
+            "WHERE d.ocr_confidence IS NOT NULL AND d.ocr_confidence < :threshold "
+            "AND d.deleted_at IS NULL "
+            "GROUP BY d.id, d.filename, d.source_id, d.ocr_confidence "
+            "ORDER BY d.added_at DESC"
+        ),
+        {"threshold": settings.ocr_confidence_threshold},
+    )
     sources = await session.execute(
         text(
             "SELECT s.id, s.name, s.status, count(d.id) AS total, "
             "count(*) FILTER (WHERE d.status = 'ready') AS ready, "
             "count(*) FILTER (WHERE j.state = 'failed') AS failed, "
             "count(*) FILTER (WHERE d.status = 'indexing') AS running, "
-            "count(*) FILTER (WHERE j.state IN ('queued', 'running', 'parked')) AS outstanding "
+            "count(*) FILTER (WHERE j.state IN ('queued', 'running', 'parked')) AS outstanding, "
+            "count(*) FILTER (WHERE d.ocr_confidence IS NOT NULL "
+            "AND d.ocr_confidence < :threshold) AS flagged "
             "FROM sources s JOIN documents d ON d.source_id = s.id AND d.deleted_at IS NULL "
             "LEFT JOIN ingest_jobs j ON j.document_id = d.id "
             "WHERE s.status <> 'deleted' GROUP BY s.id, s.name, s.status ORDER BY s.added_at"
-        )
+        ),
+        {"threshold": settings.ocr_confidence_threshold},
     )
     waiting_on = await session.execute(
         text(
@@ -917,6 +987,7 @@ async def snapshot(session: AsyncSession, settings: Settings) -> dict[str, Any]:
     )
 
     parked = waiting_on.first()
+    flagged_rows = flagged.all()
     stage_tickets = {stage.name: stage.ticket for stage in STAGES}
 
     return {
@@ -957,6 +1028,19 @@ async def snapshot(session: AsyncSession, settings: Settings) -> dict[str, Any]:
             }
             for row in failures.all()
         ],
+        # Local counter, C1: read out of this machine's own database by this
+        # machine's own browser, nothing here is transmitted.
+        "documents_flagged": len(flagged_rows),
+        "flagged": [
+            {
+                "document_id": str(row[0]),
+                "filename": row[1],
+                "source_id": str(row[2]),
+                "confidence": float(row[3]),
+                "poor_pages": list(row[4]) if row[4] is not None else [],
+            }
+            for row in flagged_rows
+        ],
         "sources": [
             {
                 "id": str(row[0]),
@@ -968,6 +1052,7 @@ async def snapshot(session: AsyncSession, settings: Settings) -> dict[str, Any]:
                     failed=int(row[5]),
                     running=int(row[6]),
                     outstanding=int(row[7]),
+                    flagged=int(row[8]),
                 ).as_dict(),
             }
             for row in sources.all()
@@ -1007,7 +1092,7 @@ class Retried:
     source_id: uuid.UUID | None = None
 
 
-async def retry(session: AsyncSession, document_id: uuid.UUID) -> Retried:
+async def retry(session: AsyncSession, document_id: uuid.UUID, settings: Settings) -> Retried:
     """Put a failed document back on the queue, with its attempts forgiven.
 
     Forgiven rather than continued: the user has looked at the reason and done
@@ -1034,7 +1119,7 @@ async def retry(session: AsyncSession, document_id: uuid.UUID) -> Retried:
     await session.execute(
         text("UPDATE documents SET status = 'queued' WHERE id = :id"), {"id": document_id}
     )
-    await refresh_source(session, row[0])
+    await refresh_source(session, row[0], settings.ocr_confidence_threshold)
     log.info("ingest_retry_requested", document_id=str(document_id))
     return Retried(retried=True, state="queued", source_id=row[0])
 
@@ -1106,7 +1191,7 @@ def register_ingest(
     @app.post("/ingest/documents/{document_id}/retry")
     async def ingest_retry(document_id: uuid.UUID) -> JSONResponse:
         async with session_scope(factory) as db:
-            outcome = await retry(db, document_id)
+            outcome = await retry(db, document_id, settings)
 
         if outcome.state is None:
             return JSONResponse(

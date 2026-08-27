@@ -61,6 +61,23 @@ export interface FailedDocument {
   attempts: number;
 }
 
+/**
+ * A document whose OCR read poorly. `M1-EXTRACT-ING-029`.
+ *
+ * Never a failure — the document indexed, and stays listed as such. This is
+ * what lets the library say *why* an answer about it might be thin, which is
+ * the whole point of measuring confidence in the first place.
+ */
+export interface FlaggedDocument {
+  document_id: string;
+  filename: string;
+  source_id: string;
+  /** 0–1, Tesseract's own mean word confidence for the pages it OCR'd. */
+  confidence: number;
+  /** Specific pages below the threshold — named, not just counted. */
+  poor_pages: number[];
+}
+
 export interface SourceCoverage {
   id: string;
   name: string | null;
@@ -70,6 +87,8 @@ export interface SourceCoverage {
   failed: number;
   running: number;
   outstanding: number;
+  /** Read poorly by OCR. Never subtracted from `ready` — these are askable too. */
+  flagged: number;
   /** One indexed file is enough to ask. Waiting for all five hundred is the bug. */
   askable: boolean;
   fraction: number;
@@ -91,12 +110,14 @@ export interface IngestState {
   counts: IngestCounts;
   documents_ingested: number;
   documents_failed: number;
+  documents_flagged: number;
   queue_length: number;
   concurrency: number;
   estimate: IngestEstimate;
   active: ActiveDocument[];
   next: QueuedDocument[];
   failures: FailedDocument[];
+  flagged: FlaggedDocument[];
   sources: SourceCoverage[];
   awaiting: AwaitingStage | null;
   stages: PipelineStage[];
@@ -231,6 +252,26 @@ export function failureSentence(failure: FailedDocument): string {
   const tries =
     failure.attempts > 1 ? ` Tried ${failure.attempts} times.` : "";
   return `${failure.filename} could not be read${where}: ${why}${tries}`;
+}
+
+/**
+ * Why one document reads thin, in a sentence naming the file and the pages.
+ *
+ * The pages are named rather than only counted — `M1-EXTRACT-ING-029`'s own
+ * edge case is a mixed document, and "read poorly" without saying which pages
+ * leaves someone with a sixty-page scan no way to know whether page one or
+ * page fifty-nine is the one to re-scan.
+ */
+export function flaggedSentence(flagged: FlaggedDocument): string {
+  const percent = Math.round(flagged.confidence * 100);
+  const pages =
+    flagged.poor_pages.length > 0
+      ? ` — page${flagged.poor_pages.length > 1 ? "s" : ""} ${flagged.poor_pages.join(", ")} read worst`
+      : "";
+  return (
+    `${flagged.filename} scanned poorly (about ${percent}% confidence)${pages}. ` +
+    `It is indexed and searchable, but answers about it may be thin.`
+  );
 }
 
 /**
