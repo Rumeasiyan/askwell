@@ -35,9 +35,10 @@ def test_the_changelog_has_an_entry_for_the_current_version() -> None:
 
 def test_the_changelog_is_newest_first() -> None:
     """The order the file claims, and the order anyone reads it in."""
-    versions = [tuple(int(part) for part in v.split(".")) for v in HEADING.findall(
-        CHANGELOG.read_text(encoding="utf-8")
-    )]
+    versions = [
+        tuple(int(part) for part in v.split("."))
+        for v in HEADING.findall(CHANGELOG.read_text(encoding="utf-8"))
+    ]
     assert versions == sorted(versions, reverse=True), (
         f"CHANGELOG.md headings are out of order: {versions}"
     )
