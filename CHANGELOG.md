@@ -4,6 +4,18 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.8 — 2026-08-28
+
+Word, PowerPoint, spreadsheet, plain text, Markdown and HTML now extract for real. `M1-EXTRACT-ING-027`.
+
+### Added
+
+- **`.docx`, `.pptx` and `.xlsx` extraction**, via `python-docx`, `python-pptx` and `openpyxl` — all MIT-licensed. Headings, list items and table boundaries survive as structural markers; a slide's speaker notes are included and labelled; a spreadsheet is read document-style, one row per anchor, across every sheet.
+- **Plain text, Markdown and HTML extraction**, sectioned by heading where one exists. A Markdown file's YAML front matter is excluded from the indexed prose. An HTML page has its navigation chrome and `<title>` discarded, keeping only what a reader actually sees.
+- **`documents.anchor_kind` and `document_pages.anchor_label`**, so the source viewer knows what a document's page-equivalent ordinal means — a PDF page, a slide, a spreadsheet row, or a heading — and can render the right pointer next to it.
+- **A document with nothing extractable in it fails with a reason**, never reaching `ready` empty — the same C5 failure a PDF with no text layer already produces, for every new format.
+- **A legacy binary Office file (`.doc`, `.xls`, `.ppt`) fails by name**, retryable, rather than crashing unreadably or being silently skipped — a known gap, tracked as issue #121.
+
 ## 0.2.7 — 2026-08-28
 
 The ingestion pipeline's first real stage. `M1-EXTRACT-ING-026`.

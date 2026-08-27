@@ -119,7 +119,9 @@ async def run(work: "Work", report: "Report", factory: "async_sessionmaker[Async
 
     async with session_scope(factory) as session:
         await session.execute(
-            text("UPDATE documents SET page_count = :page_count WHERE id = :id"),
+            text(
+                "UPDATE documents SET page_count = :page_count, anchor_kind = 'page' WHERE id = :id"
+            ),
             {"page_count": page_count, "id": work.document_id},
         )
         for page_number, page_text, has_text in pages:

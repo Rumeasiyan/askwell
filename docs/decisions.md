@@ -22,6 +22,16 @@ Template:
 
 ---
 
+## 2026-08-28 — `document_pages` grew an `anchor_label` and `documents` grew an `anchor_kind`, rather than a new table per format
+
+**Decision:** `M1-EXTRACT-ING-027` reused `document_pages` for Word, PowerPoint, Excel, text, Markdown and HTML, adding two nullable columns — `documents.anchor_kind` (`page` / `slide` / `sheet_row` / `heading`) and `document_pages.anchor_label` (the human-facing pointer, e.g. "Sheet1, row 45" or a heading's own text). `page_number` keeps meaning "the ordinal `document_pages` was already keyed on" for every format; `anchor_kind`, set once per document, says what that ordinal *is* — a PDF page, a slide, a spreadsheet row, or a heading-delimited section — so `docs/ux/source-viewer.md` §2 knows how to land.
+
+**Why:** the alternative was a table per anchor shape — `document_slides`, `document_sheet_rows`, `document_sections` — each with its own foreign key, its own `page_count`-equivalent, and its own place in every query that reads "this document's extracted units" (chunking, the source viewer, the citation resolver). That is four migrations and four query shapes for a fact that is really one thing with a label: an ordered, addressable unit of a document. `document_pages`' own uniqueness constraint (`document_id`, `page_number`) already gives every format what it needs — a stable ordinal per anchor — and the only thing missing was somewhere to put a label that is not always a plain page number. Two nullable columns is cheaper than a shape change to every downstream reader, and `document_pages` staying the name is a deliberate small cost: the table now holds slides and spreadsheet rows too, and a reader meeting it for the first time has to learn that from this decision rather than from the name.
+
+**Consequences:** `M1-INDEX-ING-031` (chunking) reads one table for every format's addressable units rather than branching on document type to find the right one. `extract_pdf.py` was touched by exactly one line — setting `anchor_kind = 'page'` — to keep every document consistent rather than leaving PDFs as the one format with no anchor kind recorded. If a future format needs an anchor shape `document_pages` cannot express (nested headings with nesting depth, for instance), that is the point at which the "one table" bet gets revisited, not before.
+
+**Refs:** `api/src/askwell/db/migrations/versions/20260828_f70a1c4e9d63_extraction_anchors.py`, `api/src/askwell/extract_common.py`, `docs/ux/source-viewer.md` §2.
+
 ## 2026-08-28 — Extraction is a stage that reads Postgres, so every stage now gets a session of its own
 
 **Decision:** `StageFn` grew a third argument — a session factory — alongside `Work` and the `report` progress callback. `extract`'s real implementation (`api/src/askwell/extract_pdf.py`) needs to write pages and a page count to Postgres, and `M1-ADD-ING-025`'s pipeline gave a stage no way to reach the database at all: only a file description and a byte-progress callback. `M1-EXTRACT-ING-026`.
