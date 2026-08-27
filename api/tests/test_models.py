@@ -16,6 +16,7 @@ from askwell.db.base import Base
 
 EXPECTED_TABLES = {
     "settings",
+    "roots",
     "sources",
     "documents",
     "chunks",

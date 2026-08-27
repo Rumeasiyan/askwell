@@ -86,6 +86,63 @@ class Setting(Base):
     updated_at: Mapped[datetime] = created_at()
 
 
+# --- nominated roots --------------------------------------------------------
+
+
+class Root(Base):
+    """A directory the user has nominated as one Askwell may read.
+
+    Askwell indexes in place, so the containers need a route to the user's own
+    folders. This table *is* that permission: `askwell.roots.covering()` reads
+    it before anything opens a file, and a path no row here covers is never
+    read.
+
+    Its own table rather than a row in `settings`. A JSON list under a settings
+    key cannot be joined against, cannot carry a per-root timestamp, and cannot
+    be tombstoned — and the tombstone is the point. Removing a root has to
+    leave enough behind for a source under it to say *why* it stopped being
+    readable, and "the folder was removed on the 3rd" and "no folder ever
+    covered this" are the same silence to a registry that deleted the row.
+
+    Mount state is deliberately **not** stored. Whether the container can see
+    the path depends on a bind mount and on whether a drive is plugged in;
+    a stored value would go stale with nothing to correct it, and would report
+    a USB disk as available an hour after it was unplugged.
+    """
+
+    __tablename__ = "roots"
+    __table_args__ = (
+        # Unique among the live ones only. A folder nominated, removed and
+        # nominated again is a normal sequence — a plain unique constraint
+        # would refuse the third step and blame the user for the second.
+        Index(
+            "uq_roots_path_active",
+            "path",
+            unique=True,
+            postgresql_where=text("removed_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+
+    # As the user nominated it: absolute, normalised, symlinks unresolved. It
+    # is the same string the native directory picker returns in M7 and the same
+    # one the source viewer shows, so resolving it here would display a path
+    # the user never typed.
+    path: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # What was carrying the path at registration, when it could be told. Null
+    # means unknown, never "local" — the only thing it drives is the network
+    # share warning, and inventing a value to avoid an empty field is a claim
+    # nothing checked.
+    filesystem: Mapped[str | None] = mapped_column(String(64))
+
+    added_at: Mapped[datetime] = created_at()
+
+    # Tombstone. Not a delete — see the class docstring.
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 # --- sources and their contents ---------------------------------------------
 
 
@@ -103,7 +160,8 @@ class Source(Base):
     name: Mapped[str] = mapped_column(Text, nullable=False)
 
     # Where the material is. Askwell indexes in place rather than copying, so
-    # this is the user's own directory, not a managed store.
+    # this is the user's own directory, not a managed store. It must lie under
+    # a nominated `roots` row; a path no root covers is never read.
     root_path: Mapped[str | None] = mapped_column(Text)
 
     # Encrypted with a key derived from the optional passphrase plus a

@@ -14,7 +14,11 @@ export const DESTINATIONS = [
   { href: "/", label: "Ask", hint: "Ask a question of your own material" },
   { href: "/library/", label: "Library", hint: "Every source you have added" },
   { href: "/memory/", label: "Memory", hint: "What Askwell has learned about your material" },
-  { href: "/settings/", label: "Settings", hint: "Profile, retention, network activity" },
+  {
+    href: "/settings/",
+    label: "Settings",
+    hint: "Folders Askwell may read, profile, retention, network activity",
+  },
 ] as const;
 
 /**

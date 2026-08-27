@@ -4,6 +4,26 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.2 — 2026-08-27
+
+Askwell can be told which folders it may read. `M1-ADD-ING-021`.
+
+Askwell indexes in place and copies nothing, so the containers need a route to the user's own files — and this is one narrow, explicit route rather than open filesystem access.
+
+### Added
+
+- **A registry of nominated root directories.** `roots`, its own table, tombstoned on removal so a source underneath can say *why* it stopped being readable rather than merely being unreadable. A path no root covers is never read, and that check resolves symlinks so one link inside a nominated folder cannot stand in for the whole disk.
+- `GET /roots`, `POST /roots`, `GET /roots/covering`, `GET /roots/{id}/removal`, `DELETE /roots/{id}`. Registering and removing a folder are decisions records.
+- **`ASKWELL_ROOTS_MOUNT`** — one directory bind-mounted read-only into the API and worker at the *same absolute path* it has on the host, so a path means one thing on both sides and needs no translation layer.
+- Four reasons a folder can be unreadable, kept apart because they have four different fixes: `not_mounted`, `unavailable` (a drive unplugged — never "deleted"), `unreadable`, `available`.
+- **Folders Askwell may read**, in settings: listed with their state, nominated by path, removed against a consequence the API computed rather than one the interface guessed.
+- Network shares are permitted, with a warning that indexing will be slow and the share must be connected for a citation to reopen its page.
+
+### Known gaps
+
+- A folder is selected by typing its path. A browser cannot offer a directory dialog; the desktop shell provides one in `M7-TAURI-FE-182`, and only the selection step changes.
+- Nominating a folder outside `ASKWELL_ROOTS_MOUNT` is recorded and reports what to set and that the stack must come up again — a container's mounts cannot be changed while it runs. Stated at the moment of registration rather than discovered later.
+
 ## 0.2.1 — 2026-08-28
 
 Inference is three processes, not one. [#89](https://github.com/Rumeasiyan/askwell/issues/89), which blocked M1 retrieval.

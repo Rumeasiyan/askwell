@@ -214,6 +214,10 @@ Revised 2026-08-10 after specifying the screens (`ux/`). Designing screens befor
 settings           key, value                              -- profile, log budget, retention,
                                                               threshold, passphrase state
 
+roots              id, path, filesystem, added_at, removed_at            -- NEW TABLE
+                   -- the folders Askwell may read. Mount state is probed,
+                   -- never stored; removal tombstones rather than deletes
+
 sources            id, kind(file|csv|dump|connection), name,
                    root_path, config_encrypted, sandbox_db,
                    status(indexing|ready|attention|deleted), last_error,
@@ -261,6 +265,8 @@ audit_interactions id, kind, payload jsonb, prev_hash, hash, occurred_at
 **`documents.ocr_confidence`**, so a poor scan is flagged in the library, surfaced in the source viewer beside the image, and can raise a clarification.
 
 **`sources.status` and `last_error`**, so `ux/library.md`'s single "needs attention" status can expand to a specific cause and a specific fix.
+
+**`roots`** (2026-08-27, `M1-ADD-ING-021`). Indexing in place means Askwell reads the user's own directories, so it has to be told which ones it may open. This table is that permission and nothing else reads a file without consulting it. Three properties are load-bearing and are argued in `decisions.md`: mount state is **probed on every read, never stored** — a stored value reports an unplugged drive as available for as long as nobody looks; removal is a **tombstone**, so a source underneath can say *why* it became unreadable rather than merely being unreadable; and the unique index on `path` is **partial over the live rows**, because nominating a folder, removing it and nominating it again is an ordinary sequence that a plain unique constraint would refuse. Flow and states in `ux/add-source.md` §7.
 
 ### 7.1 The shape of `messages.trace`
 

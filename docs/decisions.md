@@ -22,6 +22,30 @@ Template:
 
 ---
 
+## 2026-08-27 — Nominated folders are mounted at their own paths, and mount state is never stored
+
+**Decision:** The folders Askwell may read live in their own table, `roots`, tombstoned on removal. One host directory — `ASKWELL_ROOTS_MOUNT` — is bind-mounted read-only into the API and the worker **at the same absolute path it has on the host**, and every nominated folder must lie under it. Whether a folder is currently readable is **probed on every read and never stored**. A folder outside the window is registered anyway, reporting `not_mounted` and the line to add.
+
+**Why:**
+
+**Identity mounting, because the alternative is a translation layer in five places.** `sources.root_path` and `documents.path` hold host paths. That is not an implementation detail — it is what the user typed, what the source viewer displays, what the native directory picker returns in M7, and what a citation has to reopen two years later. Mounting the window at, say, `/roots` inside the container would mean converting between host and container form at every one of those points, and the failure mode of one missed conversion is a file Askwell cannot find for a reason invisible in the data. Mounting it at its own path makes the conversion the identity function, and an identity function cannot be forgotten. The cost is that the window is a real host path in configuration and cannot be a container-internal convention.
+
+**Why probe rather than store.** A `mount_state` column is the obvious design and it is wrong on a laptop. The two things that change it — a USB drive being unplugged and `.env` being edited — both happen while nothing is watching, and there is no moment at which anything would correct the stored value. A registry that reports a drive as available an hour after it was removed is worse than one that says nothing, because the user acts on it. Probing costs one `scandir` per root per read, on a list that will hold single digits.
+
+**Why a table rather than a key in `settings`.** `settings` is key/value and a JSON list under one key would have worked for the list. It would not have worked for removal, which is the part that matters: a source under a removed folder has to be able to say *why* it stopped being readable, and "you removed this folder" and "no folder ever covered this path" are the same silence to a registry that deleted the row. The tombstone needs somewhere to live, and so does the partial unique index that lets a folder be nominated, removed and nominated again — which is a normal sequence a plain unique constraint would refuse while blaming the user for the earlier step.
+
+**Why an unmountable folder is accepted rather than refused.** Everything else that cannot be read is refused at registration — a folder that is not there, a file given as a folder, one Askwell may not traverse — because those are true now and will not fix themselves. `not_mounted` is different in kind: nothing is wrong with the folder, the containers simply have no window onto it, and no platform Askwell supports can add a mount to a running container. Refusing would make a fresh install, which has no window configured at all, unable to nominate anything. So it is recorded, and the reply names the variable and the command. `docs/backlog` already calls that restart a known gap rather than a defect; this makes it a stated one instead of a discovered one.
+
+**What was rejected.** *Mounting `$HOME` by default* — it removes the restart for almost everyone, and it hands the containers every file the user owns, which is the precise thing nominating a folder exists to avoid. The default is now no window at all, which is honest about what has been granted. *Mounting each nominated folder individually* — correct in principle and impossible in practice: Compose files are static, and generating one per registration turns a user action into a rewrite of the file that defines their stack. *Storing container-relative paths* — see identity mounting above. *`z` on the roots mount* — it relabels recursively, which on a 40 GB tree is slow and changes SELinux labels on files Askwell has no business modifying; the accepted cost is that an SELinux host may refuse the mount, which surfaces as a folder in the `unreadable` state naming SELinux rather than as an empty folder. Whether it does refuse is **unverified** — see the open item in `BRAIN.md`.
+
+**The containment check is not a string prefix, and that is not a detail.** `startswith` says that `/home/anna/clients` contains `/home/anna/clients-archive`, which is a different folder the user did not nominate. The check compares path components, and it also resolves symlinks — one link placed inside a nominated folder would otherwise stand in for the whole disk, which is exactly the permission the user declined to give.
+
+**Consequences:** A user with material in two unrelated trees must set `ASKWELL_ROOTS_MOUNT` to a common ancestor, which is wider than either. That is a real cost of one window, accepted because the app-layer check is what actually narrows access — the mount is a route, the registry is the permission. Reversing identity mounting means adding host↔container path translation at every place a path is stored, displayed or reopened. Anything that later reads a file must go through `askwell.roots.covering()`; a path no root covers is never read, and that is the only enforcement point.
+
+**Refs:** `docs/backlog/M1-it-answers-from-my-documents.md` `M1-ADD-ING-021`; `api/src/askwell/roots.py`; `api/src/askwell/db/models.py`; `compose.yaml`; `docs/ux/add-source.md` §7; `docs/states-and-edge-cases.md` §3.
+
+---
+
 ## 2026-08-27 — Inference is native, supervised on the host, reached through a bridge container
 
 **Decision:** `llama.cpp` runs natively on the host, supervised by a standalone stdlib-only script (`deploy/inference/askwell-inference`). The API and worker reach it over a **Unix domain socket**, and that socket is owned by a small **bridge container running with host networking**, not by the host supervisor. `ASKWELL_INFERENCE_SOCKET` replaces the host-and-port pair.

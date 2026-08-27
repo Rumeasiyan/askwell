@@ -680,6 +680,31 @@ main() {
   local audit_log="$RUNNER_STATE/logs/${TICKET}.audit.log"
   run_agent audit "$ap" "$audit_log" || say "  ${DIM}the auditor did not finish; its notes are in $audit_log${RESET}"
 
+  # The verdict is read, not merely requested. Asking for one and ignoring it
+  # makes the audit theatre: the first real run produced work that passed every
+  # gate row and that the auditor rejected for four defects a gate cannot see —
+  # including a symlinked root that breaks the ticket's primary acceptance
+  # criterion. Marking that done would have buried it under a green tick.
+  local verdict="unclear"
+  if grep -qE '^AUDIT: *PASS' "$audit_log"; then
+    verdict="pass"
+  elif grep -qE '^AUDIT: *FAIL' "$audit_log"; then
+    verdict="fail"
+  fi
+
+  if [ "$verdict" != "pass" ]; then
+    head2 "Audit rejected the work"
+    grep -E '^###|^[0-9]+\.|^\*\*' "$audit_log" | head -20
+    say ""
+    say "  full audit: $audit_log"
+    die "The audit returned '$verdict'. $TICKET is NOT recorded as done and
+       nothing has been pushed. The work is on this branch — read the audit,
+       then either fix what it found or record why it is wrong.
+
+       An auditor that can be overruled silently is an auditor nobody needs."
+  fi
+  say "  audit: pass"
+
   # --- manual-test document ------------------------------------------------
   head2 "Manual test document"
   PHASE="doc"

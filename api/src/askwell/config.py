@@ -136,10 +136,56 @@ class Settings(BaseSettings):
     # image; a source checkout points it at web/out.
     web_assets_dir: Path = Path("/app/web/out")
 
+    # The one part of the user's filesystem the containers can see, bind-mounted
+    # at the *same* absolute path so that a path means the same thing on the
+    # host and inside the container. Nominated roots must lie under it.
+    #
+    # None — the default — means Askwell has no window onto the filesystem at
+    # all, which is the correct state on a fresh install and the honest one
+    # here: a container's mounts cannot be changed while it runs, so a root
+    # outside this is registered and reported as `not_mounted` with the fix
+    # stated, rather than failing later somewhere that will not mention a
+    # mount. See `askwell.roots`.
+    roots_mount: Path | None = None
+
     # How long a single health probe may take. Health must answer even when
     # every component is down, so this is short and it is a ceiling per probe,
     # not for the whole surface.
     health_probe_timeout_seconds: float = Field(default=1.0, gt=0, le=10)
+
+    @field_validator("roots_mount", mode="before")
+    @classmethod
+    def _optional_path(cls, value: object) -> object:
+        """An empty value means "no window", not a directory named "".
+
+        Compose passes `ASKWELL_ROOTS_MOUNT: ${ASKWELL_ROOTS_MOUNT:-}`, so the
+        variable is always present and is empty when the user has not set one.
+        Without this, that empty string becomes `Path('')`, which is falsy in
+        some checks and truthy in others — the worst kind of value to carry.
+        """
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("roots_mount", mode="after")
+    @classmethod
+    def _absolute_mount(cls, value: Path | None) -> Path | None:
+        """A relative window is not a window.
+
+        The whole point of this setting is that a path means the same thing on
+        the host and inside the container, and a path relative to a working
+        directory the two do not share means neither.
+        """
+        if value is None:
+            return None
+        expanded = value.expanduser()
+        if not expanded.is_absolute():
+            raise ValueError(
+                f"must be an absolute path, got {str(value)!r}. It names the "
+                f"same directory on the host and inside the container, so a "
+                f"relative path names two different places"
+            )
+        return expanded
 
     @field_validator("inference_model_path", "inference_socket", "trace_dir", mode="after")
     @classmethod

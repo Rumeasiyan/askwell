@@ -25,6 +25,8 @@ Drag-and-drop is the primary path and works anywhere in the app, not just here. 
 
 **Indexing is in place.** Files are read where they are, not copied into a library. Stated once, because someone about to add 40 GB of case files needs to know before they start, not after.
 
+That promise has a consequence the user meets on their first file: Askwell has to be told which folders it may open. §7 covers it.
+
 ---
 
 ## 2. Files and CSV
@@ -92,6 +94,10 @@ Copy on refusal:
 | **Connection unreachable** | Distinguish wrong host from wrong credentials from firewall — three different fixes |
 | **Write-capable credentials** | Refused, with the SQL to create a read-only user |
 | **Disk budget reached** | Refused before starting, with what to free |
+| **File outside every nominated folder** | The folder to nominate, and why Askwell needs telling. Not a bare rejection (§7) |
+| **Folder nominated but not yet mounted** | Accepted, with the line to add and that the stack has to come up again. Said now, not discovered later |
+| **Nominated folder not connected** | Its sources report unavailable — a drive unplugged, a share disconnected. **Never** rendered as deleted or as moved |
+| **Nominated folder cannot be read** | Named, with permissions and SELinux labelling as the two causes |
 
 ---
 
@@ -99,3 +105,62 @@ Copy on refusal:
 
 1. **Settled: no folder watching in v1.** It is an obvious want and it collides with supersession — a file saved five times in a minute would produce five superseding versions, and deciding when a change has "settled" is a heuristic that gets it wrong on somebody's workflow. v1 re-indexes on an explicit action. Revisit with real usage, once there is evidence about how people actually add material.
 2. **Settled: one table per sheet; merged headers raise a clarification** (`../data-sources.md` §7).
+
+---
+
+## 7. Nominating a folder
+
+> Numbered after Open rather than before it because §6 is referenced by number from the backlog and from `../decisions.md`. A renumber would silently redirect those to the wrong paragraph.
+
+Indexing in place means Askwell reads the user's own directories. The API and the worker run in containers, so a nominated folder becomes a **known mount** — one narrow route to that tree — rather than the containers having open filesystem access. That is safer, and it is the only approach that works at all when there is a virtual machine in the path, which there is on macOS and Windows.
+
+### The prompt
+
+Adding a file that lies outside every nominated folder does not fail. It asks:
+
+> **Askwell has not been given this folder yet.**
+> Askwell reads your files where they are and never copies them, so it needs to be told which folders it may open. Nominating `/home/anna/clients` lets it read anything inside it, and nothing outside it.
+
+Accept, and the file continues to indexing. A second file from the same folder asks nothing — that is what nominating once buys, and it is the whole point of nominating a tree rather than a file.
+
+### What is refused, and what is not
+
+| Situation | What happens |
+| --------- | ------------ |
+| A folder that is not there | Refused, naming it. A path that cannot be read now will not start working on its own |
+| A file given as a folder | Refused, said plainly |
+| A folder Askwell may not read | Refused with the two causes: its permissions, or SELinux labelling on the mount |
+| `/` | **Refused.** Nominating the whole disk is the exact thing nominating a folder exists to avoid |
+| A folder already inside a nominated one | Recognised, not registered twice. Reported as already covered, because it is — files under it can be added, which is all the user was asking |
+| A folder containing ones already nominated | Registered. Both stay: two rules that permit the same path permit it once, and removing one the user chose would be a decision taken on their behalf |
+| A folder outside the mount window | **Accepted**, with the configuration line to add and that the stack has to come up again. A container's mounts cannot be changed while it runs, so refusing would make a fresh install unable to nominate anything |
+| A network share | **Permitted**, with a warning: indexing will be considerably slower, and the share has to be connected whenever a citation is opened — a source viewer cannot render a page it cannot reach |
+
+### Removing one
+
+Stated before it happens, from a count the API computed rather than one the screen guessed:
+
+> **4 sources under `/home/anna/clients` will stop being readable.** They stay in your library with that reason shown, their answers keep their citations, and nothing is deleted — not the sources and not your files. Nominate the folder again to restore them.
+
+The words that must survive every future edit of that string are **nothing is deleted**. Someone removing a folder from a list has every reason to fear they are deleting their own material, and Askwell never held a copy of it.
+
+Removal is a tombstone, not an erase, for a reason that only shows up afterwards: a source under a removed folder has to be able to say *why* it became unreadable. "You removed this folder" and "no folder ever covered this path" are the same silence to a registry that deleted the row, and only one of them is an answer.
+
+### Four ways a folder can be unreadable
+
+They have four different fixes and are never collapsed into one message.
+
+| State | Means | The fix |
+| ----- | ----- | ------- |
+| **Needs a restart** | The containers have no window onto this path | A line in `.env`, then bring the stack up again |
+| **Not connected** | The window is there, the folder is not | Reconnect the drive or the share. **Nothing has been deleted and nothing needs re-indexing** |
+| **Not permitted** | It is there and Askwell may not read it | Its permissions, or SELinux labelling |
+| **Readable** | — | — |
+
+**Not connected** is distinct from a file having *moved* (`source-viewer.md` §4) and from a document being *deleted*. A whole folder being absent is not forty files having been moved, and offering to relocate each of them would be forty wrong questions.
+
+### Known gap
+
+Selection is by typed path. A browser cannot open a directory dialog, so until the desktop shell ships `M7-TAURI-FE-182` a folder the browser will not surface has to be typed. The screen says so rather than leaving it to be discovered. It is deliberately **not** a file-upload control: that copies bytes, and Askwell copies nothing.
+
+The flow is shaped so the picker replaces the selection step alone. The registry, the validation, and what removing a folder does are untouched by that change.
