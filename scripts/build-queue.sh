@@ -36,6 +36,19 @@ MILESTONE_FILTER=""
 [ "${1:-}" = "--milestone" ] && { MILESTONE_FILTER="${2:-}"; shift 2; }
 
 [ -n "${SPEND_CEILING:-}" ] || die "SPEND_CEILING is not set. A queue with no ceiling is the case the guard exists for."
+# Start from a clean main, and say so rather than discovering it later. Two
+# overlapping queues race over the same working tree: the second sees the
+# first's half-finished build and reports a preflight refusal that names a
+# dirty tree without saying whose. This is the same mistake made once already.
+[ "$(git rev-parse --abbrev-ref HEAD)" = "$MAIN" ] || die \
+  "Not on $MAIN. The queue branches per ticket and returns here between them,
+       so it has to start from a known place. If another queue is running,
+       this one would fight it for the working tree."
+[ -z "$(git status --porcelain)" ] || die \
+  "The working tree is dirty. Either something is mid-build — check for
+       another queue before starting a second — or there is work here that
+       would be swept into the first ticket's branch."
+
 command -v gh >/dev/null || die "gh is not on PATH."
 gh auth status >/dev/null 2>&1 || die "gh is not authenticated."
 
