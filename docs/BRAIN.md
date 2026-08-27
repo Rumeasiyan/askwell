@@ -7,40 +7,46 @@
 
 ## Current phase
 
-**M0 — It runs. In progress: 9 of 21 tickets done.**
+**M0 — It runs. In progress: 10 of 21 tickets done.**
 
 The repository is no longer documentation only. `api/` exists: an image, manifests, the application, and 54 tests. The API starts, refuses bad configuration by name, and serves `GET /health` reporting five components separately. `podman compose up -d` brings up four services, the database carries the full v1 schema, and the interface loads at `http://127.0.0.1:8000`. `web/` builds to static assets and the API serves them — the `web` container is gone from the topology. The Compose stack, the database schema and the inference process do not exist yet — so all five health components correctly report `unreachable`.
 
-**Version:** `0.1.9` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
+**Version:** `0.1.10` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
 **Tracker:** `Rumeasiyan/askwell`. Working agreements in `AGENTS.md`. Backlog in `docs/backlog/`.
 
 ## Last completed
 
-**`M0-FOUND-TEST-005`** — [#69](https://github.com/Rumeasiyan/askwell/issues/69). The harness, and a database that belongs to the run rather than to the developer.
+**`M0-FOUND-DEPLOY-006`** — [#71](https://github.com/Rumeasiyan/askwell/issues/71). CI on every push. Three jobs, all green.
 
-Verified:
+```
+success  API — lint, format, typecheck, tests     113 passed, 36 deselected
+success  API — database-backed tests               36 passed
+success  Frontend — typecheck, lint, build,        frontend checks passed
+         contrast, offline
+```
 
-| | |
+**Every failure kind was proven, not assumed.** Four deliberate breaks were pushed and watched, each naming its file and line:
+
+| break | what CI said |
 | --- | --- |
-| a row written into the development database, then the suite run | the row survives; the suite used its own database |
-| two suites at once | both pass, 28 each, no collision |
-| afterwards | zero test databases left behind |
-| a deliberately broken default (`host` → `0.0.0.0`) | a test fails |
-| a stale database aged past the cutoff | swept; one from a live run is not |
+| unused import | `F401 'os' imported but unused` |
+| wrong return annotation | `traces.py:82: error: Incompatible return value type (got "int", expected "str")` |
+| wrong assertion | `AssertionError: assert 'retrieve' == 'deliberately-wrong'` at `tests/test_traces.py:26` |
+| frontend return type | `lib/utils.ts(6,3): error TS2322: Type 'string' is not assignable to type 'number'` |
 
-**Two real defects, both only visible under conditions nobody had created before.**
+Each needed its own push, because steps stop at the first failure — correct behaviour, and it does mean one broken thing hides the next until it is fixed.
 
-`scripts/dev.sh` mounted the repository with `:Z` — a *private* SELinux relabel. Two containers sharing it relabel it out from under each other, so two test runs at once died with `PermissionError: '/app/api/pytest.toml'`, a file neither test touches. Now `:z`.
+**The database suite runs in CI**, which was the ticket's open question. Those 36 tests are where C6 and the schema invariants are actually asserted, so they are the ones most worth having run by something other than a person remembering. The workflow creates the two non-owner roles the same way `deploy/postgres/10-roles.sh` does — connecting as the owner would let them pass while asserting nothing.
 
-The migration read configuration **at import time**, so merely enumerating revisions required a database password to be set. It reads it inside `upgrade()` now, where it is used.
+**Two things are deliberately uncached.** The API image build is where `uv sync --locked` runs, which is the check that the lockfile agrees with `pyproject.toml`; a layer cache keyed on anything looser skips exactly that. The frontend installs with `--frozen-lockfile` rather than restoring `node_modules`, which would hide a lockfile that no longer resolves.
 
-**The harness tests its own promises**, including that the migration applied its **invariants** — building the schema from model metadata instead would pass every table assertion and silently drop every raw constraint, because the ORM does not express them.
+No secret is used or required.
 
 ## Next task
 
-**`M0-FOUND-DEPLOY-006`** — continuous integration for lint, typecheck and tests on push. Everything it needs to run now exists and is verified locally; the open question is whether CI also runs the database-backed suite, which needs a Postgres service in the workflow.
+**`M0-FOUND-SEC-007`** — secrets as environment variables, with `.env.example` kept current. The file exists (it had to, for the stack to come up); this ticket is the discipline that keeps it accurate, and a check that a variable added to the code without being added there is caught.
 
-Then `M0-FOUND-SEC-007` (`.env.example` discipline), `M0-FOUND-DOC-008`, then the STACK, SHELL and MODEL epics.
+Then `M0-FOUND-DOC-008` (version, changelog and release-note discipline — largely already practised, needs writing down and enforcing), then the STACK epic (`010` egress proxy, `011` refused-request count, `012` localhost binding), SHELL and MODEL.
 
 Forward references outstanding: the configuration error message points at `.env.example` (`M0-FOUND-SEC-007`), no screen exists yet (`M0-SHELL-FE-017`), and built assets are not in the API image (M0-STACK-DEPLOY-009 / Phase 7).
 
