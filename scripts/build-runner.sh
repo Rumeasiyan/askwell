@@ -181,11 +181,15 @@ preflight() {
   command -v gh >/dev/null && { gh auth status >/dev/null 2>&1 || fail "gh is not authenticated. Run: gh auth login"; }
 
   [ -z "$(git status --porcelain)" ] || \
-    fail "Working tree is dirty; the runner will not build on top of uncommitted work.
+    [ "$LIST_ONLY" = "1" ] || fail "Working tree is dirty; the runner will not build on top of uncommitted work.
       Run: git status --short   then commit or stash."
 
   local branch; branch="$(git rev-parse --abbrev-ref HEAD)"
-  [ "$branch" != "$PROTECTED_BRANCH" ] || \
+  # Only building needs a branch of its own. `--list` reads the backlog and
+  # the ledger and writes nothing, so demanding one there makes a read-only
+  # question fail on a clean checkout of main — which is exactly where anything
+  # asking "what is ready?" starts.
+  [ "$LIST_ONLY" = "1" ] || [ "$branch" != "$PROTECTED_BRANCH" ] || \
     fail "On '$PROTECTED_BRANCH'. The runner creates its own branch and never commits here.
       Run: git checkout -b <type>/<slug>   or let the runner create it once this check is the only failure."
 

@@ -47,8 +47,13 @@ next_ticket() {
   # into "nothing is ready", which reads as a finished backlog and stops the
   # queue with everything still to do.
   if ! listing="$(SPEND_CEILING="$SPEND_CEILING" "$RUNNER" --list 2>&1)"; then
+    # Returned, not died. `next_ticket` is called inside $(...), and a `die`
+    # there kills only the substitution — the parent carried on, found no
+    # ticket, reported "nothing left that is ready" and exited 0 having built
+    # nothing. A queue that silently does nothing and calls it success is
+    # worse than one that crashes.
     printf '%s\n' "$listing" >&2
-    die "Could not read the queue. The runner's preflight refused, above."
+    return 1
   fi
 
   printf '%s\n' "$listing" \
@@ -130,7 +135,10 @@ while :; do
     break
   fi
 
-  ticket="$(next_ticket)"
+  if ! ticket="$(next_ticket)"; then
+    die "Could not read the queue — the runner's preflight refused, above.
+       Nothing was built. This is not an empty backlog."
+  fi
   [ -n "$ticket" ] || { say ""; say "  Nothing left that is ready."; break; }
 
   head1 "$ticket"
