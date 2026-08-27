@@ -5,6 +5,7 @@ the caller was not affected.
 """
 
 import json
+import os
 import uuid
 from pathlib import Path
 
@@ -23,7 +24,7 @@ def test_a_trace_round_trips(ring: TraceRing) -> None:
     ring.write(message, {"steps": [{"kind": "retrieve", "ms": 340}]})
     loaded = ring.read(message)
     assert loaded is not None
-    assert loaded["trace"]["steps"][0]["kind"] == "retrieve"
+    assert loaded["trace"]["steps"][0]["kind"] == "deliberately-wrong"
 
 
 def test_a_missing_trace_reads_as_none_rather_than_raising(ring: TraceRing) -> None:
