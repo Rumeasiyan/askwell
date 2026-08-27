@@ -13,6 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from askwell import __version__
+from askwell.assistant import read as read_assistant
 from askwell.config import ConfigurationError, Environment, Settings, load_settings
 from askwell.db.engine import build_engine, session_factory
 from askwell.health import ComponentState, check_components
@@ -116,6 +117,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """
         current: Settings = request.app.state.settings
         return JSONResponse((await read_activity(current)).as_dict())
+
+    @app.get("/assistant")
+    async def assistant(request: Request) -> JSONResponse:
+        """Whether the assistant can answer, why not, and what still works.
+
+        Reaching this endpoint at all means the stack is up — which is half the
+        answer. The other cause, the stack being down, needs no code here: the
+        browser simply does not get a response, and the shell reads the
+        difference from that.
+
+        Always HTTP 200. The assistant being unavailable is a fact about the
+        product's state, not a failure of this request, and a 503 would make
+        the shell unable to tell it from Askwell itself being down — which is
+        the exact distinction this endpoint exists to draw.
+        """
+        current: Settings = request.app.state.settings
+        return JSONResponse(read_assistant(current).as_dict())
 
     @app.exception_handler(Exception)
     async def unhandled(request: Request, error: Exception) -> JSONResponse:

@@ -50,6 +50,12 @@ CRASHED = "crashed"
 UNAVAILABLE = "unavailable"
 STOPPED = "stopped"
 
+# How often the supervisor rewrites its state while running. Without this, a
+# state file says `ready` forever after the supervisor is killed — and the API
+# would confidently report an assistant that is not there, which is the worst
+# thing this surface can do.
+HEARTBEAT_SECONDS = 10
+
 # Backoff between restarts, then it stops. Restarting forever turns one problem
 # into a log nobody reads and a machine that never settles, and by then the
 # reason is more useful to the user than another attempt would be.
@@ -280,7 +286,13 @@ class Supervisor:
 
             if await self.wait_until_ready():
                 self.consecutive = 0
-                await self.drain()
+                heartbeat = asyncio.create_task(self._heartbeat())
+                try:
+                    await self.drain()
+                finally:
+                    heartbeat.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await heartbeat
 
             code = await self.process.wait() if self.process else None
 
@@ -299,6 +311,18 @@ class Supervisor:
             self._write(CRASHED, f"Exited with {code}. Restarting in {delay}s.")
             await asyncio.sleep(delay)
 
+    async def _heartbeat(self) -> None:
+        """Keep saying `ready` while it is.
+
+        The state file is otherwise only written on a transition, so a
+        supervisor killed with SIGKILL — or a machine that lost power — would
+        leave `ready` on disk indefinitely. The reader treats a stale file as
+        stopped, and this is what keeps a live one from looking stale.
+        """
+        while True:
+            await asyncio.sleep(HEARTBEAT_SECONDS)
+            self._write(READY)
+
     async def stop(self) -> None:
         process = self.process
         if process is not None and process.returncode is None:
@@ -314,13 +338,29 @@ class Supervisor:
 async def main() -> int:
     supervisor = Supervisor()
 
+    # SIGTERM is how anything stops this: a service manager, a Ctrl-C'd
+    # wrapper, `kill`. Python does not raise on it, so without this the
+    # process dies before writing `stopped` — leaving a state file that says
+    # `ready` and an API that believes it.
+    stopping = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for received in (signal.SIGTERM, signal.SIGINT):
+        with contextlib.suppress(NotImplementedError):
+            loop.add_signal_handler(received, stopping.set)
+
     # The socket comes up first and stays up. If it appeared only once the
     # model had loaded, the health surface could not tell "the supervisor is
     # not running" from "the model is still loading" — and those need
     # different things from the user.
+    supervising = asyncio.create_task(supervisor.supervise())
+    waiting = asyncio.create_task(stopping.wait())
     try:
-        await supervisor.supervise()
+        await asyncio.wait({supervising, waiting}, return_when=asyncio.FIRST_COMPLETED)
     finally:
+        for task in (supervising, waiting):
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         await supervisor.stop()
     return 0
 

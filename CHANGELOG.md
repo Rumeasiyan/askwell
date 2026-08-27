@@ -4,6 +4,19 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.1.19 — 2026-08-27
+
+`M0-MODEL-BE-020`. The two causes of "the assistant is unavailable", kept apart.
+
+### Added
+
+- `GET /assistant` — whether the assistant can answer, the cause when it cannot, the likely fix, and **what still works**. No two causes share a headline, and a test asserts it.
+- The supervisor heartbeats while it runs, and handles `SIGTERM`.
+
+### Fixed
+
+- **A killed supervisor left the API reporting the assistant available.** The state file said `ready` and nothing was keeping it current. `SIGTERM` now writes `stopped`; a state older than three missed heartbeats is treated as stopped rather than believed, which covers `SIGKILL` and a machine losing power.
+
 ## 0.1.18 — 2026-08-27
 
 `M0-MODEL-BE-019`. The inference client.
