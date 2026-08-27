@@ -399,7 +399,10 @@ assert_prompt_intact() {
 
 # --- agent invocation --------------------------------------------------------
 run_agent() {   # run_agent <lineage> <prompt-file> <log-file> [model] [effort]
-  local lineage="$1" prompt="$2" log="$3" model="$4" effort="$5"
+  # Defaulted, not read positionally: the runner runs under `set -u`, and
+  # calling this with three arguments — which every caller does — otherwise
+  # dies on "$4: unbound variable" after the build has already been paid for.
+  local lineage="$1" prompt="$2" log="$3" model="${4:-}" effort="${5:-}"
   # Audit and doc lineages reset per milestone: a single session across 198
   # tickets carries context from work three milestones old, and a stale auditor
   # is worse than a forgetful one. The property that matters — it did not write
