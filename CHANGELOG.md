@@ -4,6 +4,26 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.1.6 — 2026-08-27
+
+`M0-DATA-DB-013`. The whole v1 schema in one reversible migration.
+
+### Added
+
+- `askwell.db` — the declarative base, the engine, and the thirteen tables of `docs/architecture.md` §7. No `organisations`, no `users`, no roles.
+- One migration creating all of it, hand-edited after autogeneration for the vector extension, the configured embedding dimension, `content_tsv` as a generated column, and the Tamil text search configuration kept as a hedge.
+- `ASKWELL_EMBEDDING_DIMENSIONS` — the width of every embedding column, so changing model is a configuration change plus a re-embed rather than a schema edit.
+- `scripts/dev.sh db` and `scripts/dev.sh psql`.
+- Fourteen model tests asserting the properties §7 calls load-bearing, without needing a database.
+
+### Fixed
+
+- **Column defaults were Python-side only.** They applied to rows the ORM inserted and to nothing else, so a migration, a `psql` session or a repair script hit a `NOT NULL` violation on a column that appeared to have a default. Found by inserting a document by hand. They are `server_default` now, and a test asserts it.
+
+### Changed
+
+- psycopg 3 is the database driver for both the async application and Alembic's synchronous path. asyncpg is faster on paper but cannot do the sync half, and two drivers means two sets of type adapters and two failure modes on a machine where nobody is watching.
+
 ## 0.1.5 — 2026-08-27
 
 `M0-STACK-DEPLOY-009`. The stack comes up with one command.
