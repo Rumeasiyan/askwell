@@ -7,43 +7,47 @@
 
 ## Current phase
 
-**M0 — It runs. In progress: 7 of 21 tickets done.**
+**M0 — It runs. In progress: 8 of 21 tickets done.**
 
 The repository is no longer documentation only. `api/` exists: an image, manifests, the application, and 54 tests. The API starts, refuses bad configuration by name, and serves `GET /health` reporting five components separately. `podman compose up -d` brings up four services, the database carries the full v1 schema, and the interface loads at `http://127.0.0.1:8000`. `web/` builds to static assets and the API serves them — the `web` container is gone from the topology. The Compose stack, the database schema and the inference process do not exist yet — so all five health components correctly report `unreachable`.
 
-**Version:** `0.1.7` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
+**Version:** `0.1.8` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
 **Tracker:** `Rumeasiyan/askwell`. Working agreements in `AGENTS.md`. Backlog in `docs/backlog/`.
 
 ## Last completed
 
-**`M0-DATA-DB-014`** — [#65](https://github.com/Rumeasiyan/askwell/issues/65). The five invariants, in the same migration that creates the tables.
+**`M0-DATA-OBS-015`** — [#67](https://github.com/Rumeasiyan/askwell/issues/67). Hash-chained audit stores, fail-the-action writes, and the fail-open trace ring buffer.
 
-**The thing that would have shipped wrong.** C6's enforcement point is "no `UPDATE`/`DELETE` grant for the app role". Askwell connected as the role that owns every table — and **a table owner bypasses its own grants**. The `REVOKE` succeeds, the privilege listing reads correctly, and the application can still rewrite every audit record it ever wrote. There is no way to notice from the code; the only way to find out is to try it as the role that actually runs.
+Demonstrated end to end against the running stack:
 
-There are now three roles: `askwell` owns and migrates, `askwell_app` is what the application connects as and owns nothing, `askwell_readonly` can only read and is C2's second line of defence from M4.
+```
+$ askwell-verify
+audit_decisions: 2 records, chain intact.
+audit_interactions: 1 records, chain intact.
 
-Verified against the running database, connecting as `askwell_app`:
+# then, editing a row directly as the owner:
+$ askwell-verify
+audit_decisions: chain breaks at record 8be70128-… (altered). Its contents hash
+to b6a2751c…, but it stores 50189ff5….
+audit_interactions: 1 records, chain intact.
+exit 1
+```
 
-| | |
-| --- | --- |
-| `INSERT` into an audit table | allowed |
-| `UPDATE` / `DELETE` / `TRUNCATE` on either audit table | `permission denied` |
-| two live documents with the same `(source_id, sha256)` | `UniqueViolation` |
-| a deleted or superseded one sharing that hash | allowed — the index is partial for exactly this |
-| a chunk with cleared content keeping its embedding | `CheckViolation` |
-| a clarification marked answered with no answer | `CheckViolation` |
-| hard-deleting a cited document | `ForeignKeyViolation` — the chunk row must survive |
-| tombstoning it instead | citation still resolves |
+**Two real defects, both found by running it rather than reading it.**
 
-18 tests, run by `scripts/dev.sh test-db`. **Mutation-tested by pointing the application connection at the owner: all seven audit guarantees fail**, including the guard test that explains why they would.
+Verification read the chain in **timestamp order**, and the timestamp was taken before the advisory lock — so two records landing close together could be stored in one order and read in another. A perfectly good chain reported as tampered. It walks the links now: a chain defines its own order, and every ordering column available is worse than the chain itself.
 
-**A note for anyone with an existing volume:** the role hook runs only on an empty data directory, so `podman compose down -v` once.
+Then, worse: **a chain whose first record was deleted reported as intact.** `MISSING_GENESIS` has no single record to name, so `first_break` was `None`, and `intact` was derived from `first_break`. A verifier that says "fine" about a chain whose start was removed is worse than no verifier. `intact` is derived from `reason` now, and the regression test was confirmed by restoring the old line and watching it fail.
+
+**Floats are refused in audit payloads, with a reason.** The hash is computed in Python and the payload stored as `jsonb`; a float does not survive that round trip identically, and every later verification would report tampering that never happened — accusing the user of something they did not do.
+
+**C6 wording checked.** Every occurrence of "immutable" in the tree either denies it about the audit log or is the HTTP `Cache-Control` directive. A narrow test keeps that true for the two audit modules.
 
 ## Next task
 
-**`M0-DATA-OBS-015`** — hash-chained audit stores with fail-the-action write semantics. The grants are in place; this is the chain itself, and the rule that a decision which cannot be recorded does not happen.
+**`M0-FOUND-TEST-005`** — the test harness. 140 tests already exist and pass, so this is less about starting than about deciding what the harness guarantees: a genuinely disposable database per run rather than the shared one `test-db` currently uses, two parallel runs not colliding, and the convention written down.
 
-Then `M0-FOUND-TEST-005` (the harness — `test-db` already exists in embryo, and this formalises the disposable-database fixture), then `M0-FOUND-DEPLOY-006` (CI).
+Then `M0-FOUND-DEPLOY-006` (CI), `M0-FOUND-SEC-007` (`.env.example` discipline), `M0-FOUND-DOC-008`, then the STACK and SHELL and MODEL epics.
 
 Forward references outstanding: the configuration error message points at `.env.example` (`M0-FOUND-SEC-007`), no screen exists yet (`M0-SHELL-FE-017`), and built assets are not in the API image (M0-STACK-DEPLOY-009 / Phase 7).
 

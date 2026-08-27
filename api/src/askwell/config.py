@@ -98,6 +98,13 @@ class Settings(BaseSettings):
     # re-embed, not a schema edit. bge-m3 gives 1024.
     embedding_dimensions: int = Field(default=1024, ge=1, le=16000)
 
+    # Traces are the largest and fastest-growing of the three audit stores,
+    # and the only one that fails open. 256 MB is a few thousand traces —
+    # enough that "show me what happened" works for anything recent, and small
+    # enough that it never becomes the reason a laptop ran out of disk.
+    trace_dir: Path = Path("/var/lib/askwell/traces")
+    trace_max_bytes: int = Field(default=256 * 1024 * 1024, ge=1024)
+
     # Where the built frontend lives. The default is the path inside the API
     # image; a source checkout points it at web/out.
     web_assets_dir: Path = Path("/app/web/out")
