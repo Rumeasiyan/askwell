@@ -23,6 +23,7 @@ from typing import Any
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -193,6 +194,10 @@ class Document(Base):
         _one_of("status", DOCUMENT_STATUSES, "status"),
         Index("ix_documents_source_id", "source_id"),
         Index("ix_documents_sha256", "sha256"),
+        # The queue's own query: everything not yet done, oldest first. Without
+        # it the resume sweep is a sequential scan of every document on the
+        # machine, run once a minute forever.
+        Index("ix_documents_status_added_at", "status", "added_at"),
         # One live version of a given content, per source. Created by the v1
         # migration in raw SQL and declared here so the two agree: without this
         # line the index exists in every database and in no model, and the next
@@ -236,6 +241,13 @@ class Document(Base):
     sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     page_count: Mapped[int | None] = mapped_column(Integer)
 
+    # Measured while hashing at add time, and kept because the queue estimate
+    # is otherwise in files — which says a 4 GB scan and a two-page letter
+    # will take the same time. Nullable: rows recorded before ingestion
+    # existed have no size, and the estimate is withheld rather than guessed
+    # when a remaining file's size is unknown.
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger)
+
     # Versions. NOT deletion — see the module docstring.
     version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
     superseded_by: Mapped[uuid.UUID | None] = mapped_column(
@@ -249,6 +261,21 @@ class Document(Base):
     deleted_reason: Mapped[str | None] = mapped_column(Text)
 
     status: Mapped[str] = mapped_column(String(32), nullable=False, server_default=text("'queued'"))
+
+    # Why this one file could not be ingested, in the words shown to the user.
+    # Per document rather than per source: a folder of sixty contracts with one
+    # encrypted PDF is not a broken folder, and `sources.last_error` cannot say
+    # which file it was.
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+    # How long the last ingestion pass over this document took, and which
+    # pipeline ran it. Together they are the only honest basis for a queue
+    # estimate: throughput is averaged over documents processed by the *same*
+    # pipeline that is about to run, so measurements taken before extraction
+    # and embedding existed are excluded rather than making a two-hour import
+    # look like four minutes. See the d5e2b8c17f40 migration.
+    ingest_ms: Mapped[int | None] = mapped_column(Integer)
+    ingest_pipeline: Mapped[str | None] = mapped_column(String(128))
 
     # A poor scan is flagged in the library, shown beside the image in the
     # source viewer, and can raise a clarification.
