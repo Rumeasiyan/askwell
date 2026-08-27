@@ -4,6 +4,19 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.1.14 — 2026-08-27
+
+`M0-STACK-SEC-011`. The refusal count, as a fact rather than a reassurance.
+
+### Added
+
+- `GET /network` — the proxy's own counters, the recent refusals with their destinations, and the cap on that list stated rather than implied.
+- The proxy establishes both counters at startup and records that it is reporting, so an absent counter means "the proxy has never run" rather than "nothing has been refused".
+
+### Changed
+
+- If the counters cannot be read the answer is **unavailable**, never zero. Zero and unknown look identical to a reader and mean opposite things, and "nothing has tried to leave this machine" is the strongest claim the product makes.
+
 ## 0.1.13 — 2026-08-27
 
 `M0-STACK-SEC-010`. The default-deny egress proxy — C1's enforcement point.

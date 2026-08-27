@@ -37,7 +37,14 @@ log = get_logger(__name__)
 # Where the refusal count lives, so the API can read it without the proxy
 # needing a database connection or an API of its own.
 REFUSED_COUNTER_KEY = "askwell:egress:refused"
+PERMITTED_COUNTER_KEY = "askwell:egress:permitted"
 REFUSED_RECENT_KEY = "askwell:egress:recent"
+
+# Set by the proxy when it starts. Its absence is how the API tells "the proxy
+# has never reported" from "the proxy has reported zero" — which look identical
+# in a counter and mean opposite things.
+REPORTING_SINCE_KEY = "askwell:egress:since"
+
 RECENT_LIMIT = 50
 
 # Long enough for a real request line and headers, short enough that a client
@@ -200,8 +207,42 @@ class EgressProxy:
                 await client.aclose()
 
 
+async def _register(settings: Settings) -> None:
+    """Announce that the proxy is reporting, and establish its counters.
+
+    The counters are created rather than left to spring into existence on
+    first use, because a missing key and a key holding zero are the same thing
+    to a reader and opposite things in fact. With this, an absent key means the
+    proxy has never run — which the API reports as unavailable rather than as
+    "nothing has tried to leave this machine".
+    """
+    import redis.asyncio as redis
+
+    client = redis.Redis(
+        host=settings.redis_host,
+        port=settings.redis_port,
+        socket_connect_timeout=2.0,
+        socket_timeout=2.0,
+    )
+    try:
+        async with client.pipeline() as pipe:
+            pipe.setnx(REFUSED_COUNTER_KEY, 0)
+            # Permitted is created and never incremented. In local mode there
+            # are no allowed destinations, so this is a measured zero rather
+            # than an absence — the distinction the whole surface rests on.
+            pipe.setnx(PERMITTED_COUNTER_KEY, 0)
+            pipe.set(REPORTING_SINCE_KEY, __version__)
+            await pipe.execute()
+    except Exception as error:
+        log.warning("egress_register_failed", error=f"{type(error).__name__}: {error}")
+    finally:
+        with contextlib.suppress(Exception):
+            await client.aclose()
+
+
 async def serve(settings: Settings) -> None:
     proxy = EgressProxy(settings)
+    await _register(settings)
     server = await asyncio.start_server(proxy.handle, "0.0.0.0", settings.egress_proxy_port)
     log.info(
         "egress_proxy_started",

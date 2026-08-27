@@ -7,33 +7,33 @@
 
 ## Current phase
 
-**M0 — It runs. In progress: 13 of 21 tickets done.**
+**M0 — It runs. In progress: 14 of 21 tickets done.**
 
 The repository is no longer documentation only. `api/` exists: an image, manifests, the application, and 54 tests. The API starts, refuses bad configuration by name, and serves `GET /health` reporting five components separately. `podman compose up -d` brings up four services, the database carries the full v1 schema, and the interface loads at `http://127.0.0.1:8000`. `web/` builds to static assets and the API serves them — the `web` container is gone from the topology. The Compose stack, the database schema and the inference process do not exist yet — so all five health components correctly report `unreachable`.
 
-**Version:** `0.1.13` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
+**Version:** `0.1.14` (see `VERSION`). Tickets bump `PATCH`; M0 landing takes it to `0.2.0` (`AGENTS.md` §7).
 **Tracker:** `Rumeasiyan/askwell`. Working agreements in `AGENTS.md`. Backlog in `docs/backlog/`.
 
 ## Last completed
 
-**`M0-STACK-SEC-010`** — [#78](https://github.com/Rumeasiyan/askwell/issues/78). Default-deny egress, enforced by the network rather than by asking nicely.
+**`M0-STACK-SEC-011`** — [#80](https://github.com/Rumeasiyan/askwell/issues/80). `GET /network`: what the proxy refused, according to the proxy.
+
+One rule shaped the whole design: **unreadable is not zero.** Zero and unknown look identical to whoever reads the settings screen and mean opposite things, and "nothing has tried to leave this machine" is the strongest claim Askwell makes.
 
 Verified against the running stack:
 
-| attempt | result |
+| | |
 | --- | --- |
-| `http://example.com/` from the API, respecting the proxy | `403`, logged with destination and `askwell-api-1` |
-| `https://example.com/` (CONNECT) | `403 Tunnel connection failed`, logged as `example.com:443` |
-| the same from the worker | `403`, logged as `askwell-worker-1` |
-| direct hostname, bypassing the proxy | no route |
-| direct IP `1.1.1.1` | `Network is unreachable` |
-| DNS for an external name | refused |
-| the same from `postgres`, which has no proxy configured | refused |
-| **with the proxy stopped** | still no route, by any path |
+| a deliberate refused request | count goes 5 → 6, destination retrievable |
+| `podman compose down` then `up` | still 6 — cumulative for the install |
+| permitted | 0, and it is the proxy's zero, not the API's |
+| **the queue stopped** | `available: false`, `refused: null` — *"not the same as nothing having been refused"* |
+| **the proxy has never reported** | `available: false` — *"unknown rather than zero"* |
+| the proxy comes back | available again, count intact |
 
-**A real defect, found by reading the log rather than the code.** The first refusal in the log was Askwell's own health probe: it checks the proxy by opening a connection and closing it, and that was being counted. One refusal every few seconds turns *something tried to phone home* into *Askwell is running* — worse than not having the number, because `docs/ux/settings.md` §4 shows it as a measured fact. A connection that sends nothing is now logged at debug and not counted. Confirmed: eight seconds of probes, zero refusals, and the proxy still reports `reachable`.
+There are two distinct unavailable cases and they needed different answers. The queue being unreachable is one. The queue being fine while the proxy has never registered is the other — its counters would read as absent, and absent renders as zero. The proxy now writes a reporting marker at startup, which is what lets the API tell "reported zero" from "never reported".
 
-**The proxy never forwards.** It is not a proxy configured strictly; it is a service whose whole job is to refuse and say what it refused. That is a much smaller thing to get right, and a test asserts no allowlist has appeared.
+**A test I had to throw away.** The first version asserted the surface contained no alarming words, and failed on the module's own docstring explaining that alarming words do not apply. A test that cannot tell a denial from a use gets deleted the first time it is wrong. Replaced with an assertion on the payload: it carries a count and nothing that classifies the count.
 
 ## Next task
 

@@ -133,6 +133,7 @@ Everything runs through one entry point:
 | Alembic against the stack | `scripts/dev.sh db upgrade head` | **Verified** |
 | A psql shell | `scripts/dev.sh psql` | **Verified** |
 | Verify the audit chains | `podman compose exec api askwell-verify` | **Verified** |
+| What the egress proxy refused | `curl -s localhost:8000/network` | **Verified** |
 | Rebuild the image | `scripts/dev.sh build` | **Verified** |
 | Anything else inside the image | `scripts/dev.sh run <cmd>` / `scripts/dev.sh shell` | **Verified** |
 | Regenerate the lockfile | `scripts/dev.sh lock` | **Verified** |
