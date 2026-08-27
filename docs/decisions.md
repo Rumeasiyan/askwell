@@ -22,6 +22,32 @@ Template:
 
 ---
 
+## 2026-08-27 — A document is its bytes: duplicates are recognised globally, and `queued` becomes a real status
+
+**Decision:** Duplicate detection hashes file contents with sha256 and matches **across the whole library**, not within the source being added to. A recognised duplicate is linked to the existing document and reported with *both* paths; it is never an error. A zero-byte file is refused. A file that changes while it is being hashed is re-hashed, three times, and then refused by name. And `queued` is added to the source and document status vocabularies, which previously ran `indexing → ready → attention → deleted`.
+
+**Why:**
+
+**Global recognition, because the user this exists for has the file in three folders.** Matching within a source would recognise nothing in exactly that case — three folders is three sources — and the whole business value is that duplicate chunks do not pollute retrieval and make citations ambiguous. The narrower per-source rule was rejected as recognising duplicates only where they are least likely to be.
+
+**Two checks, neither derived from the other.** The application rule above is global; the partial unique index `uq_documents_live_source_id_sha256`, created with the v1 schema, is narrower — one live version per (source, hash). Keeping the narrower index rather than widening it to match the code is deliberate: it is a backstop against a *future* code path that forgets to check, and an index that merely restates what the code already does catches nothing the code does not. This is the shape C2 uses — parser plus read-only role — applied to duplicates.
+
+**A duplicate is a link, not a refusal, and it names both paths.** Which copy is indexed decides which path every future citation opens, so "already present" without a path sends the user hunting through their own filing to work out what Askwell did. Reporting it as an error was rejected outright: nothing went wrong, and an error in the list is how someone concludes the add failed.
+
+**Zero-byte files are refused rather than indexed as empty documents.** They produce no chunks, so an accepted one sits in the library reporting `ready` forever while answering nothing. Worse, every empty file has the same sha256, so the second one would be reported as a duplicate of the first — true of the bytes, and a nonsense thing to say about two unrelated documents.
+
+**Hashing verifies the file held still, because a hash over two versions identifies neither.** The file is fingerprinted from the open descriptor before and after the read and against the path afterwards; size, mtime, ctime and **inode** are all compared, because the ordinary way an editor saves is to write a temporary file and rename it into place, which size and time alone can miss. A mismatch is re-hashed. The rejected alternative — accept the hash and let extraction discover the inconsistency — writes a row whose sha256 is a value the file never had, which makes every later duplicate check about that document wrong, silently, for as long as the row lives.
+
+**`queued` is a fourth stage because the user is shown it.** `docs/states-and-edge-cases.md` §3 requires that files queued with nothing indexed yet are said plainly — *what has to land before they are searchable* — and explicitly not as a progress bar that never moves. Rows now exist before any worker looks at them, and on a laptop embedding a large corpus that is where a document spends most of its life. Reusing `indexing` for it was rejected because the interface would then need a second signal to tell "waiting" from "being read", and no such signal exists. The ticket's word *indexed* stays `ready`: that is the schema's vocabulary, in the ORM, in `docs/architecture.md` §7 and in the check constraint, and renaming it to match prose would touch all three to say the same thing.
+
+**Source status is derived, not maintained.** It is recomputed from the live documents' statuses on demand, with attention winning over everything. A source status written alongside each document change drifts the first time one of those writes is missed, and what it drifts into is a folder claiming to be indexing months after it finished — which the user cannot correct and has no reason to distrust.
+
+**Consequences:** Adding a folder is bounded by disk read speed, since every file is hashed before anything is indexed — the ticket's stated assumption, now load-bearing. A file that changes between being hashed and being *extracted* is still not handled; that is supersession, `M1-INDEX-BE-034`. The `documents.mime` column holds what the **caller** detected from the file's first bytes, and this module does not re-derive it: the previous entry's note that `M1-ADD-BE-023` would need a server-side content check is **re-owned to `M1-ADD-VAL-024`**, which has content-based detection and the rejection path in its scope — two detectors would be two answers to the same question, and they would disagree exactly where it matters. Until that lands, nothing branches on `mime` and the extractor must not trust it.
+
+**Refs:** `docs/backlog/M1-it-answers-from-my-documents.md` `M1-ADD-BE-023`; `api/src/askwell/sources.py`, `api/src/askwell/db/models.py`, `api/src/askwell/db/migrations/versions/20260827_c3a5e91b6d47_queued_status.py`; `docs/architecture.md` §7; `docs/ux/add-source.md` §5; `docs/states-and-edge-cases.md` §3.
+
+---
+
 ## 2026-08-27 — A dropped file is judged by its contents, and the browser is asked where it came from
 
 **Decision:** The add flow decides what a file is from its first 4 KB, using the extension only to tell the four zipped Office formats apart and to report a disagreement in the user's own terms. And because no browser will say where a dropped file actually lives, the screen asks once per drop which folder it came from — the same typed path `docs/ux/add-source.md` §7 already uses for nominating one — rather than pretending it knows. `M1-ADD-FE-022`'s stated assumption that "the browser's drop event gives usable paths under every supported platform" is **false on every platform**, and this records that rather than working around it quietly.

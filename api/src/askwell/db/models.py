@@ -47,8 +47,14 @@ from askwell.db.base import Base, created_at, uuid_pk
 # just as strict and the diff is readable.
 
 SOURCE_KINDS = ("file", "csv", "dump", "connection")
-SOURCE_STATUSES = ("indexing", "ready", "attention", "deleted")
-DOCUMENT_STATUSES = ("indexing", "ready", "attention", "deleted")
+# `queued` is a real stage, not a shade of `indexing`. A file that has a row and
+# no worker looking at it yet is the state `docs/states-and-edge-cases.md` §3
+# requires be said plainly — *nothing is indexed yet, here is what has to
+# happen* — and that sentence cannot be written from a status that also means
+# "being read right now". Added 2026-08-27 with `M1-ADD-BE-023`; the v1 schema
+# had four values because nothing yet created a row ahead of the worker.
+SOURCE_STATUSES = ("queued", "indexing", "ready", "attention", "deleted")
+DOCUMENT_STATUSES = ("queued", "indexing", "ready", "attention", "deleted")
 NOTE_ORIGINS = ("user", "inferred")
 MEMORY_ORIGINS = ("clarification", "correction", "manual")
 CLARIFICATION_STATUSES = ("pending", "answered", "skipped", "dismissed")
@@ -173,7 +179,7 @@ class Source(Base):
     sandbox_db: Mapped[str | None] = mapped_column(Text)
 
     status: Mapped[str] = mapped_column(
-        String(32), nullable=False, server_default=text("'indexing'")
+        String(32), nullable=False, server_default=text("'queued'")
     )
     # `ux/library.md`'s single "needs attention" expands to a specific cause and
     # a specific fix, which needs somewhere to put the cause.
@@ -224,7 +230,7 @@ class Document(Base):
     deleted_reason: Mapped[str | None] = mapped_column(Text)
 
     status: Mapped[str] = mapped_column(
-        String(32), nullable=False, server_default=text("'indexing'")
+        String(32), nullable=False, server_default=text("'queued'")
     )
 
     # A poor scan is flagged in the library, shown beside the image in the

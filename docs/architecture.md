@@ -220,12 +220,17 @@ roots              id, path, filesystem, added_at, removed_at            -- NEW 
 
 sources            id, kind(file|csv|dump|connection), name,
                    root_path, config_encrypted, sandbox_db,
-                   status(indexing|ready|attention|deleted), last_error,
+                   status(queued|indexing|ready|attention|deleted), last_error,
                    last_indexed_at, added_at
 
 documents          id, source_id, filename, path, mime, sha256, page_count,
                    version, superseded_by, deleted_at, deleted_reason,
-                   status, ocr_confidence, missing_since, added_at        -- path/missing_since NEW
+                   status(queued|indexing|ready|attention|deleted),
+                   ocr_confidence, missing_since, added_at                -- path/missing_since NEW
+                   -- one live row per (source_id, sha256): a partial unique
+                   -- index over the rows that are neither deleted nor
+                   -- superseded. Duplicate detection is in the application
+                   -- and is global; this is the independent backstop
 
 chunks             id, document_id, ordinal, page_from, page_to, heading,
                    content, content_tsv, embedding vector(1024)

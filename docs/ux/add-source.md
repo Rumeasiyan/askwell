@@ -89,7 +89,9 @@ Copy on refusal:
 | **Extraction failed** | Per-file reason and retry. Never silently dropped |
 | **Password-protected PDF** | Prompt for the password; not stored unless the user asks |
 | **Poor OCR** | Ingested, flagged, clarification raised |
-| **Duplicate** | Recognised by content hash, linked to the existing source, not re-ingested |
+| **Duplicate** | Recognised by content hash, linked to the existing document, not re-ingested. **Both paths shown** — the copy that is indexed and the copy that was skipped |
+| **Empty file** | Rejected by name: 0 bytes, nothing to read, and whatever wrote it did not finish |
+| **Still being written** | Named as having changed while it was read, not indexed, and worth adding again once it settles |
 | **New version** | Offered as superseding, not duplicating. Old version stays queryable for history |
 | **Unsupported format** | Named, with the supported list and the CSV fallback where relevant |
 | **Dump too large / too slow** | Aborted at 5 GB or 10 minutes, sandbox dropped, reason given |

@@ -22,6 +22,7 @@ from askwell.logging import configure_logging, get_logger
 from askwell.middleware import register_session
 from askwell.network import read_activity
 from askwell.roots import register_roots
+from askwell.sources import register_sources
 
 log = get_logger(__name__)
 
@@ -82,6 +83,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     register_session(app, resolved, app.state.sessions)
     register_roots(app, app.state.sessions)
+    register_sources(app, app.state.sessions)
 
     @app.get("/health")
     async def health(request: Request) -> JSONResponse:

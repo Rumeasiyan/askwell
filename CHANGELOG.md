@@ -4,6 +4,35 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.4 — 2026-08-27
+
+Askwell notices it already has your file. `M1-ADD-BE-023`.
+
+Adding material writes rows: a source for the folder, a document for each file, with the path it was found at and a hash of its contents.
+
+### Added
+
+- **`POST /sources`** — creates a source and its documents under a nominated folder, and answers with what happened to every file: added, recognised as already present, or refused with a reason. One bad file never rejects the drop it arrived in.
+- **Duplicate detection by content hash, across the whole library.** The same contract in three folders is one document, not three. The reply names **both** paths — the copy that is indexed and the copy that was skipped — because which one is indexed decides what every future citation opens. Nothing is re-ingested and nothing is deleted.
+- **`queued` as a real status.** A file with a row and no worker looking at it yet is queued, not indexing; the two are different things to say to someone waiting. A source's status is derived from its documents, and one file needing attention puts the whole source there.
+- Adding a document is a decisions record, with its path.
+- Local counters of added, duplicate and refused files in the reply. Nothing is transmitted (C1).
+
+### Changed
+
+- `sources.status` and `documents.status` gain `queued`, and default to it. Migration `c3a5e91b6d47`, reversible.
+
+### Fixed
+
+- A file that changes while it is being hashed is detected and re-hashed rather than filed under a hash spanning two versions of it — which would have made every later duplicate check about that document wrong, silently.
+
+### Known gaps
+
+- **Nothing is extracted or searchable yet.** Documents stop at `queued`; the worker that moves them is `M1-ADD-ING-025`.
+- A **modified** version of a file is a new document, not a supersession of the old one. `M1-INDEX-BE-034`.
+- `documents.mime` is what the caller detected from the file's first bytes. Server-side content detection and format rejection are `M1-ADD-VAL-024`; nothing branches on `mime` until then.
+- A document that fails has nowhere to record *why* — `documents` has no error column, only `sources.last_error`. Needed by the extraction tickets.
+
 ## 0.2.3 — 2026-08-27
 
 Material can be handed to Askwell. `M1-ADD-FE-022`.
