@@ -4,6 +4,19 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.1.12 — 2026-08-27
+
+`M0-FOUND-DOC-008`. Version and changelog discipline, enforced rather than practised.
+
+### Added
+
+- The frontend reads the version from the repository's `VERSION` file at build time and renders it, so the About screen has something to derive rather than repeat.
+- `web/scripts/check-version.mjs` and six tests: the changelog must have an entry for the current version, entries must be newest-first, no version may appear twice, and `web/package.json` must declare no version of its own.
+
+### Fixed
+
+- `0.1.0` had **two** changelog headings — the rewrite and the initial state, both legitimately at that version because no code existed. One version is one entry; a reader looking up `0.1.0` should find all of it in one place. Merged.
+
 ## 0.1.11 — 2026-08-27
 
 `M0-FOUND-SEC-007`. The example environment file, and the check that keeps it true.
@@ -182,7 +195,14 @@ First product code. `M0-FOUND-DEPLOY-001`.
 - `AGENTS.md` §5 — the commands table now lists commands that have been run, not commands that are intended.
 - `AGENTS.md` §7 — tickets inside a phase are `PATCH`; the phase landing is the `MINOR`. Previously the two rules in that section contradicted each other for any phase with more than one ticket.
 
-## 0.1.0 — 2026-08-10 (rewrite)
+## 0.1.0 — 2026-08-10
+
+Two things happened at this version and the number did not move, deliberately:
+no application code existed, so no user-visible behaviour changed. They are
+recorded here as one entry rather than two headings, because one version is
+one entry — a reader looking up `0.1.0` should find all of it in one place.
+
+### The rewrite
 
 Product repositioned. The previous documentation described on-premise software sold to government ministries; Askwell is a free local install for one individual professional. Version unchanged — no code exists, so no user-visible behaviour changed.
 
@@ -221,7 +241,7 @@ Product repositioned. The previous documentation described on-premise software s
 - Constraint C7-as-was (column-level access control per role) — it protected one role from another, and there are no roles.
 - Multi-node high availability, permanently (#4).
 
-## 0.1.0 — 2026-08-10 (initial)
+### The initial state
 
 First versioned state. No application code — the repository is documentation only, Phase 0 not yet started.
 

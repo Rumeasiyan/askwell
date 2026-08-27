@@ -1,4 +1,5 @@
 import { ThemeToggle } from "@/components/ui/theme-toggle";
+import { VERSION } from "@/lib/version";
 
 /**
  * The token demonstration. Not a screen — screens arrive with M0-SHELL-FE-017.
@@ -15,7 +16,7 @@ export default function TokenDemonstration() {
           <h1 style={{ fontSize: "var(--t-display)", lineHeight: "var(--t-display-lh)" }}>
             Askwell
           </h1>
-          <p className="ask-micro mt-1">Design tokens · not a screen</p>
+          <p className="ask-micro mt-1">Design tokens · not a screen · v{VERSION}</p>
         </div>
         <ThemeToggle />
       </header>
