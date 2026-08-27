@@ -17,11 +17,14 @@ import { test } from "node:test";
 
 import {
   MAX_FILES,
+  SUPPORTED_SUMMARY,
   describeBatch,
   detect,
   extensionOf,
   flatten,
   formatSize,
+  laterLine,
+  refusalLine,
   type TreeEntry,
 } from "./add-source.ts";
 
@@ -37,7 +40,8 @@ test("a PDF is recognised by its contents", () => {
   const result = detect("lease.pdf", head("%PDF-1.7\n%\xe2\xe3"), 90_000);
   assert.equal(result.format, "a PDF document");
   assert.equal(result.route, "files");
-  assert.equal(result.supported, true);
+  assert.equal(result.verdict, "supported");
+  assert.equal(result.arrives, null);
   assert.equal(result.mismatch, null);
   assert.equal(result.refusal, null);
 });
@@ -45,7 +49,7 @@ test("a PDF is recognised by its contents", () => {
 test("a mislabelled file is routed by its contents and the disagreement is said", () => {
   const result = detect("lease.pdf", bytes([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), 4_000);
   assert.equal(result.format, "a PNG image");
-  assert.equal(result.supported, true);
+  assert.equal(result.verdict, "supported");
   assert.match(result.mismatch ?? "", /Named \.pdf/);
   assert.match(result.mismatch ?? "", /a PNG image/);
 });
@@ -65,20 +69,20 @@ test("a zipped Office file is named by its extension, since every one of them is
 
 test("a plain zip is refused with what to do instead, not as 'unsupported'", () => {
   const result = detect("everything.zip", bytes([0x50, 0x4b, 0x03, 0x04]), 900);
-  assert.equal(result.supported, false);
+  assert.equal(result.verdict, "refused");
   assert.match(result.refusal ?? "", /Unpack it/);
 });
 
 test("a program is refused by name, and says nothing was run", () => {
   const result = detect("installer.pdf", bytes([0x7f, 0x45, 0x4c, 0x46, 0x02]), 4_000);
-  assert.equal(result.supported, false);
+  assert.equal(result.verdict, "refused");
   assert.equal(result.format, "a Linux program");
   assert.match(result.refusal ?? "", /Nothing has been run/);
 });
 
 test("an empty file is refused, and says nothing on disk changed", () => {
   const result = detect("blank.pdf", new Uint8Array(), 0);
-  assert.equal(result.supported, false);
+  assert.equal(result.verdict, "refused");
   assert.match(result.refusal ?? "", /Nothing was changed on disk/);
 });
 
@@ -102,10 +106,81 @@ test("prose is plain text, not a CSV, because one comma is not a column", () => 
   assert.equal(result.route, "files");
 });
 
-test("an unrecognised binary is refused with the supported list, never silently", () => {
+test("an unrecognised binary is refused by name and by what it turned out to be", () => {
   const result = detect("thing.bin", bytes([0x00, 0x01, 0x02, 0x00, 0x99]), 5);
-  assert.equal(result.supported, false);
-  assert.match(result.refusal ?? "", /PDF, Word, Excel/);
+  assert.equal(result.verdict, "refused");
+  assert.equal(result.format, "an unrecognised file");
+  assert.match(refusalLine("archive/thing.bin", result), /^archive\/thing\.bin — an unrecognised file\./);
+  assert.match(result.refusal ?? "", /could not tell what this file is/);
+});
+
+// --- M1-ADD-VAL-024: rejected by name, with the supported list --------------
+
+test("HTML is recognised by its opening, not by its name", () => {
+  const result = detect("saved-page.txt", head("<!DOCTYPE html>\n<html lang=\"en\">\n"), 900);
+  assert.equal(result.format, "an HTML page");
+  assert.equal(result.route, "files");
+  assert.equal(result.verdict, "supported");
+  assert.match(result.mismatch ?? "", /Named \.txt/);
+});
+
+test("an HTML page full of rows is a page, not a spreadsheet", () => {
+  // Before HTML was detected this landed on the table route, which today means
+  // "arrives in M4" — a saved web page would have been told to wait for a
+  // milestone that has nothing to do with it.
+  const result = detect("report.html", head("<html><body><table><tr><td>a,b,c</td>\n"), 4_000);
+  assert.equal(result.format, "an HTML page");
+  assert.equal(result.verdict, "supported");
+});
+
+test("Markdown is named by its extension, since no byte distinguishes it from text", () => {
+  const result = detect("notes.md", head("# Heading\n\nSome prose about the lease.\n"), 300);
+  assert.equal(result.format, "a Markdown document");
+  assert.equal(result.verdict, "supported");
+  assert.equal(result.mismatch, null);
+});
+
+test("a CSV is named as arriving, not as unsupported", () => {
+  const result = detect("q3.csv", head("a,b,c\n1,2,3\n"), 12);
+  assert.equal(result.verdict, "later");
+  assert.equal(result.arrives, "M4");
+  assert.equal(result.refusal, null);
+  assert.match(laterLine("exports/q3.csv", result), /^exports\/q3\.csv — a CSV file\./);
+  assert.match(laterLine("exports/q3.csv", result), /from M4/);
+  assert.doesNotMatch(laterLine("exports/q3.csv", result), /unsupported/i);
+});
+
+test("a dump is named as arriving too, in both its forms", () => {
+  assert.equal(detect("db.sql", head("-- a dump\nSELECT 1;\n"), 20).verdict, "later");
+  assert.equal(detect("db.dump", bytes([0x50, 0x47, 0x44, 0x4d, 0x50]), 900).verdict, "later");
+  assert.equal(detect("db.dump", bytes([0x50, 0x47, 0x44, 0x4d, 0x50]), 900).arrives, "M4");
+});
+
+test("a zip renamed .pdf is still refused, and the line names the file and the type", () => {
+  const result = detect("contracts.pdf", bytes([0x50, 0x4b, 0x03, 0x04]), 900);
+  assert.equal(result.verdict, "refused");
+  assert.equal(
+    refusalLine("dropped/contracts.pdf", result),
+    "dropped/contracts.pdf — a zip archive. " + (result.refusal ?? ""),
+  );
+  assert.match(refusalLine("dropped/contracts.pdf", result), /Unpack it/);
+});
+
+test("the supported list names every format M1 reads, and dates the rest", () => {
+  for (const format of ["PDF", "Word", "Excel", "PowerPoint", "plain text", "Markdown", "HTML", "images"]) {
+    assert.ok(SUPPORTED_SUMMARY.includes(format), `${format} is missing from the supported list`);
+  }
+  assert.match(SUPPORTED_SUMMARY, /CSV, database dumps and live connections arrive in M4/);
+});
+
+test("a corrupt but well-headed PDF is still supported, so it fails at extraction and not here", () => {
+  // The ticket is explicit that a supported file with damaged content is an
+  // extraction failure, not a rejection. Detection sees a real `%PDF-` header
+  // and must not start second-guessing the body it has not read.
+  const result = detect("shredded.pdf", head("%PDF-1.5\n\x00\x00\x9f\x03garbage"), 40_000);
+  assert.equal(result.format, "a PDF document");
+  assert.equal(result.verdict, "supported");
+  assert.equal(result.refusal, null);
 });
 
 test("extensionOf ignores a leading dot and a trailing one", () => {

@@ -37,7 +37,8 @@ export const ROUTES: {
   {
     id: "files",
     title: "Files",
-    accepts: "PDF, Word, Excel, PowerPoint, text and images. Drag them anywhere, or browse.",
+    accepts:
+      "PDF, Word, Excel, PowerPoint, plain text, Markdown, HTML and images. Drag them anywhere, or browse.",
     arrives: null,
   },
   {
@@ -61,20 +62,25 @@ export const ROUTES: {
   },
 ];
 
-/** What each route is called where a detected file is listed under it. */
-export const ROUTE_LABELS: Record<Route, string> = {
-  files: "Files",
-  table: "Spreadsheet or CSV",
-  dump: "Database dump",
-  connection: "Connect a database",
-};
+/**
+ * What Askwell will do with a file, which is three things and not two.
+ *
+ * `supported` was a boolean and that was wrong in a way the screen made
+ * visible: a CSV is not unsupported, it is unsupported *yet*, and collapsing
+ * those two into one flag either enrols it in a queue that will never take it
+ * or tells the user their spreadsheets have no home here. Both are false, and
+ * they are false in opposite directions. `later` is the third answer.
+ */
+export type Verdict = "supported" | "later" | "refused";
 
 export interface Detection {
   /** What it is, in words the user can read. */
   format: string;
   route: Route;
-  /** Whether Askwell will index it at all. */
-  supported: boolean;
+  /** Indexed today, arriving in a later milestone, or refused outright. */
+  verdict: Verdict;
+  /** The milestone the route arrives in. Set only when the verdict is `later`. */
+  arrives: string | null;
   /** Set when the bytes and the name disagree. Content is what was believed. */
   mismatch: string | null;
   /** Why it was refused, when it was. Never a bare rejection. */
@@ -101,9 +107,36 @@ export const HEAD_BYTES = 4096;
  */
 export const MAX_FILES = 5000;
 
+/**
+ * The supported list, as one sentence.
+ *
+ * Every rejection carries it, because a rejection that says only "no" is how
+ * somebody decides the product does not handle their material and stops. The
+ * second half is the same sentence doing the opposite job: CSV and dumps are
+ * named as *arriving*, which is a different statement from "unsupported" to
+ * anyone whose material is mostly exports.
+ */
 export const SUPPORTED_SUMMARY =
-  "PDF, Word, Excel, PowerPoint, plain text and images are read today. " +
+  "PDF, Word, Excel, PowerPoint, plain text, Markdown, HTML and images are read today. " +
   "CSV, database dumps and live connections arrive in M4.";
+
+/** When each route starts working, from the one place that already says so. */
+const ARRIVES: Record<Route, string | null> = Object.fromEntries(
+  ROUTES.map((route) => [route.id, route.arrives]),
+) as Record<Route, string | null>;
+
+/**
+ * The verdict for a file that Askwell recognised and did not refuse.
+ *
+ * Derived from `ROUTES` rather than written down a second time: when M4 lands
+ * and `arrives` becomes null for the table and dump routes, every CSV already
+ * detected becomes `supported` with no second edit. A hardcoded milestone here
+ * is the copy that would be forgotten.
+ */
+function onRoute(format: string, route: Route): Pick<Detection, "format" | "route" | "verdict" | "arrives"> {
+  const arrives = ARRIVES[route] ?? null;
+  return { format, route, verdict: arrives === null ? "supported" : "later", arrives };
+}
 
 // --- signatures -------------------------------------------------------------
 
@@ -116,10 +149,17 @@ function leads(head: Uint8Array, signature: number[], at = 0): boolean {
   return signature.every((byte, index) => head[at + index] === byte);
 }
 
+/**
+ * What the bytes said.
+ *
+ * No verdict here on purpose: `refusal` present means refused, and everything
+ * else is decided by its route in `onRoute`. Carrying a verdict alongside a
+ * route would let the two disagree, and the case where they disagree is
+ * exactly the CSV.
+ */
 interface Content {
   format: string;
   route: Route;
-  supported: boolean;
   refusal?: string;
   /** The zip and OLE containers hold four different things; the name decides. */
   container?: "ooxml" | "ole";
@@ -146,45 +186,46 @@ const EXECUTABLES: { signature: number[]; format: string }[] = [
 const REFUSED_PROGRAM =
   "Askwell indexes documents, and this is a program. Nothing has been run and nothing has been read past its first few bytes.";
 
+/**
+ * The archive refusal, which is the one the ticket is named after.
+ *
+ * It names the way out rather than the rule. "Unsupported format" tells
+ * someone their zip of contracts has no home here; "unpack it and add what is
+ * inside" tells them what to do in the next thirty seconds, and the reason —
+ * each document keeps its own name in citations — is true and is why Askwell
+ * would rather they did.
+ */
+const REFUSED_ARCHIVE =
+  "Askwell does not open archives. Unpack it and add what is inside — that way each document keeps its own name in your citations.";
+
 function fromBytes(head: Uint8Array): Content | null {
   if (leads(head, bytesOf("%PDF-"))) {
-    return { format: "a PDF document", route: "files", supported: true };
+    return { format: "a PDF document", route: "files" };
   }
   if (leads(head, bytesOf("PGDMP"))) {
-    return { format: "a PostgreSQL dump", route: "dump", supported: true };
+    return { format: "a PostgreSQL dump", route: "dump" };
   }
   for (const image of IMAGE_SIGNATURES) {
     if (leads(head, image.signature)) {
-      return { format: image.format, route: "files", supported: true };
+      return { format: image.format, route: "files" };
     }
   }
   if (leads(head, bytesOf("RIFF")) && leads(head, bytesOf("WEBP"), 8)) {
-    return { format: "a WebP image", route: "files", supported: true };
+    return { format: "a WebP image", route: "files" };
   }
   for (const program of EXECUTABLES) {
     if (leads(head, program.signature)) {
-      return {
-        format: program.format,
-        route: "files",
-        supported: false,
-        refusal: REFUSED_PROGRAM,
-      };
+      return { format: program.format, route: "files", refusal: REFUSED_PROGRAM };
     }
   }
   if (leads(head, [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])) {
-    return { format: "an older Microsoft Office file", route: "files", supported: true, container: "ole" };
+    return { format: "an older Microsoft Office file", route: "files", container: "ole" };
   }
   if (leads(head, [0x50, 0x4b, 0x03, 0x04])) {
-    return { format: "a zip archive", route: "files", supported: true, container: "ooxml" };
+    return { format: "a zip archive", route: "files", container: "ooxml" };
   }
   if (leads(head, [0x1f, 0x8b])) {
-    return {
-      format: "a gzip archive",
-      route: "files",
-      supported: false,
-      refusal:
-        "Askwell does not open archives. Unpack it and add what is inside — that way each document keeps its own name in your citations.",
-    };
+    return { format: "a gzip archive", route: "files", refusal: REFUSED_ARCHIVE };
   }
   return null;
 }
@@ -207,6 +248,23 @@ function looksTextual(head: Uint8Array): boolean {
   }
   return printable / head.length > 0.9;
 }
+
+/**
+ * HTML, judged on its opening rather than on its name.
+ *
+ * There is no byte signature for HTML — it is text — so this is the content
+ * check for it, and it runs *before* the delimiter and SQL checks because a
+ * saved page full of tables would otherwise read as a CSV. A leading byte-order
+ * mark and leading whitespace are skipped. The BOM is matched in both forms
+ * because `decode` reads bytes one at a time: a UTF-8 BOM arrives as three
+ * separate characters, not as U+FEFF.
+ *
+ * No nested quantifier, deliberately. A pattern that can backtrack runs on
+ * every text file in a several-thousand-file drop, and the head it runs over
+ * is attacker-supplied in the only sense that matters here — it is whatever
+ * was on disk.
+ */
+const HTML_MARKERS = /^(﻿|ï»¿)?[\s\r\n]*(<!doctype\s+html|<html[\s>]|<head[\s>])/i;
 
 const SQL_MARKERS =
   /(PostgreSQL database dump|^\s*(CREATE|INSERT INTO|COPY|ALTER TABLE|DROP TABLE|SET )\b)/im;
@@ -237,7 +295,10 @@ const BY_EXTENSION: Record<string, { format: string; route: Route }> = {
   ppt: { format: "a PowerPoint deck", route: "files" },
   pptx: { format: "a PowerPoint deck", route: "files" },
   txt: { format: "plain text", route: "files" },
-  md: { format: "plain text", route: "files" },
+  md: { format: "a Markdown document", route: "files" },
+  markdown: { format: "a Markdown document", route: "files" },
+  html: { format: "an HTML page", route: "files" },
+  htm: { format: "an HTML page", route: "files" },
   csv: { format: "a CSV file", route: "table" },
   tsv: { format: "a tab-separated file", route: "table" },
   sql: { format: "a SQL dump", route: "dump" },
@@ -292,7 +353,8 @@ export function detect(name: string, head: Uint8Array, size: number): Detection 
     return {
       format: "an empty file",
       route: claimed?.route ?? "files",
-      supported: false,
+      verdict: "refused",
+      arrives: null,
       mismatch: null,
       refusal: "There is nothing in this file to index. Nothing was changed on disk.",
     };
@@ -306,61 +368,63 @@ export function detect(name: string, head: Uint8Array, size: number): Detection 
       return {
         format: "a zip archive",
         route: "files",
-        supported: false,
+        verdict: "refused",
+        arrives: null,
         mismatch: null,
-        refusal:
-          "Askwell does not open archives. Unpack it and add what is inside — that way each document keeps its own name in your citations.",
+        refusal: REFUSED_ARCHIVE,
       };
     }
-    return { format: named, route: "files", supported: true, mismatch: null, refusal: null };
+    return { ...onRoute(named, "files"), mismatch: null, refusal: null };
   }
 
   if (content?.container === "ole") {
-    const named = OLE[extension];
-    return {
-      format: named ?? content.format,
-      route: "files",
-      supported: true,
-      mismatch: null,
-      refusal: null,
-    };
+    return { ...onRoute(OLE[extension] ?? content.format, "files"), mismatch: null, refusal: null };
   }
 
   if (content !== null) {
+    if (content.refusal !== undefined) {
+      return {
+        format: content.format,
+        route: content.route,
+        verdict: "refused",
+        arrives: null,
+        mismatch: disagreement(claimed?.format ?? null, content.format, extension),
+        refusal: content.refusal,
+      };
+    }
     return {
-      format: content.format,
-      route: content.route,
-      supported: content.supported,
+      ...onRoute(content.format, content.route),
       mismatch: disagreement(claimed?.format ?? null, content.format, extension),
-      refusal: content.refusal ?? null,
+      refusal: null,
     };
   }
 
   if (looksTextual(head)) {
     const text = decode(head);
-    if (extension === "sql" || extension === "dump" || extension === "backup" || SQL_MARKERS.test(text)) {
+    // HTML first: a saved page is full of rows and would otherwise read as a
+    // CSV, and one of those two routes works today while the other does not.
+    if (extension === "html" || extension === "htm" || HTML_MARKERS.test(text)) {
       return {
-        format: "a SQL dump",
-        route: "dump",
-        supported: true,
-        mismatch: null,
+        ...onRoute("an HTML page", "files"),
+        mismatch: disagreement(claimed?.format ?? null, "an HTML page", extension),
         refusal: null,
       };
+    }
+    if (extension === "sql" || extension === "dump" || extension === "backup" || SQL_MARKERS.test(text)) {
+      return { ...onRoute("a SQL dump", "dump"), mismatch: null, refusal: null };
     }
     if (extension === "csv" || extension === "tsv" || looksDelimited(text)) {
-      return {
-        format: extension === "tsv" ? "a tab-separated file" : "a CSV file",
-        route: "table",
-        supported: true,
-        mismatch: null,
-        refusal: null,
-      };
+      const format = extension === "tsv" ? "a tab-separated file" : "a CSV file";
+      return { ...onRoute(format, "table"), mismatch: null, refusal: null };
     }
+    // Markdown is plain text with conventions, and no byte distinguishes it —
+    // so the name decides, which is the one place the extension is the better
+    // evidence. Getting it wrong costs nothing: both go to the same extractor,
+    // and the user is told which one Askwell believed.
+    const format = extension === "md" || extension === "markdown" ? "a Markdown document" : "plain text";
     return {
-      format: "plain text",
-      route: "files",
-      supported: true,
-      mismatch: disagreement(claimed?.format ?? null, "plain text", extension),
+      ...onRoute(format, "files"),
+      mismatch: disagreement(claimed?.format ?? null, format, extension),
       refusal: null,
     };
   }
@@ -368,10 +432,38 @@ export function detect(name: string, head: Uint8Array, size: number): Detection 
   return {
     format: "an unrecognised file",
     route: claimed?.route ?? "files",
-    supported: false,
+    verdict: "refused",
+    arrives: null,
     mismatch: null,
-    refusal: `Askwell could not tell what this file is from its contents. ${SUPPORTED_SUMMARY}`,
+    refusal: "Askwell could not tell what this file is from its contents.",
   };
+}
+
+/**
+ * One line about one refused file: what it is called, what it turned out to
+ * be, and why that stops here.
+ *
+ * The supported list is *not* in here. It is shown once beneath the whole
+ * block instead — repeating the same sentence after each of five files is how
+ * the one thing worth reading gets skipped. Composed here rather than in the
+ * screen so that it is testable without a browser, which is the same reason
+ * the rest of this module is pure.
+ */
+export function refusalLine(name: string, detection: Detection): string {
+  const reason = detection.refusal === null ? "" : ` ${detection.refusal}`;
+  return `${name} — ${detection.format}.${reason}`;
+}
+
+/**
+ * One line about a file whose route is real but has not been built yet.
+ *
+ * Deliberately not a refusal, and worded so it cannot be read as one. Somebody
+ * whose material is a folder of CSV exports needs to know that Askwell will
+ * take them, and when — telling them "unsupported format" is a lie that costs
+ * the product a user who was a good fit.
+ */
+export function laterLine(name: string, detection: Detection): string {
+  return `${name} — ${detection.format}. Askwell reads these from ${detection.arrives}; nothing was added for it now.`;
 }
 
 /**
