@@ -4,6 +4,23 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.1.18 — 2026-08-27
+
+`M0-MODEL-BE-019`. The inference client.
+
+### Added
+
+- `askwell.inference.client` — generation, embedding and reranking over the Unix socket, with `InferenceUnavailable` and `InferenceFailed` as separate exceptions so callers can degrade to search rather than showing an error.
+- Availability is checked against the supervisor's state file before the request, so the caller gets "no model file at /x.gguf" rather than a connection error.
+
+### Changed
+
+- The supervised process now runs with `--embeddings --pooling mean`.
+
+### Found
+
+- **One process cannot serve all three.** Reranking needs `--reranking` and a reranker model; embeddings from the generation model are 2560 dimensions where the schema is `vector(1024)`. Askwell needs three native processes. Filed as [#89](https://github.com/Rumeasiyan/askwell/issues/89), blocking M1 retrieval.
+
 ## 0.1.17 — 2026-08-27
 
 `M0-MODEL-DEPLOY-018`. Native inference, supervised on the host.
