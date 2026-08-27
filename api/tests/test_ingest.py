@@ -86,23 +86,24 @@ def test_a_source_with_nothing_indexed_is_not_askable() -> None:
     assert not ingest.Coverage(total=12, ready=0, failed=0, running=0, outstanding=12).askable
 
 
-def test_the_whole_pipeline_is_declared_even_though_none_of_it_is_built() -> None:
+def test_the_whole_pipeline_is_declared_even_where_it_is_not_yet_built() -> None:
     """Naming the missing steps is what lets a queued file explain itself.
 
     If this list is ever trimmed to "what exists", a document waiting on
-    extraction goes back to sitting at `queued` with no way to say so.
+    chunking goes back to sitting at `queued` with no way to say so.
     """
     assert [stage.name for stage in ingest.STAGES] == ["extract", "chunk", "embed"]
     assert all(stage.ticket for stage in ingest.STAGES)
 
 
-def test_no_stage_is_installed_yet_and_the_module_does_not_pretend_otherwise() -> None:
-    """Delete this test when extraction lands. Do not delete the assertion it
-    guards: `installed()` is what `process` walks, and a stage that reports
-    itself built while doing nothing would mark documents `ready` that nothing
-    has read — which is the C4 failure, dressed as progress.
+def test_extraction_is_installed_and_chunking_and_embedding_are_not() -> None:
+    """`installed()` is what `process` walks, and a stage that reports itself
+    built while doing nothing would mark documents `ready` that nothing has
+    read — which is the C4 failure, dressed as progress. `M1-EXTRACT-ING-026`
+    installed `extract`; delete this test's second assertion when
+    `M1-INDEX-ING-031` installs `chunk` and it stops being true.
     """
-    assert ingest.installed() == ()
+    assert [stage.name for stage in ingest.installed()] == ["extract"]
 
 
 def test_a_queue_that_cannot_be_reached_delays_rather_than_loses(

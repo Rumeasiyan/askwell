@@ -17,6 +17,7 @@ dependencies = [
     "psycopg[binary,pool]>=3.2",
     "pydantic>=2.9",
     "pydantic-settings>=2.5",
+    "pypdfium2>=5.0",
     "sqlalchemy[asyncio]>=2.0",
     "structlog>=24.4",
     "uvicorn[standard]>=0.30",
@@ -83,6 +84,14 @@ files = ["src"]
 # An untyped dependency should be a decision, not a silent hole.
 disallow_any_unimported = true
 warn_unreachable = true
+
+# pypdfium2 ships no stubs and no `py.typed` marker. Ignored rather than typed
+# stub-by-hand for one library used at one boundary — `askwell/extract_pdf.py`
+# casts every value it takes back out of pdfium, so the untyped surface is
+# exactly the one function that touches the library and nowhere else.
+[[tool.mypy.overrides]]
+module = "pypdfium2"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

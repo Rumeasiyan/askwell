@@ -22,6 +22,38 @@ Template:
 
 ---
 
+## 2026-08-28 — Extraction is a stage that reads Postgres, so every stage now gets a session of its own
+
+**Decision:** `StageFn` grew a third argument — a session factory — alongside `Work` and the `report` progress callback. `extract`'s real implementation (`api/src/askwell/extract_pdf.py`) needs to write pages and a page count to Postgres, and `M1-ADD-ING-025`'s pipeline gave a stage no way to reach the database at all: only a file description and a byte-progress callback. `M1-EXTRACT-ING-026`.
+
+**Why:** the alternative was to have `extract_pdf.run` open its own engine from configuration it does not otherwise need, independent of the one `askwell.ingest.process` already holds — a second connection pool per document, and a settings dependency threaded into a module that has none today. `chunk` and `embed` will need exactly the same thing when their tickets land: chunks and embeddings are both Postgres writes. Extending the signature once, when the first real stage needed it, is cheaper than three modules each solving the same problem slightly differently, and it is a change discoverable by reading `ingest.py` rather than something a second ticket has to rediscover.
+
+**Consequences:** every test stub that plays the part of a stage (`test_ingest_records.py` has eight) took a third parameter. None of them needed to change behaviour — the harness tests care about claim/progress/failure/resume, not about database access — so the diff is mechanical. A real `chunk` or `embed` stage can now write its own tables without inventing a new plumbing pattern.
+
+**Refs:** `api/src/askwell/ingest.py`, `api/src/askwell/extract_pdf.py`, `api/tests/test_ingest_records.py`.
+
+## 2026-08-28 — A whole-document OCR need parks the same way a missing stage does, without being a fourth pipeline stage
+
+**Decision:** `extract_pdf.run` raises `NeedsOCR` when every page of a PDF comes back with no usable text. `askwell.ingest.process` catches it next to the branch that parks on a missing `Stage.run`, and parks the document naming a constant, `OCR_STAGE = Stage("ocr", "M1-EXTRACT-ING-028")`, that is not a member of `STAGES`. `M1-EXTRACT-ING-026`.
+
+**Why:** the ticket's own scope draws OCR as something `extract` detects and hands off to, not a numbered step after `chunk` and before `embed` — chunking and embedding do not care whether a page's text came from a text layer or from OCR, so OCR belongs *inside* what extraction owns, not after it in the pipeline's spine. Making it a fourth `STAGES` entry would have meant every document passes through an "ocr" stage even when it has a perfectly good text layer, and would have required `chunk`'s dependency on "the stage before it" to skip over "ocr" for the ordinary case — two special cases instead of one exception type. A page-level partial case (some pages have text, some do not) is deliberately *not* this path: only a document with zero usable pages anywhere raises `NeedsOCR`; a mixed document proceeds with its blank pages recorded and waiting for `M1-EXTRACT-ING-028` to fill in later, per the ticket's own edge case ("mixed handling per page, not per document").
+
+**Consequences:** `snapshot()`'s `stage_tickets` lookup has to know about `OCR_STAGE` alongside `STAGES`, or a document parked for OCR would render with an empty ticket string — done by merging `(*STAGES, OCR_STAGE)` at the one place that builds that mapping. `M1-EXTRACT-ING-028`, when it lands, either installs a `run` on `OCR_STAGE` and teaches `resume()` about it the same way `installed()` already covers `STAGES`, or the two mechanisms get unified then — deferred rather than guessed at now, since only one caller of `NeedsOCR` exists yet.
+
+**Refs:** `api/src/askwell/extract_pdf.py`, `api/src/askwell/ingest.py`, `docs/backlog/M1-it-answers-from-my-documents.md` ticket `M1-EXTRACT-ING-026`.
+
+## 2026-08-28 — `resume()` also revives a document parked before its stage existed (#109)
+
+**Decision:** `askwell.ingest.resume()`, run at worker startup, now does two things instead of one: it returns `running` jobs a dead worker was holding (unchanged from `M1-ADD-ING-025`), and it also returns `parked` jobs to `queued` when the stage named in `awaiting` now has a `run` installed. `M1-EXTRACT-ING-026`.
+
+**Why:** `M1-ADD-ING-025` shipped a pipeline with nothing installed, so anyone who added material before `M1-EXTRACT-ING-026` landed has documents sitting `parked`, `awaiting = 'extract'`. Issue [#109](https://github.com/Rumeasiyan/askwell/issues/109), filed while building that ticket, named the consequence exactly: nothing re-queues a `parked` row on its own — the reconcile timer only re-dispatches `queued` ones — so those documents stay parked *through* the very upgrade meant to fix them, discoverable only by someone noticing a library that never reaches `ready`. The issue was closed at the time citing this fix as already built; it was not — the closing comment described the intended shape of the work correctly but the code only ever handled `running` rows. This entry is also the correction of that record: `resume()` is where the fix actually lives, alongside the other "work the last process left in a state it cannot leave on its own" case it was already handling.
+
+The filter matters as much as the revival: only rows whose `awaiting` stage is in `installed()` move. A row parked for `chunk` must stay parked — reviving it unconditionally would let `extract` re-claim a document waiting on a *later* stage, run again for no reason, and park again on the very next one, which is #109's bug reproduced one stage later rather than fixed.
+
+**Consequences:** every future stage ticket gets this behaviour for free rather than having to remember to add it — the alternative considered and rejected was re-queuing parked rows in the migration that installs each stage, which is exactly the kind of thing a future ticket forgets. `resume()` is now the one place "a stage just became real" and "a worker just came back from being interrupted" are both handled, which is why they are documented together here rather than as two separate entries.
+
+**Refs:** `api/src/askwell/ingest.py` (`resume`), `api/tests/test_ingest_records.py`, issue [#109](https://github.com/Rumeasiyan/askwell/issues/109).
+
 ## 2026-08-28 — Postgres is the ingestion queue's record and Redis is only its transport
 
 **Decision:** `ingest_jobs` in Postgres holds one row per document with its state, stage, attempts, error and byte progress, written in the same transaction as the document itself. `arq` on Redis is used only to wake a worker. When the two disagree, Postgres wins: `resume()` returns interrupted jobs at worker startup, and a `reconcile` cron re-dispatches queued rows every thirty seconds. A dispatch that fails is logged and swallowed — never raised into the user's request. `M1-ADD-ING-025`.

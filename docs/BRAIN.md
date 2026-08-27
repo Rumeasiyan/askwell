@@ -7,18 +7,36 @@
 
 ## Current phase
 
-**M1 — It answers from my documents. In progress.** `0.2.6`. M0 complete, 21 of 21.
+**M1 — It answers from my documents. In progress.** `0.2.7`. M0 complete, 21 of 21.
 
-The repository is no longer documentation only. `api/` exists: an image, manifests, the application, and a test suite across twenty-odd modules (the exact count is what `scripts/dev.sh test` prints — a number written down here goes stale within a ticket). The API starts, refuses bad configuration by name, and serves `GET /health` reporting five components separately. `podman compose up -d` brings up four services, the database carries the full v1 schema, and the interface loads at `http://127.0.0.1:8000`. `web/` builds to static assets and the API serves them — the `web` container is gone from the topology. Material can be handed to Askwell, refused by name, and — since `M1-ADD-BE-023` — recorded as sources and documents with content-hash duplicate detection. Since `M1-ADD-ING-025` those records go onto a durable queue that a worker drains in the background, with per-file progress streamed to the browser and a queue that survives a restart. Nothing is extracted, embedded or searchable yet: the pipeline's three stages are declared, named with their tickets, and not built.
+The repository is no longer documentation only. `api/` exists: an image, manifests, the application, and a test suite across twenty-odd modules (the exact count is what `scripts/dev.sh test` prints — a number written down here goes stale within a ticket). The API starts, refuses bad configuration by name, and serves `GET /health` reporting five components separately. `podman compose up -d` brings up four services, the database carries the full v1 schema, and the interface loads at `http://127.0.0.1:8000`. `web/` builds to static assets and the API serves them — the `web` container is gone from the topology. Material can be handed to Askwell, refused by name, and — since `M1-ADD-BE-023` — recorded as sources and documents with content-hash duplicate detection. Since `M1-ADD-ING-025` those records go onto a durable queue that a worker drains in the background, with per-file progress streamed to the browser and a queue that survives a restart. Since `M1-EXTRACT-ING-026` a text-layer PDF is actually read: page text, page count and per-page usability land in Postgres, and a document proceeds as far as `chunk`, which is the next stage still undeclared as `run`. Nothing is chunked or embedded yet, and nothing is searchable — `chunk` and `embed` are declared with their tickets and not built.
 
 (The last sentence of this paragraph used to say the Compose stack, the schema and inference did not exist. All three do; it was left behind by three tickets in a row and is removed rather than corrected.)
 
-**Version:** `0.2.6` (see `VERSION`). Tickets bump `PATCH`; M0 landing took it to `0.2.0` (`AGENTS.md` §7).
+**Version:** `0.2.7` (see `VERSION`). Tickets bump `PATCH`; M0 landing took it to `0.2.0` (`AGENTS.md` §7).
 **Tracker:** `Rumeasiyan/askwell`. Working agreements in `AGENTS.md`. Backlog in `docs/backlog/`.
 
 ## Last completed
 
-**`M1-ADD-ING-025`** — indexing stops belonging to the page you are looking at. `0.2.6`. Issue [#111](https://github.com/Rumeasiyan/askwell/issues/111).
+**`M1-EXTRACT-ING-026`** — a text-layer PDF is actually read. `0.2.7`. Issue [#117](https://github.com/Rumeasiyan/askwell/issues/117), closed.
+
+The ingestion pipeline's first real stage. `extract_pdf.py` reads a PDF page by page with `pypdfium2` (BSD-3/Apache-2.0, chosen over the AGPL PyMuPDF — `docs/decisions.md`, 2026-08-27) and writes one `document_pages` row per page, whether or not the page has text, plus a real `documents.page_count`. `askwell.ingest.STAGES` installs `extract` for real; a document with a text layer proceeds and parks at `chunk` (`M1-INDEX-ING-031`, still unbuilt), and a document with no usable text layer anywhere parks naming `M1-EXTRACT-ING-028` instead, via a `NeedsOCR` exception rather than a fourth pipeline stage.
+
+Three things this ticket decided, all in `docs/decisions.md`:
+
+- **A stage now gets a session factory of its own.** `StageFn` grew a third argument because `extract` is the first stage that actually writes to Postgres — the pipeline built by `M1-ADD-ING-025` gave a stage a file and a progress callback and nothing to write with.
+- **OCR is inside `extract`'s scope, not a fourth `STAGES` entry.** A whole-document OCR need raises `NeedsOCR`, caught next to the branch that parks on a missing `Stage.run`, so both routes to `parked` share one mechanism. A *partly* usable document (some pages have text, some don't) is not this case — it proceeds normally with its blank pages recorded, per the ticket's own edge case.
+- **#109 is actually fixed now, not just described as fixed.** That issue's prior closing comment (on `M1-ADD-ING-025`) said `resume()` revives a `parked` document once its stage lands; the code never did that. Found while building this ticket, by reading `resume()` rather than trusting the comment. `resume()` now really does return a `parked` job to `queued` when its `awaiting` stage has a `run` installed — reopened, fixed, tested, closed again with real evidence.
+
+**Verified 2026-08-28, on the stack and against a real database.**
+
+- `scripts/dev.sh check` — lint, format, `mypy --strict` over 35 modules, **337 tests passed**.
+- `scripts/dev.sh test-db` — **94 passed**, including the two new #109 tests and coverage for a mixed text/blank-page document, a document with no usable text anywhere, and a rotated page.
+- On the running stack: a real 3-page PDF added through `POST /sources` extracted for real — `documents.page_count = 3` matching the file, three `document_pages` rows each holding the right page's text, worker log `extract_pdf_completed pages=3 pages_with_text=3` then `ingest_parked awaiting=chunk`. A second file with no text on any page parked `awaiting=ocr` instead, confirming the OCR-routing path outside of tests too.
+
+**What is not demonstrable yet, stated plainly:** nothing is chunked or searchable — `chunk` and `embed` are `M1-INDEX-ING-031` and `M1-INDEX-ING-032`, this ticket's own out-of-scope list. Corrupt and password-protected PDFs fail with pdfium's raw error text rather than the classified, retryable messages `M1-EXTRACT-VAL-030` adds later. Multi-column reading order is best-effort, stated in the module docstring rather than solved.
+
+**Before that: `M1-ADD-ING-025`** — indexing stops belonging to the page you are looking at. `0.2.6`. Issue [#111](https://github.com/Rumeasiyan/askwell/issues/111).
 
 Recording a drop now writes a queue row per document in the same transaction as the document, and a worker drains it. The add request ends; the work does not.
 
