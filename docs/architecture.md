@@ -113,6 +113,20 @@ This costs a container on someone's laptop, which the topology rule otherwise re
 
 The sandbox Postgres has no route to the proxy at all (C3).
 
+### 5.1 How it is built, and how a destination would be authorised
+
+Implemented in M0-STACK-SEC-010. Two halves, and both are needed:
+
+**The network makes bypassing impossible.** Every service except the proxy sits on a Compose network declared `internal`, which has no route off the machine. A container that ignores `HTTP_PROXY` does not find another way out — it finds nothing. That is an absence of routing rather than a rule that could be relaxed by accident, and it is why the proxy being *down* does not open a route: verified by stopping it and watching a direct connection to `1.1.1.1` return `Network is unreachable` and a DNS lookup fail.
+
+**The proxy makes attempts visible.** Anything that respects the proxy variables is refused with an explanation and logged with its destination and the service that tried — resolved to a container name, because "something on 10.89.2.6" sends whoever reads it to work out what that address was on a machine where it will be something else tomorrow. Anything that ignores them is refused by the network, silently. Both are refusals; only the first is diagnosable, and a dependency phoning home is exactly the thing worth seeing.
+
+**The proxy never forwards.** In local mode there are no allowed destinations, so it is not a proxy configured strictly — it is a service whose entire job is to refuse and say what it refused. There is no allowlist to misconfigure, and a test asserts that no such thing has been added.
+
+**A liveness probe is not an egress attempt.** Askwell's own health surface checks the proxy by opening a connection and closing it. Counting that would add one to the refusal figure every few seconds, turning a number that means *something tried to phone home* into a number that means *Askwell is running* — worse than not having the number. A connection that sends nothing is logged at debug and not counted.
+
+**How a destination would be authorised — and none is.** The mechanism is deliberately not a configuration file, because a file is edited once and stays edited. An authorisation is a **decision the user makes**, recorded in the decisions store, scoped to one conversation (online AI) or one question (web search), and time-bound. The proxy holds it in memory for that scope and drops it; there is no persistent form of it and no setting that creates one. Until M8 there is no code path that grants one at all, and the count on the settings screen is therefore a measured zero.
+
 ## 5.2 Web search
 
 Full behaviour in `web-search.md`. The architectural points:

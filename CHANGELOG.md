@@ -4,6 +4,21 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.1.13 — 2026-08-27
+
+`M0-STACK-SEC-010`. The default-deny egress proxy — C1's enforcement point.
+
+### Added
+
+- `askwell.egress` and an `egress-proxy` service. It never forwards anything: in local mode there are no allowed destinations, and a test asserts no allowlist has been added.
+- A Compose network declared `internal`, so every service but the proxy has **no route off the machine**. Bypassing the proxy finds nothing rather than finding another way out.
+- Refusals logged with the destination and the originating service, resolved to a container name, and counted in Redis for the settings surface.
+- `docs/architecture.md` §5.1 — how it is built, and how a destination *would* be authorised without authorising any.
+
+### Fixed
+
+- **The health probe was counted as a refused egress attempt.** Askwell checks the proxy by opening a connection and closing it, which added one to the refusal figure every few seconds — turning a number that means "something tried to phone home" into one that means "Askwell is running".
+
 ## 0.1.12 — 2026-08-27
 
 `M0-FOUND-DOC-008`. Version and changelog discipline, enforced rather than practised.

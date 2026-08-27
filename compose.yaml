@@ -11,10 +11,15 @@
 #   podman compose down           stop, keeping data
 #   podman compose down -v        stop and destroy the data. There is no undo.
 #
-# Not here yet, deliberately: the egress proxy (M0-STACK-SEC-010), the sandbox
-# database for untrusted dumps (M4, C3), voice (M6), and native inference,
-# which runs as a host process rather than a container because it needs the
-# GPU.
+# Not here yet, deliberately: the sandbox database for untrusted dumps (M4, C3),
+# voice (M6), and native inference, which runs as a host process rather than a
+# container because it needs the GPU.
+#
+# C1 is enforced by the network topology, not by asking nicely. Every service
+# except the proxy sits on an `internal` network, which has no route off this
+# machine — so a container that ignores HTTP_PROXY does not find another way
+# out, it finds nothing. The proxy is the only service on both networks, and it
+# refuses everything.
 
 name: askwell
 
@@ -57,6 +62,7 @@ services:
       start_period: 10s
     # No ports. Nothing outside the stack talks to the database, and publishing
     # it would put an open Postgres on the machine's network interface.
+    networks: [internal]
     restart: unless-stopped
 
   redis:
@@ -77,6 +83,27 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+    networks: [internal]
+    restart: unless-stopped
+
+  egress-proxy:
+    image: localhost/askwell-api:dev
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    command: ["askwell-egress-proxy"]
+    environment:
+      ASKWELL_DATABASE_URL: postgresql://askwell_app:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-askwell}
+      ASKWELL_REDIS_HOST: redis
+      ASKWELL_ENVIRONMENT: ${ASKWELL_ENVIRONMENT:-development}
+      ASKWELL_LOG_LEVEL: ${ASKWELL_LOG_LEVEL:-INFO}
+    # The only service on both networks. It is therefore the only route out of
+    # the stack, and it never forwards anything: in local mode there are no
+    # allowed destinations and there is no configuration that would create one.
+    networks: [internal, egress]
+    depends_on:
+      redis:
+        condition: service_healthy
     restart: unless-stopped
 
   api:
@@ -98,10 +125,21 @@ services:
       ASKWELL_PROFILE: ${ASKWELL_PROFILE:-balanced}
       ASKWELL_LOG_LEVEL: ${ASKWELL_LOG_LEVEL:-INFO}
       ASKWELL_WEB_ASSETS_DIR: /app/web/out
+      # Anything that respects these gets refused *with a log naming it*.
+      # Anything that ignores them gets no route at all, because `internal`
+      # has none — refused either way, but only the first way is diagnosable,
+      # and a dependency phoning home is exactly the thing worth seeing.
+      HTTP_PROXY: http://egress-proxy:3128
+      HTTPS_PROXY: http://egress-proxy:3128
+      http_proxy: http://egress-proxy:3128
+      https_proxy: http://egress-proxy:3128
+      NO_PROXY: localhost,127.0.0.1,postgres,redis,worker
+      no_proxy: localhost,127.0.0.1,postgres,redis,worker
     volumes:
       # The built interface, read-only: the API serves these files and has no
       # reason to be able to change them.
       - ./web/out:/app/web/out:ro,z
+    networks: [internal]
     ports:
       # 127.0.0.1 is load-bearing, not decoration. "8000:8000" would publish on
       # every interface, putting the user's entire corpus on whatever café
@@ -126,12 +164,30 @@ services:
       ASKWELL_REDIS_HOST: redis
       ASKWELL_ENVIRONMENT: ${ASKWELL_ENVIRONMENT:-development}
       ASKWELL_LOG_LEVEL: ${ASKWELL_LOG_LEVEL:-INFO}
+      HTTP_PROXY: http://egress-proxy:3128
+      HTTPS_PROXY: http://egress-proxy:3128
+      http_proxy: http://egress-proxy:3128
+      https_proxy: http://egress-proxy:3128
+      NO_PROXY: localhost,127.0.0.1,postgres,redis
+      no_proxy: localhost,127.0.0.1,postgres,redis
+    networks: [internal]
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     restart: unless-stopped
+
+networks:
+  # No route off this machine. Not a firewall rule that could be relaxed by
+  # accident — an absence of routing, which is the strongest form of "no" a
+  # container network has.
+  internal:
+    internal: true
+
+  # The proxy alone. Its only purpose is to exist so that the proxy has
+  # somewhere to refuse *to*.
+  egress: {}
 
 volumes:
   # Named, so `podman compose down` keeps them. The user closes the lid and
