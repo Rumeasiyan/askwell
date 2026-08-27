@@ -586,9 +586,35 @@ main() {
     exit 0
   fi
 
-  die "Live runs are not enabled in this build. Gate commands do not exist yet (M0
-       creates them), so a live run could not verify anything it produced.
-       Use --dry until M0 has landed and docs/build-runner.md §7.3 is filled in."
+  # The guard this replaces refused every live run while the gate was a stub
+  # that returned success. That is no longer true — M0 landed and §7.3 is
+  # filled from real output — but deleting the check outright would leave
+  # nothing standing between a broken gate and an unattended queue.
+  #
+  # So the gate is proved on the tree as it is, before the agent touches it.
+  # A gate that cannot pass on a clean checkout cannot tell good work from
+  # bad afterwards: everything it reports would be the tree's own failure
+  # wearing the ticket's name.
+  head2 "Proving the gate before trusting it"
+  say "  the gate must pass on this tree as it stands, or its verdict on new"
+  say "  work means nothing"
+  if ! run_gate "baseline"; then
+    die "The gate does not pass on the current tree, before this ticket has
+       changed anything. Fix that first — every failure it reported above
+       belongs to the tree, not to $TICKET, and a run started now would
+       attribute them to the ticket."
+  fi
+  if [ -n "$GATE_SKIPPED" ]; then
+    say ""
+    say "  ${BOLD}note:${RESET} skipped$GATE_SKIPPED"
+    say "  those checks will be skipped after the build too. Bring the stack up"
+    say "  first if you want them to count: podman compose up -d"
+  fi
+
+  die "Live build is wired but the agent invocation is still the next step.
+       The gate, the ledger and the prompts are all proved; what remains is
+       calling $AGENT_BIN with the rendered prompt and handling its result.
+       Use --dry to read the prompt that would be sent."
 }
 
 main "$@"
