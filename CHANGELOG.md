@@ -4,6 +4,21 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.42 — 2026-08-28
+
+Abstention copy that proves the search happened. `M2-ABSTAIN-BE-054`.
+
+### Added
+
+- **`askwell.agent.abstain.compose_abstention`** builds the three-part abstention message — state the situation, prove the search happened, give the next action — as a pure template, no second model call: the nearest topic is the top scored candidate's own heading (or filename, when no heading exists), already in memory from the retrieval the turn already did. `askwell.ask._abstain_reason` now also returns the real passage/document/database counts the message proves the search against, queried with the identical join and `WHERE` clause `askwell.retrieve`'s own dense and lexical searches use.
+- **A distinct empty-corpus variant** and a distinct still-indexing variant, neither of which claims a search happened or names a nearest topic — there is nothing to prove or name in either case.
+- **`prompts/abstention.v1.md`**, versioned like every other prompt, states the standing rule this composition path must never cross: general knowledge is never substituted for a question about the user's own material (C5). `test_abstain.py` asserts the statement survives, the same shape as `test_compose.py`'s C7 assertions.
+- `messages.content` and the audit record's own `answer` now carry the composed message for an abstained turn, rather than staying empty — streaming it as a `token` SSE event is `M2-ABSTAIN-FE-055`'s call to make, not this ticket's.
+
+### Verified
+
+- `scripts/dev.sh test` (497 passed, 1 skipped), `scripts/dev.sh test-db` (231 passed), `lint`, `typecheck` all clean.
+
 ## 0.2.41 — 2026-08-28
 
 A below-threshold retrieval abstains instead of answering. `M2-ABSTAIN-RET-053`, issue 144.

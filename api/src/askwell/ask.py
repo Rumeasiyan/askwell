@@ -71,7 +71,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -80,6 +80,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from askwell.agent.abstain import AbstainReason, compose_abstention
 from askwell.agent.claims import Claim, locate_quoted_span, segment_claims
 from askwell.agent.compose import compose
 from askwell.agent.summarize import fallback_summary, summarize_turn
@@ -353,48 +354,100 @@ def _label_for_sources(document_count: int) -> str:
     return f"Reading {document_count} sources."
 
 
+class _AbstainContext(NamedTuple):
+    """Why this turn abstained, plus what `askwell.agent.abstain.compose_abstention`
+    needs to prove the search happened: real counts, not the top-K
+    `candidates` list already in memory, which is capped at
+    `Settings.retrieval_candidate_count` and would under-report a large
+    corpus (`docs/ux/ask.md` §6's own "very large corpus" edge case).
+    """
+
+    reason_code: AbstainReason
+    passage_count: int
+    document_count: int
+    database_count: int
+
+
+# `sources.kind` (`ck_sources_kind`): `file`/`csv` are documents, `dump`/
+# `connection` are the ticket's own "databases" — a source imported or
+# connected, never a document the ingest pipeline extracted text from.
+_DOCUMENT_SOURCE_KINDS = ("file", "csv")
+_DATABASE_SOURCE_KINDS = ("dump", "connection")
+
+# The same join and `WHERE` `askwell.retrieve`'s own dense/lexical searches
+# use (`_dense_search`/`_lexical_search`), scoped identically by
+# `source_id` — the count this proves searched must be provably the same
+# population `retrieve()` actually queried, not a related-but-different one.
+_SEARCH_EXTENT_SQL = text(
+    "SELECT count(c.id) AS passages, "
+    "count(DISTINCT CASE WHEN s.kind = ANY(:document_kinds) THEN d.id END) AS documents, "
+    "count(DISTINCT CASE WHEN s.kind = ANY(:database_kinds) THEN s.id END) AS databases "
+    "FROM chunks c "
+    "JOIN documents d ON d.id = c.document_id "
+    "JOIN sources s ON s.id = d.source_id "
+    "WHERE d.deleted_at IS NULL AND d.superseded_by IS NULL "
+    "AND (CAST(:source_id AS uuid) IS NULL OR d.source_id = CAST(:source_id AS uuid))"
+)
+
+
 async def _abstain_reason(
     factory: async_sessionmaker[AsyncSession], settings: Settings, source_id: uuid.UUID | None
-) -> tuple[str, str]:
+) -> _AbstainContext:
     """Why this turn abstained, distinct from "nothing scored high enough" —
     the ticket's own edge cases: an empty corpus has nothing to match
     against at all, and a source scoped question against a source still
     indexing is missing content, not merely unmatched by what exists.
 
-    Copy is `M2-ABSTAIN-BE-054`'s job; this returns a reason code for that
-    ticket to render, plus a plain-English placeholder trace/`done` can carry
-    in the meantime, matching how `askwell.ask` already handles a `completed`
-    turn's other non-happy-path reasons (e.g. length truncation).
+    `M2-ABSTAIN-RET-053` left `reason_code` as a placeholder for this
+    ticket's copy; the counts alongside it are what let
+    `askwell.agent.abstain.compose_abstention` prove the search happened
+    rather than merely assert it happened.
     """
     async with session_scope(factory) as db:
+        reason_code: AbstainReason
         if source_id is not None:
             cov = await coverage(db, source_id, settings.ocr_confidence_threshold)
             if cov.total == 0:
-                return "empty_corpus", "No documents are indexed under this source yet."
-            if cov.ready < cov.total:
-                return (
-                    "source_indexing",
-                    "This source is still indexing — not everything in it has been searched yet.",
+                reason_code = "empty_corpus"
+            elif cov.ready < cov.total:
+                reason_code = "source_indexing"
+            else:
+                reason_code = "below_threshold"
+        else:
+            # Chunk existence, not `documents.status = 'ready'`:
+            # `askwell.retrieve` searches every live document's chunks
+            # regardless of where that document's own pipeline stage is (its
+            # dense and lexical queries filter only
+            # `deleted_at`/`superseded_by`), so "empty" has to mean the same
+            # thing here or a corpus mid-indexing with something already
+            # searchable would be misreported as having nothing at all.
+            indexed = (
+                await db.execute(
+                    text(
+                        "SELECT count(*) FROM chunks c JOIN documents d ON d.id = c.document_id "
+                        "WHERE d.deleted_at IS NULL AND d.superseded_by IS NULL"
+                    )
                 )
-            return "below_threshold", "Nothing in your files scored above the retrieval threshold."
+            ).scalar_one()
+            reason_code = "empty_corpus" if indexed == 0 else "below_threshold"
 
-        # Chunk existence, not `documents.status = 'ready'`: `askwell.retrieve`
-        # searches every live document's chunks regardless of where that
-        # document's own pipeline stage is (its dense and lexical queries
-        # filter only `deleted_at`/`superseded_by`), so "empty" has to mean
-        # the same thing here or a corpus mid-indexing with something already
-        # searchable would be misreported as having nothing at all.
-        indexed = (
+        extent = (
             await db.execute(
-                text(
-                    "SELECT count(*) FROM chunks c JOIN documents d ON d.id = c.document_id "
-                    "WHERE d.deleted_at IS NULL AND d.superseded_by IS NULL"
-                )
+                _SEARCH_EXTENT_SQL,
+                {
+                    "document_kinds": list(_DOCUMENT_SOURCE_KINDS),
+                    "database_kinds": list(_DATABASE_SOURCE_KINDS),
+                    "source_id": str(source_id) if source_id else None,
+                },
             )
-        ).scalar_one()
-    if indexed == 0:
-        return "empty_corpus", "No documents are indexed yet."
-    return "below_threshold", "Nothing in your files scored above the retrieval threshold."
+        ).one()
+
+    return _AbstainContext(
+        reason_code=reason_code,
+        passage_count=int(extent[0]),
+        document_count=int(extent[1]),
+        database_count=int(extent[2]),
+    )
 
 
 async def _generate(
@@ -479,9 +532,28 @@ async def _run_generation(
             # answer. `citation_rows` stays empty, which is what already
             # makes `summarize_turn` (below) treat this turn as abstained —
             # `source_count = None`, never `0`.
-            abstain_code, reason = await _abstain_reason(factory, settings, source_id)
-            trace_steps.append({"kind": "abstain", "reason_code": abstain_code})
+            abstain_context = await _abstain_reason(factory, settings, source_id)
+            # The nearest miss, not the fused `.score`: the same comparable
+            # score the threshold decision above was made against, so
+            # "closest" here means the same thing it meant to that decision.
+            # `None` when nothing was retrieved at all — `compose_abstention`
+            # renders that as "found nothing close" rather than a topic.
+            nearest = max(scored_candidates, key=lambda pair: pair[1], default=None)
+            nearest_heading = (nearest[0].heading or nearest[0].filename) if nearest else None
+            reason = compose_abstention(
+                reason_code=abstain_context.reason_code,
+                passage_count=abstain_context.passage_count,
+                document_count=abstain_context.document_count,
+                database_count=abstain_context.database_count,
+                nearest_heading=nearest_heading,
+            )
+            trace_steps.append({"kind": "abstain", "reason_code": abstain_context.reason_code})
             turn.emit("step", {"label": "Nothing in your files answers this.", "kind": "read"})
+            # `messages.content` and the audit record's own `answer`
+            # (below) carry the composed copy — streamed as a `token` event
+            # is `M2-ABSTAIN-FE-055`'s call to make, not this ticket's; the
+            # composition and its persistence are what this one owns.
+            turn.text = reason
         else:
             document_count = len({candidate.document_id for candidate in candidates})
             turn.emit("step", {"label": _label_for_sources(document_count), "kind": "read"})
