@@ -1325,6 +1325,98 @@ async def test_retrying_something_that_did_not_fail_is_refused_by_name(
     assert unknown.state is None
 
 
+async def test_reindexing_a_source_requeues_every_live_document_regardless_of_state(
+    factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    tmp_path: Path,
+    unreachable_queue: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`M1-LIB-FE-050`: re-index is not `retry` — it puts back *every* live
+    document, including one that already reached `ready`, not only the ones
+    that failed. A ready document with a stale OCR flag would otherwise be
+    invisible to a re-index meant to fix exactly that.
+    """
+    await nominate(session, str(tmp_path))
+    written(tmp_path, "ready.pdf", PDF)
+    written(tmp_path, "broken.pdf", OTHER)
+    documents = await recorded(session, tmp_path, "ready.pdf", "broken.pdf")
+
+    async def fails(
+        work: Work, report: Report, factory: async_sessionmaker[AsyncSession], _settings: Settings
+    ) -> None:
+        raise OSError("could not read it")
+
+    monkeypatch.setattr(ingest, "STAGES", (Stage("extract", "M1-EXTRACT-ING-026", fails),))
+    for _ in range(ingest.MAX_ATTEMPTS):
+        await ingest.process(factory, unreachable_queue, documents[1])
+
+    # The other document is marked ready by hand, with a flagged OCR
+    # confidence — exactly the state a re-index exists to clear.
+    await session.execute(
+        text("UPDATE documents SET status = 'ready', ocr_confidence = 0.2 WHERE id = :id"),
+        {"id": documents[0]},
+    )
+    source_row = (
+        await session.execute(
+            text("SELECT source_id FROM documents WHERE id = :id"), {"id": documents[0]}
+        )
+    ).one()
+    source_id = source_row[0]
+    await ingest.refresh_source(session, source_id, unreachable_queue.ocr_confidence_threshold)
+    await session.commit()
+
+    outcome = await ingest.reindex_source(session, source_id, unreachable_queue)
+    await session.commit()
+
+    assert outcome.found
+    assert outcome.documents == 2
+    assert set(outcome.document_ids) == set(documents)
+
+    rows = (
+        await session.execute(
+            text(
+                "SELECT j.state, j.attempts, j.error, d.status, d.ocr_confidence "
+                "FROM ingest_jobs j JOIN documents d ON d.id = j.document_id "
+                "WHERE j.document_id = ANY(:ids)"
+            ),
+            {"ids": documents},
+        )
+    ).all()
+    assert len(rows) == 2
+    for row in rows:
+        assert row[0] == "queued"
+        assert row[1] == 0
+        assert row[2] is None
+        assert row[3] == "queued"
+        assert row[4] is None
+
+    source_status = (
+        await session.execute(text("SELECT status FROM sources WHERE id = :id"), {"id": source_id})
+    ).one()
+    assert source_status[0] == "queued"
+
+    decisions = (
+        await session.execute(
+            text(
+                "SELECT payload FROM audit_decisions WHERE kind = 'source_reindex_requested' "
+                "ORDER BY occurred_at DESC LIMIT 1"
+            )
+        )
+    ).one()
+    assert decisions[0]["source_id"] == str(source_id)
+    assert decisions[0]["documents"] == 2
+
+
+async def test_reindexing_an_unknown_or_deleted_source_is_refused_by_name(
+    session: AsyncSession, settings: Settings
+) -> None:
+    unknown = await ingest.reindex_source(session, uuid.uuid4(), settings)
+    assert not unknown.found
+    assert unknown.documents == 0
+    assert unknown.document_ids == []
+
+
 async def test_a_document_deleted_before_its_job_ran_is_not_a_failure(
     factory: async_sessionmaker[AsyncSession],
     session: AsyncSession,
