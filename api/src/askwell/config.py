@@ -125,6 +125,23 @@ class Settings(BaseSettings):
     # re-embed, not a schema edit. bge-m3 gives 1024.
     embedding_dimensions: int = Field(default=1024, ge=1, le=16000)
 
+    # How many candidates dense search and lexical search each fetch before
+    # fusion. Bounded because both queries scan every chunk in the corpus with
+    # no vector index yet (`M1-ASK-RET-035`) — a number sized to a large corpus
+    # is a number that makes every question slow on a small one. Reciprocal
+    # rank fusion only needs enough of each ranked list to find the overlap;
+    # the fused result is truncated to the same count.
+    retrieval_candidate_count: int = Field(default=40, ge=1, le=500)
+
+    # The score below which a candidate is a near-miss rather than a match.
+    # Not applied here — abstaining on it is `M2`'s decision, out of this
+    # ticket's scope — but captured alongside every candidate's score so the
+    # abstention explanation can show "the right passage scored 0.61 under a
+    # 0.65 threshold" without recomputing a number that would have moved by
+    # the time anyone asks (`docs/architecture.md` §7.1). 0.65 is the same
+    # starting point named there, not a measured figure.
+    retrieval_score_threshold: float = Field(default=0.65, ge=0, le=1)
+
     # How many chunks go into one call to the embedding model. Bounded for the
     # same reason `ingest_concurrency` is: a batch sized to the whole document
     # is a batch sized to whatever the largest document turns out to be, and a
