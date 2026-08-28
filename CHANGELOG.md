@@ -4,6 +4,27 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.45 — 2026-08-28
+
+Partial answers: answer the grounded part, name the gap. `M2-PARTIAL-BE-057`.
+
+### Added
+
+- **`askwell.agent.partial`**: `compose_partial` builds the prompt for one turn once at least one candidate has cleared the retrieval threshold, from a new versioned prompt (`prompts/partial_answer.v1.md`) rather than a variant of the ordinary answer prompt. A compound question is answered, with citations, for exactly the aspects the retrieved content supports; any aspect it does not support is never guessed at or smoothed into fluent prose — the model names it plainly on its own line, `Not covered: <the specific aspect>.`. `split_partial_answer` reads that convention back out of the composed text, the same way `askwell.agent.claims.segment_claims` already reads citation markers back out.
+- `askwell.ask._run_generation` now composes every non-abstained turn with `compose_partial` in place of `compose` — a fully-covered question parses to nothing uncovered and composes identically to before this ticket, so this is additive, not a variation of the existing path with a flag on it. `messages.trace` gained `partial_coverage`/`uncovered_aspects`, at both the turn level and the `compose` step; `audit_interactions` gained the same two on the interaction payload (no migration — both stores already carry flexible `jsonb`).
+- `askwell.agent.compose.delimit_candidates`/`flag_injection` are now shared, non-private functions — `askwell.agent.partial` reuses them rather than reimplementing C7's delimitation and injection-flagging a second time.
+
+### Notes
+
+- Structurally cannot blur into abstention: `compose_partial` only ever runs after `M2-ABSTAIN-RET-053`'s own threshold check has already decided the turn is not abstaining, so "every aspect uncovered" stays the abstention branch by construction, never a partial answer with an empty covered half.
+- Aspect decomposition is prompt-driven, not a Python heuristic — there is no reliable way to tell "two aspects, one retrieved" apart from "one aspect, retrieved thinly" without asking the model doing the composition anyway, so detection and composition are one model call, and "marking the message as partial" is reading its own output back rather than a second judgement.
+- **Found while verifying against the real stack, not fixed here:** the shipped generation model (`Qwen3.5-4B-Q4_K_M.gguf`) is a reasoning model and its `<think>` block is never stripped anywhere in the pipeline before `_run_generation` appends every streamed chunk to `turn.text`. Verified live, the model rehearsed `Not covered: termination notice period.` three times while drafting inside `<think>`, so `uncovered_aspects` came back with three duplicate entries instead of one written after `</think>`. This is a pre-existing gap in the whole answer pipeline — `segment_claims`'s citation markers are exposed to the identical risk and predate this ticket — not something introduced by or scoped to this one. Filed as [#220](https://github.com/Rumeasiyan/askwell/issues/220).
+
+### Verified
+
+- `scripts/dev.sh test` (510 passed, 1 skipped, up from 497) and `scripts/dev.sh test-db` (241 passed, up from 238 — 3 new in `test_ask_api.py`: a compound question with one uncovered aspect, every aspect covered composing exactly as before, every aspect uncovered still abstaining rather than going partial). `lint`, `typecheck`, `fmt-check` all clean.
+- Against the running stack with native inference on the host and the real bundled weights (`bge-m3`, `bge-reranker-v2-m3`, `Qwen3.5-4B`): a real two-part question against a seeded chunk (payment terms covered, termination notice not) produced `partial_coverage: true` with citations on the covered sentences and a plain `Not covered: termination notice period.` line — confirming the mechanism works end to end with a real model, with the caveat above about the duplicate count from unstripped reasoning. A fully-covered question against the same corpus composed and stored exactly as it did before this ticket.
+
 ## 0.2.44 — 2026-08-28
 
 The local abstention rate, computed from stored values, never recomputed. `M2-ABSTAIN-OBS-056`.

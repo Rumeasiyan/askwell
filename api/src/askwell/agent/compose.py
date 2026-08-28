@@ -70,7 +70,12 @@ def _load_system_prompt() -> str:
     return PROMPT_PATH.read_text(encoding="utf-8")
 
 
-def _delimit(candidates: list[Candidate]) -> str:
+def delimit_candidates(candidates: list[Candidate]) -> str:
+    """Wrap each candidate in its own `<retrieved-content>` block. Shared with
+    `askwell.agent.partial`, which composes a different prompt over the same
+    candidates and must delimit them identically — the C7 boundary this
+    enforces does not change with which prompt is in force.
+    """
     blocks = [
         f'<{CONTENT_TAG} index="{index}" chunk_id="{candidate.chunk_id}">\n'
         f"{candidate.content}\n"
@@ -80,7 +85,9 @@ def _delimit(candidates: list[Candidate]) -> str:
     return "\n\n".join(blocks)
 
 
-def _flag(candidates: list[Candidate]) -> tuple[bool, tuple[str, ...]]:
+def flag_injection(candidates: list[Candidate]) -> tuple[bool, tuple[str, ...]]:
+    """Heuristic instruction-pattern flagging, shared with `askwell.agent.partial`
+    for the same reason `delimit_candidates` is."""
     matched: list[str] = []
     for candidate in candidates:
         for pattern in _INSTRUCTION_PATTERNS:
@@ -91,10 +98,10 @@ def _flag(candidates: list[Candidate]) -> tuple[bool, tuple[str, ...]]:
 
 def compose(question: str, candidates: list[Candidate]) -> ComposedPrompt:
     """Build the prompt for one turn. Pure — no I/O beyond reading the cached prompt file."""
-    injection_flagged, injection_patterns = _flag(candidates)
+    injection_flagged, injection_patterns = flag_injection(candidates)
     return ComposedPrompt(
         system_prompt=_load_system_prompt(),
-        user_content=f"{_delimit(candidates)}\n\nQuestion: {question}",
+        user_content=f"{delimit_candidates(candidates)}\n\nQuestion: {question}",
         prompt_version=PROMPT_VERSION,
         injection_flagged=injection_flagged,
         injection_patterns=injection_patterns,

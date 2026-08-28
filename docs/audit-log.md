@@ -91,7 +91,7 @@ This is deferred with the rest of stage 7 and needs its own decision before that
 
 **Decisions:** clarification answers, corrections to memory, source added/removed/reconfigured, settings changed, log budget changed, document deleted (with reason — this is what an old citation resolves to under issue #11's tombstone).
 
-**Interactions:** question asked, answer produced, chunks retrieved with scores, SQL generated and whether it was accepted or rejected by validation, rows returned, duration, backend used, abstentions, tool-ceiling stops.
+**Interactions:** question asked, answer produced, chunks retrieved with scores, SQL generated and whether it was accepted or rejected by validation, rows returned, duration, backend used, abstentions, partial answers with the aspects named as not covered, tool-ceiling stops.
 
 Rejected SQL is recorded deliberately. It is the signal that a prompt change has degraded generation, and it is invisible unless logged.
 
