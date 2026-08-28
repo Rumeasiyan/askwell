@@ -253,12 +253,15 @@ case "$cmd" in
         ;;
 
     eval)
-        # --network=none: the harness talks to the native inference process
-        # over the Unix socket mounted below, never the network (C1) — the
-        # same guarantee every other in_image command gets, extended with the
-        # one bind mount this command additionally needs. database_url is a
-        # fixed placeholder, never read from .env: the harness never touches
-        # Postgres, and Settings requires the field to exist regardless.
+        # The harness talks to the native inference process over the Unix
+        # socket mounted below, never the network (C1) — same guarantee
+        # every other in_image command gets. `M2-EVAL-TEST-063`'s smoke suite
+        # never touched Postgres, so this used to run with `--network=none`
+        # and a placeholder database_url; `M2-EVAL-TEST-064` added a
+        # `mode: "grounded"` suite kind that seeds and queries the fixture
+        # corpus through the real database, the same way `db`/`test-db`
+        # already join the stack's network to reach it — an eval run is the
+        # local machine talking to itself, not egress.
         #
         # -w /app/api, not /app: Settings reads `.env` relative to the working
         # directory, and the real `.env` at the repo root carries the raw
@@ -268,8 +271,8 @@ case "$cmd" in
         [ "$#" -gt 0 ] || die "eval needs a suite, e.g. $SELF eval --suite smoke.v1"
         image_exists || build_image
         "$CONTAINER" run --rm "${TTY_FLAGS[@]}" \
-            --network=none \
-            -e ASKWELL_DATABASE_URL="postgresql://unused:unused@127.0.0.1:1/unused" \
+            --network "${ASKWELL_COMPOSE_NETWORK:-askwell_internal}" \
+            -e ASKWELL_DATABASE_URL="postgresql://$(_db_user):$(_db_password)@$(_db_host):5432/$(_db_name)" \
             -e ASKWELL_PROFILE="${ASKWELL_PROFILE:-balanced}" \
             -v "$REPO_ROOT":/app:z \
             -v "${ASKWELL_RUN_DIR:-$REPO_ROOT/.run}":/run/askwell:z \

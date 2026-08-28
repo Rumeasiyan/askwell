@@ -1,0 +1,328 @@
+{
+  "name": "grounded_qa.v1",
+  "category": "grounded-document-qa",
+  "mode": "grounded",
+  "pass_bar": 0.85,
+  "tasks": [
+    {
+      "id": "handbook-a-holiday-accrual",
+      "prompt": "How many paid holiday days do Meridian Loom employees accrue per calendar year?",
+      "scorer": "contains_all",
+      "expected": ["eleven"],
+      "expected_documents": ["handbook_a.pdf"],
+      "expected_passages": ["eleven paid holiday days"]
+    },
+    {
+      "id": "handbook-a-notice-period",
+      "prompt": "What is the standard resignation notice period at Meridian Loom?",
+      "scorer": "contains_all",
+      "expected": ["sixty-three"],
+      "expected_documents": ["handbook_a.pdf"],
+      "expected_passages": ["sixty-three days"]
+    },
+    {
+      "id": "handbook-a-parental-leave",
+      "prompt": "How many weeks of full-pay parental leave does Meridian Loom offer?",
+      "scorer": "contains_all",
+      "expected": ["twenty-two"],
+      "expected_documents": ["handbook_a.pdf"],
+      "expected_passages": ["twenty-two weeks"]
+    },
+    {
+      "id": "handbook-a-holiday-carryover",
+      "prompt": "At most how many unused holiday days can a Meridian Loom employee carry into the next year?",
+      "scorer": "contains_all",
+      "expected": ["nine"],
+      "expected_documents": ["handbook_a.pdf"],
+      "expected_passages": ["nine unused holiday days"]
+    },
+    {
+      "id": "handbook-a-probation-length",
+      "prompt": "How long is the Meridian Loom probation period for new hires?",
+      "scorer": "contains_all",
+      "expected": ["one hundred and four"],
+      "expected_documents": ["handbook_a.pdf"],
+      "expected_passages": ["one hundred and four days"]
+    },
+    {
+      "id": "handbook-a-remote-office-visits",
+      "prompt": "How many times a year must remote Meridian Loom employees attend the Cedarbrook office in person?",
+      "scorer": "contains_all",
+      "expected": ["four"],
+      "expected_documents": ["handbook_a.pdf"],
+      "expected_passages": ["four times per year"]
+    },
+    {
+      "id": "handbook-a-equipment-reimbursement",
+      "prompt": "Up to how much does Meridian Loom reimburse for home office equipment per employee?",
+      "scorer": "contains_all",
+      "expected": ["four hundred and forty"],
+      "expected_documents": ["handbook_a.pdf"],
+      "expected_passages": ["four hundred and forty"]
+    },
+    {
+      "id": "handbook-a-whistleblower-hotline",
+      "prompt": "What is the Meridian Loom whistleblower hotline number?",
+      "scorer": "contains_all",
+      "expected": ["800-555-0177"],
+      "expected_documents": ["handbook_a.pdf"],
+      "expected_passages": ["800-555-0177"]
+    },
+    {
+      "id": "handbook-b-disk-encryption",
+      "prompt": "What is the minimum passphrase length Meridian Loom requires for laptop disk encryption?",
+      "scorer": "contains_all",
+      "expected": ["sixteen"],
+      "expected_documents": ["handbook_b.pdf"],
+      "expected_passages": ["sixteen characters"]
+    },
+    {
+      "id": "handbook-b-vpn-token-expiry",
+      "prompt": "After how many days of inactivity do Meridian Loom VPN access tokens expire?",
+      "scorer": "contains_all",
+      "expected": ["fourteen"],
+      "expected_documents": ["handbook_b.pdf"],
+      "expected_passages": ["fourteen days"]
+    },
+    {
+      "id": "handbook-b-breach-notification",
+      "prompt": "Within how many hours of a suspected breach must the Meridian Loom incident response team be notified?",
+      "scorer": "contains_all",
+      "expected": ["three"],
+      "expected_documents": ["handbook_b.pdf"],
+      "expected_passages": ["three hours"]
+    },
+    {
+      "id": "handbook-b-credential-rotation",
+      "prompt": "How often does Meridian Loom rotate production database credentials?",
+      "scorer": "contains_all",
+      "expected": ["forty-five"],
+      "expected_documents": ["handbook_b.pdf"],
+      "expected_passages": ["forty-five days"]
+    },
+    {
+      "id": "handbook-b-data-center",
+      "prompt": "Which data center may host Meridian Loom's customer database?",
+      "scorer": "contains_all",
+      "expected": ["Cedarbrook"],
+      "expected_documents": ["handbook_b.pdf"],
+      "expected_passages": ["Cedarbrook data center"]
+    },
+    {
+      "id": "handbook-b-password-policy",
+      "prompt": "What is the minimum password length in Meridian Loom's password policy?",
+      "scorer": "contains_all",
+      "expected": ["eighteen"],
+      "expected_documents": ["handbook_b.pdf"],
+      "expected_passages": ["eighteen characters"]
+    },
+    {
+      "id": "handbook-b-contractor-access",
+      "prompt": "For how many days can a Meridian Loom contractor hold network access before renewal is required?",
+      "scorer": "contains_all",
+      "expected": ["one hundred and twenty"],
+      "expected_documents": ["handbook_b.pdf"],
+      "expected_passages": ["one hundred and twenty days"]
+    },
+    {
+      "id": "handbook-b-bug-bounty",
+      "prompt": "What is the minimum payout in Meridian Loom's bug bounty program for a critical finding?",
+      "scorer": "contains_all",
+      "expected": ["two thousand"],
+      "expected_documents": ["handbook_b.pdf"],
+      "expected_passages": ["two thousand dollars"]
+    },
+    {
+      "id": "notice-scan-retreat-location",
+      "prompt": "Where will the Meridian Loom annual staff retreat be held this year?",
+      "scorer": "contains_all",
+      "expected": ["Alderford"],
+      "expected_documents": ["notice_scan.pdf"],
+      "expected_passages": ["Alderford"]
+    },
+    {
+      "id": "notice-scan-retreat-dates",
+      "prompt": "What dates does the Meridian Loom staff retreat run?",
+      "scorer": "contains_all",
+      "expected": ["ninth", "twelfth"],
+      "expected_documents": ["notice_scan.pdf"],
+      "expected_passages": ["ninth to the twelfth of March"]
+    },
+    {
+      "id": "notice-scan-confirmation-deadline",
+      "prompt": "By when must department leads confirm attendance at the Meridian Loom retreat?",
+      "scorer": "contains_all",
+      "expected": ["twentieth", "February"],
+      "expected_documents": ["notice_scan.pdf"],
+      "expected_passages": ["twentieth of February"]
+    },
+    {
+      "id": "notice-scan-travel-cost",
+      "prompt": "Up to how much will Meridian Loom cover in travel costs per retreat attendee?",
+      "scorer": "contains_all",
+      "expected": ["seven hundred"],
+      "expected_documents": ["notice_scan.pdf"],
+      "expected_passages": ["seven hundred dollars"]
+    },
+    {
+      "id": "notice-scan-hotline-duplicate",
+      "prompt": "What is the Meridian Loom whistleblower hotline number, per the staff notice?",
+      "scorer": "contains_all",
+      "expected": ["800-555-0177"],
+      "expected_documents": ["handbook_a.pdf", "notice_scan.pdf"],
+      "expected_passages": ["800-555-0177"]
+    },
+    {
+      "id": "spec-battery-life",
+      "prompt": "How many hours does the Loomwear Sensor Mk3 run on a single charge?",
+      "scorer": "contains_all",
+      "expected": ["eleven"],
+      "expected_documents": ["spec.docx"],
+      "expected_passages": ["eleven hours"]
+    },
+    {
+      "id": "spec-weatherproof-rating",
+      "prompt": "What is the weatherproof rating of the Loomwear Sensor Mk3?",
+      "scorer": "contains_all",
+      "expected": ["IP67"],
+      "expected_documents": ["spec.docx"],
+      "expected_passages": ["IP67"]
+    },
+    {
+      "id": "spec-bluetooth-range",
+      "prompt": "What Bluetooth version and range does the Loomwear Sensor Mk3 use?",
+      "scorer": "contains_all",
+      "expected": ["5.3", "forty"],
+      "expected_documents": ["spec.docx"],
+      "expected_passages": ["Bluetooth 5.3"]
+    },
+    {
+      "id": "spec-firmware-cadence",
+      "prompt": "How often are firmware updates released for the Loomwear Sensor Mk3?",
+      "scorer": "contains_all",
+      "expected": ["six weeks"],
+      "expected_documents": ["spec.docx"],
+      "expected_passages": ["six weeks"]
+    },
+    {
+      "id": "spec-warranty-length",
+      "prompt": "How long is the warranty period for the Loomwear Sensor Mk3?",
+      "scorer": "contains_all",
+      "expected": ["three years"],
+      "expected_documents": ["spec.docx"],
+      "expected_passages": ["three years"]
+    },
+    {
+      "id": "spec-pack-size",
+      "prompt": "How many units come in a pack of Loomwear Sensor Mk3?",
+      "scorer": "contains_all",
+      "expected": ["six"],
+      "expected_documents": ["spec.docx"],
+      "expected_passages": ["packs of six"]
+    },
+    {
+      "id": "figures-textiles-revenue",
+      "prompt": "What was the Textiles department's Q1 revenue, per the department figures?",
+      "scorer": "contains_all",
+      "expected": ["482000"],
+      "expected_documents": ["figures.xlsx"],
+      "expected_passages": ["482000"]
+    },
+    {
+      "id": "figures-logistics-headcount",
+      "prompt": "How many people work in the Logistics department, per the department figures?",
+      "scorer": "contains_all",
+      "expected": ["19"],
+      "expected_documents": ["figures.xlsx"],
+      "expected_passages": ["Logistics | 215000 | 19"]
+    },
+    {
+      "id": "figures-research-revenue",
+      "prompt": "What was the Research department's Q1 revenue, per the department figures?",
+      "scorer": "contains_all",
+      "expected": ["903000"],
+      "expected_documents": ["figures.xlsx"],
+      "expected_passages": ["903000"]
+    },
+    {
+      "id": "figures-retail-tenure",
+      "prompt": "What is the average tenure, in years, of the Retail department?",
+      "scorer": "contains_all",
+      "expected": ["1.9"],
+      "expected_documents": ["figures.xlsx"],
+      "expected_passages": ["Retail | 118000 | 41 | 1.9"]
+    },
+    {
+      "id": "figures-design-headcount",
+      "prompt": "How many people work in the Design department, per the department figures?",
+      "scorer": "contains_all",
+      "expected": ["12"],
+      "expected_documents": ["figures.xlsx"],
+      "expected_passages": ["Design | 76000 | 12"]
+    },
+    {
+      "id": "handbook-a-notice-period-paraphrase",
+      "prompt": "How many days' notice does a Meridian Loom employee need to give before resigning?",
+      "scorer": "contains_all",
+      "expected": ["sixty-three"],
+      "expected_documents": ["handbook_a.pdf"],
+      "expected_passages": ["sixty-three days"]
+    },
+    {
+      "id": "handbook-a-probation-paraphrase",
+      "prompt": "For a new Meridian Loom hire, how long does the probation period last?",
+      "scorer": "contains_all",
+      "expected": ["one hundred and four"],
+      "expected_documents": ["handbook_a.pdf"],
+      "expected_passages": ["one hundred and four days"]
+    },
+    {
+      "id": "handbook-b-vpn-paraphrase",
+      "prompt": "How long can a Meridian Loom VPN token sit unused before it expires?",
+      "scorer": "contains_all",
+      "expected": ["fourteen"],
+      "expected_documents": ["handbook_b.pdf"],
+      "expected_passages": ["fourteen days"]
+    },
+    {
+      "id": "handbook-b-password-paraphrase",
+      "prompt": "How many characters long must a Meridian Loom password be at minimum?",
+      "scorer": "contains_all",
+      "expected": ["eighteen"],
+      "expected_documents": ["handbook_b.pdf"],
+      "expected_passages": ["eighteen characters"]
+    },
+    {
+      "id": "spec-battery-paraphrase",
+      "prompt": "On one charge, how long does the Loomwear Sensor Mk3's battery last?",
+      "scorer": "contains_all",
+      "expected": ["eleven"],
+      "expected_documents": ["spec.docx"],
+      "expected_passages": ["eleven hours"]
+    },
+    {
+      "id": "spec-warranty-paraphrase",
+      "prompt": "How long is Loomwear Sensor Mk3 covered under warranty from purchase?",
+      "scorer": "contains_all",
+      "expected": ["three years"],
+      "expected_documents": ["spec.docx"],
+      "expected_passages": ["three years"]
+    },
+    {
+      "id": "figures-research-tenure-paraphrase",
+      "prompt": "What is the average years of tenure for employees in the Research department?",
+      "scorer": "contains_all",
+      "expected": ["5.6"],
+      "expected_documents": ["figures.xlsx"],
+      "expected_passages": ["Research | 903000 | 27 | 5.6"]
+    },
+    {
+      "id": "figures-retail-headcount-paraphrase",
+      "prompt": "How many employees are in the Retail department, per the department figures?",
+      "scorer": "contains_all",
+      "expected": ["41"],
+      "expected_documents": ["figures.xlsx"],
+      "expected_passages": ["Retail | 118000 | 41"]
+    }
+  ]
+}
