@@ -62,6 +62,10 @@ function coverage(over: Partial<SourceCoverage> = {}): SourceCoverage {
     id: "b2f0c1e2-0000-4000-8000-000000000001",
     name: "papers",
     status: "indexing",
+    kind: "file",
+    added_at: "2026-08-28T00:00:00Z",
+    last_error: null,
+    open_clarifications: 0,
     total: 500,
     ready: 80,
     failed: 0,
@@ -248,6 +252,7 @@ function failed(over: Partial<FailedDocument> = {}): FailedDocument {
   return {
     document_id: "d1",
     filename: "scan.pdf",
+    source_id: "b2f0c1e2-0000-4000-8000-000000000001",
     stage: null,
     error: "The file is open in another program.",
     attempts: 1,

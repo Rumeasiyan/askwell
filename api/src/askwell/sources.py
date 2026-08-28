@@ -837,3 +837,16 @@ def register_sources(
         # import.
         await ingest.dispatch(settings, result.queued)
         return JSONResponse(result.as_dict(), status_code=201)
+
+    @app.post("/sources/{source_id}/reindex")
+    async def reindex_source(source_id: uuid.UUID) -> JSONResponse:
+        async with session_scope(factory) as db:
+            outcome = await ingest.reindex_source(db, source_id, settings)
+        if not outcome.found:
+            return JSONResponse({"error": "No such source."}, status_code=404)
+
+        # After the commit, same reasoning as `add_source` above: the queue
+        # rows are already durable, this only saves the worker its next
+        # reconcile wait.
+        await ingest.dispatch(settings, outcome.document_ids)
+        return JSONResponse({"documents": outcome.documents}, status_code=200)

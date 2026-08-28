@@ -81,6 +81,7 @@ log = get_logger(__name__)
 # recorded: they are operational detail, and a store kept forever should not
 # grow by two rows per file.
 SOURCE_STATUS_CHANGED = "source_status_changed"
+SOURCE_REINDEX_REQUESTED = "source_reindex_requested"
 
 # How often a running stage's byte count is written down. Twice a second is
 # faster than anybody reads and slower than a tight loop; the alternative — a
@@ -976,7 +977,7 @@ async def snapshot(session: AsyncSession, settings: Settings) -> dict[str, Any]:
     )
     failures = await session.execute(
         text(
-            "SELECT j.document_id, d.filename, j.stage, j.error, j.attempts "
+            "SELECT j.document_id, d.filename, j.source_id, j.stage, j.error, j.attempts "
             "FROM ingest_jobs j JOIN documents d ON d.id = j.document_id "
             "WHERE j.state = 'failed' ORDER BY j.finished_at DESC"
         )
@@ -1000,16 +1001,19 @@ async def snapshot(session: AsyncSession, settings: Settings) -> dict[str, Any]:
     )
     sources = await session.execute(
         text(
-            "SELECT s.id, s.name, s.status, count(d.id) AS total, "
+            "SELECT s.id, s.name, s.status, s.kind, s.added_at, s.last_error, "
+            "count(d.id) AS total, "
             "count(*) FILTER (WHERE d.status = 'ready') AS ready, "
             "count(*) FILTER (WHERE j.state = 'failed') AS failed, "
             "count(*) FILTER (WHERE d.status = 'indexing') AS running, "
             "count(*) FILTER (WHERE j.state IN ('queued', 'running', 'parked')) AS outstanding, "
             "count(*) FILTER (WHERE d.ocr_confidence IS NOT NULL "
             "AND d.ocr_confidence < :threshold) AS flagged "
-            "FROM sources s JOIN documents d ON d.source_id = s.id AND d.deleted_at IS NULL "
+            "FROM sources s LEFT JOIN documents d ON d.source_id = s.id AND d.deleted_at IS NULL "
             "LEFT JOIN ingest_jobs j ON j.document_id = d.id "
-            "WHERE s.status <> 'deleted' GROUP BY s.id, s.name, s.status ORDER BY s.added_at"
+            "WHERE s.status <> 'deleted' "
+            "GROUP BY s.id, s.name, s.status, s.kind, s.added_at, s.last_error "
+            "ORDER BY s.added_at DESC"
         ),
         {"threshold": settings.ocr_confidence_threshold},
     )
@@ -1056,9 +1060,10 @@ async def snapshot(session: AsyncSession, settings: Settings) -> dict[str, Any]:
             {
                 "document_id": str(row[0]),
                 "filename": row[1],
-                "stage": row[2],
-                "error": row[3],
-                "attempts": int(row[4]),
+                "source_id": str(row[2]),
+                "stage": row[3],
+                "error": row[4],
+                "attempts": int(row[5]),
             }
             for row in failures.all()
         ],
@@ -1080,13 +1085,20 @@ async def snapshot(session: AsyncSession, settings: Settings) -> dict[str, Any]:
                 "id": str(row[0]),
                 "name": row[1],
                 "status": row[2],
+                "kind": row[3],
+                "added_at": row[4].isoformat(),
+                "last_error": row[5],
+                # Clarification counts are always zero until M3 builds the
+                # clarification loop — a stub, not a lie: the library never
+                # claims a count it has no table to back yet.
+                "open_clarifications": 0,
                 **Coverage(
-                    total=int(row[3]),
-                    ready=int(row[4]),
-                    failed=int(row[5]),
-                    running=int(row[6]),
-                    outstanding=int(row[7]),
-                    flagged=int(row[8]),
+                    total=int(row[6]),
+                    ready=int(row[7]),
+                    failed=int(row[8]),
+                    running=int(row[9]),
+                    outstanding=int(row[10]),
+                    flagged=int(row[11]),
                 ).as_dict(),
             }
             for row in sources.all()
@@ -1156,6 +1168,68 @@ async def retry(session: AsyncSession, document_id: uuid.UUID, settings: Setting
     await refresh_source(session, row[0], settings.ocr_confidence_threshold)
     log.info("ingest_retry_requested", document_id=str(document_id))
     return Retried(retried=True, state="queued", source_id=row[0])
+
+
+@dataclass(frozen=True, slots=True)
+class Reindexed:
+    """What a re-index request did. `found` is `False` for an unknown or
+    already-deleted source, distinct from `documents == 0` — a source with
+    nothing in it yet is a normal thing to re-index and finds nothing to do.
+    """
+
+    found: bool
+    documents: int
+    document_ids: list[uuid.UUID]
+
+
+async def reindex_source(
+    session: AsyncSession, source_id: uuid.UUID, settings: Settings
+) -> Reindexed:
+    """Put every live document in a source back through extract, chunk and embed.
+
+    Unlike `retry`, not limited to documents in a `failed` state. A re-index is
+    asked for because the *source* changed underneath Askwell — a scan redone,
+    a file corrected in place — not because one document errored, so every live
+    document goes back to the front of the pipeline regardless of what it is
+    doing now, including one already `ready`. `docs/ux/library.md` §3: "confirms
+    first — it can take hours", because this is that.
+    """
+    existing = await session.execute(
+        text("SELECT id FROM sources WHERE id = :id AND status <> 'deleted'"), {"id": source_id}
+    )
+    if existing.first() is None:
+        return Reindexed(found=False, documents=0, document_ids=[])
+
+    docs = await session.execute(
+        text("SELECT id FROM documents WHERE source_id = :id AND deleted_at IS NULL"),
+        {"id": source_id},
+    )
+    document_ids = [row[0] for row in docs.all()]
+    if not document_ids:
+        return Reindexed(found=True, documents=0, document_ids=[])
+
+    await session.execute(
+        text(
+            "UPDATE ingest_jobs SET state = 'queued', attempts = 0, error = NULL, "
+            "stage = NULL, awaiting = NULL, started_at = NULL, finished_at = NULL, "
+            "bytes_done = NULL, bytes_total = NULL, enqueued_at = now() "
+            "WHERE document_id = ANY(:ids)"
+        ),
+        {"ids": document_ids},
+    )
+    await session.execute(
+        text("UPDATE documents SET status = 'queued', ocr_confidence = NULL WHERE id = ANY(:ids)"),
+        {"ids": document_ids},
+    )
+    await refresh_source(session, source_id, settings.ocr_confidence_threshold)
+    await record(
+        session,
+        Store.DECISIONS,
+        SOURCE_REINDEX_REQUESTED,
+        {"source_id": str(source_id), "documents": len(document_ids)},
+    )
+    log.info("source_reindex_requested", source_id=str(source_id), documents=len(document_ids))
+    return Reindexed(found=True, documents=len(document_ids), document_ids=document_ids)
 
 
 class PasswordRequest(BaseModel):

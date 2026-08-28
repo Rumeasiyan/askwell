@@ -62,6 +62,12 @@ def test_retrying_requires_a_session(client: TestClient) -> None:
     assert response.status_code == 401
 
 
+def test_reindexing_requires_a_session(client: TestClient) -> None:
+    with client:
+        response = client.post("/sources/00000000-0000-0000-0000-000000000000/reindex")
+    assert response.status_code == 401
+
+
 def test_submitting_a_password_requires_a_session(client: TestClient) -> None:
     with client:
         response = client.post(
@@ -92,6 +98,7 @@ def test_a_malformed_document_id_is_a_validation_error_not_a_route_miss(
     with client:
         with_session(client)
         assert client.post("/ingest/documents/not-a-uuid/retry").status_code == 422
+        assert client.post("/sources/not-a-uuid/reindex").status_code == 422
 
 
 @pytest.mark.requires_db
@@ -148,6 +155,9 @@ def test_progress_is_readable_without_holding_the_request_that_started_the_work(
         assert body["estimate"]["seconds"] is None
         assert body["concurrency"] == settings.ingest_concurrency
         assert body["sources"][0]["askable"] is False
+        assert body["sources"][0]["kind"] == "file"
+        assert body["sources"][0]["added_at"]
+        assert body["sources"][0]["open_clarifications"] == 0
         # `extract`, `chunk` and `embed` are real since `M1-EXTRACT-ING-026`,
         # `M1-INDEX-ING-031` and `M1-INDEX-ING-032` — the surface names every
         # stage and whether it is built, and today all three are.
@@ -172,6 +182,14 @@ def test_progress_is_readable_without_holding_the_request_that_started_the_work(
             json={"password": "letmein"},
         )
         assert missing_password.status_code == 404
+
+        source_id = body["sources"][0]["id"]
+        reindexed = client.post(f"/sources/{source_id}/reindex")
+        assert reindexed.status_code == 200, reindexed.text
+        assert reindexed.json()["documents"] == 1
+
+        missing_source = client.post("/sources/00000000-0000-0000-0000-000000000000/reindex")
+        assert missing_source.status_code == 404
 
     with psycopg.connect(database_url, autocommit=True) as clean:
         clean.execute(f"TRUNCATE {TABLES} CASCADE")

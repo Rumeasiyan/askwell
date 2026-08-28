@@ -56,6 +56,7 @@ export interface QueuedDocument {
 export interface FailedDocument {
   document_id: string;
   filename: string;
+  source_id: string;
   stage: string | null;
   error: string | null;
   attempts: number;
@@ -82,6 +83,13 @@ export interface SourceCoverage {
   id: string;
   name: string | null;
   status: string;
+  /** A folder, spreadsheet, dump or live connection. `M4` adds kinds beyond `file`. */
+  kind: string;
+  added_at: string;
+  /** The specific needs-attention cause, in a sentence. `null` when nothing is wrong. */
+  last_error: string | null;
+  /** Always 0 until `M3` builds the clarification loop — a stub, not a lie. */
+  open_clarifications: number;
   total: number;
   ready: number;
   failed: number;
@@ -236,6 +244,28 @@ export async function retryDocument(documentId: string): Promise<void> {
     const body = (await response.json().catch(() => ({}))) as { error?: string };
     throw new Error(body.error ?? `Askwell answered ${response.status} to the retry.`);
   }
+}
+
+/**
+ * Ask for every live document in a source to be read again — extraction,
+ * chunking and embedding, from the front, regardless of what state each
+ * document is currently in.
+ *
+ * `docs/ux/library.md` §3: "confirms first — it can take hours." The
+ * confirmation is the caller's job (`LibraryScreen`); this is only the call
+ * once the user has already agreed.
+ */
+export async function reindexSource(sourceId: string): Promise<number> {
+  const response = await fetch(`/sources/${sourceId}/reindex`, {
+    method: "POST",
+    headers: { accept: "application/json" },
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `Askwell answered ${response.status} to the re-index.`);
+  }
+  const result = (await response.json()) as { documents: number };
+  return result.documents;
 }
 
 /**

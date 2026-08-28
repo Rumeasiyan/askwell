@@ -4,6 +4,17 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.26 — 2026-08-28
+
+The library screen renders, for the first time. `M1-LIB-FE-050`.
+
+### Added
+
+- **The library** (`web/components/library/library-screen.tsx`, route `/library/`) — one row per source, most recently added first: name, kind, added date, status (a word plus a distinct shape — `web/components/library/status-mark.tsx` — never colour alone, per `docs/ux/design-system.md` §8), and open clarification count (always 0 until `M3`). Filters by kind, status and has-open-clarifications, computed client-side over the same snapshot the add screen already watches.
+- **Needs-attention expansion** — a source with status `attention` expands to name the specific failed or poorly-scanned document, one line per cause, with a retry action for a failure (`retryDocument`, already built by `M1-EXTRACT-VAL-030`); a flagged scan is shown as information, never as something to retry.
+- **Re-index** (`POST /sources/{id}/reindex`, new) — confirms inline, stating it can take hours, before resetting every live document in a source back through extract, chunk and embed regardless of its current state. Recorded to the decisions store as `source_reindex_requested`.
+- `GET /ingest`'s `sources` array gained `kind`, `added_at`, `last_error`, `open_clarifications`; its `failures` array gained `source_id` — additive fields reusing the existing snapshot rather than a new endpoint. Reasoning in `docs/decisions.md`, 2026-08-28.
+
 ## 0.2.25 — 2026-08-28
 
 Hover pairing and the narrow-window inline fallback. `M1-CITE-FE-044`.
