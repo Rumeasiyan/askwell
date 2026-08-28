@@ -20,7 +20,7 @@ def _row(
     content: str = "content",
     heading: str | None = None,
 ) -> retrieve_module._Row:
-    return (chunk_id, document_id, content, heading, 1, 1, score)
+    return (chunk_id, document_id, "doc.pdf", "page", content, heading, 1, 1, score)
 
 
 def test_a_hit_in_both_lists_outranks_a_hit_in_only_one() -> None:

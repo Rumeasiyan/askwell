@@ -22,6 +22,30 @@ Template:
 
 ---
 
+## 2026-08-28 — The card's display data rides the citation event; no new endpoint
+
+**Decision:** `M1-CITE-FE-043`. The ticket's own "API / Data Touchpoints" line calls for "`citations` joined to `chunks` and `documents`", but no such join was reachable from the browser: the `citation` SSE event (`M1-CITE-BE-042`) carried only `chunk_id`, `document_id`, `page_from`/`page_to` and `quoted_span` — enough to prove a citation happened, not enough to render a card naming the file or showing the passage. Rather than filing that gap as a blocked dependency, `askwell.retrieve.Candidate` gained `filename` and `anchor_kind` (joined from `documents` in the two SQL queries that already join it for the `deleted_at`/`superseded_by`/`source_id` filters), and the `citation` event gained `filename`, `anchor_kind`, `heading` and `passage` (the chunk's own `content`). The `citations` table itself is untouched — this is display data carried alongside the row, not a new column.
+
+**Why:** the alternative was a new `GET` endpoint the browser calls once per card (or once per turn) to resolve chunk IDs to display data. Rejected: it duplicates a join the retrieval query already performs one call earlier in the same request, adds a round trip per answer for data the server already had in hand while composing it, and — the deciding factor — no such endpoint exists in `docs/backlog/` under any ticket; the only place this join is named at all is this ticket's own Touchpoints line, describing what the ticket touches, not a dependency on something else. Filing "citation card data has no route to the browser" as a separate blocked-on ticket would have stopped a *frontend* story on a *backend* gap invented by the story itself, for a one-line SQL change with no schema impact.
+
+**Consequences:** `Candidate` now carries two fields (`filename`, `anchor_kind`) that retrieval scoring and reranking never read — they exist solely for citation rendering, which is a mild leak of a display concern into the retrieval layer. If a future ticket wants citation display data to diverge from what retrieval selects (e.g. a document's *current* filename after a rename, rather than the filename at chunk-fetch time), that will need an actual join at citation-write time instead of retrieval time — today the two are the same query. `api/tests/test_retrieve.py`'s `_row` helper and both `Candidate(...)` test constructors now require the two fields; a future field added to `Candidate` will hit the same three call sites.
+
+**Refs:** `api/src/askwell/retrieve.py`, `api/src/askwell/ask.py`, `api/tests/test_retrieve.py`, `api/tests/test_ask_api.py`, `web/lib/citations.ts`, `web/lib/ask.ts`.
+
+---
+
+## 2026-08-28 — A source card's click target names a route that does not exist yet
+
+**Decision:** `M1-CITE-FE-043`. Each provenance card links to `/documents/{document_id}?page={page_from}` — a route `M1-VIEW-FE-048` has not built. Clicking a card today lands on `web/app/not-found.tsx`.
+
+**Why:** the ticket's own Out of Scope line is explicit that this ticket wires the click to *a* route without building the landing: "the click is wired here to the route." No route convention existed anywhere in the codebase to reuse — `web/app/library/page.tsx` is still a placeholder with no per-document path, and no backlog ticket names one. `/documents/{id}` was chosen over alternatives (`/library/{id}`, a query param on `/library`) because a document, not a source, is what a citation names, and a plain resource path leaves `M1-VIEW-FE-048` free to add its own query parameters (a highlighted span, a citation to step to) without renegotiating the base path. This is a guess, written down rather than left silent, so `M1-VIEW-FE-048` either confirms it or replaces it deliberately instead of two tickets picking different paths independently.
+
+**Consequences:** `M1-VIEW-FE-048` must either build its route at `/documents/[id]` or, if it picks something else, update `provenance-margin.tsx`'s `href` in the same change — otherwise every card silently 404s again after the viewer ships elsewhere.
+
+**Refs:** `web/components/ask/provenance-margin.tsx`, `docs/backlog/M1-it-answers-from-my-documents.md` (`M1-VIEW-FE-048`).
+
+---
+
 ## 2026-08-28 — A claim is a marked sentence; the marker sits before the period, not after
 
 **Decision:** `M1-CITE-BE-042`. `askwell.agent.claims.segment_claims` treats a sentence as a factual claim only if it carries one or more `[index]` markers immediately before its own closing punctuation — `"...forty-five days [1][2]."`, not `"...forty-five days. [1][2]"`. A sentence with no marker is not a claim: it produces no citation and is not counted anywhere, rather than being flagged as an uncited claim. `citations.claim_ordinal` increments only for marked sentences, so a claim citing two passages produces two rows sharing one ordinal instead of the pre-ticket behaviour — a flat `re.finditer(r"\[(\d+)\]")` over the whole growing answer, deduplicated globally by index — which could only ever produce one citation row per distinct index used anywhere in the answer, no matter how many separate claims reused it.

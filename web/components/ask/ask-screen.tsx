@@ -1,10 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { type AskTurn, useAsk } from "@/components/ask/ask-state";
+import { useClaimRef } from "@/components/ask/leader";
 import { fetchIngest } from "@/lib/ingest";
+import { segmentClaims } from "@/lib/claims";
 import { VERSION } from "@/lib/version";
 
 /**
@@ -12,10 +14,12 @@ import { VERSION } from "@/lib/version";
  *
  * Composer, the live turn, streaming and step labels — the three states this
  * ticket owns (`ask.md` §5: retrieving, streaming, answered). What is not
- * here, on purpose: source cards in the margin (`M1-CITE-FE-043`, the margin
- * still renders its permanent empty state from `Shell`), abstention's own
- * rendering (`M2`), and collapsing past turns (`M1-CONV-FE-180`) — every turn
- * here simply stacks.
+ * here, on purpose: abstention's own rendering (`M2`), and collapsing past
+ * turns (`M1-CONV-FE-180`) — every turn here simply stacks. Since
+ * `M1-CITE-FE-043`, `Turn` wraps each cited claim in a span the provenance
+ * margin's leader can find (`ProvenanceMargin`, `shell.tsx`) — the margin
+ * itself lives there, not here, since it is a sibling column, not a child of
+ * this screen.
  */
 export function AskScreen() {
   const hasSources = useHasSources();
@@ -249,7 +253,7 @@ function Turn({ turn }: { turn: AskTurn }) {
         </p>
       ) : null}
 
-      {turn.answer !== "" ? <p className="ask-prose">{turn.answer}</p> : null}
+      {turn.answer !== "" ? <AnswerProse turnId={turn.id} text={turn.answer} /> : null}
 
       {turn.status === "failed" && turn.reason !== null ? (
         <p className="ask-prose" style={{ color: "var(--muted)" }}>
@@ -274,5 +278,53 @@ function Turn({ turn }: { turn: AskTurn }) {
         </div>
       ) : null}
     </article>
+  );
+}
+
+/**
+ * The answer, with every cited claim wrapped in a span the provenance
+ * margin's leader can point at. `M1-CITE-FE-043`.
+ *
+ * `segmentClaims` (`lib/claims.ts`) mirrors the server's own claim
+ * numbering exactly, so a `citation` event's `claim_ordinal` names the same
+ * sentence here that it named in `askwell.agent.claims.segment_claims` —
+ * re-run on every render rather than incrementally, the same "recompute
+ * against the growing prefix" approach the server itself uses, and just as
+ * cheap at answer length.
+ */
+function AnswerProse({ turnId, text }: { turnId: string; text: string }) {
+  const claims = useMemo(() => segmentClaims(text), [text]);
+
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+  for (const claim of claims) {
+    if (claim.start > cursor) nodes.push(text.slice(cursor, claim.start));
+    nodes.push(
+      <ClaimSpan key={`claim-${claim.ordinal}`} turnId={turnId} ordinal={claim.ordinal}>
+        {claim.text}
+        {claim.terminator}
+      </ClaimSpan>,
+    );
+    cursor = claim.end;
+  }
+  if (cursor < text.length) nodes.push(text.slice(cursor));
+
+  return <p className="ask-prose">{nodes}</p>;
+}
+
+function ClaimSpan({
+  turnId,
+  ordinal,
+  children,
+}: {
+  turnId: string;
+  ordinal: number;
+  children: ReactNode;
+}) {
+  const ref = useClaimRef(`${turnId}:${ordinal}`);
+  return (
+    <span ref={ref} data-claim-ordinal={ordinal}>
+      {children}
+    </span>
   );
 }

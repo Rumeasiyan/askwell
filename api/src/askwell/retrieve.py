@@ -80,6 +80,8 @@ class Candidate:
 
     chunk_id: uuid.UUID
     document_id: uuid.UUID
+    filename: str
+    anchor_kind: str | None
     content: str
     heading: str | None
     page_from: int | None
@@ -104,6 +106,8 @@ class _FusionEntry:
     """Mutable accumulator while the two ranked lists are being merged."""
 
     document_id: uuid.UUID
+    filename: str
+    anchor_kind: str | None
     content: str
     heading: str | None
     page_from: int | None
@@ -113,7 +117,7 @@ class _FusionEntry:
     lexical_score: float | None
 
 
-_Row = tuple[uuid.UUID, uuid.UUID, str, str | None, int | None, int | None, float]
+_Row = tuple[uuid.UUID, uuid.UUID, str, str | None, str, str | None, int | None, int | None, float]
 
 
 async def _dense_search(
@@ -125,7 +129,8 @@ async def _dense_search(
     rows = (
         await session.execute(
             text(
-                "SELECT c.id, c.document_id, c.content, c.heading, c.page_from, c.page_to, "
+                "SELECT c.id, c.document_id, d.filename, d.anchor_kind, c.content, c.heading, "
+                "c.page_from, c.page_to, "
                 "1 - (c.embedding <=> CAST(:qvec AS vector)) AS score "
                 "FROM chunks c JOIN documents d ON d.id = c.document_id "
                 "WHERE c.embedding IS NOT NULL "
@@ -141,7 +146,10 @@ async def _dense_search(
             },
         )
     ).all()
-    return [(row[0], row[1], row[2], row[3], row[4], row[5], float(row[6])) for row in rows]
+    return [
+        (row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7], float(row[8]))
+        for row in rows
+    ]
 
 
 async def _lexical_search(
@@ -153,7 +161,8 @@ async def _lexical_search(
     rows = (
         await session.execute(
             text(
-                "SELECT c.id, c.document_id, c.content, c.heading, c.page_from, c.page_to, "
+                "SELECT c.id, c.document_id, d.filename, d.anchor_kind, c.content, c.heading, "
+                "c.page_from, c.page_to, "
                 "ts_rank(c.content_tsv, "
                 "plainto_tsquery(:cfg, regexp_replace(:query, '-', ' ', 'g'))) AS score "
                 "FROM chunks c JOIN documents d ON d.id = c.document_id "
@@ -172,7 +181,10 @@ async def _lexical_search(
             },
         )
     ).all()
-    return [(row[0], row[1], row[2], row[3], row[4], row[5], float(row[6])) for row in rows]
+    return [
+        (row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7], float(row[8]))
+        for row in rows
+    ]
 
 
 def _fuse(
@@ -187,9 +199,21 @@ def _fuse(
     fused: dict[uuid.UUID, _FusionEntry] = {}
 
     for rank, row in enumerate(dense_rows, start=1):
-        chunk_id, document_id, content, heading, page_from, page_to, score = row
+        (
+            chunk_id,
+            document_id,
+            filename,
+            anchor_kind,
+            content,
+            heading,
+            page_from,
+            page_to,
+            score,
+        ) = row
         fused[chunk_id] = _FusionEntry(
             document_id=document_id,
+            filename=filename,
+            anchor_kind=anchor_kind,
             content=content,
             heading=heading,
             page_from=page_from,
@@ -200,11 +224,23 @@ def _fuse(
         )
 
     for rank, row in enumerate(lexical_rows, start=1):
-        chunk_id, document_id, content, heading, page_from, page_to, score = row
+        (
+            chunk_id,
+            document_id,
+            filename,
+            anchor_kind,
+            content,
+            heading,
+            page_from,
+            page_to,
+            score,
+        ) = row
         entry = fused.get(chunk_id)
         if entry is None:
             fused[chunk_id] = _FusionEntry(
                 document_id=document_id,
+                filename=filename,
+                anchor_kind=anchor_kind,
                 content=content,
                 heading=heading,
                 page_from=page_from,
@@ -224,6 +260,8 @@ def _fuse(
         Candidate(
             chunk_id=chunk_id,
             document_id=entry.document_id,
+            filename=entry.filename,
+            anchor_kind=entry.anchor_kind,
             content=entry.content,
             heading=entry.heading,
             page_from=entry.page_from,

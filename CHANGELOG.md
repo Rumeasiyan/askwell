@@ -4,6 +4,29 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.24 — 2026-08-28
+
+The provenance margin renders, for the first time. `M1-CITE-FE-043`.
+
+### Added
+
+- **The provenance margin** (`web/components/ask/provenance-margin.tsx`) — one card per cited passage, filename, page or anchor, and the exact retrieved passage, entering the margin as claims are cited during streaming rather than waiting for the answer to finish. Replaces `Shell`'s static placeholder text with a live view of `AskProvider`'s own turn state.
+- **`lib/citations.ts`'s `applyCitation`** — groups `citation` events by `chunk_id` rather than by event, so two claims citing the same passage produce one card carrying two claim ordinals, not a duplicate card.
+- **A hairline leader** (`web/components/ask/leader.tsx`) joining each claim's rendered text to its card, drawn in `--rule-strong`. A registry, not a prop, because the claim (centre column) and the card (margin rail) are DOM siblings under `ShellFrame`; a short poll keeps it tracking reflow while a turn streams, and falls back to resize/scroll recompute once it settles.
+- **`lib/claims.ts`'s `segmentClaims`** — a client-side mirror of `askwell.agent.claims.segment_claims`, run against the same growing answer text so the two sides agree on claim ordinals without either telling the other.
+- **The `citation` SSE event now carries `filename`, `anchor_kind`, `heading` and `passage`** (`api/src/askwell/ask.py`, `askwell.retrieve.Candidate`) — the citations table is unchanged; this is display data the browser had no route to before, joined in from `documents` alongside the chunk already being fetched.
+
+### Changed
+
+- `web/lib/ask.ts`'s `AskTurnState`/`applyAskEvent` no longer track a citation count — `AskTurn.citations: CitationCard[]` (`ask-state.tsx`) is the real data the margin renders, kept in its own module rather than folded into `applyAskEvent`.
+
+### Known gaps
+
+- **Click-through has no landing yet.** The card links to `/documents/{id}?page=N`, a route `M1-VIEW-FE-048` has not built — the click is wired to where the viewer will live, per this ticket's own Out of Scope line, and 404s until then.
+- **No hover pairing or narrow-window fallback** (`M1-CITE-FE-044`) — the leader is always visible, not raised on hover, and the margin is hidden below the three-column breakpoint rather than reflowing inline (unchanged from `Shell`'s existing behaviour, since that reflow is that ticket's own scope).
+- **Deleted-source rendering waits for deletion to exist** (`M2`) — nothing here renders a moved or deleted document differently; a card for either still renders normally.
+- **Not exercised against a real model or a real browser** in this environment — verified by `scripts/dev.sh test`, `test-db` (`api/tests/test_ask_api.py`'s wire-format assertions now include the new citation fields) and `scripts/dev.sh web-check` (typecheck, lint, the new `lib/claims.test.ts`/`lib/citations.test.ts`, build, contrast, offline-check), the same limits `M1-ASK-BE-040`/`M1-CITE-BE-042` already recorded.
+
 ## 0.2.23 — 2026-08-28
 
 Claim-level citations, as data rather than as prose. `M1-CITE-BE-042`.

@@ -44,6 +44,14 @@ citation rows sharing one `claim_ordinal`. Each row also carries
 chunk, `None` otherwise — resolved with `askwell.agent.claims.locate_quoted_span`
 rather than dropped, per the ticket's own edge case.
 
+**Since `M1-CITE-FE-043`, the `citation` event also carries what the margin
+card renders.** `documents.filename` and `documents.anchor_kind` are joined in
+by `askwell.retrieve` alongside the chunk (`Candidate.filename`,
+`Candidate.anchor_kind`), and the event adds `filename`, `anchor_kind`,
+`heading` and `passage` (the chunk's full `content`) — the citations table
+itself is unchanged, this is display data the browser would otherwise have no
+route to.
+
 **Since `M1-ASK-BE-040`, the answer's row exists before there is an answer.**
 `POST /ask` writes the assistant `messages` row as `running`, empty, in the
 same request that starts the background task — not once generation finishes.
@@ -298,8 +306,12 @@ def _cite_claim(
                 "index": index,
                 "chunk_id": str(candidate.chunk_id),
                 "document_id": str(candidate.document_id),
+                "filename": candidate.filename,
+                "anchor_kind": candidate.anchor_kind,
+                "heading": candidate.heading,
                 "page_from": candidate.page_from,
                 "page_to": candidate.page_to,
+                "passage": candidate.content,
                 "quoted_span": quoted_span,
             },
         )
