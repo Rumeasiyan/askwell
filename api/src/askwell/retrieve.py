@@ -33,16 +33,29 @@ this join.
 **No deduplication by content.** Two chunks with identical text from two
 different documents are two different citations, and collapsing them would
 point one citation at the wrong source — the ticket's own edge case.
+
+**Reranking, `M1-ASK-RET-036`.** A cross-encoder pass over the top fused
+candidates, served by the same native process as embedding — one more reason
+`InferenceClient` is the seam `M1-ASK-RET-035`'s own decision log named. Only
+the top `Settings.rerank_candidate_count` fused candidates are sent; the rest
+of the fused list is appended after them, unreordered, so a corpus with fewer
+candidates than the window needs no padding and nothing beyond the window is
+silently dropped. The reranker's score is kept *alongside* the fused score,
+never in place of it — the two are never mixed, matching `docs/architecture.md`
+§8's cross-encoder pass and the ticket's own validation rule. If the reranker
+is unavailable or times out, `retrieve()` returns fusion order unchanged and
+says so on `RetrievalResult`, rather than silently pretending reranking ran.
 """
 
+import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from askwell.config import Settings
-from askwell.inference.client import InferenceClient
+from askwell.inference.client import InferenceClient, InferenceFailed, InferenceUnavailable
 from askwell.logging import get_logger
 
 log = get_logger(__name__)
@@ -74,12 +87,16 @@ class Candidate:
     score: float  # the fused RRF score this candidate was ranked by
     dense_score: float | None  # cosine similarity, as measured; null if dense search missed it
     lexical_score: float | None  # ts_rank, as measured; null if lexical search missed it
+    rerank_score: float | None = None  # raw cross-encoder logit; null unless reranking ran on it
 
 
 @dataclass(frozen=True, slots=True)
 class RetrievalResult:
     candidates: list[Candidate]
     threshold: float  # Settings.retrieval_score_threshold, in force at this call
+    reranked: bool  # whether `candidates`' order is the reranker's, not fusion's
+    rerank_duration_ms: float | None  # None when reranking did not run
+    rerank_skipped_reason: str | None  # None when `reranked` is True
 
 
 @dataclass(slots=True)
@@ -219,6 +236,51 @@ def _fuse(
     ]
 
 
+async def _rerank(
+    client: InferenceClient,
+    settings: Settings,
+    query: str,
+    candidates: list[Candidate],
+) -> tuple[list[Candidate], bool, float | None, str | None]:
+    """Reorder the top fused candidates by cross-encoder score.
+
+    Only `settings.rerank_candidate_count` candidates are sent — the reranker
+    scores each one individually, so the window is what keeps this bounded on
+    a light profile. The remainder of `candidates` (if any) is appended
+    unreordered: it was never sent to be scored, so claiming it was reranked
+    would be exactly the "silently pretending" the ticket forbids.
+
+    Returns the fused list unchanged, with a reason, if the reranker is
+    unavailable or the call fails or times out — reranking is a quality
+    improvement, not a dependency retrieval can fail on.
+    """
+    if not candidates:
+        return candidates, False, None, None
+
+    window = candidates[: settings.rerank_candidate_count]
+    started = time.monotonic()
+    try:
+        scored = await client.rerank(
+            query,
+            [candidate.content for candidate in window],
+            timeout_seconds=settings.rerank_timeout_seconds,
+        )
+    except InferenceUnavailable as error:
+        log.info("rerank_skipped", reason="unavailable", detail=str(error))
+        return candidates, False, None, f"reranker unavailable: {error}"
+    except InferenceFailed as error:
+        log.warning("rerank_failed", detail=str(error))
+        return candidates, False, None, f"reranker failed: {error}"
+
+    duration_ms = (time.monotonic() - started) * 1000
+
+    # `scored` is already sorted best-first by `InferenceClient.rerank`, and
+    # that sort is stable, so two near-identical scores keep the order they
+    # arrived in (their fused rank) rather than moving between runs.
+    reranked_window = [replace(window[index], rerank_score=score) for index, score in scored]
+    return reranked_window + candidates[len(window) :], True, duration_ms, None
+
+
 async def retrieve(
     session: AsyncSession,
     client: InferenceClient,
@@ -240,6 +302,9 @@ async def retrieve(
     lexical_rows = await _lexical_search(session, settings, query, source_id)
 
     candidates = _fuse(dense_rows, lexical_rows, settings.retrieval_candidate_count)
+    candidates, reranked, rerank_duration_ms, rerank_skipped_reason = await _rerank(
+        client, settings, query, candidates
+    )
 
     log.info(
         "retrieve_completed",
@@ -248,6 +313,14 @@ async def retrieve(
         dense_hits=len(dense_rows),
         lexical_hits=len(lexical_rows),
         fused=len(candidates),
+        reranked=reranked,
+        rerank_duration_ms=rerank_duration_ms,
     )
 
-    return RetrievalResult(candidates=candidates, threshold=settings.retrieval_score_threshold)
+    return RetrievalResult(
+        candidates=candidates,
+        threshold=settings.retrieval_score_threshold,
+        reranked=reranked,
+        rerank_duration_ms=rerank_duration_ms,
+        rerank_skipped_reason=rerank_skipped_reason,
+    )
