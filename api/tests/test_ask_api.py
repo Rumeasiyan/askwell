@@ -1074,6 +1074,89 @@ def test_every_aspect_uncovered_still_abstains_rather_than_going_partial(
 # --- turn summaries and source counts, `M1-CONV-BE-177` ----------------------
 
 
+def test_two_passages_disagreeing_on_the_asked_fact_are_recorded_as_a_conflict(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """The ticket's own acceptance criterion: two retrieved passages with
+    materially different values for the same asked fact produce a conflict
+    answer naming both with citations, and it is recorded on the interaction
+    for the audit log. `M2-PARTIAL-BE-059`."""
+    _truncate(database_url)
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "Notice must be given ninety days in advance.", vector)
+    _seed_chunk(database_url, "Notice must be given sixty days in advance.", vector)
+    fake = _FakeInferenceClient(
+        settings,
+        tokens=[
+            "Conflicting sources on the notice period:\n",
+            "- Notice must be given ninety days in advance [1].\n",
+            "- Notice must be given sixty days in advance [2].\n",
+        ],
+        vector=vector,
+    )
+    _patch_client(monkeypatch, fake)
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "How much notice must be given?"})
+        events = _events(response.text)
+        done = next(data for kind, data in events if kind == "done")
+        assert done["status"] == "completed"
+        message_id = uuid.UUID(done["message_id"])
+
+        # Both positions still cite normally — the conflict branch is a
+        # composition path, not a different citation mechanism.
+        citation_events = [data for kind, data in events if kind == "citation"]
+        assert len(citation_events) == 2
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        content, trace = db.execute(
+            "SELECT content, trace FROM messages WHERE id = %s", (message_id,)
+        ).fetchone()
+        assert "Notice must be given ninety days in advance" in content
+        assert "Notice must be given sixty days in advance" in content
+        assert trace["conflict_detected"] is True
+        assert trace["conflict_topic"] == "the notice period"
+
+        audit_payload = db.execute(
+            "SELECT payload FROM audit_interactions WHERE payload->>'message_id' = %s",
+            (str(message_id),),
+        ).fetchone()[0]
+        assert audit_payload["conflict_detected"] is True
+        assert audit_payload["conflict_topic"] == "the notice period"
+
+
+def test_a_single_consistent_answer_is_not_marked_as_a_conflict(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """A single consistent set produces an ordinary answer — the edge case
+    by name: never a false conflict. `M2-PARTIAL-BE-059`."""
+    _truncate(database_url)
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "Notice is ninety days.", vector)
+    fake = _FakeInferenceClient(settings, tokens=["Notice is ninety days [1]."], vector=vector)
+    _patch_client(monkeypatch, fake)
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "How long is the notice period?"})
+        message_id = uuid.UUID(
+            next(data for kind, data in _events(response.text) if kind == "done")["message_id"]
+        )
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        trace = db.execute("SELECT trace FROM messages WHERE id = %s", (message_id,)).fetchone()[0]
+        assert trace["conflict_detected"] is False
+        assert trace["conflict_topic"] is None
+
+        audit_payload = db.execute(
+            "SELECT payload FROM audit_interactions WHERE payload->>'message_id' = %s",
+            (str(message_id),),
+        ).fetchone()[0]
+        assert audit_payload["conflict_detected"] is False
+        assert audit_payload["conflict_topic"] is None
+
+
 def test_a_grounded_answer_stores_a_summary_and_a_source_count(
     settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
 ) -> None:
