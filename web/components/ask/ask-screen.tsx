@@ -1,0 +1,229 @@
+"use client";
+
+import Link from "next/link";
+import { useEffect, useRef, useState } from "react";
+
+import { type AskTurn, useAsk } from "@/components/ask/ask-state";
+import { fetchIngest } from "@/lib/ingest";
+import { VERSION } from "@/lib/version";
+
+/**
+ * The Ask screen. `docs/ux/ask.md`, `M1-ASK-FE-039`.
+ *
+ * Composer, the live turn, streaming and step labels — the three states this
+ * ticket owns (`ask.md` §5: retrieving, streaming, answered). What is not
+ * here, on purpose: source cards in the margin (`M1-CITE-FE-043`, the margin
+ * still renders its permanent empty state from `Shell`), abstention's own
+ * rendering (`M2`), the mic control (`M1-ASK-FE-039a`), and collapsing past
+ * turns (`M1-CONV-FE-180`) — every turn here simply stacks.
+ */
+export function AskScreen() {
+  const hasSources = useHasSources();
+  const { turns } = useAsk();
+
+  return (
+    <section className="flex flex-col gap-6">
+      {/* Rendered unconditionally, statically — not only inside `FirstRun` —
+          so it reaches the exported `index.html` before `hasSources` resolves
+          on the client. `scripts/check-version.mjs` reads exactly that file
+          for exactly this string (`AGENTS.md` §7). */}
+      <p className="ask-micro">Askwell {VERSION} · nothing leaves this machine</p>
+
+      {hasSources === false ? (
+        <FirstRun />
+      ) : (
+        <>
+          <Composer />
+          {turns.length > 0 ? (
+            <div className="flex flex-col gap-8">
+              {turns.map((turn) => (
+                <Turn key={turn.id} turn={turn} />
+              ))}
+            </div>
+          ) : null}
+        </>
+      )}
+    </section>
+  );
+}
+
+/**
+ * Whether any source has ever been recorded on this machine — `null` while
+ * that is still being found out, so the first-run card never flashes in
+ * ahead of a real answer. Reuses `fetchIngest` (`M1-ADD-ING-025`) rather than
+ * a new endpoint; a source's coverage list is exactly "does anything exist",
+ * one call away, and this ticket adds no backend of its own.
+ */
+function useHasSources(): boolean | null {
+  const [hasSources, setHasSources] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchIngest()
+      .then((state) => {
+        if (!cancelled) setHasSources(state.sources.length > 0);
+      })
+      .catch(() => {
+        // Unreachable is `StatusBanner`'s job to say, loudly, above this
+        // screen. Here it only decides which of two states to show, and
+        // guessing "no sources" is the safer of two guesses — it still lets
+        // someone type a question once the assistant comes back.
+        if (!cancelled) setHasSources(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return hasSources;
+}
+
+function FirstRun() {
+  return (
+    <section className="flex flex-col gap-4">
+      <h1 style={{ fontSize: "var(--t-display)", lineHeight: "var(--t-display-lh)" }}>
+        Ask your own material
+      </h1>
+
+      <p className="ask-prose">
+        Askwell answers from documents and databases you have added, and cites what it
+        used. When nothing in your material answers a question, it says so instead of
+        guessing — which is the whole reason it is worth pointing at a confidential
+        corpus.
+      </p>
+
+      <div
+        className="flex flex-col gap-2 px-4 py-3"
+        style={{
+          background: "var(--surface)",
+          border: "1px solid var(--rule)",
+          borderRadius: "var(--radius)",
+        }}
+      >
+        <p className="ask-micro">Nothing added yet</p>
+        <p className="ask-prose" style={{ color: "var(--muted)" }}>
+          There is nothing to ask about until you add a source. Drop files or a folder
+          anywhere on this window — you do not have to go anywhere first — or add them from
+          the screen below.
+        </p>
+        <div>
+          <Link
+            href="/sources/add/"
+            className="ask-navigates inline-block px-4 py-2"
+            style={{ border: "1px solid var(--rule-strong)", fontSize: "var(--t-ui)" }}
+          >
+            Add a source
+          </Link>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Type, `Enter` submits, `Shift+Enter` newlines (`ask.md` §4). Never disabled
+ * while a turn streams — the whole point of the queue in `AskProvider` is
+ * that a question asked mid-answer still lands rather than being refused.
+ */
+function Composer() {
+  const { ask } = useAsk();
+  const [value, setValue] = useState("");
+  const textarea = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    textarea.current?.focus();
+    const onFocusRequest = (): void => textarea.current?.focus();
+    window.addEventListener("askwell:focus-composer", onFocusRequest);
+    return () => window.removeEventListener("askwell:focus-composer", onFocusRequest);
+  }, []);
+
+  const submit = (): void => {
+    if (value.trim() === "") return;
+    ask(value);
+    setValue("");
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      <textarea
+        ref={textarea}
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+            submit();
+          }
+        }}
+        placeholder="Ask about your own files and databases"
+        rows={3}
+        className="ask-input ask-prose w-full px-3 py-2"
+        style={{ resize: "none" }}
+        aria-label="Ask a question"
+      />
+      <div className="flex justify-end">
+        <button
+          type="button"
+          onClick={submit}
+          disabled={value.trim() === ""}
+          className="ask-action-primary px-4"
+          style={{ fontSize: "var(--t-ui)", opacity: value.trim() === "" ? 0.5 : 1 }}
+        >
+          Ask
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Turn({ turn }: { turn: AskTurn }) {
+  const { running, stop } = useAsk();
+  const isRunning = turn.status === "running";
+  const isStreaming = isRunning && turn.answer !== "";
+  const isRetrieving = isRunning && turn.answer === "";
+
+  return (
+    <article className="flex flex-col gap-2" aria-busy={isRunning}>
+      <p className="ask-prose" style={{ color: "var(--muted)" }}>
+        {turn.question}
+      </p>
+
+      {turn.status === "queued" ? (
+        <p className="ask-micro">Waiting for the question ahead of it.</p>
+      ) : null}
+
+      {/* Named steps, before the first token and kept visible alongside it —
+          apparatus, so mono (`design-system.md` §3). */}
+      {turn.steps.length > 0 && (isRetrieving || isStreaming) ? (
+        <p className="ask-micro" aria-live="polite">
+          {turn.steps.map((step) => step.label).join(" · ")}
+        </p>
+      ) : null}
+
+      {turn.answer !== "" ? <p className="ask-prose">{turn.answer}</p> : null}
+
+      {turn.status === "failed" && turn.reason !== null ? (
+        <p className="ask-prose" style={{ color: "var(--muted)" }}>
+          {turn.reason}
+        </p>
+      ) : null}
+
+      {turn.status === "stopped" ? (
+        <p className="ask-micro">Stopped. The answer above is partial.</p>
+      ) : null}
+
+      {isRunning && running?.id === turn.id ? (
+        <div>
+          <button
+            type="button"
+            onClick={stop}
+            className="ask-navigates px-3 py-1"
+            style={{ border: "1px solid var(--rule-strong)", fontSize: "var(--t-ui)" }}
+          >
+            Stop
+          </button>
+        </div>
+      ) : null}
+    </article>
+  );
+}
