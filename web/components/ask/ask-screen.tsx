@@ -8,6 +8,7 @@ import { type AskTurn, useAsk } from "@/components/ask/ask-state";
 import { useClaimRef, useHoverHandlers, useScrollToClaim } from "@/components/ask/leader";
 import { InlineSourceCards, useRaised } from "@/components/ask/provenance-margin";
 import { CONVERSATION_PAGE_SIZE, conversationWindow, dividerLabel, liveTurnId,
+  isAbstained,
   isFirstAnswer,
 } from "@/lib/ask";
 import { followUpSuggestions, recordFollowUpUsed } from "@/lib/follow-ups";
@@ -692,7 +693,10 @@ function CollapsedTurn({ turn }: { turn: AskTurn }) {
 
       {expanded ? (
         <div className="flex flex-col gap-2">
-          {turn.answer !== "" ? <AnswerProse turnId={turn.id} text={turn.answer} /> : null}
+          {isAbstained(turn) ? <AbstentionState turn={turn} /> : null}
+          {!isAbstained(turn) && turn.answer !== "" ? (
+            <AnswerProse turnId={turn.id} text={turn.answer} />
+          ) : null}
           {turn.status === "failed" && turn.reason !== null ? (
             <p className="ask-prose" style={{ color: "var(--muted)" }}>
               {turn.reason}
@@ -822,13 +826,17 @@ function LiveTurn({ turn }: { turn: AskTurn }) {
         </p>
       ) : null}
 
-      {turn.answer !== "" ? <AnswerProse turnId={turn.id} text={turn.answer} /> : null}
+      {isAbstained(turn) ? <AbstentionState turn={turn} /> : null}
+
+      {!isAbstained(turn) && turn.answer !== "" ? (
+        <AnswerProse turnId={turn.id} text={turn.answer} />
+      ) : null}
 
       {/* Below the three-column breakpoint the margin `<aside>` is
           CSS-hidden (`shell.tsx`) — these are the same cards, inline,
           never removed. `hidden @5xl:block` there, so this is its mirror:
           shown below the breakpoint, hidden at width. `M1-CITE-FE-044`. */}
-      {turn.citations.length > 0 ? (
+      {!isAbstained(turn) && turn.citations.length > 0 ? (
         <div className="block @5xl:hidden">
           <InlineSourceCards turnId={turn.id} cards={turn.citations} />
         </div>
@@ -861,6 +869,82 @@ function LiveTurn({ turn }: { turn: AskTurn }) {
         </div>
       ) : null}
     </article>
+  );
+}
+
+/**
+ * The abstained state (`ask.md` §5/§6, `M2-ABSTAIN-FE-055`). Rendered
+ * instead of `AnswerProse`, never alongside it — `isAbstained` (`lib/ask.ts`)
+ * is what both `LiveTurn` and `CollapsedTurn` gate on to keep those mutually
+ * exclusive.
+ *
+ * `turn.reason` is the whole composed message
+ * (`askwell.agent.abstain.compose_abstention`): the situation on its own
+ * line, the proof of search (when there is one to prove), and the next
+ * action, `\n`-joined. Split and re-rendered as separate lines rather than
+ * left as one block of text so the situation line can carry `--ink` while
+ * the rest carries `--muted` (`design-system.md` §2's own abstention rule:
+ * "renders in `--ink` and `--muted` with more space than an answer would
+ * get" — never `--alarm`, never a caveat). `py-4` is that "more space": an
+ * abstention is not squeezed into the same rhythm as a paragraph of prose.
+ *
+ * `AddSourceAction` sits in its own region below every line of that message,
+ * on purpose: `ask.md`'s own note that this ticket's shape is what
+ * `M6.5-WEB-FE-186` later adds two siblings beside, and that nothing may
+ * render above the abstention statement (C10). Until that ticket, this
+ * region holds exactly one control.
+ */
+function AbstentionState({ turn }: { turn: AskTurn }) {
+  const lines = (turn.reason ?? "").split("\n").filter((line) => line !== "");
+
+  return (
+    <div className="flex flex-col gap-6 py-4">
+      <div className="flex flex-col gap-2">
+        {lines.map((line, index) => (
+          <p
+            key={index}
+            className="ask-prose"
+            style={{ color: index === 0 ? "var(--ink)" : "var(--muted)" }}
+          >
+            {line}
+          </p>
+        ))}
+      </div>
+      <div>
+        <AddSourceAction question={turn.question} />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The abstained state's own next action (`ask.md` §5/§6, scope's own
+ * "add-a-source action wired to the add flow with the question retained").
+ * Mirrors `AskAboutSource` (`context-rail.tsx`, `M1-VIEW-FE-048`) exactly:
+ * `fillComposer` before the navigation, not after — the route change is not
+ * synchronous, and its module-level slot (`ask-screen.tsx`'s own
+ * `pendingFill`) is what survives the gap. `Composer` drains it the moment
+ * it remounts on the way back to `/`, so the question the user just asked is
+ * sitting in the composer, ready to re-ask, the moment the newly added
+ * source is in.
+ */
+function AddSourceAction({ question }: { question: string }) {
+  const router = useRouter();
+
+  const addSource = (): void => {
+    fillComposer(question);
+    router.push("/sources/add/");
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={addSource}
+      className="ask-navigates px-4 py-2"
+      style={{ border: "1px solid var(--rule-strong)", fontSize: "var(--t-ui)" }}
+    >
+      Add a source
+    </button>
   );
 }
 

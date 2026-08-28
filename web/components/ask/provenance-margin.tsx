@@ -6,6 +6,7 @@ import { useState } from "react";
 import { useCardRef, useHoveredKey, useHoverHandlers, type LeaderPair } from "@/components/ask/leader";
 import { useLiveTurn } from "@/components/ask/ask-state";
 import { anchorLabel, documentHref, pageLabel, recordCardClick, type CitationCard } from "@/lib/citations";
+import { isAbstained } from "@/lib/ask";
 import { isRaised } from "@/lib/pairing";
 
 /**
@@ -25,7 +26,13 @@ export function ProvenanceMargin() {
       <p className="ask-micro p-4">
         {turn === null
           ? "Sources appear here, beside the claims they support."
-          : "Nothing in this answer was cited."}
+          : isAbstained(turn)
+            ? // The margin's own explicit empty state for abstention
+              // (`ask.md` §6, `M2-ABSTAIN-FE-055`): named as empty because
+              // nothing matched, not left to read the same as an ordinary
+              // uncited answer.
+              "No sources — nothing in your files matched."
+            : "Nothing in this answer was cited."}
       </p>
     );
   }
