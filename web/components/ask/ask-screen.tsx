@@ -11,10 +11,13 @@ import { CONVERSATION_PAGE_SIZE, conversationWindow, dividerLabel, liveTurnId,
   isAbstained,
   isFirstAnswer,
 } from "@/lib/ask";
+import { documentHref, pageLabel } from "@/lib/citations";
 import { followUpSuggestions, recordFollowUpUsed } from "@/lib/follow-ups";
 import { fetchIngest } from "@/lib/ingest";
+import { fetchSearch, type SearchHit } from "@/lib/search";
 import { fetchSuggestions, type Suggestion } from "@/lib/suggestions";
 import { segmentClaims } from "@/lib/claims";
+import { useStatus } from "@/lib/use-status";
 import { VERSION } from "@/lib/version";
 
 /** Fills the composer without sending — `ask.md` §4's suggested-follow-up
@@ -70,6 +73,13 @@ export function AskScreen() {
   const corpus = useCorpusState();
   const { turns } = useAsk();
   const liveId = liveTurnId(turns);
+  const status = useStatus();
+  // `status.kind === "loading"` renders neither state rather than flashing
+  // the search panel in for the instant before the first poll resolves —
+  // the same reason `useCorpusState` starts at `null` (`ask.md` §5's own
+  // edge case: nothing should assume the worse of two states before it
+  // actually knows).
+  const assistantDown = status.kind === "reporting" && !status.assistant.available;
 
   return (
     <section className="flex flex-col gap-6">
@@ -93,6 +103,7 @@ export function AskScreen() {
         <FirstRun />
       ) : (
         <>
+          {assistantDown ? <DegradedSearch /> : null}
           <Composer />
           {turns.length === 0 && corpus === "indexing" ? <IndexingNotice /> : null}
           {turns.length === 0 && corpus === "ready" ? <SuggestedQuestions /> : null}
@@ -231,6 +242,134 @@ function useCorpusState(): CorpusState {
   }, []);
 
   return corpus;
+}
+
+/**
+ * Search across sources, offered the moment the assistant is unavailable
+ * (`docs/states-and-edge-cases.md` §1 "Model not loaded", `ask.md` §5,
+ * `M2-FAIL-FE-060`). `StatusBanner` (`shell.tsx`) already says the assistant
+ * is down and how to fix it, above every screen — this is Ask's own half of
+ * the ticket: retrieval does not need the model, so a keyword search still
+ * works, and this is where it is actually offered rather than only promised
+ * in `Assistant.still_works`' own prose.
+ *
+ * Reads `useStatus()` a second time rather than threading a prop down from
+ * `Shell` — `ShellFrame` renders `children` with no status prop today
+ * (`shell.tsx`), and duplicating one cheap poll of a local, single-user
+ * process is a smaller change than plumbing status through every route.
+ * Because it is the same hook, the panel disappears the moment the assistant
+ * reports ready again — `AskScreen`'s next render simply stops mounting it,
+ * which is what makes "recovers without a reload" true for free.
+ */
+function DegradedSearch() {
+  const [query, setQuery] = useState("");
+  const [state, setState] = useState<
+    | { kind: "idle" }
+    | { kind: "loading" }
+    | { kind: "done"; keywordOnly: boolean; hits: SearchHit[] }
+    | { kind: "failed"; error: string }
+  >({ kind: "idle" });
+
+  const submit = (event: React.FormEvent): void => {
+    event.preventDefault();
+    const trimmed = query.trim();
+    if (trimmed === "") return;
+    setState({ kind: "loading" });
+    void fetchSearch(trimmed)
+      .then((result) => setState({ kind: "done", keywordOnly: result.keywordOnly, hits: result.results }))
+      .catch((error: unknown) =>
+        setState({
+          kind: "failed",
+          error: error instanceof Error ? error.message : "Search failed.",
+        }),
+      );
+  };
+
+  return (
+    <div
+      className="flex flex-col gap-3 px-4 py-3"
+      style={{ background: "var(--surface)", border: "1px solid var(--rule)", borderRadius: "var(--radius)" }}
+    >
+      <p className="ask-micro">Search your files while the assistant is unavailable</p>
+      <form onSubmit={submit} className="flex gap-2">
+        <input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search by keyword"
+          className="ask-input ask-prose flex-1 px-3 py-2"
+          aria-label="Search your documents"
+        />
+        <button
+          type="submit"
+          disabled={query.trim() === ""}
+          className="ask-action-primary px-4"
+          style={{ fontSize: "var(--t-ui)", opacity: query.trim() === "" ? 0.5 : 1 }}
+        >
+          Search
+        </button>
+      </form>
+
+      {state.kind === "loading" ? <p className="ask-micro">Searching…</p> : null}
+
+      {state.kind === "failed" ? (
+        <p className="ask-prose" style={{ color: "var(--muted)" }}>
+          {state.error}
+        </p>
+      ) : null}
+
+      {state.kind === "done" ? (
+        <>
+          {/* `keywordOnly` (`lib/search.ts`): dense search needs the model to
+              embed the query, so when the assistant is down every match here
+              is lexical alone — the ticket's own edge case names this
+              explicitly rather than letting a keyword-only result set look
+              like an ordinary ranked search. */}
+          {state.keywordOnly ? (
+            <p className="ask-micro">Keyword-only while the assistant is unavailable.</p>
+          ) : null}
+          {state.hits.length === 0 ? (
+            <p className="ask-prose" style={{ color: "var(--muted)" }}>
+              Nothing in your files matched that search.
+            </p>
+          ) : (
+            <ul className="flex flex-col gap-3 list-none p-0">
+              {state.hits.map((hit) => (
+                <SearchHitRow key={hit.chunkId} hit={hit} />
+              ))}
+            </ul>
+          )}
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function SearchHitRow({ hit }: { hit: SearchHit }) {
+  const page = pageLabel(hit);
+  const href = documentHref({
+    chunkId: hit.chunkId,
+    documentId: hit.documentId,
+    filename: hit.filename,
+    anchorKind: hit.anchorKind,
+    heading: hit.heading,
+    pageFrom: hit.pageFrom,
+    pageTo: hit.pageTo,
+    passage: hit.passage,
+    quotedSpan: null,
+    claimOrdinals: [],
+  });
+
+  return (
+    <li className="flex flex-col gap-1">
+      <a href={href} className="ask-navigates ask-prose">
+        {hit.filename}
+        {page !== null ? ` · ${page}` : ""}
+      </a>
+      <p className="ask-prose" style={{ color: "var(--muted)" }}>
+        {hit.passage}
+      </p>
+    </li>
+  );
 }
 
 /**

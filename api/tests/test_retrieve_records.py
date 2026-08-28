@@ -386,3 +386,74 @@ async def test_reranker_unavailable_still_returns_fusion_ordered_results(
     assert result.rerank_skipped_reason is not None
     assert "unavailable" in result.rerank_skipped_reason
     assert all(candidate.rerank_score is None for candidate in result.candidates)
+
+
+# --- search: retrieval with no composition, `M2-FAIL-FE-060` -----------------
+
+
+class _UnavailableEmbedClient(_FakeClient):
+    """Stands in for the assistant being down mid-search: dense search's own
+    query embedding is what needs the model, so this is what a caller sees
+    when the process that would normally answer `client.embed(...)` is not
+    there — the exact case `askwell.inference.client.InferenceUnavailable`
+    exists to name."""
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        from askwell.inference.client import InferenceUnavailable
+
+        raise InferenceUnavailable("The assistant is not running.")
+
+
+async def test_search_runs_dense_and_lexical_when_the_assistant_is_up(
+    session: AsyncSession, settings: Settings
+) -> None:
+    source_id = await _source(session)
+    document_id = await _document(session, source_id)
+    target = await _chunk(session, document_id, "Invoice INV-2024-0917 is overdue.", _vector(0.0))
+    await _committed(session)
+
+    result = await retrieve_module.search(session, _FakeClient(_vector(0.0)), settings, "0917")
+
+    assert result.keyword_only is False
+    assert target in [candidate.chunk_id for candidate in result.candidates]
+
+
+async def test_search_degrades_to_lexical_only_when_the_assistant_is_down(
+    session: AsyncSession, settings: Settings
+) -> None:
+    """The ticket's own edge case: dense search needs the model to embed the
+    query, so an assistant outage must not take lexical search down with it —
+    a keyword match still comes back, flagged `keyword_only`."""
+    source_id = await _source(session)
+    document_id = await _document(session, source_id)
+    target = await _chunk(session, document_id, "Invoice INV-2024-0917 is overdue.", _vector(0.0))
+    await _committed(session)
+
+    result = await retrieve_module.search(
+        session, _UnavailableEmbedClient(_vector(0.0)), settings, "0917"
+    )
+
+    assert result.keyword_only is True
+    assert target in [candidate.chunk_id for candidate in result.candidates]
+    hit = next(candidate for candidate in result.candidates if candidate.chunk_id == target)
+    assert hit.dense_score is None
+    assert hit.lexical_score is not None and hit.lexical_score > 0
+
+
+async def test_search_with_the_assistant_down_and_no_lexical_match_returns_nothing(
+    session: AsyncSession, settings: Settings
+) -> None:
+    """No candidate clearing any bar here — `search()` has no threshold to
+    apply, unlike `retrieve()`'s caller in `askwell.ask` — so an empty result
+    is simply the honest fact that nothing matched, not an error."""
+    source_id = await _source(session)
+    document_id = await _document(session, source_id)
+    await _chunk(session, document_id, "The quarterly picnic is on Friday.", _vector(0.0))
+    await _committed(session)
+
+    result = await retrieve_module.search(
+        session, _UnavailableEmbedClient(_vector(0.0)), settings, "zzqx nonexistent term"
+    )
+
+    assert result.keyword_only is True
+    assert result.candidates == []
