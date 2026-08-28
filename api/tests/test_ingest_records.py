@@ -44,7 +44,7 @@ from askwell.config import Settings
 from askwell.db.engine import session_scope
 from askwell.extract_common import WrongPassword
 from askwell.ingest import Report, Stage, Work
-from askwell.sources import add
+from askwell.sources import add, delete_source
 
 pytestmark = pytest.mark.requires_db
 
@@ -1837,6 +1837,29 @@ async def test_the_snapshot_counts_are_this_machines_own_and_nothing_leaves_it(
     assert state["documents_failed"] == 1
     assert state["failures"][0]["filename"] == "b.pdf"
     assert "encrypted" in state["failures"][0]["error"]
+
+
+async def test_the_snapshot_still_lists_a_deleted_source_greyed_with_its_date(
+    session: AsyncSession,
+    tmp_path: Path,
+    settings: Settings,
+) -> None:
+    """`docs/ux/library.md` §4/§5, `M2-DELETE-FE-062`: a deleted source stays
+    listed — the row is what makes an old citation resolve at all — so the
+    snapshot the library reads must keep sending it, with a date, rather than
+    dropping it the moment it is tombstoned."""
+    await nominate(session, str(tmp_path))
+    written(tmp_path, "a.pdf", PDF)
+    await recorded(session, tmp_path, "a.pdf")
+    source_id = (await session.execute(text("SELECT id FROM sources"))).scalar_one()
+
+    await delete_source(session, source_id)
+    state = await ingest.snapshot(session, settings)
+
+    rows = {row["id"]: row for row in state["sources"]}
+    assert str(source_id) in rows
+    assert rows[str(source_id)]["status"] == "deleted"
+    assert rows[str(source_id)]["deleted_at"] is not None
 
 
 # --- the periodic moved-file check (`M1-VIEW-BE-049`) -----------------------

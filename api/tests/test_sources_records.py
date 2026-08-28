@@ -655,12 +655,13 @@ async def test_deleting_a_source_tombstones_every_live_document_under_it(
     assert len(rows) == 2
     for row in rows:
         assert row.deleted_at is not None
-    source_status = (
+    source_status, source_deleted_at = (
         await session.execute(
-            text("SELECT status FROM sources WHERE id = :id"), {"id": result.source_id}
+            text("SELECT status, deleted_at FROM sources WHERE id = :id"), {"id": result.source_id}
         )
-    ).scalar_one()
+    ).one()
     assert source_status == "deleted"
+    assert source_deleted_at is not None
 
 
 async def test_deleting_a_source_mid_import_leaves_nothing_half_indexed(

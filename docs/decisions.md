@@ -22,6 +22,18 @@ Template:
 
 ---
 
+## 2026-08-28 — The library deletes sources, not documents; deleted sources stay in the coverage snapshot
+
+**Decision:** `M2-DELETE-FE-062`'s library control calls `DELETE /sources/{id}`, not `DELETE /documents/{id}` — the library is grouped by source (`docs/ux/library.md` §2: "the source *is* the row"), so a row's own delete action tombstones everything under it. `askwell.ingest.coverage`'s snapshot query, which the library's `/ingest`/`/ingest/stream` read, was changed to stop filtering `s.status <> 'deleted'` — a deleted source now stays in the list it always did, with the same row, greyed by the frontend and hidden by a `showDeleted` filter that defaults to off. A new `sources.deleted_at` column (migration `5f3a7c1e9d42`) gives that row a date to show, matching `documents.deleted_at`.
+
+**Why:** `docs/ux/library.md` §4's confirmation copy example ("Delete **supplier-agreement-2024.pdf**?") names a file, which reads as document-level deletion — but §2's own shape statement is unambiguous that collections were removed and the source is the unit the library shows, and §5's state table lists `deleted` as one of the four source statuses a row can be in, not a document-level concept the library surfaces at all. Building a document-level delete control the library never shows anywhere was rejected as scope the ticket's own screen spec does not ask for. Excluding deleted sources from the coverage snapshot was the right call when it was made (`M2` was still future work and nothing needed to render a deleted row), but this ticket is the thing that needed it, and re-deriving "deleted sources exist" from a second query would be exactly the kind of second hand-maintained fact `AGENTS.md` §5 warns about — the snapshot already visits every source once per poll, so it is one `WHERE` clause and one selected column, not a new query.
+
+**Consequences:** any future document-level delete surface (there is none today — `delete_document` exists and is tested but nothing in the frontend calls it) will need its own confirmation flow; this ticket's `DeleteControl` only ever asks for a source. Every other reader of `askwell.ingest.coverage`'s sources list now sees deleted rows too and must filter them if it does not want them — `askwell.retrieve` and the ask-scoping queries were already filtering on `sources.status <> 'deleted'`/`documents.deleted_at IS NULL` independently and are unaffected.
+
+**Refs:** `api/src/askwell/ingest.py` (`coverage`), `api/src/askwell/db/migrations/versions/20260828_5f3a7c1e9d42_source_deleted_at.py`, `web/components/library/library-screen.tsx` (`DeleteControl`), `web/lib/library.ts` (`showDeleted`), `docs/ux/library.md` §2/§4/§5.
+
+---
+
 ## 2026-08-28 — Deletion tombstones a document rather than removing its row
 
 **Decision:** `askwell.sources.delete_document`/`delete_source` (`M2-DELETE-BE-061`) clear a document's chunks' `content` and `embedding` and set `deleted_at`/`deleted_reason`, but keep the `documents` and `chunks` rows. A source deletion does the same to every live document under it and deletes its `schema_notes` outright, leaving `memory` untouched.

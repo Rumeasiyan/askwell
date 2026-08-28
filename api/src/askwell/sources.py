@@ -914,7 +914,8 @@ async def delete_source(session: AsyncSession, source_id: uuid.UUID) -> int:
     notes_removed = len(notes.all())
 
     await session.execute(
-        text("UPDATE sources SET status = 'deleted' WHERE id = :id"), {"id": source_id}
+        text("UPDATE sources SET status = 'deleted', deleted_at = now() WHERE id = :id"),
+        {"id": source_id},
     )
     await record(
         session,

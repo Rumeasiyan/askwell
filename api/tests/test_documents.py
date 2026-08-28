@@ -196,6 +196,56 @@ def test_metadata_for_an_unknown_document_is_404(
     assert response.status_code == 404
 
 
+def test_metadata_for_a_deleted_document_resolves_the_tombstone(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """Issue #231: `GET /documents/{id}` must answer honestly for a
+    tombstoned row rather than 404ing indistinguishably from a bad id — the
+    row survives specifically so an old citation can resolve to a deletion
+    date (`docs/ux/source-viewer.md` §4, `M2-DELETE-FE-062`)."""
+    _truncate(database_url)
+    document_id = _seed_document(database_url, tmp_path)
+    with psycopg.connect(database_url, autocommit=True) as db:
+        db.execute(
+            "UPDATE documents SET deleted_at = now(), deleted_reason = 'client engagement ended', "
+            "status = 'deleted' WHERE id = %s",
+            (document_id,),
+        )
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+
+    with client:
+        _with_session(client)
+        response = client.get(f"/documents/{document_id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["deleted"] is True
+    assert body["deleted_at"] is not None
+    assert body["deleted_reason"] == "client engagement ended"
+    assert body["filename"] == "contract.pdf"
+
+
+def test_the_file_route_still_404s_a_deleted_document(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """Bytes are gone for a tombstoned document — only `document_metadata`
+    resolves the tombstone; `document_file` has nothing to serve."""
+    _truncate(database_url)
+    document_id = _seed_document(database_url, tmp_path)
+    with psycopg.connect(database_url, autocommit=True) as db:
+        db.execute(
+            "UPDATE documents SET deleted_at = now(), status = 'deleted' WHERE id = %s",
+            (document_id,),
+        )
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+
+    with client:
+        _with_session(client)
+        response = client.get(f"/documents/{document_id}/file")
+
+    assert response.status_code == 404
+
+
 def test_metadata_reports_a_document_whose_file_is_gone(
     settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
 ) -> None:

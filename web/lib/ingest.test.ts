@@ -65,6 +65,7 @@ function coverage(over: Partial<SourceCoverage> = {}): SourceCoverage {
     kind: "file",
     added_at: "2026-08-28T00:00:00Z",
     last_error: null,
+    deleted_at: null,
     open_clarifications: 0,
     total: 500,
     ready: 80,

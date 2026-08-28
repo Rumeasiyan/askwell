@@ -7,6 +7,7 @@ import {
   type IngestState,
   type SourceCoverage,
   coverageSentence,
+  deleteSource,
   fetchIngest,
   reindexSource,
   retryDocument,
@@ -18,6 +19,7 @@ import {
   STATUS_LABELS,
   addedSentence,
   attentionCauses,
+  deletedSentence,
   matchesFilters,
   type LibraryFilters,
 } from "@/lib/library";
@@ -210,6 +212,14 @@ function LibraryList({
           />
           Has open clarifications
         </label>
+        <label className="flex items-center gap-1 ask-micro">
+          <input
+            type="checkbox"
+            checked={filters.showDeleted}
+            onChange={(event) => onFilters({ ...filters, showDeleted: event.target.checked })}
+          />
+          Show deleted
+        </label>
       </div>
 
       {rows.length === 0 ? (
@@ -233,6 +243,7 @@ function LibraryList({
 
 function SourceRow({ source, state }: { source: SourceCoverage; state: IngestState }) {
   const [expanded, setExpanded] = useState(false);
+  const deleted = source.status === "deleted";
   const active = state.active.find((item) => item.source_id === source.id);
   const causes =
     source.status === "attention" ? attentionCauses(source.id, state.failures, state.flagged) : [];
@@ -245,6 +256,7 @@ function SourceRow({ source, state }: { source: SourceCoverage; state: IngestSta
           background: "var(--surface)",
           border: "1px solid var(--rule)",
           borderRadius: "var(--radius)",
+          opacity: deleted ? 0.55 : 1,
         }}
       >
         <div className="flex flex-wrap items-baseline justify-between gap-3">
@@ -259,36 +271,48 @@ function SourceRow({ source, state }: { source: SourceCoverage; state: IngestSta
           </span>
         </div>
 
-        <p className="ask-micro" style={{ color: "var(--muted)" }}>
-          {KIND_LABELS[source.kind] ?? source.kind} · Added {addedSentence(source.added_at)}
-          {source.open_clarifications > 0
-            ? ` · ${source.open_clarifications} open clarification${source.open_clarifications === 1 ? "" : "s"}`
-            : ""}
-        </p>
-
-        <p className="ask-micro">
-          {coverageSentence(source)}
-          {active === undefined
-            ? ""
-            : ` Indexing ${active.filename}${active.fraction === null ? "" : ` (${Math.round(active.fraction * 100)}%)`} now.`}
-        </p>
-
-        {causes.length === 0 ? null : (
+        {deleted ? (
+          <p className="ask-micro" style={{ color: "var(--muted)" }}>
+            {KIND_LABELS[source.kind] ?? source.kind}
+            {source.deleted_at !== null ? ` · ${deletedSentence(source.deleted_at)}` : ""}
+          </p>
+        ) : (
           <>
-            <button
-              type="button"
-              onClick={() => setExpanded((was) => !was)}
-              className="ask-navigates self-start px-2 py-1"
-              style={{ border: "1px solid var(--rule)", fontSize: "var(--t-meta)" }}
-              aria-expanded={expanded}
-            >
-              {expanded ? "Hide detail" : `Show detail (${causes.length})`}
-            </button>
-            {expanded ? <AttentionDetail sourceId={source.id} causes={causes} /> : null}
+            <p className="ask-micro" style={{ color: "var(--muted)" }}>
+              {KIND_LABELS[source.kind] ?? source.kind} · Added {addedSentence(source.added_at)}
+              {source.open_clarifications > 0
+                ? ` · ${source.open_clarifications} open clarification${source.open_clarifications === 1 ? "" : "s"}`
+                : ""}
+            </p>
+
+            <p className="ask-micro">
+              {coverageSentence(source)}
+              {active === undefined
+                ? ""
+                : ` Indexing ${active.filename}${active.fraction === null ? "" : ` (${Math.round(active.fraction * 100)}%)`} now.`}
+            </p>
+
+            {causes.length === 0 ? null : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setExpanded((was) => !was)}
+                  className="ask-navigates self-start px-2 py-1"
+                  style={{ border: "1px solid var(--rule)", fontSize: "var(--t-meta)" }}
+                  aria-expanded={expanded}
+                >
+                  {expanded ? "Hide detail" : `Show detail (${causes.length})`}
+                </button>
+                {expanded ? <AttentionDetail sourceId={source.id} causes={causes} /> : null}
+              </>
+            )}
+
+            <div className="flex gap-2">
+              <ReindexControl sourceId={source.id} name={source.name ?? "this source"} />
+              <DeleteControl sourceId={source.id} name={source.name ?? "this source"} />
+            </div>
           </>
         )}
-
-        <ReindexControl sourceId={source.id} name={source.name ?? "this source"} />
       </article>
     </li>
   );
@@ -346,6 +370,82 @@ function AttentionDetail({
         </li>
       ))}
     </ul>
+  );
+}
+
+/**
+ * Delete, with the confirmation `docs/ux/library.md` §4 requires before it
+ * starts — the three facts a user needs and would otherwise guess wrong:
+ * their original file is safe, the content is genuinely gone from Askwell,
+ * and old citations degrade honestly instead of vanishing. Same inline
+ * pattern as `ReindexControl` above, for the same reason.
+ *
+ * No local "it worked" message on success, unlike `ReindexControl`: once the
+ * request completes the source's own status becomes `"deleted"` on the next
+ * `subscribeIngest` push, which unmounts this control entirely (`SourceRow`
+ * only renders it for a live row) — the greyed row *is* the confirmation.
+ */
+function DeleteControl({ sourceId, name }: { sourceId: string; name: string }) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!confirming) {
+    return (
+      <div className="mt-1">
+        <button
+          type="button"
+          onClick={() => setConfirming(true)}
+          className="ask-navigates px-2 py-1"
+          style={{ border: "1px solid var(--rule)", color: "var(--muted)", fontSize: "var(--t-meta)" }}
+        >
+          Delete
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-1 flex flex-col gap-2">
+      <p className="ask-micro">
+        Delete <strong style={{ color: "var(--ink)" }}>{name}</strong>? The file on your disk is
+        untouched. Askwell forgets its contents and stops using it in answers. Past answers that
+        cited it will show it as deleted rather than breaking.
+      </p>
+      {error === null ? null : (
+        <p className="ask-micro" style={{ color: "var(--alarm)" }}>
+          {error}
+        </p>
+      )}
+      <div className="flex gap-2">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => {
+            setBusy(true);
+            setError(null);
+            deleteSource(sourceId)
+              .catch((reason: unknown) => {
+                setError(String(reason));
+                setBusy(false);
+              });
+          }}
+          className="ask-navigates px-3 py-1"
+          style={{ border: "1px solid var(--rule-strong)", fontSize: "var(--t-ui)" }}
+        >
+          {busy ? "Deleting…" : "Delete it"}
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => setConfirming(false)}
+          className="ask-navigates px-3 py-1"
+          style={{ border: "1px solid var(--rule)", fontSize: "var(--t-ui)" }}
+        >
+          Not now
+        </button>
+      </div>
+    </div>
   );
 }
 

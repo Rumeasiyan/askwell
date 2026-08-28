@@ -88,6 +88,10 @@ export interface SourceCoverage {
   added_at: string;
   /** The specific needs-attention cause, in a sentence. `null` when nothing is wrong. */
   last_error: string | null;
+  /** When this source was deleted, `null` otherwise. `status === "deleted"`
+   * is the filterable fact; this is the date the library's own deleted row
+   * shows beside it (`docs/ux/library.md` §5). */
+  deleted_at: string | null;
   /** Always 0 until `M3` builds the clarification loop — a stub, not a lie. */
   open_clarifications: number;
   total: number;
@@ -266,6 +270,38 @@ export async function reindexSource(sourceId: string): Promise<number> {
   }
   const result = (await response.json()) as { documents: number };
   return result.documents;
+}
+
+/**
+ * Tombstone a source. `docs/ux/library.md` §4, `M2-DELETE-FE-062`.
+ *
+ * The confirmation — naming the source and stating the three facts — is the
+ * caller's job (`LibraryScreen`), same division as `reindexSource` above;
+ * this is only the call once the user has already agreed. The file on disk
+ * is never touched by this request or by the endpoint it calls
+ * (`askwell.sources.delete_source`) — only what Askwell kept is cleared.
+ */
+export async function deleteSource(sourceId: string): Promise<number> {
+  const response = await fetch(`/sources/${sourceId}`, {
+    method: "DELETE",
+    headers: { accept: "application/json" },
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `Askwell answered ${response.status} to the deletion.`);
+  }
+  const result = (await response.json()) as { documents_deleted: number };
+  sourceDeletionCount += 1;
+  return result.documents_deleted;
+}
+
+// A local counter of confirmed deletions (this ticket's own Analytics
+// Events line) — in-memory only, never persisted or sent anywhere (C1).
+// Same pattern as `citations.ts`'s `cardClickCount`.
+let sourceDeletionCount = 0;
+
+export function getSourceDeletionCount(): number {
+  return sourceDeletionCount;
 }
 
 /**

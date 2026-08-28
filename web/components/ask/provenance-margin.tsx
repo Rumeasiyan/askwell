@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { useCardRef, useHoveredKey, useHoverHandlers, type LeaderPair } from "@/components/ask/leader";
 import { useLiveTurn } from "@/components/ask/ask-state";
@@ -127,6 +127,21 @@ function SourceCard({
   const { onHover, onUnhover } = useHoverHandlers(cardKey);
   const raised = useRaised(cardKey);
   const [expanded, setExpanded] = useState(false);
+  const deletion = useDeletion(card.documentId);
+
+  if (deletion.deleted) {
+    return (
+      <DeletedSourceCard
+        cardRef={variant === "margin" ? marginRef : undefined}
+        raised={raised}
+        onHover={onHover}
+        onUnhover={onUnhover}
+        filename={card.filename}
+        deletedAt={deletion.deletedAt}
+        edgeToken={variant === "margin" ? "var(--provenance)" : "var(--rule-strong)"}
+      />
+    );
+  }
 
   const label = pageLabel(card) ?? anchorLabel(card);
   const passage = card.passage.trim();
@@ -182,6 +197,96 @@ function SourceCard({
           {expanded ? "Show less" : "See full passage"}
         </button>
       ) : null}
+    </article>
+  );
+}
+
+/**
+ * Whether the document a card cites has since been deleted, and when.
+ * `docs/ux/ask.md` §5 "Deleted source cited", issue 231.
+ *
+ * A card is composed once, from the trace of what was true when the answer
+ * was generated — it never learns of a later deletion on its own. This is
+ * the live check that fills that gap, the same `GET /documents/{id}`
+ * `SupersededBanner` (`context-rail.tsx`) already reads for its own
+ * after-the-fact fact. Defaults to "not deleted" while the request is in
+ * flight rather than a loading state of its own: the ordinary card is the
+ * correct thing to show until proven otherwise, and on a local machine the
+ * answer arrives before anyone would notice the difference.
+ */
+function useDeletion(documentId: string): { deleted: boolean; deletedAt: string | null } {
+  const [state, setState] = useState<{ deleted: boolean; deletedAt: string | null }>({
+    deleted: false,
+    deletedAt: null,
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetch(`/documents/${documentId}`, { cache: "no-store" })
+      .then((response) =>
+        response.ok
+          ? (response.json() as Promise<{ deleted: boolean; deleted_at: string | null }>)
+          : null,
+      )
+      .then((body) => {
+        if (!cancelled && body !== null) {
+          setState({ deleted: body.deleted, deletedAt: body.deleted_at });
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [documentId]);
+
+  return state;
+}
+
+/**
+ * The deleted rendering itself: greyed, not clickable — no `Link`, so there
+ * is nowhere for a click or a keyboard activation to go, matching the
+ * ticket's own "absent rather than inert" standard used elsewhere in this
+ * surface (`context-rail.tsx`'s `CitationStepper`).
+ */
+function DeletedSourceCard({
+  cardRef,
+  raised,
+  onHover,
+  onUnhover,
+  filename,
+  deletedAt,
+  edgeToken,
+}: {
+  cardRef: ((node: HTMLElement | null) => void) | undefined;
+  raised: boolean;
+  onHover: () => void;
+  onUnhover: () => void;
+  filename: string;
+  deletedAt: string | null;
+  edgeToken: string;
+}) {
+  const date = deletedAt !== null ? new Date(deletedAt).toLocaleDateString() : null;
+  return (
+    <article
+      ref={cardRef}
+      className="ask-card-raised flex flex-col gap-1.5 p-3"
+      data-raised={raised}
+      onMouseEnter={onHover}
+      onMouseLeave={onUnhover}
+      style={{
+        background: "var(--surface)",
+        border: "1px solid var(--rule)",
+        borderLeft: `2px solid ${edgeToken}`,
+        borderRadius: "var(--radius)",
+        opacity: 0.55,
+      }}
+    >
+      <span className="ask-micro" style={{ color: "var(--muted)" }}>
+        {filename}
+      </span>
+      <span className="ask-prose" style={{ fontSize: "var(--t-meta)", lineHeight: "var(--t-meta-lh)" }}>
+        Deleted{date !== null ? ` on ${date}` : ""}. Askwell no longer has the contents.
+      </span>
     </article>
   );
 }
