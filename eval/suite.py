@@ -1,0 +1,113 @@
+"""Suite and task definitions, loaded from `eval/suites/*.json`.
+
+A suite is one category from the quality gate (`docs/build-plan.md`) — or,
+until those exist, the harness's own fixture. The file format is deliberately
+plain JSON rather than a Python module: a task list is data a non-engineer
+reviewing the quality bar can read, and versioning a suite (`v1`, `v2`) is a
+new file rather than a diff that changes what "the abstention suite" meant
+retroactively.
+"""
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+
+class SuiteError(ValueError):
+    """A suite file is malformed or names something the harness cannot do."""
+
+
+@dataclass(frozen=True, slots=True)
+class Task:
+    id: str
+    prompt: str
+    scorer: str
+    expected: object
+    timeout_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class Suite:
+    name: str
+    category: str
+    pass_bar: float
+    """The quality-gate bar for this category (`docs/build-plan.md`).
+
+    `1.0` marks a suite that must report pass/fail rather than a mean — SQL
+    safety and web-escalation discipline are the two named there, because
+    "0.97 on ten tasks" reads as nearly fine when it is a failure.
+    """
+    tasks: tuple[Task, ...]
+
+    @property
+    def strict(self) -> bool:
+        return self.pass_bar >= 1.0
+
+
+_DEFAULT_TIMEOUT_SECONDS = 60.0
+
+
+def load_suite(path: Path) -> Suite:
+    try:
+        raw = json.loads(path.read_text())
+    except FileNotFoundError:
+        raise SuiteError(f"no suite at {path}") from None
+    except json.JSONDecodeError as error:
+        raise SuiteError(f"{path} is not valid JSON: {error}") from error
+
+    for field in ("name", "category", "pass_bar", "tasks"):
+        if field not in raw:
+            raise SuiteError(f"{path} is missing required field '{field}'")
+
+    tasks_raw = raw["tasks"]
+    if not isinstance(tasks_raw, list) or not tasks_raw:
+        raise SuiteError(f"{path} has no tasks")
+
+    tasks: list[Task] = []
+    seen_ids: set[str] = set()
+    for entry in tasks_raw:
+        task = _load_task(path, entry)
+        if task.id in seen_ids:
+            raise SuiteError(f"{path} has a duplicate task id: {task.id!r}")
+        seen_ids.add(task.id)
+        tasks.append(task)
+
+    pass_bar = float(raw["pass_bar"])
+    if not 0.0 <= pass_bar <= 1.0:
+        raise SuiteError(f"{path} pass_bar must be in [0, 1], got {pass_bar!r}")
+
+    return Suite(
+        name=str(raw["name"]),
+        category=str(raw["category"]),
+        pass_bar=pass_bar,
+        tasks=tuple(tasks),
+    )
+
+
+def _load_task(path: Path, entry: Any) -> Task:
+    for field in ("id", "prompt", "scorer", "expected"):
+        if field not in entry:
+            raise SuiteError(f"{path}: task {entry!r} is missing required field '{field}'")
+    return Task(
+        id=str(entry["id"]),
+        prompt=str(entry["prompt"]),
+        scorer=str(entry["scorer"]),
+        expected=entry["expected"],
+        timeout_seconds=float(entry.get("timeout_seconds", _DEFAULT_TIMEOUT_SECONDS)),
+    )
+
+
+def suites_dir() -> Path:
+    return Path(__file__).resolve().parent / "suites"
+
+
+def resolve_suite_path(name: str) -> Path:
+    """`name` is the file stem under `eval/suites/`, e.g. `smoke.v1`."""
+    direct = suites_dir() / f"{name}.json"
+    if direct.exists():
+        return direct
+    raise SuiteError(
+        f"no suite named {name!r} in {suites_dir()}. "
+        f"Available: {', '.join(sorted(p.stem for p in suites_dir().glob('*.json')))}"
+    )

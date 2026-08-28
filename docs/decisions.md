@@ -22,6 +22,18 @@ Template:
 
 ---
 
+## 2026-08-28 — Eval harness aborts the whole run on model-unavailable; a per-run failure stays local to that run
+
+**Decision:** `eval/runner.py` treats `InferenceUnavailable` (the model is not there at all) and `InferenceFailed` (a request to a present model failed — timeout, malformed output) differently. The first propagates and aborts the entire suite with a named reason, before or during any task, and no results file is written. The second is caught per run, recorded on that run as `{score: 0.0, error: "..."}`, and the task's other two runs still happen.
+
+**Why:** the ticket's own edge cases name both, and conflating them would violate one or the other. If a per-task-only catch were used for `InferenceUnavailable`, a supervisor crash mid-suite would produce nine more tasks silently scored 0.0 each — "reporting zeros as if measured," the exact failure the ticket calls out, because a 0.0 for "the assistant did not answer this" and a 0.0 for "the model is not running" look identical in a mean. If the whole-run abort were used for `InferenceFailed` instead, one timeout on one run would discard the other five runs already measured, defeating the entire worst-of-3 design (`docs/build-plan.md`: "a single malformed output fails an entire turn and errors compound" is the reason worst-case is reported, not a reason to throw the rest away). Also decided: `RUNS_PER_TASK = 3` is a module constant with no CLI flag, rather than a `--runs` option defaulting to 3 — a flag is a way to accidentally (or not) run once and report as three, and the acceptance criteria forbid that outcome outright, not just discourage it.
+
+**Consequences:** a suite with one persistently-slow task cannot get a partial result for the rest of the suite by racing past a dead model — the whole run stops, which is intended (a suite that could not be measured must say so, not report what it managed). Widening this later to "abort only the current task's remaining runs on `InferenceUnavailable`" would need a documented reason, since it re-opens the exact ambiguity this decision resolves.
+
+**Refs:** `AGENTS.md` §9 ticket `M2-EVAL-TEST-063`; `eval/runner.py`; `docs/build-plan.md` quality-gate section; issue #236.
+
+---
+
 ## 2026-08-28 — The library deletes sources, not documents; deleted sources stay in the coverage snapshot
 
 **Decision:** `M2-DELETE-FE-062`'s library control calls `DELETE /sources/{id}`, not `DELETE /documents/{id}` — the library is grouped by source (`docs/ux/library.md` §2: "the source *is* the row"), so a row's own delete action tombstones everything under it. `askwell.ingest.coverage`'s snapshot query, which the library's `/ingest`/`/ingest/stream` read, was changed to stop filtering `s.status <> 'deleted'` — a deleted source now stays in the list it always did, with the same row, greyed by the frontend and hidden by a `showDeleted` filter that defaults to off. A new `sources.deleted_at` column (migration `5f3a7c1e9d42`) gives that row a date to show, matching `documents.deleted_at`.

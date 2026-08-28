@@ -1,0 +1,19 @@
+{
+  "name": "smoke.v1",
+  "category": "harness-smoke",
+  "pass_bar": 0.5,
+  "tasks": [
+    {
+      "id": "capital-of-france",
+      "prompt": "Answer in one short sentence. What is the capital of France?",
+      "scorer": "contains_all",
+      "expected": "Paris"
+    },
+    {
+      "id": "two-plus-two",
+      "prompt": "Answer with only the number. What is 2 + 2?",
+      "scorer": "contains_all",
+      "expected": "4"
+    }
+  ]
+}

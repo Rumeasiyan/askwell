@@ -1,0 +1,6 @@
+[tool.pytest.ini_options]
+# Own config because `eval/` is a sibling of `api/`, not inside it
+# (`docs/build-plan.md` repository layout) — `api/pyproject.toml`'s pytest
+# section is never consulted for a run rooted here.
+asyncio_mode = "auto"
+addopts = "-q --strict-markers --strict-config"
