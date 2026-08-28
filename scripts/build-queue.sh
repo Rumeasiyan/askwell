@@ -103,7 +103,14 @@ branch_for() { printf 'feat/%s' "$(printf '%s' "$1" | tr 'A-Z' 'a-z')"; }
 build_one() {   # build_one <ticket>
   local ticket="$1" branch; branch="$(branch_for "$ticket")"
 
-  git checkout -q "$MAIN" && git pull -q || return 1
+  # --ff-only, not a bare pull: without it git refuses outright when the
+  # local branch has diverged ("Need to specify how to reconcile divergent
+  # branches") unless the person running the queue happens to have set
+  # pull.rebase. That killed three tickets in one run — M1-ASK-RET-036 was
+  # parked after its audit had already passed. Fast-forward is also the only
+  # thing this should ever do: main moves because a PR merged, and a main
+  # that cannot fast-forward is a problem to stop on, not to merge past.
+  git checkout -q "$MAIN" && git pull -q --ff-only || return 1
   # -b first: resetting the branch would discard an earlier attempt's work,
   # which is the one thing parking exists to keep.
   git checkout -q -b "$branch" 2>/dev/null || git checkout -q -B "$branch" || return 1
@@ -159,7 +166,7 @@ See docs/manual-tests/$ticket.md for what to try by hand." || return 1
   fi
 
   gh pr merge --squash --delete-branch >/dev/null 2>&1 || return 1
-  git checkout -q "$MAIN" && git pull -q
+  git checkout -q "$MAIN" && git pull -q --ff-only
   say "  merged."
   return 0
 }
