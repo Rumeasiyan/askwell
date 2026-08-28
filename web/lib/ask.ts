@@ -28,10 +28,16 @@ export interface AskTokenData {
 export interface AskCitationData {
   message_id: string;
   index: number;
+  claim_ordinal: number;
   chunk_id: string;
   document_id: string;
+  filename: string;
+  anchor_kind: string | null;
+  heading: string | null;
   page_from: number | null;
   page_to: number | null;
+  passage: string;
+  quoted_span: string | null;
 }
 
 export type AskStatus = "completed" | "stopped" | "failed";
@@ -205,14 +211,14 @@ export function looksNonEnglish(question: string): boolean {
  * the only durable fix is to derive the next turn from the previous *turn*
  * rather than from a snapshot taken at some other moment.
  *
- * `seen` carries citation indices already counted, because the server may
- * repeat one and a citation counted twice is a claim that looks doubly
- * supported (C4).
+ * The `citation` kind is deliberately not handled here — grouping one into
+ * a provenance card is `applyCitation` (`lib/citations.ts`)'s job, kept in
+ * its own module rather than folded in here to avoid this file importing
+ * `CitationCard` for a kind it does nothing else with.
  */
 export function applyAskEvent<T extends AskTurnState>(
   turn: T,
   event: AskEvent,
-  seen: Set<number>,
 ): Partial<AskTurnState> {
   switch (event.event) {
     case "step":
@@ -222,10 +228,6 @@ export function applyAskEvent<T extends AskTurnState>(
       };
     case "token":
       return { answer: turn.answer + event.data.text };
-    case "citation":
-      if (seen.has(event.data.index)) return {};
-      seen.add(event.data.index);
-      return { citationCount: turn.citationCount + 1 };
     default:
       return {};
   }
@@ -236,5 +238,4 @@ export interface AskTurnState {
   serverId: string | null;
   steps: { label: string; kind: string }[];
   answer: string;
-  citationCount: number;
 }

@@ -83,6 +83,8 @@ def _candidate(content: str, score: float = 0.5) -> retrieve_module.Candidate:
     return retrieve_module.Candidate(
         chunk_id=uuid.uuid4(),
         document_id=uuid.uuid4(),
+        filename="doc.pdf",
+        anchor_kind="page",
         content=content,
         heading=None,
         page_from=1,

@@ -250,8 +250,12 @@ def test_a_question_streams_steps_then_tokens_then_a_citation_then_done(
                 "index": 1,
                 "chunk_id": str(chunk_id),
                 "document_id": str(document_id),
+                "filename": "file.txt",
+                "anchor_kind": None,
+                "heading": None,
                 "page_from": None,
                 "page_to": None,
+                "passage": "Notice is ninety days.",
                 "quoted_span": None,
                 "message_id": str(message_id),
             }

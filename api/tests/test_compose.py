@@ -16,6 +16,8 @@ def _candidate(content: str, *, chunk_id: uuid.UUID | None = None) -> Candidate:
     return Candidate(
         chunk_id=chunk_id or uuid.uuid4(),
         document_id=uuid.uuid4(),
+        filename="doc.pdf",
+        anchor_kind="page",
         content=content,
         heading=None,
         page_from=1,

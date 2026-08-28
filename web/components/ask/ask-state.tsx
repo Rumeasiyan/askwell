@@ -19,6 +19,7 @@ import {
   stopAsk,
   streamAsk,
 } from "@/lib/ask";
+import { applyCitation, type CitationCard } from "@/lib/citations";
 
 /**
  * The conversation, held once for the whole application. `M1-ASK-FE-039`.
@@ -57,7 +58,10 @@ export interface AskTurn {
   status: TurnStatus;
   steps: { label: string; kind: string }[];
   answer: string;
-  citationCount: number;
+  /** One card per cited chunk, grouped by `applyCitation` (`lib/citations.ts`)
+   * as `citation` events arrive — the provenance margin's own data, not
+   * rendered by this module (`ProvenanceMargin`, `M1-CITE-FE-043`). */
+  citations: CitationCard[];
   reason: string | null;
 }
 
@@ -78,6 +82,17 @@ export function useAsk(): AskApi {
   return value;
 }
 
+/**
+ * The turn the provenance margin belongs to (`ask.md` §8, settled): past
+ * turns do not collapse yet (`M1-CONV-FE-180`), but the margin only ever
+ * shows one answer's citations, so it tracks the most recently asked turn
+ * rather than every turn on screen.
+ */
+export function useLiveTurn(): AskTurn | null {
+  const { turns } = useAsk();
+  return turns.length > 0 ? turns[turns.length - 1]! : null;
+}
+
 const NON_ENGLISH_REASON =
   "Askwell answers in English in this version. Ask again in English, and it will search your files.";
 
@@ -89,7 +104,7 @@ function blankTurn(question: string, status: TurnStatus, reason: string | null =
     status,
     steps: [],
     answer: "",
-    citationCount: 0,
+    citations: [],
     reason,
   };
 }
@@ -147,8 +162,6 @@ export function AskProvider({ children }: { children: ReactNode }) {
     dispatching.current = true;
     patch(id, { status: "running" });
 
-    const seenCitations = new Set<number>();
-
     void (async () => {
       let finalStatus: TurnStatus = "failed";
       let finalReason: string | null = "Askwell could not reach the assistant.";
@@ -164,9 +177,13 @@ export function AskProvider({ children }: { children: ReactNode }) {
           // tokens in one frame would both read the same answer and the second
           // would overwrite the first, losing words the user was watching arrive.
           setTurns((queue) =>
-            queue.map((turn) =>
-              turn.id !== id ? turn : { ...turn, ...applyAskEvent(turn, event, seenCitations) },
-            ),
+            queue.map((turn) => {
+              if (turn.id !== id) return turn;
+              if (event.event === "citation") {
+                return { ...turn, citations: applyCitation(turn.citations, event.data) };
+              }
+              return { ...turn, ...applyAskEvent(turn, event) };
+            }),
           );
         });
       } catch (error) {
