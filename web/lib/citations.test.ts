@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { AskCitationData } from "./ask.ts";
-import { anchorLabel, applyCitation, pageLabel, type CitationCard } from "./citations.ts";
+import { anchorLabel, applyCitation, documentHref, pageLabel, type CitationCard } from "./citations.ts";
 
 function citation(over: Partial<AskCitationData> = {}): AskCitationData {
   return {
@@ -86,4 +86,44 @@ test("an anchor kind with no heading renders its human label", () => {
 
 test("neither a heading nor an anchor kind renders nothing", () => {
   assert.equal(anchorLabel(card()), null);
+});
+
+// --- documentHref -------------------------------------------------------------
+// `M1-VIEW-FE-046`: a query-string route, not `/documents/{id}` — a dynamic
+// path segment cannot exist under this app's static export.
+
+function fullCard(over: Partial<CitationCard> = {}): CitationCard {
+  return {
+    chunkId: "c1",
+    documentId: "d1",
+    filename: "contract.pdf",
+    anchorKind: null,
+    heading: null,
+    pageFrom: 3,
+    pageTo: 3,
+    passage: "Notice is ninety days.",
+    quotedSpan: "ninety days",
+    claimOrdinals: [1],
+    ...over,
+  };
+}
+
+test("documentHref carries the id, page, quoted span and passage", () => {
+  const href = documentHref(fullCard());
+  const url = new URL(href, "http://example.test");
+  assert.equal(url.pathname, "/documents/");
+  assert.equal(url.searchParams.get("id"), "d1");
+  assert.equal(url.searchParams.get("page"), "3");
+  assert.equal(url.searchParams.get("span"), "ninety days");
+  assert.equal(url.searchParams.get("passage"), "Notice is ninety days.");
+});
+
+test("documentHref omits page when there is none, rather than sending page=null", () => {
+  const url = new URL(documentHref(fullCard({ pageFrom: null, pageTo: null })), "http://example.test");
+  assert.equal(url.searchParams.has("page"), false);
+});
+
+test("documentHref omits a blank quoted span rather than searching for nothing", () => {
+  const url = new URL(documentHref(fullCard({ quotedSpan: "  " })), "http://example.test");
+  assert.equal(url.searchParams.has("span"), false);
 });

@@ -4,7 +4,7 @@ import { useState } from "react";
 
 import { useCardRef, useHoveredKey, useHoverHandlers, type LeaderPair } from "@/components/ask/leader";
 import { useLiveTurn } from "@/components/ask/ask-state";
-import { anchorLabel, pageLabel, recordCardClick, type CitationCard } from "@/lib/citations";
+import { anchorLabel, documentHref, pageLabel, recordCardClick, type CitationCard } from "@/lib/citations";
 import { isRaised } from "@/lib/pairing";
 
 /**
@@ -141,7 +141,7 @@ function SourceCard({
       }}
     >
       <a
-        href={`/documents/${card.documentId}${card.pageFrom !== null ? `?page=${card.pageFrom}` : ""}`}
+        href={documentHref(card)}
         onClick={() => recordCardClick()}
         onFocus={onHover}
         onBlur={onUnhover}

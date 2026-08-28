@@ -300,4 +300,57 @@
     white-space: nowrap;
     border: 0;
   }
+
+  /* The minimal subset of pdf.js's own `web/pdf_viewer.css` that its
+     `TextLayer` class (`pdfjs-dist/build/pdf.mjs`) needs to position an
+     invisible, selectable text overlay on top of the rendered canvas.
+     Adapted rather than importing the full stylesheet (Apache-2.0, same as
+     the library) — that file is ~6,000 lines of toolbar, annotation-editor
+     and thumbnail-panel CSS for viewer chrome this ticket does not build;
+     importing it would bundle all of that for three rules this needs.
+     `--total-scale-factor` and the two `--scale-round-*` variables are read
+     by `TextLayer`'s own internal `setLayerDimensions` to size this
+     container — set on `.ask-pdf-page` (`document-viewer.tsx`) to the same
+     scale the page's canvas was rendered at. */
+  .ask-pdf-page {
+    --scale-round-x: 1px;
+    --scale-round-y: 1px;
+  }
+
+  .ask-pdf-text-layer {
+    position: absolute;
+    inset: 0;
+    overflow: clip;
+    line-height: 1;
+    text-align: initial;
+    transform-origin: 0 0;
+  }
+
+  .ask-pdf-text-layer :is(span, br) {
+    color: transparent;
+    position: absolute;
+    white-space: pre;
+    cursor: text;
+    transform-origin: 0% 0%;
+    user-select: text;
+  }
+
+  /* The located passage, inside pdf.js's own text layer (`M1-VIEW-FE-046`).
+     A translucent `--provenance` fill rather than a new solid token — the
+     text colour underneath is untouched, so the existing ink-on-paper and
+     ink-on-surface contrast rows already cover legibility and this needs no
+     row of its own in `scripts/contrast.mjs`. */
+  .ask-pdf-highlight {
+    background: color-mix(in srgb, var(--provenance) 35%, transparent);
+    border-radius: 2px;
+  }
+
+  /* The page-level fallback (`M1-VIEW-FE-046`'s own edge case: the exact
+     passage could not be pinpointed, or the page is a scan). A left rule
+     rather than a fill — a whole page tinted the same colour as a three-word
+     match would read as a much stronger claim than "somewhere on this page." */
+  .ask-pdf-page-note {
+    border-left: 2px solid var(--provenance);
+    padding-left: 8px;
+  }
 }

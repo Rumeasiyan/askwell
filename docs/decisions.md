@@ -22,6 +22,18 @@ Template:
 
 ---
 
+## 2026-08-28 — The document viewer is a query string, not a dynamic route segment
+
+**Decision:** `M1-VIEW-FE-046`. `web/app/documents/page.tsx` is one static page. A document's id, the page to land on, and the two search targets for highlighting (`span` — the claim's own quoted words, `passage` — the full retrieved chunk) travel as query parameters (`/documents/?id=...&page=...&span=...&passage=...`), read client-side with `useSearchParams`. `web/lib/citations.ts`'s `documentHref` builds this; `web/components/ask/provenance-margin.tsx`'s card link was updated in the same change. This supersedes `M1-CITE-FE-043`'s own guess (2026-08-28, below) of `/documents/{document_id}?page=...`.
+
+**Why:** `next.config.ts` sets `output: "export"` (`M0-FOUND-DEPLOY-004`'s decision, unrelated ticket, same file) — there is no server process on the user's machine to render a page on demand, so every route is a real directory written at build time. A dynamic path segment (`/documents/[id]`) under static export must enumerate every value it will ever take via `generateStaticParams`, and a document id is created at runtime when someone adds a file; it cannot be known at build time. The `[id]` form was not merely unbuilt, as the earlier decision assumed — it cannot be built at all under this app's own architecture, a fact `M1-CITE-FE-043`'s own session did not have reason to check since it was only wiring a link, not building the landing page the link pointed at. The query-string form needed no new insight to reach once this was noticed: one static page, everything else client-side.
+
+**Consequences:** `M1-VIEW-FE-047` and `M1-VIEW-FE-048` build on this page and this parameter set rather than inventing a route of their own — `M1-VIEW-FE-048`'s own "back to the answer" and citation-stepping controls add further query parameters (or client-side state) to the same `/documents/` page, never a new path. Any future surface that needs to link to a specific passage in a specific document should reach for `documentHref`, not construct a URL inline — that function is the one place the parameter names are allowed to be decided.
+
+**Refs:** `web/app/documents/page.tsx`, `web/components/documents/document-viewer.tsx`, `web/lib/citations.ts`, `web/components/ask/provenance-margin.tsx`, `docs/ux/source-viewer.md` §0 (Route).
+
+---
+
 ## 2026-08-28 — Scores in the interaction record are strings; an audit write failure gets a second, separate write to mark the turn failed
 
 **Decision:** `M1-ASK-OBS-041`. `audit_interactions`' `retrieved_chunks` stores each candidate's score as `str(candidate.score)`, not the raw `float`. Separately, the final write (`messages` upsert, citation inserts, `record()`) stays one transaction as before, but is now wrapped in `try`/`except AuditError`: on failure, a second, independent `session_scope` writes the `messages` row to `failed` with a stated reason, and the turn still emits its `done` event.
