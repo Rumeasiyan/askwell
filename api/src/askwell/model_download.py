@@ -22,7 +22,9 @@ which is the only durability this needs.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -83,6 +85,19 @@ class DownloadProgress:
 
 ClientFactory = Callable[[], httpx.AsyncClient]
 
+# Both sides of the container boundary agree on these two names and nothing
+# else. The API writes the first; the host supervisor writes the second.
+FETCH_REQUEST = "fetch-request.json"
+FETCH_PROGRESS = "fetch-progress.json"
+
+# The host writes plain words; this maps them onto the states the screen knows.
+_HOST_STATUS = {
+    "downloading": DownloadStatus.DOWNLOADING,
+    "paused": DownloadStatus.PAUSED,
+    "failed": DownloadStatus.FAILED,
+    "ready": DownloadStatus.READY,
+}
+
 
 def _default_client() -> httpx.AsyncClient:
     # Streamed, no overall timeout: a 2-3 GB transfer on a slow connection is
@@ -118,6 +133,39 @@ class ModelDownloadManager:
     def target_path(self) -> Path:
         return self._target_path
 
+    @property
+    def _models_dir(self) -> Path:
+        return self._target_path.parent
+
+    def _write_request(self, spec: ModelSpec) -> None:
+        """Ask the host to fetch this, and say exactly which bytes count.
+
+        The checksum travels with the request rather than being looked up on
+        the far side: the host script verifies against what the registry said
+        at the moment the catalogue was written, and a fetcher that decided for
+        itself what "correct" meant would be no check at all.
+        """
+        self._models_dir.mkdir(parents=True, exist_ok=True)
+        (self._models_dir / "fetch-cancel").unlink(missing_ok=True)
+        (self._models_dir / FETCH_REQUEST).write_text(
+            json.dumps(
+                {
+                    "url": spec.url,
+                    "filename": spec.filename,
+                    "sha256": spec.sha256,
+                    "size_bytes": spec.size_bytes,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def _host_progress(self) -> dict[str, object] | None:
+        """What the host says it is doing, or nothing if it has not said."""
+        try:
+            return dict(json.loads((self._models_dir / FETCH_PROGRESS).read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return None
+
     def _part_path(self) -> Path:
         return self._target_path.with_name(self._target_path.name + ".part")
 
@@ -136,10 +184,29 @@ class ModelDownloadManager:
         stopped" true without any state beyond the file itself: a fresh
         process asked for a snapshot sees exactly what a running one would.
         """
+        spec = spec_for_tier(tier)
+
+        # The host is the authority while it is working: it is the process
+        # doing the download, and the in-memory value here is only what this
+        # container last asked for. Preferring the local one would show a
+        # progress bar that stopped moving when the API restarted, over a
+        # download that never paused.
+        reported = self._host_progress()
+        if reported is not None and reported.get("filename") == spec.filename:
+            status = _HOST_STATUS.get(str(reported.get("status")), DownloadStatus.IDLE)
+            if status is not DownloadStatus.IDLE:
+                return DownloadProgress(
+                    status=status,
+                    tier=tier,
+                    display_name=spec.display_name,
+                    downloaded_bytes=_as_int(reported.get("downloaded_bytes")),
+                    total_bytes=spec.size_bytes,
+                    error=(str(reported["error"]) if reported.get("error") else None),
+                )
+
         if self._progress is not None and self._progress.tier == tier:
             return self._progress
 
-        spec = spec_for_tier(tier)
         on_disk = self._bytes_on_disk(spec)
         if self._target_path.is_file() and on_disk == spec.size_bytes:
             status = DownloadStatus.READY
@@ -188,13 +255,23 @@ class ModelDownloadManager:
             total_bytes=spec.size_bytes,
         )
         self._cancel.clear()
-        self._task = asyncio.create_task(self._run(tier, spec))
+        # Asked for, not performed. Nothing in a container may reach the
+        # network: the egress proxy never forwards and the application network
+        # is declared internal, so doing this here earned a 403 from our own
+        # proxy — C1 working, not a bug. The host supervisor watches for this
+        # file for the same reason it runs llama.cpp: the host is where host
+        # things belong. See `docs/architecture.md` §5.1.
+        self._write_request(spec)
         return self._progress
 
     async def cancel(self, tier: str) -> DownloadProgress:
         self._cancel.set()
-        if self._task is not None:
-            await asyncio.wait([self._task])
+        # A file rather than a signal: the fetch runs in another process on the
+        # other side of the container boundary, and this directory is the only
+        # thing both can touch.
+        with contextlib.suppress(OSError):
+            (self._models_dir / "fetch-cancel").write_text("", encoding="utf-8")
+        (self._models_dir / FETCH_REQUEST).unlink(missing_ok=True)
         return self.snapshot(tier)
 
     def verify_manual(self, tier: str) -> DownloadProgress:
@@ -337,6 +414,20 @@ class ModelDownloadManager:
             total_bytes=spec.size_bytes,
             error=error,
         )
+
+
+def _as_int(value: object) -> int:
+    """A byte count out of a file another process wrote, or zero.
+
+    Progress arriving as a string, a null or something stranger is a reason to
+    show no progress, never a reason to fail the request.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _sha256_file(path: Path) -> str:

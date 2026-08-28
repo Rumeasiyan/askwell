@@ -4,6 +4,19 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.40 — 2026-08-28
+
+The one download in the product runs on the host. Issue 192.
+
+### Fixed
+
+- **The model download no longer tries to reach the network from inside a container**, where it was refused by Askwell's own egress proxy — `403 Forbidden`, logged, exactly as designed. The API now writes a request into the models directory and reads progress back; the host supervisor that already runs `llama.cpp` performs the fetch, verifies the published sha256, and discards a file that does not match.
+- **C1 gains no third exception.** An allowlist entry for `huggingface.co` would have cost the property that makes the proxy trustworthy — that no configuration exists which would let it forward. The containers holding the corpus keep zero route out.
+
+### Verified
+
+- `api/tests/test_model_fetch_host.py` loads the host script directly and exercises the fetch against a stubbed `urlopen`: a verified download lands, a checksum mismatch is discarded, a partial file resumes with the right `Range`, a server ignoring the `Range` restarts cleanly rather than appending, a cancel keeps what arrived and consumes its own flag, a dead network reports rather than raising, and a model already on disk is not fetched again.
+
 ## 0.2.39 — 2026-08-28
 
 A second question stays in the same conversation. `M1-ASK-API-038`, issue 156.
