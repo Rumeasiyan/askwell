@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import shutil
@@ -38,6 +39,7 @@ import threading
 import signal
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 # States the API reads back out of state.json. Kept in step with
@@ -381,6 +383,131 @@ class Supervisor:
         self._write(STOPPED)
 
 
+# --- fetching a model, on the host, because nothing in a container may ---------
+#
+# C1's egress proxy never forwards anything, and the application network is
+# declared internal, so a container asking Hugging Face for a model gets a 403
+# from the proxy — correctly. That is not a bug to work around: the proxy's
+# whole safety property is that there is no configuration which would let it
+# forward, and an allowlist would take that away for one feature.
+#
+# So the one download in the product happens here, for the same reason
+# inference does: the host is where host things belong. The API writes a request
+# into the models directory and reads progress back from it; it never opens a
+# socket to anywhere. An air-gapped machine simply never writes a request and
+# uses the manual-file path instead.
+#
+# stdlib only, like the rest of this file — the host has whatever Python it has.
+
+FETCH_REQUEST = "fetch-request.json"
+FETCH_PROGRESS = "fetch-progress.json"
+FETCH_POLL_SECONDS = 1.0
+FETCH_CHUNK = 1024 * 1024
+
+
+def _fetch_write(models_dir: Path, payload: dict) -> None:
+    """Publish progress the way `_write` publishes state: atomically."""
+    target = models_dir / FETCH_PROGRESS
+    try:
+        models_dir.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_suffix(".partial")
+        temporary.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(temporary, target)
+        os.chmod(target, 0o644)
+    except OSError as error:
+        print(f"askwell-inference[fetch]: could not write progress: {error}", file=sys.stderr)
+
+
+def _fetch_once(models_dir: Path, request: dict) -> None:
+    """One model, resumable, verified against the checksum the API sent.
+
+    The checksum is not optional and is not computed here: it comes from the
+    request, which the API took from a registry lookup. A file that arrives
+    with the wrong bytes is deleted rather than kept, because a half-right model
+    fails in ways that look like bad answers rather than like a bad download.
+    """
+    url = str(request["url"])
+    filename = str(request["filename"])
+    expected = str(request["sha256"])
+    total = int(request["size_bytes"])
+    target = models_dir / filename
+    part = target.with_suffix(target.suffix + ".part")
+
+    def publish(status: str, done: int, error: str | None = None) -> None:
+        _fetch_write(models_dir, {
+            "filename": filename,
+            "status": status,
+            "downloaded_bytes": done,
+            "total_bytes": total,
+            "error": error,
+            "updated_at": time.time(),
+        })
+
+    if target.is_file() and target.stat().st_size == total:
+        publish("ready", total)
+        return
+
+    done = part.stat().st_size if part.is_file() else 0
+    if done > total:
+        part.unlink()
+        done = 0
+
+    publish("downloading", done)
+    request_headers = {"User-Agent": "askwell"}
+    if done:
+        request_headers["Range"] = f"bytes={done}-"
+
+    try:
+        req = urllib.request.Request(url, headers=request_headers)  # noqa: S310 - https, from the catalog
+        with urllib.request.urlopen(req, timeout=30) as response:  # noqa: S310
+            append = response.status == 206 and done > 0
+            if not append:
+                done = 0
+            with open(part, "ab" if append else "wb") as handle:
+                while True:
+                    if (models_dir / "fetch-cancel").exists():
+                        (models_dir / "fetch-cancel").unlink(missing_ok=True)
+                        publish("paused", done)
+                        return
+                    chunk = response.read(FETCH_CHUNK)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+                    done += len(chunk)
+                    publish("downloading", done)
+    except Exception as error:  # noqa: BLE001 - a failed download is reported, never raised
+        publish("failed", done, f"{type(error).__name__}: {error}. Nothing already downloaded was lost.")
+        return
+
+    digest = hashlib.sha256()
+    with open(part, "rb") as handle:
+        for block in iter(lambda: handle.read(FETCH_CHUNK), b""):
+            digest.update(block)
+    if digest.hexdigest() != expected:
+        part.unlink(missing_ok=True)
+        publish("failed", 0, "The downloaded file did not match its published checksum, so it was discarded.")
+        return
+
+    os.replace(part, target)
+    publish("ready", total)
+
+
+async def watch_for_fetch_requests(models_dir: Path, stopping: asyncio.Event) -> None:
+    """Do what the API asked, when it asks, and nothing when it does not."""
+    request_path = models_dir / FETCH_REQUEST
+    while not stopping.is_set():
+        try:
+            if request_path.is_file():
+                request = json.loads(request_path.read_text(encoding="utf-8"))
+                request_path.unlink(missing_ok=True)
+                await asyncio.to_thread(_fetch_once, models_dir, request)
+        except (OSError, json.JSONDecodeError, KeyError, ValueError) as error:
+            print(f"askwell-inference[fetch]: bad request: {error}", file=sys.stderr)
+            request_path.unlink(missing_ok=True)
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(stopping.wait(), timeout=FETCH_POLL_SECONDS)
+
+
 async def main() -> int:
     supervisors = [Supervisor(*role) for role in ROLES]
 
@@ -398,6 +525,10 @@ async def main() -> int:
     # others: a user with no reranker can still ask questions, and telling them
     # the assistant is down because retrieval cannot rank would be false.
     running = [asyncio.create_task(s.supervise()) for s in supervisors]
+    models_dir = Path(
+        env("ASKWELL_MODELS_DIR", os.path.expanduser("~/.local/share/askwell/models"))
+    )
+    running.append(asyncio.create_task(watch_for_fetch_requests(models_dir, stopping)))
     waiting = asyncio.create_task(stopping.wait())
 
     try:

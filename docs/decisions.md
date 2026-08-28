@@ -22,6 +22,24 @@ Template:
 
 ---
 
+## 2026-08-28 — The one download in the product runs on the host, not through the proxy
+
+**Decision:** Model acquisition does not become a third exception to C1's default-deny egress. The API writes a request file into the models directory and reads progress back; the host supervisor that already runs `llama.cpp` performs the fetch, verifies the published sha256, and discards a file that does not match. No container gains a route out.
+
+**Why:** `M1-LIB-FE-052` shipped a download that ran inside the `api` container and was refused by Askwell's own egress proxy — `403 Forbidden`, logged, exactly as designed. That is C1 working against a call the architecture never authorised, not a bug in the download code.
+
+The obvious repair is an allowlist entry for `huggingface.co`. It was rejected because it costs the property that makes the proxy worth having. `egress.py` says it plainly: the proxy "cannot leak by misconfiguration because there is no configuration that would let it." Add one allowlist and that sentence becomes false — the proxy joins the ordinary category of things that are safe when configured correctly, and the audit question changes from "can it forward?" to "is the list right today?" for the rest of the product's life. One feature is not worth that trade.
+
+A dedicated fetcher container on both networks was also weighed. It is narrow and auditable, but it is still an `internal`→`egress` bridge, which is the shape the topology exists to forbid, and it is new infrastructure to keep correct.
+
+The host already has the precedent and the machinery. Inference runs natively because GPU acceleration only works from the host; the supervisor already writes a state file the API reads across the container boundary. The download is the same shape of problem and gets the same shape of answer.
+
+**Consequences:** The wizard's download step needs the host supervisor running — the same process the user already starts for inference — and says so when it is not. The request carries the checksum rather than the host looking it up, so a fetcher deciding for itself what "correct" means is not possible. Two filenames are now contract between the container and the host, `fetch-request.json` and `fetch-progress.json`, and drift in either is a silent failure — `test_model_fetch_host.py` exercises the host side directly against a stubbed `urlopen` so nothing in that path is only reasoned about.
+
+An air-gapped install writes no request and makes no network call at all, which was already the manual-file path and is now the only difference between the two.
+
+**Refs:** issue 192; `docs/architecture.md` §5.1; `api/src/askwell/model_download.py`; `deploy/inference/askwell-inference`; `api/tests/test_model_fetch_host.py`.
+
 ## 2026-08-28 — The welcome sequence's model download writes inside the API container; it does not (yet) reach the host path the inference supervisor reads
 
 **Decision:** `M1-LIB-FE-052`. `askwell.model_download.ModelDownloadManager` downloads the generation model to `Settings.inference_model_path` — real progress, `Range`-based resume from whatever `<target>.part` already holds, sha256 verification, a manual-file path for an air-gapped machine — and stops there. It does not attempt to place the file anywhere the host-side `llama-server` supervisor (`M0-MODEL-DEPLOY-018`) would find it, because as configured today it cannot: `.env.example`'s own comment on the model-path variables says "Read by the host-side supervisor only. The containers never see these," `compose.yaml`'s `api` service has no volume mount for the models directory, and `Path.expanduser()` resolves `~` against whichever process calls it — `/root` inside the container, the real user's home on the host. Passing the same env var into the container would not fix this; it would make the mismatch silent instead of absent.

@@ -141,6 +141,12 @@ Implemented in M0-STACK-SEC-010. Two halves, and both are needed:
 
 **How a destination would be authorised — and none is.** The mechanism is deliberately not a configuration file, because a file is edited once and stays edited. An authorisation is a **decision the user makes**, recorded in the decisions store, scoped to one conversation (online AI) or one question (web search), and time-bound. The proxy holds it in memory for that scope and drops it; there is no persistent form of it and no setting that creates one. Until M8 there is no code path that grants one at all, and the count on the settings screen is therefore a measured zero.
 
+**The model download is not an exception, because it does not happen here.** Askwell fetches one thing over the network in its life: the model, once, at install, when the user asks. That could have been a third allowlist entry, and it is not — an allowlist would take away the property that makes the proxy trustworthy, which is that no configuration exists that would let it forward. Instead the fetch runs on the host, in the same supervisor that runs `llama.cpp`, for the same reason: the host is where host things belong.
+
+The API never opens a socket. It writes `fetch-request.json` into the models directory — url, filename, size and the sha256 the registry published — and reads `fetch-progress.json` back. The host verifies the checksum and discards a file that does not match, because a half-right model fails later as bad answers rather than as a bad download. An air-gapped machine simply never writes a request and uses the manual-file path, and makes no network request at all.
+
+What this buys: the containers holding the user's entire corpus keep zero route to the internet, the proxy keeps its one job, and the only egress in the product is a separate process the user started, fetching a file whose bytes are known in advance.
+
 ## 5.2 Web search
 
 Full behaviour in `web-search.md`. The architectural points:
