@@ -156,7 +156,7 @@ Three are not generic and must not be reskinned into standard patterns.
 
 **Source card** — the margin unit. Filename in mono, page or table, then the exact retrieved passage in serif. Left edge is a 2px `--provenance` bar. Clicking opens the source at that position.
 
-**Claim leader** — a hairline from a cited claim to its card. `--rule` at rest, `--provenance` on hover of either end.
+**Claim leader** — a hairline from a cited claim to its card. `--rule-strong` at rest — it carries which source a claim came from, so it cannot be the decorative `--rule` — `--provenance` and doubled weight when either end is hovered or focused, and unambiguous when leaders overlap in a dense answer (`M1-CITE-FE-044`).
 
 **Confidence marker** — a 6px square before any memory fact. Filled `--provenance` if the user supplied it, hollow `--inferred` if Askwell guessed. Small, everywhere, and it is how a user learns at a glance which facts they own.
 
