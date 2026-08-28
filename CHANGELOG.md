@@ -4,6 +4,15 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.34 — 2026-08-28
+
+A one-line summary and a source count, stored with every turn. `M1-CONV-BE-177`.
+
+### Added
+
+- **`askwell.agent.summarize.summarize_turn`** — the one-line summary and source count `docs/ux/conversation.md` §2 collapses a past turn to, produced once at composition time and written into `messages` (`summary`, `source_count`) in the same transaction as the answer, never recomputed on read. The source count is the number of distinct documents named by the turn's own citation rows — evidence actually cited, not a retrieval estimate. A turn with no citation rows abstained: `source_count` is `NULL`, never `0`, so scrolling back can tell "cited nothing" from "asked and answered from zero sources" (not currently reachable, but the schema does not conflate them). A stopped or length-truncated turn's summary is marked partial rather than silently describing a finished answer. A failed turn's summary names the failure. Summary generation itself never blocks the answer — a bug in it falls back to a summary derived from the question alone, logged as `ask_summary_failed`.
+- Migration `22d97a766e29` — `messages.summary` (`text`, nullable) and `messages.source_count` (`integer`, nullable, `CHECK (source_count IS NULL OR source_count >= 0)`).
+
 ## 0.2.33 — 2026-08-28
 
 The moved-or-renamed file state, distinct from deleted. `M1-VIEW-BE-049`.

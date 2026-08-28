@@ -82,6 +82,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from askwell.agent.claims import Claim, locate_quoted_span, segment_claims
 from askwell.agent.compose import compose
+from askwell.agent.summarize import fallback_summary, summarize_turn
 from askwell.audit import AuditError, Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
@@ -242,8 +243,11 @@ async def reconcile_interrupted(factory: async_sessionmaker[AsyncSession]) -> in
                 "UPDATE messages SET trace = trace"
                 ' || \'{"status": "failed", "stopped_early": true,'
                 ' "interrupted": true,'
-                ' "reason": "Askwell restarted before this answer finished."}\'::jsonb'
-                " WHERE role = 'assistant' AND trace ->> 'status' = 'running'"
+                ' "reason": "Askwell restarted before this answer finished."}\'::jsonb, '
+                "summary = COALESCE(summary, "
+                "'Could not answer: Askwell restarted before this answer finished.'), "
+                "source_count = NULL "
+                "WHERE role = 'assistant' AND trace ->> 'status' = 'running'"
             )
         )
         return int(result.rowcount)  # type: ignore[attr-defined]
@@ -364,6 +368,7 @@ async def _run_generation(
     trace_steps: list[dict[str, Any]] = []
     injection_flagged = False
     injection_patterns: tuple[str, ...] = ()
+    truncated = False
     # The model file's own name, not its full path — read from configuration
     # (never hardcoded, `AGENTS.md` §4) so this ticket's "backend and model
     # used" survives a deployment-profile change with no code edit.
@@ -398,7 +403,6 @@ async def _run_generation(
 
         prompt = f"{composed.system_prompt}\n\n{composed.user_content}"
         compose_started = time.monotonic()
-        truncated = False
         stream = client.stream_generate(prompt, max_tokens=settings.generation_max_tokens)
         async for chunk in stream:
             if turn.stop_requested:
@@ -448,6 +452,26 @@ async def _run_generation(
         "reason": reason,
     }
 
+    # `M1-CONV-BE-177`: the summary and source count a collapsed past turn
+    # renders (`docs/ux/conversation.md` §2), produced once here and never
+    # recomputed on read. `summarize_turn` itself does not raise, but the
+    # ticket's own edge case — summary generation failing — must still not
+    # block the answer, so this is defensive against a future bug in it
+    # rather than a path exercised today.
+    try:
+        turn_summary = summarize_turn(
+            question=question,
+            answer_text=turn.text,
+            status=status,
+            reason=reason,
+            partial=status == "stopped" or truncated,
+            citation_rows=citation_rows,
+            candidates=candidates,
+        )
+    except Exception:
+        log.error("ask_summary_failed", message_id=str(turn.message_id))
+        turn_summary = fallback_summary(question)
+
     # Traces are the ring buffer's own concern and never gate the answer —
     # `TraceRing.write` cannot raise, matching `askwell.traces`'s own "fails
     # open" guarantee. Written ahead of the audited write below so a trace
@@ -465,16 +489,21 @@ async def _run_generation(
             # than the one this ticket exists to close.
             await db.execute(
                 text(
-                    "INSERT INTO messages (id, conversation_id, role, content, trace) "
-                    "VALUES (:id, :conversation_id, 'assistant', :content, CAST(:trace AS jsonb)) "
+                    "INSERT INTO messages "
+                    "(id, conversation_id, role, content, trace, summary, source_count) "
+                    "VALUES (:id, :conversation_id, 'assistant', :content, CAST(:trace AS jsonb), "
+                    ":summary, :source_count) "
                     "ON CONFLICT (id) DO UPDATE SET "
-                    "content = :content, trace = CAST(:trace AS jsonb)"
+                    "content = :content, trace = CAST(:trace AS jsonb), "
+                    "summary = :summary, source_count = :source_count"
                 ),
                 {
                     "id": turn.message_id,
                     "conversation_id": turn.conversation_id,
                     "content": turn.text,
                     "trace": json.dumps(trace),
+                    "summary": turn_summary.summary,
+                    "source_count": turn_summary.source_count,
                 },
             )
             for row in citation_rows:
@@ -545,17 +574,37 @@ async def _run_generation(
         reason = f"Askwell could not save this answer: {error}"
         log.error("ask_audit_write_failed", message_id=str(turn.message_id), error=str(error))
         failure_trace = {**trace, "status": status, "reason": reason}
+        # The answer this turn produced was rolled back whole (see the
+        # comment above), so the summary describing that answer no longer
+        # matches what `content` is about to become — recomputed for the
+        # failure itself rather than left describing text that no longer
+        # exists.
+        try:
+            failure_summary = summarize_turn(
+                question=question,
+                answer_text="",
+                status=status,
+                reason=reason,
+                partial=False,
+                citation_rows=[],
+                candidates=[],
+            )
+        except Exception:
+            failure_summary = fallback_summary(question)
         try:
             async with session_scope(factory) as db:
                 await db.execute(
                     text(
-                        "UPDATE messages SET content = :content, trace = CAST(:trace AS jsonb) "
+                        "UPDATE messages SET content = :content, trace = CAST(:trace AS jsonb), "
+                        "summary = :summary, source_count = :source_count "
                         "WHERE id = :id"
                     ),
                     {
                         "id": turn.message_id,
                         "content": "",
                         "trace": json.dumps(failure_trace),
+                        "summary": failure_summary.summary,
+                        "source_count": failure_summary.source_count,
                     },
                 )
         except Exception:
