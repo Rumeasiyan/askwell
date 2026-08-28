@@ -25,6 +25,15 @@ class Task:
     scorer: str
     expected: object
     timeout_seconds: float
+    expected_documents: tuple[str, ...] = ()
+    """`mode: "grounded"` only: filenames under `eval/fixtures/corpus/` that
+    a citation must resolve to for the task to count as correctly grounded.
+    More than one filename is the ticket's own "answer appears in two
+    places" edge case — either is accepted."""
+    expected_passages: tuple[str, ...] = ()
+    """`mode: "grounded"` only: substrings (case-insensitive) of which at
+    least one must appear in the cited chunk's content. Several entries
+    exist for the same "two places" edge case as `expected_documents`."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +48,12 @@ class Suite:
     "0.97 on ten tasks" reads as nearly fine when it is a failure.
     """
     tasks: tuple[Task, ...]
+    mode: str = "completion"
+    """`"completion"` (default) runs `eval.runner` — one isolated
+    `InferenceClient.generate()` call per task, no retrieval. `"grounded"`
+    runs `eval.grounded` instead — the real `askwell.ask` retrieve-and-cite
+    path against the fixture corpus, needed once a suite's tasks carry
+    `expected_documents`/`expected_passages` (`M2-EVAL-TEST-064`)."""
 
     @property
     def strict(self) -> bool:
@@ -77,11 +92,23 @@ def load_suite(path: Path) -> Suite:
     if not 0.0 <= pass_bar <= 1.0:
         raise SuiteError(f"{path} pass_bar must be in [0, 1], got {pass_bar!r}")
 
+    mode = str(raw.get("mode", "completion"))
+    if mode not in ("completion", "grounded"):
+        raise SuiteError(f"{path}: unknown mode {mode!r}. Available: completion, grounded")
+    if mode == "grounded":
+        for task in tasks:
+            if not task.expected_documents or not task.expected_passages:
+                raise SuiteError(
+                    f"{path}: task {task.id!r} is in a 'grounded' suite but is missing "
+                    "'expected_documents' and/or 'expected_passages'"
+                )
+
     return Suite(
         name=str(raw["name"]),
         category=str(raw["category"]),
         pass_bar=pass_bar,
         tasks=tuple(tasks),
+        mode=mode,
     )
 
 
@@ -95,6 +122,8 @@ def _load_task(path: Path, entry: Any) -> Task:
         scorer=str(entry["scorer"]),
         expected=entry["expected"],
         timeout_seconds=float(entry.get("timeout_seconds", _DEFAULT_TIMEOUT_SECONDS)),
+        expected_documents=tuple(entry.get("expected_documents", ())),
+        expected_passages=tuple(entry.get("expected_passages", ())),
     )
 
 

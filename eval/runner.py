@@ -75,7 +75,7 @@ async def run_suite(settings: Settings, suite: Suite) -> SuiteRunReport:
         category=suite.category,
         pass_bar=suite.pass_bar,
         strict=suite.strict,
-        model=_current_model_name(settings),
+        model=current_model_name(settings),
         profile=settings.profile.value,
         prompt_versions=prompt_versions.read_prompt_versions(prompt_versions.default_prompts_dir()),
         started_at=started_at,
@@ -85,13 +85,14 @@ async def run_suite(settings: Settings, suite: Suite) -> SuiteRunReport:
     )
 
 
-def _current_model_name(settings: Settings) -> str | None:
+def current_model_name(settings: Settings) -> str | None:
     """The model actually loaded, per the supervisor's own state file.
 
     Never the configured path or a name written in this code (AGENTS.md §4):
     the state file is what the supervisor observed llama.cpp report after
     loading, so a mismatch between configuration and reality shows up here
-    rather than being asserted away.
+    rather than being asserted away. Shared with `eval.grounded`, which needs
+    the same fact for the same reason.
     """
     state_path = settings.inference_socket.parent / "state.json"
     return read_inference_state(state_path).model

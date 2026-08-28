@@ -1,0 +1,109 @@
+%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R 6 0 R 7 0 R 8 0 R 9 0 R 10 0 R] /Count 8 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 11 0 R >> >> /MediaBox [0 0 612 792] /Contents 12 0 R >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 11 0 R >> >> /MediaBox [0 0 612 792] /Contents 13 0 R >>
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 11 0 R >> >> /MediaBox [0 0 612 792] /Contents 14 0 R >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 11 0 R >> >> /MediaBox [0 0 612 792] /Contents 15 0 R >>
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 11 0 R >> >> /MediaBox [0 0 612 792] /Contents 16 0 R >>
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 11 0 R >> >> /MediaBox [0 0 612 792] /Contents 17 0 R >>
+endobj
+9 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 11 0 R >> >> /MediaBox [0 0 612 792] /Contents 18 0 R >>
+endobj
+10 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 11 0 R >> >> /MediaBox [0 0 612 792] /Contents 19 0 R >>
+endobj
+11 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+12 0 obj
+<< /Length 127 >>
+stream
+BT /F1 12 Tf 72 700 Td (Meridian Loom requires laptop disk encryption using a passphrase of at least sixteen characters.) Tj ET
+endstream
+endobj
+13 0 obj
+<< /Length 107 >>
+stream
+BT /F1 12 Tf 72 700 Td (VPN access tokens at Meridian Loom expire after fourteen days of inactivity.) Tj ET
+endstream
+endobj
+14 0 obj
+<< /Length 130 >>
+stream
+BT /F1 12 Tf 72 700 Td (The Meridian Loom incident response team must be notified within three hours of a suspected breach.) Tj ET
+endstream
+endobj
+15 0 obj
+<< /Length 107 >>
+stream
+BT /F1 12 Tf 72 700 Td (Meridian Loom rotates production database credentials every forty-five days.) Tj ET
+endstream
+endobj
+16 0 obj
+<< /Length 106 >>
+stream
+BT /F1 12 Tf 72 700 Td (Only the Cedarbrook data center may host Meridian Loom's customer database.) Tj ET
+endstream
+endobj
+17 0 obj
+<< /Length 152 >>
+stream
+BT /F1 12 Tf 72 700 Td (Meridian Loom's password policy requires a minimum length of eighteen characters with no reuse of the last ten passwords.) Tj ET
+endstream
+endobj
+18 0 obj
+<< /Length 143 >>
+stream
+BT /F1 12 Tf 72 700 Td (Contractors at Meridian Loom receive network access for a maximum of one hundred and twenty days before renewal.) Tj ET
+endstream
+endobj
+19 0 obj
+<< /Length 130 >>
+stream
+BT /F1 12 Tf 72 700 Td (The Meridian Loom bug bounty program pays a minimum of two thousand dollars for a critical finding.) Tj ET
+endstream
+endobj
+xref
+0 20
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000158 00000 n 
+0000000286 00000 n 
+0000000414 00000 n 
+0000000542 00000 n 
+0000000670 00000 n 
+0000000798 00000 n 
+0000000926 00000 n 
+0000001054 00000 n 
+0000001183 00000 n 
+0000001254 00000 n 
+0000001433 00000 n 
+0000001592 00000 n 
+0000001774 00000 n 
+0000001933 00000 n 
+0000002091 00000 n 
+0000002295 00000 n 
+0000002490 00000 n 
+trailer
+<< /Size 20 /Root 1 0 R >>
+startxref
+2672
+%%EOF

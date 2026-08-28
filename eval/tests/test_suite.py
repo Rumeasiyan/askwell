@@ -85,3 +85,54 @@ def test_resolve_suite_path_finds_real_fixture() -> None:
 def test_resolve_suite_path_unknown_lists_available() -> None:
     with pytest.raises(SuiteError, match=r"smoke\.v1"):
         resolve_suite_path("no-such-suite")
+
+
+def test_completion_mode_is_the_default(tmp_path: Path) -> None:
+    suite = load_suite(_write(tmp_path, _valid_payload()))
+    assert suite.mode == "completion"
+    assert suite.tasks[0].expected_documents == ()
+    assert suite.tasks[0].expected_passages == ()
+
+
+def test_unknown_mode_raises(tmp_path: Path) -> None:
+    payload = _valid_payload()
+    payload["mode"] = "telepathic"
+    with pytest.raises(SuiteError, match="unknown mode"):
+        load_suite(_write(tmp_path, payload))
+
+
+def test_grounded_mode_reads_citation_fields(tmp_path: Path) -> None:
+    payload = _valid_payload()
+    payload["mode"] = "grounded"
+    payload["tasks"] = [
+        {
+            "id": "a",
+            "prompt": "hi",
+            "scorer": "contains_all",
+            "expected": "hi",
+            "expected_documents": ["a.pdf", "b.pdf"],
+            "expected_passages": ["hello there"],
+        }
+    ]
+    suite = load_suite(_write(tmp_path, payload))
+    assert suite.mode == "grounded"
+    assert suite.tasks[0].expected_documents == ("a.pdf", "b.pdf")
+    assert suite.tasks[0].expected_passages == ("hello there",)
+
+
+def test_grounded_mode_requires_citation_fields(tmp_path: Path) -> None:
+    payload = _valid_payload()
+    payload["mode"] = "grounded"
+    with pytest.raises(SuiteError, match="expected_documents"):
+        load_suite(_write(tmp_path, payload))
+
+
+def test_resolve_grounded_qa_suite_has_forty_tasks() -> None:
+    suite = load_suite(resolve_suite_path("grounded_qa.v1"))
+    assert suite.mode == "grounded"
+    assert suite.category == "grounded-document-qa"
+    assert suite.pass_bar == 0.85
+    assert len(suite.tasks) == 40
+    for task in suite.tasks:
+        assert task.expected_documents
+        assert task.expected_passages
