@@ -176,6 +176,8 @@ Every one of these is a real screen someone will see on day one, and each is an 
 | **Past turn that used the web** | Keeps its web marker when collapsed. Never shown as if it came from the user's files |
 | **Past turn citing a deleted source** | Count reflects what was cited then; expanding shows the tombstone |
 | **New question while an answer streams** | Queued, not interleaved |
+| **Past turn expanded** | Full stored answer and its own margin render in place; clicking again re-collapses it. Several turns may be expanded at once — the user chose it, and expanding one never changes another (`M1-CONV-FE-179`) |
+| **Long conversation, scrolled to the top** | Older turns page in twenty at a time, with a visible "Load earlier turns" affordance; once every turn has been revealed it says "Start of this conversation" rather than simply stopping (`M1-CONV-FE-179`) |
 
 ## 8. Decisions this document surfaced — all now answered
 

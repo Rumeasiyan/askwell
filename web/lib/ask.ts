@@ -203,6 +203,33 @@ export function liveTurnId<T extends { id: string; status: string }>(
   return turns.length > 0 ? turns[turns.length - 1]!.id : null;
 }
 
+/**
+ * Turns kept collapsed before the rest page in on scroll (`conversation.md`
+ * §7, settled: "twenty turns, then page" — a starting value, not a finding).
+ * `M1-CONV-FE-179`.
+ */
+export const CONVERSATION_PAGE_SIZE = 20;
+
+/**
+ * Which turns are actually rendered right now, out of the full in-memory
+ * list, and whether older ones remain to page in.
+ *
+ * Pure so the windowing itself is checkable without a browser — the DOM
+ * side (`AskScreen`) only decides *when* `revealed` grows, never how many
+ * turns that yields. `revealed` counts from the newest turn backwards, since
+ * that is what stays visible without scrolling; the oldest turns are what
+ * page in. Never truncates: given `revealed >= turns.length`, every turn is
+ * returned and `hasMore` is `false` — "genuinely no more" is `turns.length`
+ * itself, not a guess.
+ */
+export function conversationWindow<T>(
+  turns: readonly T[],
+  revealed: number,
+): { turns: T[]; hasMore: boolean } {
+  if (turns.length <= revealed) return { turns: turns.slice(), hasMore: false };
+  return { turns: turns.slice(turns.length - revealed), hasMore: true };
+}
+
 function startOfDay(ms: number): number {
   const date = new Date(ms);
   date.setHours(0, 0, 0, 0);

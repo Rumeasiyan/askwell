@@ -22,6 +22,20 @@ Template:
 
 ---
 
+## 2026-08-28 — Expanding a past turn gets its own inline margin; paging is a client-side reveal, not a network read
+
+**Decision:** `M1-CONV-FE-179` (expanding a collapsed turn, its source count, and paging older turns) is built entirely on data `AskProvider` already holds in memory. Two consequences of that: (1) an expanded past turn's provenance cards render with `InlineSourceCards` (`M1-CITE-FE-044`'s below-breakpoint variant) unconditionally, at every width, rather than borrowing the shared `<aside>` (`ProvenanceMargin`) that the live turn already owns; (2) "older turns page in on scroll" (`conversation.md` §5, §7) is implemented as `conversationWindow` (`web/lib/ask.ts`) revealing more of the same in-memory `turns` array, never a request that can fail.
+
+**Why:** The shared margin `<aside>` (`shell.tsx`) is wired to exactly one turn — `useLiveTurn()` — because until this ticket only one turn was ever expanded at a time. This ticket's own scope explicitly permits several past turns expanded at once ("the user chose it"), and there is exactly one aside slot. Building a second, dynamic margin surface that could host an arbitrary number of simultaneously-expanded turns without stealing the live turn's own space is real scope beyond "one expansion, one scroll target and one paging rule, over presentation that already exists" (this ticket's own granularity note) — so each expanded past turn gets its own inline margin instead, the same component and the same `--rule-strong` edge the ticket already specifies for the narrow-window case, just used unconditionally rather than only below the breakpoint.
+
+For paging: `docs/BRAIN.md` and issue #156 both record that `conversation_id` is not threaded across turns — nothing survives a page reload today, so there is no persisted, re-fetchable conversation history for a backend "paged read" to serve, and no such endpoint exists (`api/src/askwell/ask.py` has no `GET` for past turns at all). Building a network-shaped paging UI (a request that can fail, with retry) against data that cannot yet outlive the tab would be exactly the kind of stub the build process warns against — a state that looks handled but can never actually occur. `conversationWindow` instead treats "paging in on scroll" as revealing more of the array `AskProvider` already has, oldest last, twenty at a time (`conversation.md` §7's settled page size). The moment a past conversation can be reloaded, this same function is what a real fetched page slots into — the windowing rule does not change, only where the older turns come from.
+
+**Consequences:** The "paging fails to load older turns, offers to retry" edge case in this ticket's own edge-case list cannot be exercised yet — it depends on conversation persistence (issue #156) existing first. Filed as issue #199 rather than silently dropped, naming both the missing `GET` endpoint and this edge case as the two things to build against once persistence lands. An expanded past turn's hover-to-raise leader line (`M1-CITE-FE-044`) does not apply to it — `useLiveLeaderPairs` only pairs the live turn's claims and cards — which is unchanged behaviour (past turns never had leader lines before this ticket either) rather than a regression.
+
+**Refs:** `docs/ux/conversation.md` §2, §3, §5, §7; `M1-CONV-FE-179`; issue #156; issue #199; `web/components/ask/ask-screen.tsx`; `web/lib/ask.ts`.
+
+---
+
 ## 2026-08-28 — The `done` SSE event carries the stored turn summary and source count, closing a gap `M1-CONV-BE-177` left open on purpose
 
 **Decision:** `askwell.ask`'s `done` event (both the live path in `_run_generation` and the reconnect-replay path in `_load_finished`/`ask_stream`) now includes `summary` and `source_count` — the exact `TurnSummary` already computed and written to `messages` — rather than only `status` and `reason`.

@@ -4,6 +4,24 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.36 — 2026-08-28
+
+A collapsed turn opens back up, in place, with its stored answer and margin — and a source count opens it while bringing that margin into view. `M1-CONV-FE-179`.
+
+### Added
+
+- **`web/components/ask/ask-screen.tsx`** — `CollapsedTurn` is now interactive: clicking or pressing Enter/Space on its row toggles its own `expanded` state (colocated per turn instance, so expanding one never touches another), rendering the stored `answer` (`AnswerProse`, reused unchanged from `LiveTurn`) and its citations (`InlineSourceCards`, reused unconditionally rather than only below the breakpoint — see `docs/decisions.md`) directly beneath the row, with a `Collapse` control to close it again. `SourceCountBadge` gained an optional `onClick`, rendered as a nested real `<button>`: clicking it expands the turn (if not already) and scrolls its margin into view.
+- **`web/components/ask/ask-screen.tsx`** — `TurnList`: the turn array now renders through a window (`conversationWindow`, `web/lib/ask.ts`) capped at `CONVERSATION_PAGE_SIZE` (twenty, `conversation.md` §7's settled starting value) from the newest turn backwards. A boundary row above the window offers "Load earlier turns" (also triggered by an `IntersectionObserver` on scroll) while more remain, and reads "Start of this conversation" once every turn has been revealed — never a silent truncation.
+- **`web/lib/ask.ts`** — `conversationWindow` (pure): which turns are visible and whether more remain, given the full list and how many are currently revealed.
+
+### Fixed
+
+- Nothing — this ticket only adds interaction over turns `AskProvider` already held in memory; no prior behaviour changed.
+
+### Deferred
+
+- The "paging fails, offers to retry" edge case named in this ticket needs a real backend paged read of conversation history to fail against, and none exists yet — `conversation_id` is not threaded across turns (issue #156), so nothing survives a reload for a request to page through. Filed as issue #199 rather than simulated. See `docs/decisions.md`.
+
 ## 0.2.35 — 2026-08-28
 
 Past turns collapse; an abstained turn shows no source count. `M1-CONV-FE-178`.
