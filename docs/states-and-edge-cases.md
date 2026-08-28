@@ -53,6 +53,9 @@ The core loop. Most of these states are reachable in the first five minutes of u
 | **Retrieved content contains instruction-like text** | Answer normally; the trace flags it | C7. Flagged in the trace, not shown as a scary warning — this is a mitigation, not a detection system, and PRD §8 says to document the residual risk honestly rather than overclaim |
 | **Very long answer** | Stream, do not truncate silently. If a limit is hit, say so | — |
 | **User navigates away mid-answer** | Generation continues server-side and the answer is saved to the conversation | Issue #14, Option A. Costs local compute on an abandoned question — fan noise on a laptop, not a queue, since there is no other user waiting |
+| **Suggested follow-ups after a completed answer** | Up to three, derived from what was just answered; fewer or none rather than padded. Click fills the composer, focused, and sends nothing | `conversation.md` §3, `M1-CONV-FE-180`. A suggestion that fires immediately takes the decision away — the point is a cheap start on the next question, not asking it for the user |
+| **Suggestion clicked with a draft already in the composer** | The user is asked before the draft is replaced; declining leaves it untouched | This ticket's own edge case — a suggestion is an accelerator, never a silent overwrite of work in progress |
+| **Follow-up suggestion generation fails or has nothing to suggest** | No row renders; the answer above it is unaffected | Same rule as the empty-state corpus suggestions (`M1-LIB-FE-051`): an accelerator must never be able to break an answer |
 
 ---
 
