@@ -53,7 +53,9 @@ class Suite:
     `InferenceClient.generate()` call per task, no retrieval. `"grounded"`
     runs `eval.grounded` instead — the real `askwell.ask` retrieve-and-cite
     path against the fixture corpus, needed once a suite's tasks carry
-    `expected_documents`/`expected_passages` (`M2-EVAL-TEST-064`)."""
+    `expected_documents`/`expected_passages` (`M2-EVAL-TEST-064`). `"abstain"`
+    runs `eval.abstain` — the same real `askwell.ask` path, scored on whether
+    the turn abstained and named what it searched (`M2-EVAL-TEST-065`)."""
 
     @property
     def strict(self) -> bool:
@@ -93,8 +95,10 @@ def load_suite(path: Path) -> Suite:
         raise SuiteError(f"{path} pass_bar must be in [0, 1], got {pass_bar!r}")
 
     mode = str(raw.get("mode", "completion"))
-    if mode not in ("completion", "grounded"):
-        raise SuiteError(f"{path}: unknown mode {mode!r}. Available: completion, grounded")
+    if mode not in ("completion", "grounded", "abstain"):
+        raise SuiteError(
+            f"{path}: unknown mode {mode!r}. Available: completion, grounded, abstain"
+        )
     if mode == "grounded":
         for task in tasks:
             if not task.expected_documents or not task.expected_passages:
