@@ -326,3 +326,34 @@ export interface AskTurnState {
   steps: { label: string; kind: string }[];
   answer: string;
 }
+
+
+/**
+ * Whether this completed answer is the reader's first one on this machine.
+ *
+ * `M1-LIB-FE-052` calls the first answer "the one celebratory moment", and
+ * `docs/ux/first-run.md` §4 says why: the citation is the product, and somebody
+ * seeing their first answer does not yet know the margin is clickable. Saying
+ * it once, when the citation actually lands, is the only moment it means
+ * anything — the wizard saying it beforehand is a promise about something the
+ * reader has not seen yet.
+ *
+ * Counted from the database rather than a flag in this browser, so it is still
+ * the first answer after a reload, and stops being the first the moment a
+ * second one exists.
+ */
+export async function isFirstAnswer(signal?: AbortSignal): Promise<boolean> {
+  try {
+    const response = await fetch("/ask/counts", {
+      ...(signal ? { signal } : {}),
+      headers: { accept: "application/json" },
+    });
+    if (!response.ok) return false;
+    const counts = (await response.json()) as { completed?: number };
+    return counts.completed === 1;
+  } catch {
+    // A celebration is not worth an error. If the count cannot be read, the
+    // answer and its citation are still there; only the callout is missed.
+    return false;
+  }
+}

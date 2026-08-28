@@ -7,7 +7,9 @@ import { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "
 import { type AskTurn, useAsk } from "@/components/ask/ask-state";
 import { useClaimRef, useHoverHandlers, useScrollToClaim } from "@/components/ask/leader";
 import { InlineSourceCards, useRaised } from "@/components/ask/provenance-margin";
-import { CONVERSATION_PAGE_SIZE, conversationWindow, dividerLabel, liveTurnId } from "@/lib/ask";
+import { CONVERSATION_PAGE_SIZE, conversationWindow, dividerLabel, liveTurnId,
+  isFirstAnswer,
+} from "@/lib/ask";
 import { followUpSuggestions, recordFollowUpUsed } from "@/lib/follow-ups";
 import { fetchIngest } from "@/lib/ingest";
 import { fetchSuggestions, type Suggestion } from "@/lib/suggestions";
@@ -308,6 +310,47 @@ function SuggestedQuestions() {
  * the same `fillComposer` the pre-question suggestions and the context
  * rail's "ask about this source" already use; it never sends.
  */
+/**
+ * The one celebratory moment, said once.
+ *
+ * `docs/ux/first-run.md` §4: the citation is the product, and somebody reading
+ * their first answer does not yet know the margin beside it can be clicked. The
+ * wizard already says so before the question is sent, which is a promise about
+ * something not yet seen; this says it while the citation is actually on
+ * screen, which is the only moment it teaches anything.
+ *
+ * Only for a first answer that cited something. An abstention is the right
+ * answer and has its own treatment, but it is not the moment to celebrate a
+ * margin that is empty.
+ */
+function FirstAnswerNote({ turn }: { turn: AskTurn }) {
+  const [show, setShow] = useState(false);
+
+  useEffect(() => {
+    if (turn.citations.length === 0) return;
+    const controller = new AbortController();
+    let live = true;
+    void isFirstAnswer(controller.signal).then((first) => {
+      if (live) setShow(first);
+    });
+    return () => {
+      live = false;
+      controller.abort();
+    };
+  }, [turn.citations.length]);
+
+  if (!show) return null;
+
+  return (
+    <p className="ask-micro" style={{ color: "var(--provenance)" }}>
+      That is your first answer — and beside it is where it came from. Every claim Askwell
+      makes names the document and page behind it, and you can open a source to read the
+      passage yourself.
+    </p>
+  );
+}
+
+
 function FollowUpSuggestions({ turn }: { turn: AskTurn }) {
   const suggestions = useMemo(() => followUpSuggestions(turn), [turn]);
   if (suggestions.length === 0) return null;
@@ -800,6 +843,8 @@ function LiveTurn({ turn }: { turn: AskTurn }) {
       {turn.status === "stopped" ? (
         <p className="ask-micro">Stopped. The answer above is partial.</p>
       ) : null}
+
+      {turn.status === "completed" ? <FirstAnswerNote turn={turn} /> : null}
 
       {turn.status === "completed" ? <FollowUpSuggestions turn={turn} /> : null}
 
