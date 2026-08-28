@@ -116,10 +116,22 @@ build_one() {   # build_one <ticket>
   git checkout -q -b "$branch" 2>/dev/null || git checkout -q -B "$branch" || return 1
 
   if ! SPEND_CEILING="$SPEND_CEILING" "$RUNNER" "$ticket"; then
-    # The runner refuses to record a ticket its audit rejected, so an
-    # unfinished branch is left exactly where it stopped. Parked rather than
-    # deleted: the work and the audit that rejected it are the two things a
-    # person needs, and deleting the branch throws away both.
+    # Commit what it built before leaving, or it does not stay on the branch.
+    # The runner never commits work its audit rejected, so the changes are still
+    # uncommitted here — and `git checkout main` at the top of the next ticket
+    # carries them along, where preflight refuses to build on a dirty tree. That
+    # cost five tickets in one run and four of them had nothing wrong with them.
+    #
+    # Parked rather than deleted: the work and the audit that rejected it are
+    # the two things a person needs, and deleting the branch throws away both.
+    if [ -n "$(git status --porcelain)" ]; then
+      git add -A
+      git commit -q -m "wip: $ticket, not accepted
+
+Built by $RUNNER. Its audit rejected it, so it is committed here rather than
+merged — read $STATE/logs/$ticket.audit.log before continuing it." \
+        || say "  ${DIM}could not commit the rejected work; the tree is left as it is${RESET}"
+    fi
     say ""
     say "  ${BOLD}$ticket was not accepted.${RESET} Its branch is $branch and the"
     say "  audit is in $STATE/logs/$ticket.audit.log"
