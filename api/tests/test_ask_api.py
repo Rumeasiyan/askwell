@@ -26,6 +26,7 @@ import pytest
 import pytest_asyncio
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from askwell import ask as ask_module
@@ -220,6 +221,7 @@ def test_a_question_streams_steps_then_tokens_then_a_citation_then_done(
         settings, tokens=["The notice period ", "is ninety days [1]."], vector=vector
     )
     _patch_client(monkeypatch, fake)
+    settings = settings.model_copy(update={"trace_dir": tmp_path / "traces"})
 
     client = _app(settings, monkeypatch, tmp_path, database_url)
     with client:
@@ -287,7 +289,39 @@ def test_a_question_streams_steps_then_tokens_then_a_citation_then_done(
         ).fetchall()
         assert len(audit_rows) == 1
         assert audit_rows[0][0] == ask_module.ASK_ASKED
-        assert audit_rows[0][1]["status"] == "completed"
+        payload = audit_rows[0][1]
+        assert payload["status"] == "completed"
+
+        # `M1-ASK-OBS-041`'s own acceptance criteria: retrieved chunk
+        # identifiers and scores, duration, backend and model — one
+        # interaction record, written transactionally with the answer.
+        assert payload["question"] == "How long is the notice period?"
+        assert payload["answer"] == "The notice period is ninety days [1]."
+        assert payload["retrieved_chunks"] == [
+            {"chunk_id": str(chunk_id), "score": str(payload["retrieved_chunks"][0]["score"])}
+        ]
+        float(payload["retrieved_chunks"][0]["score"])  # a real score, stored as a string
+        assert isinstance(payload["duration_ms"], int)
+        assert payload["duration_ms"] >= 0
+        assert payload["backend"] == "local"
+        assert payload["model"] == settings.inference_model_path.stem
+
+    # Trace written separately from the audited write, `M1-ASK-OBS-041`'s
+    # other half — the full retrieval hits and step timings, none of which
+    # belong in the interaction record's own identifiers-and-scores shape.
+    trace_files = list((tmp_path / "traces").iterdir())
+    assert len(trace_files) == 1
+    trace_document = json.loads(trace_files[0].read_text())
+    assert trace_document["trace"]["backend"] == {
+        "mode": "local",
+        "model": settings.inference_model_path.stem,
+    }
+    assert trace_document["trace"]["steps"][0]["hits"] == [
+        {
+            "chunk_id": str(chunk_id),
+            "score": trace_document["trace"]["steps"][0]["hits"][0]["score"],
+        }
+    ]
 
 
 def test_three_factual_claims_produce_three_citation_rows(
@@ -506,6 +540,120 @@ def test_a_truncated_answer_says_it_hit_the_limit(
         done = next(data for kind, data in events if kind == "done")
         assert done["status"] == "completed", "hitting the limit is not a failure"
         assert "length limit" in done["reason"].lower(), done["reason"]
+
+
+def test_an_induced_audit_write_failure_fails_the_answer_rather_than_leaving_it_unlogged(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """`M1-ASK-OBS-041`'s own acceptance criterion, induced directly against
+    `askwell.audit.record` rather than by actually breaking Postgres — the
+    same reasoning `test_traces.py` uses for a blocked directory: what matters
+    is Askwell's own reaction to the failure, not reproducing its cause."""
+    _truncate(database_url)
+    fake = _FakeInferenceClient(settings, tokens=["Ninety days."], vector=_vector(0.0))
+    _patch_client(monkeypatch, fake)
+
+    async def _broken_record(*_args: object, **_kwargs: object) -> None:
+        raise ask_module.AuditError("the interaction table is not writable")
+
+    monkeypatch.setattr(ask_module, "record", _broken_record)
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "Anything?"})
+        assert response.status_code == 200
+
+        events = _events(response.text)
+        done = next(data for kind, data in events if kind == "done")
+        assert done["status"] == "failed"
+        assert "could not save this answer" in done["reason"]
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        rows = db.execute(
+            "SELECT content, trace ->> 'status' FROM messages WHERE role = 'assistant'"
+        ).fetchall()
+        # Not an unlogged answer with the model's real text sitting in
+        # `messages` — the transaction that would have written it rolled
+        # back whole, and the token stream the browser watched is the only
+        # place that text ever existed.
+        assert rows == [("", "failed")]
+
+        audit_rows = db.execute("SELECT count(*) FROM audit_interactions").fetchone()
+        assert audit_rows is not None
+        assert audit_rows[0] == 0
+
+
+def test_a_real_database_write_failure_fails_the_answer_the_same_way(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """The same criterion, against the failure that actually happens.
+
+    The test above raises `AuditError`, which `record()` produces only for a
+    payload that will not hash. An `audit_interactions` that genuinely cannot
+    be written — a revoked INSERT grant, which is exactly how C6 is enforced, a
+    missing table, a full disk — raises SQLAlchemy's own error instead, and
+    that is not an `AuditError`. Catching only the first meant this ticket's own
+    named scenario escaped the handler: the turn ended on an unhandled
+    exception, the browser's stream stopped with no `done` event to explain it,
+    and the row stayed `running` with nothing left generating it.
+    """
+    _truncate(database_url)
+    fake = _FakeInferenceClient(settings, tokens=["Ninety days."], vector=_vector(0.0))
+    _patch_client(monkeypatch, fake)
+
+    async def _refused(*_args: object, **_kwargs: object) -> None:
+        raise ProgrammingError("INSERT INTO audit_interactions ...", {}, Exception("denied"))
+
+    monkeypatch.setattr(ask_module, "record", _refused)
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "Anything?"})
+        assert response.status_code == 200
+
+        events = _events(response.text)
+        done = next(data for kind, data in events if kind == "done")
+        assert done["status"] == "failed", "the turn must end, not hang at running"
+        assert "could not save this answer" in done["reason"]
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        rows = db.execute(
+            "SELECT content, trace ->> 'status' FROM messages WHERE role = 'assistant'"
+        ).fetchall()
+        assert rows == [("", "failed")]
+
+
+def test_an_unwritable_trace_directory_does_not_fail_the_answer(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """Traces fail open (`askwell.traces`); the audited write is what must
+    never fail silently, not the debugging aid beside it."""
+    _truncate(database_url)
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_text("this is a file")
+    settings = settings.model_copy(update={"trace_dir": blocked / "traces"})
+
+    fake = _FakeInferenceClient(settings, tokens=["Ninety days."], vector=_vector(0.0))
+    _patch_client(monkeypatch, fake)
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "Anything?"})
+        assert response.status_code == 200
+
+        events = _events(response.text)
+        done = next(data for kind, data in events if kind == "done")
+        assert done["status"] == "completed"
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        rows = db.execute(
+            "SELECT content, trace ->> 'status' FROM messages WHERE role = 'assistant'"
+        ).fetchall()
+        assert rows == [("Ninety days.", "completed")]
+
+        audit_rows = db.execute("SELECT count(*) FROM audit_interactions").fetchone()
+        assert audit_rows is not None
+        assert audit_rows[0] == 1
 
 
 def test_an_assistant_that_dies_mid_stream_keeps_what_it_already_said(

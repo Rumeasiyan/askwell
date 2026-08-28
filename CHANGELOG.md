@@ -4,6 +4,20 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.28 — 2026-08-28
+
+Interaction records for every question and answer. `M1-ASK-OBS-041`.
+
+### Added
+
+- **`audit_interactions` gained the ticket's own fields**: retrieved chunk identifiers and scores, duration, backend and model — alongside the question, answer, status, source and citation count `M1-ASK-API-038` already wrote. Written in the same transaction as the assistant `messages` row and its citations, per C6 — one interaction record per question, chained and durable, or the answer does not persist.
+- **A trace ring buffer write**, alongside the audited write and never gating it — `askwell.traces.TraceRing` (built by an earlier ticket, unused until now) now actually receives every turn's full step detail, failing open on a write error exactly as it always promised to.
+- **`messages.trace.backend`** gained `model`, matching `docs/architecture.md` §7.1's own documented shape (`{"mode": "local", "model": "…"}`) — previously only `mode` was written.
+
+### Fixed
+
+- **An audit write failure now fails the turn visibly** rather than leaving it `running` forever: the transaction that would have written the answer rolls back in full (nothing unlogged persists), and a second, separate write marks the message `failed` with a stated reason so a client watching the stream sees the failure rather than a hang.
+
 ## 0.2.27 — 2026-08-28
 
 Empty states that teach rather than say "no items". `M1-LIB-FE-051`.
