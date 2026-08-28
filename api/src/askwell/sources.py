@@ -42,15 +42,30 @@ after the commit. The order matters in both directions. A document committed
 without a queue row is a file the user was told was queued and which nothing
 will ever pick up; a worker woken before the commit is a worker sent to collect
 rows that do not exist yet. See `askwell.ingest`.
+
+Since `M1-INDEX-BE-034` a sixth thing this module recognises: the same path
+with *different* content. That is not a duplicate — the bytes changed — and it
+is not an ordinary new document either, because the old one is still sitting at
+that path in the library. It is offered as a new version rather than silently
+duplicated (`docs/data-sources.md` §1) or silently inserted, because whether
+the old version should stop being retrieved is the user's call, not a hash
+comparison's. `version_decisions` carries the answer once made: `"supersede"`
+retires the old document (`documents.superseded_by`, never `deleted_at` — the
+module docstring's distinction) in the same transaction as the new one is
+recorded; `"keep_both"` inserts the new file as an ordinary independent
+document and leaves the old one exactly as live as it was, because the schema's
+own uniqueness (`uq_documents_live_source_id_sha256`) is keyed on content, not
+path, and two live documents sharing a path is a state it already permits.
 """
 
 import asyncio
 import hashlib
 import os
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -73,6 +88,7 @@ log = get_logger(__name__)
 # is kept forever should hold what happened rather than what did not.
 SOURCE_ADDED = "source_added"
 DOCUMENT_ADDED = "document_added"
+DOCUMENT_SUPERSEDED = "document_superseded"
 
 # How much is read at a time while hashing. Large enough that a 400 MB scan is
 # not a million syscalls, small enough that the buffer is not a consideration on
@@ -98,6 +114,13 @@ class Outcome(StrEnum):
     DUPLICATE = "duplicate"
     LATER = "later"
     REFUSED = "refused"
+    # Offered, not yet decided: a live document already sits at this path with
+    # different content. Nothing was recorded — `existing` names the document a
+    # supersession or a keep-both decision would apply to.
+    NEW_VERSION = "new_version"
+    # Decided: the old document at `existing` had `superseded_by` set to this
+    # one in the same transaction that recorded it.
+    SUPERSEDED = "superseded"
 
 
 class AddRefused(ValueError):
@@ -131,6 +154,9 @@ class Existing:
     path: str
     filename: str
     source_id: uuid.UUID
+    # Only meaningful for a version offer — the version number the new document
+    # would become is this plus one. A plain duplicate does not carry it.
+    version: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -138,6 +164,7 @@ class Existing:
             "path": self.path,
             "filename": self.filename,
             "source_id": str(self.source_id),
+            "version": self.version,
         }
 
 
@@ -221,6 +248,8 @@ class AddResult:
             "duplicates": self.count(Outcome.DUPLICATE),
             "later": self.count(Outcome.LATER),
             "refused": self.count(Outcome.REFUSED),
+            "new_versions": self.count(Outcome.NEW_VERSION),
+            "superseded": self.count(Outcome.SUPERSEDED),
             "files": [item.as_dict() for item in self.files],
         }
 
@@ -380,10 +409,36 @@ async def _duplicate_of(session: AsyncSession, sha256: str) -> Existing | None:
     return Existing(id=row[0], path=row[1], filename=row[2], source_id=row[3])
 
 
+async def _version_candidate(session: AsyncSession, path: str) -> Existing | None:
+    """The live document already at this exact path, if there is one.
+
+    Content is deliberately not part of the `WHERE` — the caller only reaches
+    here once the sha256 check above has already ruled out identical content,
+    so any row this finds is, by construction, a live document at the same
+    path with *different* bytes: the definition of a changed revision, not a
+    duplicate. `superseded_by IS NULL` is what makes chaining work rather than
+    orphaning: re-adding a path a second time finds the version left live by
+    the first supersession, never the original.
+    """
+    result = await session.execute(
+        text(
+            "SELECT id, path, filename, source_id, version FROM documents "
+            "WHERE path = :path AND deleted_at IS NULL AND superseded_by IS NULL "
+            "ORDER BY added_at DESC LIMIT 1"
+        ),
+        {"path": path},
+    )
+    row = result.first()
+    if row is None:
+        return None
+    return Existing(id=row[0], path=row[1], filename=row[2], source_id=row[3], version=row[4])
+
+
 async def add(
     session: AsyncSession,
     folder: str,
     relative_paths: list[str],
+    version_decisions: Mapping[str, str] | None = None,
 ) -> AddResult:
     """Record a batch of files as documents under one source.
 
@@ -393,7 +448,13 @@ async def add(
     is reported against the individual file and the rest of the batch carries
     on. One archive among sixty contracts must not take the contracts with it,
     and neither must one file that has been moved since it was dropped.
+
+    `version_decisions` maps a relative path to `"supersede"` or `"keep_both"`
+    — an answer already given, from a prior call's `NEW_VERSION` offer on the
+    same path. A path with no entry that turns out to be a changed revision is
+    offered rather than decided for it.
     """
+    version_decisions = version_decisions or {}
     root_path = roots.normalise(folder)
 
     if not relative_paths:
@@ -507,6 +568,62 @@ async def add(
             )
             continue
 
+        version_of = await _version_candidate(session, path)
+        decision = version_decisions.get(relative) if version_of is not None else None
+        if version_of is not None and decision != "keep_both":
+            if decision != "supersede":
+                # Offered, not decided. Nothing recorded — the old document is
+                # untouched and the new content is not on disk under Askwell's
+                # own record of it, so declining costs nothing to reverse.
+                log.info("file_new_version_offered", path=path, of=str(version_of.id))
+                files.append(
+                    FileResult(
+                        relative_path=relative,
+                        path=path,
+                        filename=filename,
+                        outcome=Outcome.NEW_VERSION,
+                        detection=detection,
+                        existing=version_of,
+                        sha256=stamp.sha256,
+                        size=stamp.size,
+                    )
+                )
+                continue
+
+            if source is None:
+                source = await _live_source(session, root_path)
+                if source is None:
+                    source = await _create_source(session, root_path)
+                    created = True
+
+            document_id = await _insert_document(
+                session,
+                source_id=source[0],
+                path=path,
+                filename=filename,
+                mime=detection.mime,
+                sha256=stamp.sha256,
+                version=(version_of.version or 1) + 1,
+                supersedes=version_of.id,
+            )
+            seen[stamp.sha256] = Existing(
+                id=document_id, path=path, filename=filename, source_id=source[0]
+            )
+            files.append(
+                FileResult(
+                    relative_path=relative,
+                    path=path,
+                    filename=filename,
+                    outcome=Outcome.SUPERSEDED,
+                    detection=detection,
+                    document_id=document_id,
+                    existing=version_of,
+                    sha256=stamp.sha256,
+                    size=stamp.size,
+                )
+            )
+            continue
+
         if source is None:
             source = await _live_source(session, root_path)
             if source is None:
@@ -600,6 +717,8 @@ async def _insert_document(
     filename: str,
     mime: str | None,
     sha256: str,
+    version: int = 1,
+    supersedes: uuid.UUID | None = None,
 ) -> uuid.UUID:
     """One document row and the decisions record that says it was added.
 
@@ -607,11 +726,18 @@ async def _insert_document(
     is a document nobody can later explain, and `docs/audit-log.md` treats the
     decisions store as the record of what the user chose — "I gave Askwell these
     sixty files" is exactly that.
+
+    `supersedes`, when given, retires the old document in the **same**
+    transaction: the new row and the old row's `superseded_by` either both land
+    or neither does, so a document can never end up hidden from retrieval with
+    nothing yet standing in its place. This is the state transition, not the
+    decision to take it — the caller has already decided.
     """
     result = await session.execute(
         text(
-            "INSERT INTO documents (source_id, filename, path, mime, sha256, status) "
-            "VALUES (:source_id, :filename, :path, :mime, :sha256, 'queued') RETURNING id"
+            "INSERT INTO documents (source_id, filename, path, mime, sha256, version, status) "
+            "VALUES (:source_id, :filename, :path, :mime, :sha256, :version, 'queued') "
+            "RETURNING id"
         ),
         {
             "source_id": source_id,
@@ -619,6 +745,7 @@ async def _insert_document(
             "path": path,
             "mime": mime,
             "sha256": sha256,
+            "version": version,
         },
     )
     document_id: uuid.UUID = result.scalar_one()
@@ -633,8 +760,33 @@ async def _insert_document(
             "filename": filename,
             "mime": mime,
             "sha256": sha256,
+            "version": version,
         },
     )
+
+    if supersedes is not None:
+        await session.execute(
+            text("UPDATE documents SET superseded_by = :new_id WHERE id = :old_id"),
+            {"new_id": document_id, "old_id": supersedes},
+        )
+        await record(
+            session,
+            Store.DECISIONS,
+            DOCUMENT_SUPERSEDED,
+            {
+                "old_document_id": str(supersedes),
+                "new_document_id": str(document_id),
+                "source_id": str(source_id),
+                "path": path,
+            },
+        )
+        log.info(
+            "document_superseded",
+            old_document_id=str(supersedes),
+            new_document_id=str(document_id),
+            path=path,
+        )
+
     return document_id
 
 
@@ -658,6 +810,10 @@ class AddRequest(BaseModel):
     folder: str = Field(min_length=1, max_length=4096)
     files: list[str] = Field(min_length=1, max_length=MAX_FILES)
 
+    # Answers to a prior call's `new_version` offers, by relative path. Absent
+    # for a path means "not decided yet" — offered again, not guessed at.
+    version_decisions: dict[str, Literal["supersede", "keep_both"]] = Field(default_factory=dict)
+
 
 def register_sources(
     app: FastAPI, settings: Settings, factory: async_sessionmaker[AsyncSession]
@@ -668,7 +824,7 @@ def register_sources(
     async def add_source(body: AddRequest) -> JSONResponse:
         try:
             async with session_scope(factory) as db:
-                result = await add(db, body.folder, body.files)
+                result = await add(db, body.folder, body.files, body.version_decisions)
         except (AddRefused, roots.RootRefused) as refusal:
             # 400, not 422: the request is exactly the shape the interface meant
             # to send, and what is wrong is the folder. A validation error would
