@@ -125,6 +125,29 @@ export function useCardRef(key: string): (node: HTMLElement | null) => void {
   return useCallback((node: HTMLElement | null) => store.registerCard(key, node), [store, key]);
 }
 
+/**
+ * Scrolls a registered claim span into view, if it is currently mounted.
+ * `M1-VIEW-FE-048`'s "back to answer": the context rail's return link names
+ * a claim key (`${turnId}:${ordinal}`), and this is the one place that
+ * already tracks where that claim's node lives, so returning to the exact
+ * claim reuses the leader-line registry rather than a second lookup. Returns
+ * whether a node was found, so the caller can tell "landed" from "the answer
+ * that produced this claim is no longer on screen" without inventing a
+ * second signal for the same fact.
+ */
+export function useScrollToClaim(): (key: string) => boolean {
+  const store = useLeaderStore();
+  return useCallback(
+    (key: string) => {
+      const node = store.claims.get(key);
+      if (node === undefined) return false;
+      node.scrollIntoView({ block: "center" });
+      return true;
+    },
+    [store],
+  );
+}
+
 /** The currently hovered/focused claim or card key, either side, or `null`. */
 export function useHoveredKey(): string | null {
   const store = useLeaderStore();
