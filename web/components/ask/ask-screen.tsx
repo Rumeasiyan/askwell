@@ -4,7 +4,8 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { type AskTurn, useAsk } from "@/components/ask/ask-state";
-import { useClaimRef } from "@/components/ask/leader";
+import { useClaimRef, useHoverHandlers } from "@/components/ask/leader";
+import { InlineSourceCards, useRaised } from "@/components/ask/provenance-margin";
 import { fetchIngest } from "@/lib/ingest";
 import { segmentClaims } from "@/lib/claims";
 import { VERSION } from "@/lib/version";
@@ -255,6 +256,16 @@ function Turn({ turn }: { turn: AskTurn }) {
 
       {turn.answer !== "" ? <AnswerProse turnId={turn.id} text={turn.answer} /> : null}
 
+      {/* Below the three-column breakpoint the margin `<aside>` is
+          CSS-hidden (`shell.tsx`) — these are the same cards, inline,
+          never removed. `hidden @5xl:block` there, so this is its mirror:
+          shown below the breakpoint, hidden at width. `M1-CITE-FE-044`. */}
+      {turn.citations.length > 0 ? (
+        <div className="block @5xl:hidden">
+          <InlineSourceCards turnId={turn.id} cards={turn.citations} />
+        </div>
+      ) : null}
+
       {turn.status === "failed" && turn.reason !== null ? (
         <p className="ask-prose" style={{ color: "var(--muted)" }}>
           {turn.reason}
@@ -312,6 +323,13 @@ function AnswerProse({ turnId, text }: { turnId: string; text: string }) {
   return <p className="ask-prose">{nodes}</p>;
 }
 
+/**
+ * Hovering or focusing a claim raises its card(s), and a card hovered or
+ * focused raises this claim back (`ProvenanceMargin`'s `SourceCard`,
+ * `M1-CITE-FE-044`). `tabIndex={0}` is what makes the second half of that
+ * true without a pointer — the ticket's own "keyboard focus produces the
+ * same pairing".
+ */
 function ClaimSpan({
   turnId,
   ordinal,
@@ -321,9 +339,22 @@ function ClaimSpan({
   ordinal: number;
   children: ReactNode;
 }) {
-  const ref = useClaimRef(`${turnId}:${ordinal}`);
+  const claimKey = `${turnId}:${ordinal}`;
+  const ref = useClaimRef(claimKey);
+  const { onHover, onUnhover } = useHoverHandlers(claimKey);
+  const raised = useRaised(claimKey);
   return (
-    <span ref={ref} data-claim-ordinal={ordinal}>
+    <span
+      ref={ref}
+      data-claim-ordinal={ordinal}
+      data-raised={raised}
+      tabIndex={0}
+      className="ask-claim-raised"
+      onMouseEnter={onHover}
+      onMouseLeave={onUnhover}
+      onFocus={onHover}
+      onBlur={onUnhover}
+    >
       {children}
     </span>
   );

@@ -4,6 +4,21 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.25 — 2026-08-28
+
+Hover pairing and the narrow-window inline fallback. `M1-CITE-FE-044`.
+
+### Added
+
+- **Hover and focus pairing** — hovering or focusing a cited claim raises exactly its card(s); hovering or focusing a card raises exactly its claim(s), including the two-cards-per-claim case. `web/components/ask/leader.tsx`'s store gained a `hovered` field for this — the same cross-column registry the claim/card maps already use, not a second one. The raised leader draws in `--provenance` at double weight and last, so it stays legible when leaders overlap in a dense answer.
+- **`web/lib/pairing.ts`'s `isRaised`** — the pure matching rule ("this key is hovered, or paired with what is"), pulled out so it is checkable without a DOM, the same reasoning `segmentClaims` and `applyCitation` already follow.
+- **The inline fallback below the three-column breakpoint** — `web/components/ask/provenance-margin.tsx`'s `InlineSourceCards` renders the live turn's cards beneath its answer (`ask-screen.tsx`'s `Turn`), CSS-shown only below `@5xl`, mirroring the margin `<aside>`'s own `hidden @5xl:block`. No card is ever removed at any width. Its left edge is `--rule-strong`, not the margin card's decorative `--provenance` — below the breakpoint there is no leader, so the edge itself carries the claim-to-source relationship.
+- Keyboard focus parity: a claim span is now `tabIndex={0}` and fires the same hover/raise handlers on `focus`/`blur` that the mouse path fires on `mouseEnter`/`mouseLeave`.
+
+### Changed
+
+- `docs/ux/design-system.md` §7's claim-leader description corrected — it still said `--rule` at rest, left over from before `M1-CITE-FE-043` moved the leader to `--rule-strong`.
+
 ## 0.2.24 — 2026-08-28
 
 The provenance margin renders, for the first time. `M1-CITE-FE-043`.

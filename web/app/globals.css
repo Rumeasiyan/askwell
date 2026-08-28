@@ -209,6 +209,29 @@
     border-left: 2px solid var(--provenance);
   }
 
+  /* Hovering or focusing a claim raises its card and vice versa — plain
+     `:hover` cannot reach across the two DOM subtrees a claim and its card
+     live in, so this is a class toggled from the leader store's hovered key
+     (`leader.tsx`), not a pseudo-class. `M1-CITE-FE-044`. */
+  .ask-card-raised {
+    transition:
+      transform 120ms ease,
+      box-shadow 120ms ease;
+  }
+
+  .ask-card-raised[data-raised="true"] {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px var(--drop);
+  }
+
+  .ask-claim-raised {
+    transition: background 120ms ease;
+  }
+
+  .ask-claim-raised[data-raised="true"] {
+    background: var(--surface);
+  }
+
   .ask-prose {
     font-family: var(--font-text);
     font-size: var(--t-body);
