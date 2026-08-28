@@ -4,6 +4,27 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.16 — 2026-08-28
+
+A question mixing a name and a concept returns candidates found by either. `M1-ASK-RET-035`.
+
+### Added
+
+- **`askwell.retrieve.retrieve`** — dense search (pgvector cosine, `chunks.embedding`) and lexical search (`chunks.content_tsv`, hyphen-normalised query text to match `c7e2f814a5b3`'s own tokenising) run independently, each bounded to `Settings.retrieval_candidate_count`, and are fused with Reciprocal Rank Fusion (`RRF_K = 60`). Every candidate retains its own dense score, lexical score (either nullable, if only one search found it) and the fused score it was ranked by — nothing is recomputed from the fused list alone. `Settings.retrieval_score_threshold` is captured on the result as configured at call time, for the trace to show a near-miss later, without applying it — abstaining on it is `M2`.
+- **`source_id` scopes both searches to one source.** Both queries exclude superseded (`superseded_by IS NOT NULL`) and deleted (`deleted_at IS NOT NULL`) documents at the query itself.
+- Two new settings: `ASKWELL_RETRIEVAL_CANDIDATE_COUNT` (default 40) and `ASKWELL_RETRIEVAL_SCORE_THRESHOLD` (default 0.65, matching `docs/architecture.md` §7.1's own example).
+
+### Verified
+
+- `api/tests/test_retrieve.py`: `_fuse` in isolation — a hit in both lists outranks a hit in only one, a missing side keeps a null score, the fused score is the reciprocal-rank sum, no hits returns nothing, identical content from two documents is never deduplicated, the result is truncated to the candidate count.
+- `api/tests/test_retrieve_records.py`, against real Postgres: a reference number (`INV-2024-0917`) retrieves the chunk that contains it by lexical search alone; a paraphrase with no shared wording retrieves the right chunk by dense search alone; scores and threshold land on the result as configured; a superseded document and a deleted document are both excluded while the live one is returned; an empty corpus returns cleanly; a one-word query does not error; a one-document corpus still fuses; identical content in two documents returns both; scoping to a source excludes a matching chunk in another source.
+- `scripts/dev.sh check` — 407 passed, 1 skipped. `scripts/dev.sh test-db` — 150 passed, up from 141, 10 of them new.
+
+### Deferred
+
+- No caller exists yet — nothing in the repository invokes `retrieve()`. The `ask` endpoint, streaming, and writing `messages.trace` are `M1-ASK-RET-036` (reranking) and later M1/M2 tickets; this ticket's own scope is the two searches and their fusion, not the surface that calls them.
+- No vector index (`ivfflat`/`hnsw`) on `chunks.embedding` — both searches are sequential scans. Not needed yet at the corpus sizes this milestone targets; worth revisiting once a real corpus makes `_dense_search` measurably slow.
+
 ## 0.2.15 — 2026-08-28
 
 Re-adding a changed document offers to replace the old version rather than duplicating it. `M1-INDEX-BE-034`.
