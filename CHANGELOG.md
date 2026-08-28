@@ -4,6 +4,22 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.41 — 2026-08-28
+
+A below-threshold retrieval abstains instead of answering. `M2-ABSTAIN-RET-053`, issue 144.
+
+### Added
+
+- **C5's abstention branch, taken before composition.** `askwell.ask._run_generation` compares every reranked candidate's score against `Settings.retrieval_score_threshold` (default `0.65`); if nothing clears it, the turn ends without ever calling `compose()` or the model — there is no path from a below-threshold retrieval to a document-grounded answer. The threshold in force and every candidate's score, including the near-miss, are stored on `messages.trace` rather than recomputed later.
+- **`askwell.retrieve.candidate_score`** turns whichever of a candidate's four scores is actually informative into one comparable to a `[0, 1]` threshold: a reranked candidate's raw, unbounded cross-encoder logit through a sigmoid, falling back to the real dense or lexical score for a candidate reranking never touched.
+- **A distinct reason when a source-scoped question hits a source that is still indexing**, rather than reporting a generically empty corpus — `askwell.ask._abstain_reason` distinguishes `empty_corpus`, `source_indexing` and `below_threshold` by querying `askwell.ingest.coverage` for a scoped question and chunk existence otherwise. Final user-facing copy is `M2-ABSTAIN-BE-054`.
+- **The interaction audit record gains `abstained` and `threshold`**, so an abstention is queryable from `audit_interactions` directly rather than only inferable from a zero citation count.
+
+### Verified
+
+- `scripts/dev.sh test` (488 passed, 1 skipped), `scripts/dev.sh test-db` (231 passed, up from 226), `lint`, `typecheck`, `fmt-check` all clean.
+- Against the running stack with native inference on the host: a question with no candidate above threshold abstained (`status: "completed"`, `source_count: null`, near-miss score `0.0000164` stored under a `0.65` threshold); the same corpus's one real chunk answered normally for a matching question (score `0.9998`); `askwell-verify` confirmed both audit chains intact including the abstained interaction's `abstained: true`/`threshold: "0.65"` fields.
+
 ## 0.2.40 — 2026-08-28
 
 The one download in the product runs on the host. Issue 192.

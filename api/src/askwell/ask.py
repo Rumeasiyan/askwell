@@ -87,8 +87,9 @@ from askwell.audit import AuditError, Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
 from askwell.inference.client import InferenceClient, InferenceFailed, InferenceUnavailable
+from askwell.ingest import coverage
 from askwell.logging import get_logger
-from askwell.retrieve import Candidate, retrieve
+from askwell.retrieve import Candidate, candidate_score, retrieve
 from askwell.traces import TraceRing
 
 log = get_logger(__name__)
@@ -352,6 +353,50 @@ def _label_for_sources(document_count: int) -> str:
     return f"Reading {document_count} sources."
 
 
+async def _abstain_reason(
+    factory: async_sessionmaker[AsyncSession], settings: Settings, source_id: uuid.UUID | None
+) -> tuple[str, str]:
+    """Why this turn abstained, distinct from "nothing scored high enough" —
+    the ticket's own edge cases: an empty corpus has nothing to match
+    against at all, and a source scoped question against a source still
+    indexing is missing content, not merely unmatched by what exists.
+
+    Copy is `M2-ABSTAIN-BE-054`'s job; this returns a reason code for that
+    ticket to render, plus a plain-English placeholder trace/`done` can carry
+    in the meantime, matching how `askwell.ask` already handles a `completed`
+    turn's other non-happy-path reasons (e.g. length truncation).
+    """
+    async with session_scope(factory) as db:
+        if source_id is not None:
+            cov = await coverage(db, source_id, settings.ocr_confidence_threshold)
+            if cov.total == 0:
+                return "empty_corpus", "No documents are indexed under this source yet."
+            if cov.ready < cov.total:
+                return (
+                    "source_indexing",
+                    "This source is still indexing — not everything in it has been searched yet.",
+                )
+            return "below_threshold", "Nothing in your files scored above the retrieval threshold."
+
+        # Chunk existence, not `documents.status = 'ready'`: `askwell.retrieve`
+        # searches every live document's chunks regardless of where that
+        # document's own pipeline stage is (its dense and lexical queries
+        # filter only `deleted_at`/`superseded_by`), so "empty" has to mean
+        # the same thing here or a corpus mid-indexing with something already
+        # searchable would be misreported as having nothing at all.
+        indexed = (
+            await db.execute(
+                text(
+                    "SELECT count(*) FROM chunks c JOIN documents d ON d.id = c.document_id "
+                    "WHERE d.deleted_at IS NULL AND d.superseded_by IS NULL"
+                )
+            )
+        ).scalar_one()
+    if indexed == 0:
+        return "empty_corpus", "No documents are indexed yet."
+    return "below_threshold", "Nothing in your files scored above the retrieval threshold."
+
+
 async def _generate(
     settings: Settings,
     factory: async_sessionmaker[AsyncSession],
@@ -386,6 +431,9 @@ async def _run_generation(
     candidates: list[Candidate] = []
     citation_rows: list[dict[str, Any]] = []
     claims_emitted = 0
+    abstained = False
+    retrieval_threshold: float | None = None
+    scored_candidates: list[tuple[Candidate, float]] = []
     trace_steps: list[dict[str, Any]] = []
     injection_flagged = False
     injection_patterns: tuple[str, ...] = ()
@@ -403,51 +451,73 @@ async def _run_generation(
         async with session_scope(factory) as db:
             result = await retrieve(db, client, settings, question, source_id=source_id)
         candidates = result.candidates
+        retrieval_threshold = result.threshold
+        # `candidate_score()`, not `c.score` (the fused RRF value): the
+        # abstention decision below and the near-miss this trace exists to
+        # show both need the one score that is actually comparable to
+        # `result.threshold` — see its own docstring in `askwell.retrieve`.
+        scored_candidates = [(c, candidate_score(c)) for c in candidates]
         trace_steps.append(
             {
                 "kind": "retrieve",
                 "ms": (time.monotonic() - retrieve_started) * 1000,
                 "query": question,
                 "threshold": result.threshold,
-                "hits": [{"chunk_id": str(c.chunk_id), "score": c.score} for c in candidates],
+                "hits": [
+                    {"chunk_id": str(c.chunk_id), "score": score} for c, score in scored_candidates
+                ],
             }
         )
 
-        document_count = len({candidate.document_id for candidate in candidates})
-        turn.emit("step", {"label": _label_for_sources(document_count), "kind": "read"})
+        best_score = max((score for _, score in scored_candidates), default=None)
+        abstained = best_score is None or best_score < result.threshold
 
-        composed = compose(question, candidates)
-        injection_flagged = composed.injection_flagged
-        injection_patterns = composed.injection_patterns
+        if abstained:
+            # C5's abstention branch, taken before composition: nothing
+            # retrieved clears the threshold in force, so there is no path
+            # from a below-threshold retrieval to a document-grounded
+            # answer. `citation_rows` stays empty, which is what already
+            # makes `summarize_turn` (below) treat this turn as abstained —
+            # `source_count = None`, never `0`.
+            abstain_code, reason = await _abstain_reason(factory, settings, source_id)
+            trace_steps.append({"kind": "abstain", "reason_code": abstain_code})
+            turn.emit("step", {"label": "Nothing in your files answers this.", "kind": "read"})
+        else:
+            document_count = len({candidate.document_id for candidate in candidates})
+            turn.emit("step", {"label": _label_for_sources(document_count), "kind": "read"})
 
-        turn.emit("step", {"label": "Writing your answer.", "kind": "compose"})
+            composed = compose(question, candidates)
+            injection_flagged = composed.injection_flagged
+            injection_patterns = composed.injection_patterns
 
-        prompt = f"{composed.system_prompt}\n\n{composed.user_content}"
-        compose_started = time.monotonic()
-        stream = client.stream_generate(prompt, max_tokens=settings.generation_max_tokens)
-        async for chunk in stream:
-            if turn.stop_requested:
-                await stream.aclose()
-                status = "stopped"
-                break
-            if chunk.text:
-                turn.text += chunk.text
-                turn.emit("token", {"text": chunk.text})
-                claims = segment_claims(turn.text)
-                for claim in claims[claims_emitted:]:
-                    _cite_claim(turn, claim, candidates, citation_rows)
-                claims_emitted = len(claims)
-            if chunk.done:
-                truncated = chunk.truncated
+            turn.emit("step", {"label": "Writing your answer.", "kind": "compose"})
 
-        trace_steps.append(
-            {
-                "kind": "compose",
-                "ms": (time.monotonic() - compose_started) * 1000,
-                "claims": claims_emitted,
-                "citations": len(citation_rows),
-            }
-        )
+            prompt = f"{composed.system_prompt}\n\n{composed.user_content}"
+            compose_started = time.monotonic()
+            stream = client.stream_generate(prompt, max_tokens=settings.generation_max_tokens)
+            async for chunk in stream:
+                if turn.stop_requested:
+                    await stream.aclose()
+                    status = "stopped"
+                    break
+                if chunk.text:
+                    turn.text += chunk.text
+                    turn.emit("token", {"text": chunk.text})
+                    claims = segment_claims(turn.text)
+                    for claim in claims[claims_emitted:]:
+                        _cite_claim(turn, claim, candidates, citation_rows)
+                    claims_emitted = len(claims)
+                if chunk.done:
+                    truncated = chunk.truncated
+
+            trace_steps.append(
+                {
+                    "kind": "compose",
+                    "ms": (time.monotonic() - compose_started) * 1000,
+                    "claims": claims_emitted,
+                    "citations": len(citation_rows),
+                }
+            )
 
         if status == "running":
             status = "completed"
@@ -549,6 +619,10 @@ async def _run_generation(
             # chains to the previous record (`askwell.audit`); scores are
             # stringified because `canonical_payload` refuses floats — a
             # value that must hash identically after a jsonb round trip.
+            # `abstained`/`threshold` (`M2-ABSTAIN-RET-053`) make an
+            # abstention queryable from this log directly, per
+            # `docs/audit-log.md` §7, rather than only inferable from
+            # `citation_count == 0`.
             await record(
                 db,
                 Store.INTERACTIONS,
@@ -559,14 +633,18 @@ async def _run_generation(
                     "question": question,
                     "answer": turn.text,
                     "status": status,
+                    "abstained": abstained,
+                    "threshold": (
+                        str(retrieval_threshold) if retrieval_threshold is not None else None
+                    ),
                     "source_id": str(source_id) if source_id else None,
                     "citation_count": len(citation_rows),
                     "duration_ms": duration_ms,
                     "backend": "local",
                     "model": model_name,
                     "retrieved_chunks": [
-                        {"chunk_id": str(candidate.chunk_id), "score": str(candidate.score)}
-                        for candidate in candidates
+                        {"chunk_id": str(candidate.chunk_id), "score": str(score)}
+                        for candidate, score in scored_candidates
                     ],
                 },
             )

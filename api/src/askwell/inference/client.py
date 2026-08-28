@@ -292,9 +292,11 @@ class InferenceClient:
             raise InferenceFailed("The assistant's ranking had no results in it.")
 
         # The scores are raw logits, not probabilities — llama.cpp returns the
-        # reranker's output directly, so they are negative and unbounded. Only
-        # their order is meaningful, which is why this returns them sorted and
-        # the caller is not invited to threshold on the number itself.
+        # reranker's output directly, so they are negative and unbounded. This
+        # method returns them sorted and does not itself invite thresholding
+        # on the raw number; a caller that needs a comparable, bounded score
+        # (`askwell.retrieve.candidate_score`, `M2-ABSTAIN-RET-053`) passes it
+        # through a sigmoid first rather than comparing the logit directly.
         scored: list[tuple[int, float]] = []
         for item in results:
             if not isinstance(item, dict) or "index" not in item:
