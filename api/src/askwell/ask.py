@@ -82,7 +82,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from askwell.agent.abstain import AbstainReason, compose_abstention
 from askwell.agent.claims import Claim, locate_quoted_span, segment_claims
-from askwell.agent.compose import compose
+from askwell.agent.partial import compose_partial, split_partial_answer
 from askwell.agent.summarize import fallback_summary, summarize_turn
 from askwell.audit import AuditError, Store, record
 from askwell.config import Settings
@@ -491,6 +491,8 @@ async def _run_generation(
     injection_flagged = False
     injection_patterns: tuple[str, ...] = ()
     truncated = False
+    partial_coverage = False
+    uncovered_aspects: tuple[str, ...] = ()
     # The model file's own name, not its full path — read from configuration
     # (never hardcoded, `AGENTS.md` §4) so this ticket's "backend and model
     # used" survives a deployment-profile change with no code edit.
@@ -558,7 +560,15 @@ async def _run_generation(
             document_count = len({candidate.document_id for candidate in candidates})
             turn.emit("step", {"label": _label_for_sources(document_count), "kind": "read"})
 
-            composed = compose(question, candidates)
+            # `compose_partial`, not `compose`: a question can ask about more
+            # than one thing, and only some of it may be covered by what
+            # cleared the threshold above. The prompt this loads
+            # (`agent/prompts/partial_answer.v1.md`) answers, with citations,
+            # exactly what is supported and names anything else plainly
+            # rather than folding it into fluent prose — an ordinary
+            # single-aspect question comes back with nothing to name and
+            # composes identically to before. `M2-PARTIAL-BE-057`.
+            composed = compose_partial(question, candidates)
             injection_flagged = composed.injection_flagged
             injection_patterns = composed.injection_patterns
 
@@ -582,12 +592,24 @@ async def _run_generation(
                 if chunk.done:
                     truncated = chunk.truncated
 
+            # C4 and C5 both apply to the same answer here: the grounded part
+            # already carries citations from the loop above, and this reads
+            # back the `Not covered: <aspect>.` lines `partial_answer.v1.md`
+            # asks the model to write for the rest, rather than inventing or
+            # smoothing over them. A fully-covered answer parses to nothing
+            # here and `partial_coverage` stays `False`, same as before this
+            # ticket. `M2-PARTIAL-BE-057`.
+            uncovered_aspects = split_partial_answer(turn.text).uncovered
+            partial_coverage = bool(uncovered_aspects)
+
             trace_steps.append(
                 {
                     "kind": "compose",
                     "ms": (time.monotonic() - compose_started) * 1000,
                     "claims": claims_emitted,
                     "citations": len(citation_rows),
+                    "partial_coverage": partial_coverage,
+                    "uncovered_aspects": list(uncovered_aspects),
                 }
             )
 
@@ -613,6 +635,11 @@ async def _run_generation(
         "injection_patterns": list(injection_patterns),
         "status": status,
         "reason": reason,
+        # `M2-PARTIAL-BE-057`: what the FE ticket (`M2-PARTIAL-FE-058`) and the
+        # eval suite both need to tell a partial answer apart from an ordinary
+        # one or a full abstention, without re-parsing the answer's own prose.
+        "partial_coverage": partial_coverage,
+        "uncovered_aspects": list(uncovered_aspects),
     }
 
     # `M1-CONV-BE-177`: the summary and source count a collapsed past turn
@@ -706,6 +733,8 @@ async def _run_generation(
                     "answer": turn.text,
                     "status": status,
                     "abstained": abstained,
+                    "partial": partial_coverage,
+                    "uncovered_aspects": list(uncovered_aspects),
                     "threshold": (
                         str(retrieval_threshold) if retrieval_threshold is not None else None
                     ),

@@ -942,6 +942,135 @@ def test_raising_the_threshold_makes_a_previously_answered_question_abstain(
     assert strict_count is None
 
 
+# --- partial answers, `M2-PARTIAL-BE-057` -------------------------------------
+
+
+def test_a_compound_question_with_one_uncovered_aspect_is_marked_partial(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """The ticket's own real-world example: payment terms answered with a
+    citation, termination notice named plainly as not covered — neither
+    smoothed into the other, and the turn is marked partial for a renderer
+    or the eval suite to key off without re-parsing the prose."""
+    _truncate(database_url)
+    vector = _vector(0.0)
+    document_id, chunk_id = _seed_chunk(database_url, "Payment terms are 45 days.", vector)
+    fake = _FakeInferenceClient(
+        settings,
+        tokens=[
+            "Payment terms are 45 days [1].\n",
+            "Not covered: the termination notice period for this supplier.",
+        ],
+        vector=vector,
+    )
+    _patch_client(monkeypatch, fake)
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post(
+            "/ask",
+            json={"question": "What are the payment terms and the termination notice period?"},
+        )
+        events = _events(response.text)
+        done = next(data for kind, data in events if kind == "done")
+        assert done["status"] == "completed"
+        message_id = uuid.UUID(done["message_id"])
+
+        # The covered half still cites normally — a partial answer is not a
+        # different citation mechanism, just a composition path that also
+        # names what it could not cite.
+        citation_events = [data for kind, data in events if kind == "citation"]
+        assert citation_events[0]["chunk_id"] == str(chunk_id)
+        assert citation_events[0]["document_id"] == str(document_id)
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        content, trace = db.execute(
+            "SELECT content, trace FROM messages WHERE id = %s", (message_id,)
+        ).fetchone()
+        assert "Payment terms are 45 days" in content
+        assert "Not covered: the termination notice period for this supplier." in content
+        assert trace["partial_coverage"] is True
+        assert trace["uncovered_aspects"] == ["the termination notice period for this supplier"]
+
+        audit_payload = db.execute(
+            "SELECT payload FROM audit_interactions WHERE payload->>'message_id' = %s",
+            (str(message_id),),
+        ).fetchone()[0]
+        assert audit_payload["partial"] is True
+        assert audit_payload["uncovered_aspects"] == [
+            "the termination notice period for this supplier"
+        ]
+        # A partial answer still has real citations, so it is not what
+        # `summarize_turn` treats as an abstention — `source_count` stays a
+        # real count, distinct from the `None` an abstained turn gets.
+        source_count = db.execute(
+            "SELECT source_count FROM messages WHERE id = %s", (message_id,)
+        ).fetchone()[0]
+        assert source_count == 1
+
+
+def test_every_aspect_covered_is_an_ordinary_answer_not_marked_partial(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """The edge case by name: nothing to name as uncovered composes and
+    is marked exactly like an answer built before this ticket existed."""
+    _truncate(database_url)
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "Notice is ninety days.", vector)
+    fake = _FakeInferenceClient(settings, tokens=["Notice is ninety days [1]."], vector=vector)
+    _patch_client(monkeypatch, fake)
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "How long is the notice period?"})
+        message_id = uuid.UUID(
+            next(data for kind, data in _events(response.text) if kind == "done")["message_id"]
+        )
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        content, trace = db.execute(
+            "SELECT content, trace FROM messages WHERE id = %s", (message_id,)
+        ).fetchone()
+        assert content == "Notice is ninety days [1]."
+        assert trace["partial_coverage"] is False
+        assert trace["uncovered_aspects"] == []
+
+        audit_payload = db.execute(
+            "SELECT payload FROM audit_interactions WHERE payload->>'message_id' = %s",
+            (str(message_id),),
+        ).fetchone()[0]
+        assert audit_payload["partial"] is False
+        assert audit_payload["uncovered_aspects"] == []
+
+
+def test_every_aspect_uncovered_still_abstains_rather_than_going_partial(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """The ticket's own edge case: when nothing clears the retrieval
+    threshold at all, the turn abstains before composition ever runs —
+    `partial_coverage` cannot be `True` on an abstained turn, and the two
+    branches must not blur."""
+    _truncate(database_url)
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "Notice is ninety days.", vector)
+    fake = _FakeInferenceClient(
+        settings, tokens=["should never stream"], vector=vector, rerank_score=-10.0
+    )
+    _patch_client(monkeypatch, fake)
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "What are the payment terms?"})
+        done = next(data for kind, data in _events(response.text) if kind == "done")
+        message_id = uuid.UUID(done["message_id"])
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        trace = db.execute("SELECT trace FROM messages WHERE id = %s", (message_id,)).fetchone()[0]
+        assert trace["partial_coverage"] is False
+        assert trace["uncovered_aspects"] == []
+        assert any(step["kind"] == "abstain" for step in trace["steps"])
+
+
 # --- turn summaries and source counts, `M1-CONV-BE-177` ----------------------
 
 

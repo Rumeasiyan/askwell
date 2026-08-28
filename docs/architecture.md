@@ -301,15 +301,20 @@ Left unspecified, this becomes a dumping ground that every screen parses differe
     { "kind": "sql",      "ms": 240, "generated": "SELECT …",
       "validated": true, "rejection_reason": null,
       "limit_injected": 1000, "rows": 7 },
-    { "kind": "compose",  "ms": 8200, "claims": 3 }
+    { "kind": "compose",  "ms": 8200, "claims": 3,
+      "partial_coverage": false, "uncovered_aspects": [] }
   ],
   "backend": { "mode": "local", "model": "qwen3-8b-q4km" },
   "stopped_early": false,
-  "injection_flagged": false
+  "injection_flagged": false,
+  "partial_coverage": false,          // true when part of the question went unanswered
+  "uncovered_aspects": []             // named, never a generic "some information was unavailable"
 }
 ```
 
 **Scores and the threshold are stored, never recomputed.** The abstention trace is the most useful trace there is, and its value is showing the near-miss — "the right passage scored 0.61 under a 0.65 threshold". Recomputing later gives a different number after any model or threshold change, which makes the explanation wrong precisely when someone is trying to understand an old answer.
+
+**A partial answer is not an abstention.** `partial_coverage` can only be `true` on a turn that already cleared the retrieval threshold and composed an answer — the branch that abstains entirely never reaches composition at all (`M2-ABSTAIN-RET-053`), so the two states cannot blur into each other. `uncovered_aspects` is read back out of the model's own answer text (`askwell.agent.partial.split_partial_answer`), the same "recompute from what the turn produced, never from a live re-check" rule the threshold and scores above already follow. `M2-PARTIAL-BE-057`.
 
 **Rejected SQL is stored with its reason.** It is the signal that a prompt change has degraded generation, and it is invisible unless recorded (`audit-log.md` §7).
 
