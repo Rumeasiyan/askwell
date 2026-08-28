@@ -142,6 +142,20 @@ class Settings(BaseSettings):
     # starting point named there, not a measured figure.
     retrieval_score_threshold: float = Field(default=0.65, ge=0, le=1)
 
+    # How many of the fused candidates go through the cross-encoder reranker.
+    # Bounded separately from `retrieval_candidate_count`: fusion needs enough
+    # of each ranked list to find the overlap, but the reranker scores every
+    # candidate it is given individually, so a window sized to the fused
+    # count would make reranking the slow part of every question on a light
+    # profile. `M1-ASK-RET-036`.
+    rerank_candidate_count: int = Field(default=10, ge=1, le=100)
+
+    # How long the reranker gets before its result is discarded in favour of
+    # fusion order. Shorter than `DEFAULT_TIMEOUT_SECONDS` on purpose — a slow
+    # rerank should degrade to a still-useful answer, not make the user wait
+    # twice for the same passages. `M1-ASK-RET-036`.
+    rerank_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
+
     # How many chunks go into one call to the embedding model. Bounded for the
     # same reason `ingest_concurrency` is: a batch sized to the whole document
     # is a batch sized to whatever the largest document turns out to be, and a

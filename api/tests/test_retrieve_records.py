@@ -10,6 +10,7 @@ operator; nothing about the search itself is a stand-in.
 
 import uuid
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
@@ -27,17 +28,38 @@ DIMENSIONS = Settings.model_fields["embedding_dimensions"].default
 
 
 class _FakeClient:
-    """Stands in for `InferenceClient.embed`: hands back whatever vector the
-    test asked to be returned for the query, instead of talking to a real
-    embedding model this suite has no need to start."""
+    """Stands in for `InferenceClient`: hands back whatever vector the test
+    asked to be returned for the query, instead of talking to a real
+    embedding model this suite has no need to start.
 
-    def __init__(self, vector: list[float]) -> None:
+    `rerank` defaults to identity — same order, descending scores by
+    position — so the ten `M1-ASK-RET-035` tests above, none of which care
+    about reranking, keep asserting on fused order unchanged. A test that
+    does care passes `rerank_scores` explicitly.
+    """
+
+    def __init__(self, vector: list[float], rerank_scores: dict[str, float] | None = None) -> None:
         self.vector = vector
+        self.rerank_scores = rerank_scores
         self.calls: list[list[str]] = []
+        self.rerank_calls: list[list[str]] = []
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         self.calls.append(texts)
         return [self.vector for _text in texts]
+
+    async def rerank(
+        self, query: str, documents: list[str], *, timeout_seconds: float = 0.0
+    ) -> list[tuple[int, float]]:
+        self.rerank_calls.append(documents)
+        if self.rerank_scores is None:
+            scored = [(index, float(len(documents) - index)) for index in range(len(documents))]
+        else:
+            scored = [
+                (index, self.rerank_scores.get(document, 0.0))
+                for index, document in enumerate(documents)
+            ]
+        return sorted(scored, key=lambda pair: pair[1], reverse=True)
 
 
 def _vector(lead: float) -> list[float]:
@@ -293,3 +315,74 @@ async def test_scoping_to_a_source_excludes_a_matching_chunk_in_another_source(
     )
 
     assert [candidate.chunk_id for candidate in result.candidates] == [wanted_chunk]
+
+
+# --- reranking, `M1-ASK-RET-036` ---------------------------------------------
+
+
+async def test_the_right_passage_is_promoted_above_four_wrong_ones(
+    session: AsyncSession, settings: Settings
+) -> None:
+    """The ticket's own Real-World Example Scenario: on a corpus of similar
+    contracts, the passage from the right supplier is promoted above four
+    passages from the wrong ones. All five score equally under fusion — same
+    vector, same words — so only reranking can tell them apart."""
+    source_id = await _source(session)
+    right = "Meridian Supplies: payment terms are net 30 from invoice date."
+    wrong = [
+        "Acme Corp: payment terms are net 30 from invoice date.",
+        "Bolt Industries: payment terms are net 30 from invoice date.",
+        "Crestview Ltd: payment terms are net 30 from invoice date.",
+        "Delta Partners: payment terms are net 30 from invoice date.",
+    ]
+    document_id = await _document(session, source_id)
+    right_chunk = await _chunk(session, document_id, right, _vector(1.0))
+    for text_ in wrong:
+        await _chunk(session, document_id, text_, _vector(1.0))
+    await _committed(session)
+
+    client = _FakeClient(_vector(1.0), rerank_scores={right: 9.0})
+    result = await retrieve_module.retrieve(
+        session, client, settings, "what are Meridian's payment terms"
+    )
+
+    assert result.reranked is True
+    assert result.candidates[0].chunk_id == right_chunk
+    assert result.candidates[0].rerank_score == 9.0
+
+
+async def test_reranker_unavailable_still_returns_fusion_ordered_results(
+    session: AsyncSession, settings: Settings, tmp_path: Path
+) -> None:
+    """An answer still comes back with the reranker off — degradation, not
+    failure — and the result says reranking did not run."""
+    from askwell.inference.client import InferenceClient
+
+    source_id = await _source(session)
+    document_id = await _document(session, source_id)
+    await _chunk(session, document_id, "renewal terms and conditions", _vector(1.0))
+    await _committed(session)
+
+    absent = InferenceClient(
+        settings.model_copy(update={"inference_socket": tmp_path / "no-such.sock"})
+    )
+    # `InferenceClient.embed` needs the assistant too, so retrieve() would
+    # abstain before ever reaching reranking; a fake client that can embed
+    # but whose `rerank` behaves like the real client when nothing is
+    # listening is what isolates the reranking degradation path.
+
+    class _EmbedsButNoReranker(_FakeClient):
+        async def rerank(
+            self, query: str, documents: list[str], *, timeout_seconds: float = 0.0
+        ) -> list[tuple[int, float]]:
+            return await absent.rerank(query, documents, timeout_seconds=timeout_seconds)
+
+    result = await retrieve_module.retrieve(
+        session, _EmbedsButNoReranker(_vector(1.0)), settings, "renewal terms"
+    )
+
+    assert result.candidates
+    assert result.reranked is False
+    assert result.rerank_skipped_reason is not None
+    assert "unavailable" in result.rerank_skipped_reason
+    assert all(candidate.rerank_score is None for candidate in result.candidates)
