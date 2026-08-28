@@ -4,6 +4,21 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.29 — 2026-08-28
+
+The source viewer: in-app PDF at the cited page, passage highlighted. `M1-VIEW-FE-046`.
+
+### Added
+
+- **`GET /documents/{id}`, `GET /documents/{id}/file`, `GET /documents/{id}/pages/{n}`** (`api/src/askwell/documents.py`) — a document's metadata, its bytes (with `Range` support, so a large PDF's cited page arrives first and the rest streams behind it), and one page's own extracted text for the unrenderable fallback. Opening a document is logged to `audit_interactions` as `document_opened` — an interaction, not a decision.
+- **The in-app PDF viewer** (`web/components/documents/document-viewer.tsx`, `web/app/documents/page.tsx`) — pdf.js (`pdfjs-dist`, bundled locally, no CDN), landing on the cited page with the passage highlighted for text-layer documents. The search target is the claim's own quoted span when the server found one, falling back to the full retrieved passage, falling back to a page-level highlight with a stated note when neither locates on the page — the ticket's own "the exact passage could not be pinpointed" edge case. An unrenderable page (or PDF) falls back to its extracted text plus an open-in-system-app link.
+- **`web/lib/pdf-highlight.ts`, `web/lib/pdf-text-map.ts`** — the pure search-and-offset-mapping core behind the highlight, independently testable without a browser or a PDF (25 new tests).
+
+### Changed
+
+- **A card's click target is a query string, not a path segment**: `documentHref` (`web/lib/citations.ts`) now builds `/documents/?id=...&page=...&span=...&passage=...` rather than `/documents/{id}?page=...`, which `M1-CITE-FE-043` guessed at. A dynamic path segment cannot exist under this app's `output: "export"` — every value it will ever take must be enumerable at build time, and a document id is not. Recorded in `docs/decisions.md`, superseding the earlier guess.
+- `docs/ux/source-viewer.md`'s Route line corrected to match — it named `/sources/:id?page=...&chunk=...`, which was never built and does not fit the static-export constraint either.
+
 ## 0.2.28 — 2026-08-28
 
 Interaction records for every question and answer. `M1-ASK-OBS-041`.

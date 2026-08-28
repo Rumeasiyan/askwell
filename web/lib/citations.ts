@@ -89,6 +89,26 @@ export function getCardClickCount(): number {
   return cardClickCount;
 }
 
+/**
+ * Where a card's own link goes. `M1-VIEW-FE-046`.
+ *
+ * `/documents/{document_id}?page=...` — what `M1-CITE-FE-043` guessed at
+ * (`docs/decisions.md`, 2026-08-28) — cannot exist under this app's own
+ * `output: "export"`: a dynamic path segment needs every value it will ever
+ * take enumerated at build time, and a document id is not one of those.
+ * `id`, `page`, `span` and `passage` travel as query parameters onto the
+ * single static `/documents/` route instead (`app/documents/page.tsx`,
+ * `document-viewer.tsx`) — a decision superseding the earlier guess,
+ * recorded in `docs/decisions.md`.
+ */
+export function documentHref(card: CitationCard): string {
+  const params = new URLSearchParams({ id: card.documentId });
+  if (card.pageFrom !== null) params.set("page", String(card.pageFrom));
+  if (card.quotedSpan !== null && card.quotedSpan.trim() !== "") params.set("span", card.quotedSpan);
+  if (card.passage.trim() !== "") params.set("passage", card.passage);
+  return `/documents/?${params.toString()}`;
+}
+
 /** What the card shows for "filename, page or anchor" when there is no
  * page number to show — the anchor kind and, if extraction found a nearer
  * label, the heading. */

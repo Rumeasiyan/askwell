@@ -1,0 +1,142 @@
+"""The source viewer's read side: a document's own metadata, bytes and pages.
+
+`docs/backlog/M1-it-answers-from-my-documents.md` ticket `M1-VIEW-FE-046`.
+
+**The byte-serving route exists because nothing else does.** `M1-VIEW-FE-048`'s
+own ticket lists Context rail and citation stepping as its scope, not a
+document endpoint — and no other backlog ticket names one either
+(`M1-VIEW-BE-049` is the moved/deleted-file *state*, not the ordinary read
+path). A viewer that lands on a page has to fetch the page from somewhere, so
+this ticket's own "Document bytes from the registered root" touchpoint is
+built here rather than left for a ticket that does not claim it.
+
+**`documents.path` is opened directly, exactly as `extract_common.check_readable`
+already does.** It is not user input — it came out of the database, written at
+add time from a path `askwell.roots` had already checked against a nominated
+root (`askwell.sources`) — so there is no second containment check to make
+here; the containment already happened once, at write time, and re-deriving it
+from a mount prefix would be the second hand-maintained copy `AGENTS.md` §5
+warns a build number away from.
+
+**Range requests, not a custom chunked stream.** `FileResponse` (Starlette
+1.6) already serves `Range: bytes=...` as `206 Partial Content` with
+`Accept-Ranges: bytes`. pdf.js's own default loader issues range requests for
+exactly this reason — it reads the cross-reference table first, then only the
+pages it needs — so "the cited page loads first and the rest streams" is
+satisfied by a correct `Accept-Ranges` response, not by any code in this
+module deciding what order to send bytes in.
+"""
+
+import asyncio
+import uuid
+from pathlib import Path
+
+from fastapi import FastAPI, Response
+from fastapi.responses import FileResponse, JSONResponse
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from askwell.audit import Store, record
+from askwell.config import Settings
+from askwell.db.engine import session_scope
+from askwell.logging import get_logger
+
+log = get_logger(__name__)
+
+DOCUMENT_OPENED = "document_opened"
+
+
+async def _find(session: AsyncSession, document_id: uuid.UUID) -> dict[str, object] | None:
+    result = await session.execute(
+        text(
+            "SELECT id, filename, path, mime, page_count, anchor_kind, status "
+            "FROM documents WHERE id = :id AND deleted_at IS NULL"
+        ),
+        {"id": document_id},
+    )
+    row = result.mappings().first()
+    return dict(row) if row is not None else None
+
+
+def register_documents(
+    app: FastAPI, _settings: Settings, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """Attach the document-viewing surface. Register before the interface catch-all."""
+
+    @app.get("/documents/{document_id}")
+    async def document_metadata(document_id: uuid.UUID) -> JSONResponse:
+        async with factory() as db:
+            found = await _find(db, document_id)
+        if found is None:
+            return JSONResponse({"error": "No such document."}, status_code=404)
+
+        available = await asyncio.to_thread(Path(str(found["path"])).is_file)
+
+        async with session_scope(factory) as db:
+            # Interaction-adjacent, not a decision: opening a source is
+            # something that happened, never something Askwell chose
+            # (`AGENTS.md`'s own line for this ticket). `request.headers` is
+            # never read into the payload — only what document was opened.
+            await record(
+                db,
+                Store.INTERACTIONS,
+                DOCUMENT_OPENED,
+                {"document_id": str(document_id), "filename": found["filename"]},
+            )
+
+        return JSONResponse(
+            {
+                "id": str(found["id"]),
+                "filename": found["filename"],
+                "mime": found["mime"],
+                "page_count": found["page_count"],
+                "anchor_kind": found["anchor_kind"],
+                "status": found["status"],
+                "available": available,
+            }
+        )
+
+    @app.get("/documents/{document_id}/file", response_model=None)
+    async def document_file(document_id: uuid.UUID) -> Response:
+        async with factory() as db:
+            found = await _find(db, document_id)
+        if found is None:
+            return JSONResponse({"error": "No such document."}, status_code=404)
+
+        path = Path(str(found["path"]))
+        if not await asyncio.to_thread(path.is_file):
+            # The moved/deleted distinction is `M1-VIEW-BE-049`'s job. This
+            # is the honest fallback until that ticket lands: not a crash,
+            # not a silent empty body.
+            return JSONResponse(
+                {"error": f"{found['filename']} is no longer at its recorded path."},
+                status_code=404,
+            )
+
+        return FileResponse(
+            path,
+            media_type=str(found["mime"]) if found["mime"] else "application/octet-stream",
+            filename=str(found["filename"]),
+            content_disposition_type="inline",
+        )
+
+    @app.get("/documents/{document_id}/pages/{page_number}")
+    async def document_page(document_id: uuid.UUID, page_number: int) -> JSONResponse:
+        """One page's own extracted text.
+
+        Used for the unrenderable-PDF fallback (extracted text plus a note,
+        per the ticket's own edge case) — not for search, which reads the
+        rendered PDF's own text layer client-side.
+        """
+        async with factory() as db:
+            result = await db.execute(
+                text(
+                    "SELECT text, has_text FROM document_pages "
+                    "WHERE document_id = :id AND page_number = :page"
+                ),
+                {"id": document_id, "page": page_number},
+            )
+            row = result.first()
+        if row is None:
+            return JSONResponse({"error": "No such page."}, status_code=404)
+        return JSONResponse({"text": row[0], "has_text": row[1]})

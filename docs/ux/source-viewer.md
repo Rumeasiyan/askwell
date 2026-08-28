@@ -4,7 +4,7 @@ Where a citation lands. The screen that makes "you can check this" true rather t
 
 > **This document is the specification. Any mockup is a reference.**
 
-**Route:** `/sources/:id?page=14&chunk=…`
+**Route:** `/documents/?id=<uuid>&page=14&span=…&passage=…` — a query string, not a dynamic path segment: `next.config.ts` builds this app as a static export, and a path segment would need every document id enumerated at build time. Decided and recorded in `../decisions.md`, 2026-08-28.
 **Entry points:** any citation card, any claim, the library.
 **Phase:** 1
 
