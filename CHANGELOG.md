@@ -4,6 +4,24 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.44 — 2026-08-28
+
+The local abstention rate, computed from stored values, never recomputed. `M2-ABSTAIN-OBS-056`.
+
+### Added
+
+- **`askwell.observability.abstention_rate`** counts the `abstained` flag `M2-ABSTAIN-RET-053` already writes to every `audit_interactions` row over the most recent `window` questions (default 500), and reports how many it actually covered — a very long history still returns a bounded query rather than scanning the whole log. `.rate` is `None`, not `0.0`, when nothing has been asked yet, the same `NULL`-not-`0` reasoning `source_count` already settled per turn.
+- No dashboard and nothing transmitted, both deliberately out of scope — the function is the whole surface, called on demand against the user's own log (C1).
+
+### Notes
+
+- Every candidate score, the threshold in force, and the near-miss were already stored per turn by `M2-ABSTAIN-RET-053`, not recomputed here — this ticket's own headline rule ("recomputation of a stored score is a defect") is enforced by `test_changing_the_threshold_later_never_alters_a_stored_turn` rather than by any new storage, since the storage already existed.
+
+### Verified
+
+- `scripts/dev.sh test` (497 passed, 1 skipped) and `scripts/dev.sh test-db` (238 passed, up from 231 — 7 new in `test_observability.py`) clean. `lint`, `typecheck`, `fmt-check` clean.
+- `podman compose exec api askwell-verify` — both chains intact after the new tests' writes.
+
 ## 0.2.43 — 2026-08-28
 
 Abstention renders as a deliberate state, not a blank answer. `M2-ABSTAIN-FE-055`.
