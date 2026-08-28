@@ -22,6 +22,7 @@ export interface AskStepData {
 
 export interface AskTokenData {
   message_id: string;
+  conversation_id: string;
   text: string;
 }
 
@@ -356,4 +357,19 @@ export async function isFirstAnswer(signal?: AbortSignal): Promise<boolean> {
     // answer and its citation are still there; only the callout is missed.
     return false;
   }
+}
+
+
+/**
+ * The conversation id the server used for this turn.
+ *
+ * The browser cannot know it: `POST /ask` resolves an existing conversation or
+ * creates one, and until issue 156 it never said which. Every event carries it, so
+ * the first event of a turn is enough — and the value has to be sent back on
+ * the next question or each one starts a conversation of its own, which is the
+ * whole feature the follow-up suggestions sit on top of.
+ */
+export function conversationOf(event: AskEvent): string | null {
+  const data = event.data as { conversation_id?: unknown };
+  return typeof data.conversation_id === "string" ? data.conversation_id : null;
 }

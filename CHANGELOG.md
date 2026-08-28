@@ -4,6 +4,15 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.39 — 2026-08-28
+
+A second question stays in the same conversation. `M1-ASK-API-038`, issue 156.
+
+### Fixed
+
+- **`POST /ask` returns the conversation it used.** It accepted an optional `conversation_id` and resolved or created one server-side, and never said which — so the screen had nothing to send back and every question opened a fresh conversation. Both ids are now on every event, and `_load_finished` returns it too, because a browser reconnecting to a finished turn has no other way to learn which conversation it is in.
+- **The ask screen sends it back.** `AskProvider` captures the id from the first event that carries it and puts it on every later question. Follow-up suggestions, conversation history and the whole `M1-CONV` surface were built on top of a thread that did not exist.
+
 ## 0.2.38 — 2026-08-28
 
 The first-run sequence: what this is, machine check, model, first question. `M1-LIB-FE-052`.

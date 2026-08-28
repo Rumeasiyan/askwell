@@ -15,6 +15,7 @@ import { test } from "node:test";
 
 import {
   applyAskEvent,
+  conversationOf,
   isFirstAnswer,
   type AskTurnState,
   CONVERSATION_PAGE_SIZE,
@@ -293,7 +294,7 @@ test("tokens arriving in one frame all survive", () => {
   // overwrote the first. The answer lost words with nothing saying so.
   let turn = turnState();
   for (const text of ["The ", "contract ", "may be ", "terminated."]) {
-    turn = { ...turn, ...applyAskEvent(turn, { event: "token", data: { message_id: "m1", text } }) };
+    turn = { ...turn, ...applyAskEvent(turn, { event: "token", data: { message_id: "m1", conversation_id: "conv1", text } }) };
   }
   assert.equal(turn.answer, "The contract may be terminated.");
 });
@@ -364,5 +365,39 @@ test("a counts endpoint that fails costs the note, never the answer", () => {
   return withFetch(
     () => new Response("nope", { status: 500 }),
     () => isFirstAnswer().then((first) => assert.equal(first, false)),
+  );
+});
+
+
+// --- staying in one conversation ---------------------------------------------
+
+test("the conversation id is read off whichever event arrives first", () => {
+  // The browser cannot know it: the server resolves an existing conversation or
+  // creates one. Every event carries it, so the first is enough.
+  assert.equal(
+    conversationOf({
+      event: "step",
+      data: { label: "Searching", kind: "retrieval", message_id: "m1", conversation_id: "c1" },
+    } as never),
+    "c1",
+  );
+  assert.equal(
+    conversationOf({
+      event: "token",
+      data: { message_id: "m1", conversation_id: "c1", text: "Yes." },
+    }),
+    "c1",
+  );
+});
+
+test("an event without one yields null rather than a broken id", () => {
+  // Older turns replayed from before this shipped, and anything malformed. A
+  // null starts a fresh conversation, which is the previous behaviour — wrong,
+  // but not as wrong as sending a conversation id that is the string
+  // "undefined".
+  assert.equal(conversationOf({ event: "token", data: { message_id: "m1" } } as never), null);
+  assert.equal(
+    conversationOf({ event: "token", data: { message_id: "m1", conversation_id: 7 } } as never),
+    null,
   );
 });

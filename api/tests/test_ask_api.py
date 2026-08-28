@@ -246,6 +246,13 @@ def test_a_question_streams_steps_then_tokens_then_a_citation_then_done(
 
         citation_events = [data for kind, data in events if kind == "citation"]
         message_id = uuid.UUID(citation_events[0]["message_id"])
+        # Read off the stream rather than hardcoded: the server resolves or
+        # creates it, which is the whole reason it has to be sent back (#156).
+        conversation_id = citation_events[0]["conversation_id"]
+        assert uuid.UUID(conversation_id)
+        assert all(data["conversation_id"] == conversation_id for _, data in events), (
+            "one turn is one conversation, on every event"
+        )
         assert citation_events == [
             {
                 "claim_ordinal": 1,
@@ -260,6 +267,9 @@ def test_a_question_streams_steps_then_tokens_then_a_citation_then_done(
                 "passage": "Notice is ninety days.",
                 "quoted_span": None,
                 "message_id": str(message_id),
+                # Every event carries it now — without it the browser cannot
+                # continue the conversation it is already in (#156).
+                "conversation_id": conversation_id,
             }
         ]
 
@@ -1020,7 +1030,9 @@ async def test_load_finished_reads_a_completed_turn_back_from_the_database(
         )
 
     loaded = await ask_module._load_finished(factory, message_id)
-    assert loaded == ("Ninety days.", "completed", None, None)
+    # The conversation id comes back with it: a browser reconnecting to a
+    # finished turn has no other way to learn which conversation it is in (#156).
+    assert loaded == ("Ninety days.", "completed", None, None, str(conversation_id))
 
     missing = await ask_module._load_finished(factory, uuid.uuid4())
     assert missing is None
