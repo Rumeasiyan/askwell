@@ -363,7 +363,7 @@ async def _park(
             {"reached": reached, "awaiting": awaiting.name, "id": work.document_id},
         )
         await session.execute(
-            text("UPDATE documents SET status = 'queued' WHERE id = :id"),
+            text("UPDATE documents SET status = 'queued' WHERE id = :id AND deleted_at IS NULL"),
             {"id": work.document_id},
         )
         await refresh_source(session, work.source_id, settings.ocr_confidence_threshold)
@@ -389,7 +389,7 @@ async def _finish(
             {"id": work.document_id},
         )
         await session.execute(
-            text("UPDATE documents SET status = 'ready' WHERE id = :id"),
+            text("UPDATE documents SET status = 'ready' WHERE id = :id AND deleted_at IS NULL"),
             {"id": work.document_id},
         )
         await refresh_source(session, work.source_id, settings.ocr_confidence_threshold)
@@ -442,7 +442,10 @@ async def _fail(
         )
         if not again:
             await session.execute(
-                text("UPDATE documents SET status = 'attention' WHERE id = :id"),
+                text(
+                    "UPDATE documents SET status = 'attention' "
+                    "WHERE id = :id AND deleted_at IS NULL"
+                ),
                 {"id": work.document_id},
             )
         await refresh_source(session, work.source_id, settings.ocr_confidence_threshold)
@@ -543,7 +546,10 @@ async def process(
         if reached is None:
             async with session_scope(factory) as session:
                 await session.execute(
-                    text("UPDATE documents SET status = 'indexing' WHERE id = :id"),
+                    text(
+                        "UPDATE documents SET status = 'indexing' "
+                        "WHERE id = :id AND deleted_at IS NULL"
+                    ),
                     {"id": document_id},
                 )
                 await refresh_source(session, work.source_id, settings.ocr_confidence_threshold)

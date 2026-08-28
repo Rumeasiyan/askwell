@@ -89,6 +89,8 @@ log = get_logger(__name__)
 SOURCE_ADDED = "source_added"
 DOCUMENT_ADDED = "document_added"
 DOCUMENT_SUPERSEDED = "document_superseded"
+DOCUMENT_DELETED = "document_deleted"
+SOURCE_DELETED = "source_deleted"
 
 # How much is read at a time while hashing. Large enough that a 400 MB scan is
 # not a million syscalls, small enough that the buffer is not a consideration on
@@ -125,6 +127,10 @@ class Outcome(StrEnum):
 
 class AddRefused(ValueError):
     """The whole request cannot proceed. The message is shown to the user."""
+
+
+class SourceNotFound(LookupError):
+    """No live source has this id."""
 
 
 class FileUnsettled(OSError):
@@ -790,6 +796,145 @@ async def _insert_document(
     return document_id
 
 
+# --- deletion ----------------------------------------------------------------
+# `M2-DELETE-BE-061`. Tombstone, not delete: `docs/decisions.md`, "Deletion
+# tombstones a document rather than removing its row". The row and its
+# chunks survive so an old citation still resolves to "deleted on <date>"
+# instead of breaking; only the content and the embedding are cleared, so
+# the chunk stops carrying anything retrieval or a citation viewer could
+# show. `deleted_at`/`deleted_reason` are the tombstone;
+# `superseded_by` is for versions and is never reused for this.
+
+
+async def _tombstone_document(
+    session: AsyncSession, document_id: uuid.UUID, reason: str | None
+) -> None:
+    """The state transition shared by deleting one document and deleting a
+    whole source: clear content and embedding in the same statement the
+    check constraint (`ck_chunks_cleared_content_has_no_embedding`) also
+    enforces, cancel any queued or running ingestion for it, and tombstone
+    the row. Never touches the user's file on disk — Askwell only ever read
+    it, and this clears what Askwell kept, not what they have.
+    """
+    await session.execute(
+        text(
+            "UPDATE documents SET deleted_at = now(), deleted_reason = :reason, "
+            "status = 'deleted' WHERE id = :id"
+        ),
+        {"id": document_id, "reason": reason},
+    )
+    await session.execute(
+        text("UPDATE chunks SET content = NULL, embedding = NULL WHERE document_id = :id"),
+        {"id": document_id},
+    )
+    # A queued job is simply gone — there is nothing left to index. A running
+    # one loses its row too: `ingest._claim`/`_finish` already re-check
+    # `deleted_at IS NULL` before writing a document back to `ready`, so a job
+    # mid-flight when this runs finds nothing to claim or nothing to finish
+    # against, rather than resurrecting a tombstoned document.
+    await session.execute(
+        text("DELETE FROM ingest_jobs WHERE document_id = :id"), {"id": document_id}
+    )
+
+
+async def delete_document(
+    session: AsyncSession,
+    document_id: uuid.UUID,
+    reason: str | None,
+    ocr_confidence_threshold: float,
+) -> bool:
+    """Delete one document. Returns `False` if it was already gone or never
+    existed — deleting twice is not an error, it is nothing happening twice.
+    """
+    found = await session.execute(
+        text("SELECT source_id FROM documents WHERE id = :id AND deleted_at IS NULL"),
+        {"id": document_id},
+    )
+    row = found.first()
+    if row is None:
+        return False
+    source_id: uuid.UUID = row[0]
+
+    await _tombstone_document(session, document_id, reason)
+    await record(
+        session,
+        Store.DECISIONS,
+        DOCUMENT_DELETED,
+        {"document_id": str(document_id), "source_id": str(source_id), "reason": reason},
+    )
+    log.info("document_deleted", document_id=str(document_id), reason=reason)
+
+    # Recomputes what the source can now be asked from. Guarded on the
+    # source's own status inside `refresh_source`, so deleting the last
+    # document of an already-deleted source is a no-op rather than reviving
+    # a tombstoned source's status column.
+    await ingest.refresh_source(session, source_id, ocr_confidence_threshold)
+    return True
+
+
+async def delete_source(session: AsyncSession, source_id: uuid.UUID) -> int:
+    """Delete a source: every live document under it is tombstoned the same
+    way a lone document is, its schema notes are removed outright, and
+    general memory is left untouched.
+
+    Schema notes are deleted rather than tombstoned — unlike a chunk, nothing
+    ever cites one directly, so there is no old citation that needs it to
+    survive. General memory is a different table (`memory`, not
+    `schema_notes`) and this function never touches it: an abbreviation
+    learned from this source is still true after the source is gone
+    (`docs/memory-and-clarification.md` §7).
+
+    Raises `SourceNotFound` for a source that is already deleted or never
+    existed, rather than returning a sentinel — the caller has one live
+    source it means, unlike `delete_document`, which is routinely re-called
+    on something already gone by a retried request.
+    """
+    found = await session.execute(
+        text("SELECT id FROM sources WHERE id = :id AND status <> 'deleted'"),
+        {"id": source_id},
+    )
+    if found.first() is None:
+        raise SourceNotFound(str(source_id))
+
+    live = await session.execute(
+        text("SELECT id FROM documents WHERE source_id = :id AND deleted_at IS NULL"),
+        {"id": source_id},
+    )
+    document_ids = [row[0] for row in live.all()]
+    for document_id in document_ids:
+        # Mid-import is exactly this case: some documents `ready`, some still
+        # `queued` with a job row. Each is tombstoned and its job cancelled in
+        # the same way, so nothing is left half-indexed once the source itself
+        # reads `deleted`.
+        await _tombstone_document(session, document_id, "source deleted")
+
+    notes = await session.execute(
+        text("DELETE FROM schema_notes WHERE source_id = :id RETURNING id"), {"id": source_id}
+    )
+    notes_removed = len(notes.all())
+
+    await session.execute(
+        text("UPDATE sources SET status = 'deleted' WHERE id = :id"), {"id": source_id}
+    )
+    await record(
+        session,
+        Store.DECISIONS,
+        SOURCE_DELETED,
+        {
+            "source_id": str(source_id),
+            "documents_deleted": len(document_ids),
+            "schema_notes_removed": notes_removed,
+        },
+    )
+    log.info(
+        "source_deleted",
+        source_id=str(source_id),
+        documents=len(document_ids),
+        schema_notes=notes_removed,
+    )
+    return len(document_ids)
+
+
 # --- the surface ------------------------------------------------------------
 
 
@@ -850,3 +995,30 @@ def register_sources(
         # reconcile wait.
         await ingest.dispatch(settings, outcome.document_ids)
         return JSONResponse({"documents": outcome.documents}, status_code=200)
+
+    @app.delete("/documents/{document_id}")
+    async def delete_document_route(
+        document_id: uuid.UUID, reason: str | None = None
+    ) -> JSONResponse:
+        async with session_scope(factory) as db:
+            deleted = await delete_document(
+                db, document_id, reason, settings.ocr_confidence_threshold
+            )
+        if not deleted:
+            return JSONResponse({"error": "No such document."}, status_code=404)
+        return JSONResponse({"deleted": True, "document_id": str(document_id), "reason": reason})
+
+    @app.delete("/sources/{source_id}")
+    async def delete_source_route(source_id: uuid.UUID) -> JSONResponse:
+        async with session_scope(factory) as db:
+            try:
+                documents_deleted = await delete_source(db, source_id)
+            except SourceNotFound:
+                return JSONResponse({"error": "No such source."}, status_code=404)
+        return JSONResponse(
+            {
+                "deleted": True,
+                "source_id": str(source_id),
+                "documents_deleted": documents_deleted,
+            }
+        )

@@ -27,11 +27,24 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from askwell.sources import DOCUMENT_ADDED, DOCUMENT_SUPERSEDED, SOURCE_ADDED, Outcome, add
+from askwell.sources import (
+    DOCUMENT_ADDED,
+    DOCUMENT_DELETED,
+    DOCUMENT_SUPERSEDED,
+    SOURCE_ADDED,
+    SOURCE_DELETED,
+    Outcome,
+    SourceNotFound,
+    add,
+    delete_document,
+    delete_source,
+)
 
 pytestmark = pytest.mark.requires_db
 
-TABLES = "roots, sources, documents, audit_decisions"
+TABLES = "roots, sources, documents, chunks, ingest_jobs, schema_notes, memory, audit_decisions"
+
+OCR_THRESHOLD = 0.60
 
 PDF = b"%PDF-1.7\nEither party may terminate on ninety days written notice.\n"
 OTHER = b"%PDF-1.7\nThe tenant shall pay rent monthly in advance.\n"
@@ -479,3 +492,262 @@ async def test_a_file_outside_every_nominated_root_is_refused_not_recorded(
     assert result.count(Outcome.REFUSED) == 1
     assert "nominate" in (result.files[0].reason or "").lower()
     assert len(await documents(session)) == 0
+
+
+# --- deletion: M2-DELETE-BE-061 ----------------------------------------------
+
+
+def _embedding_literal(dimensions: int = 1024) -> str:
+    return "[" + ",".join("0.1" for _ in range(dimensions)) + "]"
+
+
+async def _chunk_with_content(
+    session: AsyncSession, document_id: uuid.UUID, ordinal: int = 0
+) -> uuid.UUID:
+    result = await session.execute(
+        text(
+            "INSERT INTO chunks (document_id, ordinal, content, embedding) "
+            "VALUES (:document_id, :ordinal, 'ninety days written notice', :embedding) "
+            "RETURNING id"
+        ),
+        {"document_id": document_id, "ordinal": ordinal, "embedding": _embedding_literal()},
+    )
+    return result.scalar_one()
+
+
+async def test_deleting_a_document_clears_content_and_embedding_and_tombstones_the_row(
+    session: AsyncSession, tmp_path: Path
+) -> None:
+    folder = tmp_path / "clients"
+    written(folder, "contract.pdf", PDF)
+    await nominate(session, str(tmp_path))
+    result = await add(session, str(folder), ["contract.pdf"])
+    document_id = result.files[0].document_id
+    assert document_id is not None
+    chunk_id = await _chunk_with_content(session, document_id)
+
+    deleted = await delete_document(session, document_id, "client engagement ended", OCR_THRESHOLD)
+
+    assert deleted is True
+    row = (
+        await session.execute(
+            text("SELECT deleted_at, deleted_reason, status FROM documents WHERE id = :id"),
+            {"id": document_id},
+        )
+    ).first()
+    assert row is not None
+    assert row[0] is not None, "the tombstone date must be set"
+    assert row[1] == "client engagement ended"
+    assert row[2] == "deleted"
+
+    chunk = (
+        await session.execute(
+            text("SELECT content, embedding FROM chunks WHERE id = :id"), {"id": chunk_id}
+        )
+    ).first()
+    assert chunk is not None
+    assert chunk[0] is None, "content must be cleared so it stops influencing retrieval"
+    assert chunk[1] is None, "embedding must be cleared alongside it"
+
+    # The row itself survives, unlike the content — a citation must still
+    # resolve to something, even a tombstoned one.
+    assert len(await documents(session)) == 1
+
+
+async def test_deleting_a_document_does_not_touch_the_file_on_disk(
+    session: AsyncSession, tmp_path: Path
+) -> None:
+    folder = tmp_path / "clients"
+    filename = written(folder, "contract.pdf", PDF)
+    await nominate(session, str(tmp_path))
+    result = await add(session, str(folder), [filename])
+    document_id = result.files[0].document_id
+    assert document_id is not None
+
+    await delete_document(session, document_id, "no longer a client", OCR_THRESHOLD)
+
+    assert (folder / filename).read_bytes() == PDF
+
+
+async def test_deleting_a_document_cancels_its_pending_ingestion_job(
+    session: AsyncSession, tmp_path: Path
+) -> None:
+    """`add` already enqueues a job in the same transaction as the row — the
+    ordinary queued state of a just-added document, not something this test
+    has to construct."""
+    folder = tmp_path / "clients"
+    written(folder, "contract.pdf", PDF)
+    await nominate(session, str(tmp_path))
+    result = await add(session, str(folder), ["contract.pdf"])
+    document_id = result.files[0].document_id
+    assert document_id is not None
+    queued_before = (
+        await session.execute(
+            text("SELECT count(*) FROM ingest_jobs WHERE document_id = :id"),
+            {"id": document_id},
+        )
+    ).scalar_one()
+    assert queued_before == 1, "the add path is expected to enqueue a job"
+
+    await delete_document(session, document_id, "removed mid-import", OCR_THRESHOLD)
+
+    remaining = (
+        await session.execute(
+            text("SELECT count(*) FROM ingest_jobs WHERE document_id = :id"),
+            {"id": document_id},
+        )
+    ).scalar_one()
+    assert remaining == 0
+
+
+async def test_deleting_an_already_deleted_document_is_not_an_error(
+    session: AsyncSession, tmp_path: Path
+) -> None:
+    folder = tmp_path / "clients"
+    written(folder, "contract.pdf", PDF)
+    await nominate(session, str(tmp_path))
+    result = await add(session, str(folder), ["contract.pdf"])
+    document_id = result.files[0].document_id
+    assert document_id is not None
+    await delete_document(session, document_id, "first delete", OCR_THRESHOLD)
+
+    second = await delete_document(session, document_id, "second delete", OCR_THRESHOLD)
+
+    assert second is False
+
+
+async def test_deleting_an_unknown_document_returns_false(session: AsyncSession) -> None:
+    assert await delete_document(session, uuid.uuid4(), None, OCR_THRESHOLD) is False
+
+
+async def test_deleting_a_document_is_a_decisions_record_naming_the_reason(
+    session: AsyncSession, tmp_path: Path
+) -> None:
+    folder = tmp_path / "clients"
+    written(folder, "contract.pdf", PDF)
+    await nominate(session, str(tmp_path))
+    result = await add(session, str(folder), ["contract.pdf"])
+    document_id = result.files[0].document_id
+    assert document_id is not None
+
+    await delete_document(session, document_id, "client engagement ended", OCR_THRESHOLD)
+
+    entries = await decisions(session, DOCUMENT_DELETED)
+    assert len(entries) == 1
+    assert entries[0]["document_id"] == str(document_id)
+    assert entries[0]["reason"] == "client engagement ended"
+
+
+async def test_deleting_a_source_tombstones_every_live_document_under_it(
+    session: AsyncSession, tmp_path: Path
+) -> None:
+    folder = tmp_path / "clients"
+    written(folder, "one.pdf", PDF)
+    written(folder, "two.pdf", OTHER)
+    await nominate(session, str(tmp_path))
+    result = await add(session, str(folder), ["one.pdf", "two.pdf"])
+    assert result.source_id is not None
+
+    deleted_count = await delete_source(session, result.source_id)
+
+    assert deleted_count == 2
+    rows = await documents(session)
+    assert len(rows) == 2
+    for row in rows:
+        assert row.deleted_at is not None
+    source_status = (
+        await session.execute(
+            text("SELECT status FROM sources WHERE id = :id"), {"id": result.source_id}
+        )
+    ).scalar_one()
+    assert source_status == "deleted"
+
+
+async def test_deleting_a_source_mid_import_leaves_nothing_half_indexed(
+    session: AsyncSession, tmp_path: Path
+) -> None:
+    """A queued job for one of its documents is cancelled along with the
+    tombstone, rather than being left to index a source that no longer
+    exists."""
+    folder = tmp_path / "clients"
+    written(folder, "one.pdf", PDF)
+    written(folder, "two.pdf", OTHER)
+    await nominate(session, str(tmp_path))
+    result = await add(session, str(folder), ["one.pdf", "two.pdf"])
+    assert result.source_id is not None
+    assert len(result.queued) == 2, "both documents are expected to be enqueued by add"
+
+    await delete_source(session, result.source_id)
+
+    remaining = (await session.execute(text("SELECT count(*) FROM ingest_jobs"))).scalar_one()
+    assert remaining == 0
+
+
+async def test_deleting_a_source_removes_its_schema_notes_but_not_general_memory(
+    session: AsyncSession, tmp_path: Path
+) -> None:
+    folder = tmp_path / "clients"
+    written(folder, "one.pdf", PDF)
+    await nominate(session, str(tmp_path))
+    result = await add(session, str(folder), ["one.pdf"])
+    assert result.source_id is not None
+    await session.execute(
+        text(
+            "INSERT INTO schema_notes (source_id, table_name, description, origin) "
+            "VALUES (:source_id, 'invoices', 'One row per invoice.', 'inferred')"
+        ),
+        {"source_id": result.source_id},
+    )
+    await session.execute(
+        text(
+            "INSERT INTO memory (subject, fact, origin) "
+            "VALUES ('client', 'CDA stands for confidential disclosure agreement', 'manual')"
+        )
+    )
+
+    await delete_source(session, result.source_id)
+
+    notes = (
+        await session.execute(
+            text("SELECT count(*) FROM schema_notes WHERE source_id = :id"),
+            {"id": result.source_id},
+        )
+    ).scalar_one()
+    assert notes == 0
+    memory_count = (await session.execute(text("SELECT count(*) FROM memory"))).scalar_one()
+    assert memory_count == 1
+
+
+async def test_deleting_an_unknown_source_raises(session: AsyncSession) -> None:
+    with pytest.raises(SourceNotFound):
+        await delete_source(session, uuid.uuid4())
+
+
+async def test_deleting_a_source_twice_raises(session: AsyncSession, tmp_path: Path) -> None:
+    folder = tmp_path / "clients"
+    written(folder, "one.pdf", PDF)
+    await nominate(session, str(tmp_path))
+    result = await add(session, str(folder), ["one.pdf"])
+    assert result.source_id is not None
+    await delete_source(session, result.source_id)
+
+    with pytest.raises(SourceNotFound):
+        await delete_source(session, result.source_id)
+
+
+async def test_deleting_a_source_is_a_decisions_record(
+    session: AsyncSession, tmp_path: Path
+) -> None:
+    folder = tmp_path / "clients"
+    written(folder, "one.pdf", PDF)
+    written(folder, "two.pdf", OTHER)
+    await nominate(session, str(tmp_path))
+    result = await add(session, str(folder), ["one.pdf", "two.pdf"])
+    assert result.source_id is not None
+
+    await delete_source(session, result.source_id)
+
+    entries = await decisions(session, SOURCE_DELETED)
+    assert len(entries) == 1
+    assert entries[0]["source_id"] == str(result.source_id)
+    assert entries[0]["documents_deleted"] == 2
