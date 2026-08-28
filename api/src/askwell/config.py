@@ -156,6 +156,11 @@ class Settings(BaseSettings):
     # twice for the same passages. `M1-ASK-RET-036`.
     rerank_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
 
+    # The ceiling on one answer's own length. Streamed, never truncated
+    # silently — `docs/ux/ask.md` §5's "very long answer" state requires that
+    # reaching this be stated, not just that generation stop. `M1-ASK-API-038`.
+    generation_max_tokens: int = Field(default=1024, ge=1, le=8192)
+
     # How many chunks go into one call to the embedding model. Bounded for the
     # same reason `ingest_concurrency` is: a batch sized to the whole document
     # is a batch sized to whatever the largest document turns out to be, and a

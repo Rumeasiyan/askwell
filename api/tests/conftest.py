@@ -16,8 +16,11 @@ letting it read the ambient environment. A test that passes because the
 developer happens to have `ASKWELL_DATABASE_URL` exported is not a test.
 """
 
+import asyncio
 from collections.abc import Iterator
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -60,3 +63,92 @@ def settings() -> Settings:
         egress_proxy_port=1,
         health_probe_timeout_seconds=0.5,
     )
+
+
+@dataclass(slots=True)
+class DrivenRequest:
+    """What an ASGI app sent, for a request driven directly rather than
+    through Starlette's `TestClient`.
+
+    `TestClient`'s transport collects a response body before returning it
+    (issue #110), which makes a stream that ends only when the browser
+    disconnects untestable through it — the disconnect can never be sent
+    before the collection that is waiting for the stream to end. Speaking
+    ASGI directly is what makes both halves of that observable: that a chunk
+    is *sent* before the response finishes, and that `http.disconnect`
+    reaches whatever is on the other end of the connection. First used by
+    `test_ingest_api.py`; `M1-ASK-API-038` is the second caller the module
+    docstring for that test predicted, so the pattern moved here.
+    """
+
+    messages: list[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def start(self) -> dict[str, Any]:
+        return self.messages[0]
+
+    @property
+    def body(self) -> str:
+        return b"".join(
+            message.get("body", b"")
+            for message in self.messages
+            if message["type"] == "http.response.body"
+        ).decode()
+
+
+async def drive_and_disconnect(
+    app: Any, *, method: str, path: str, cookies: str, body: bytes = b""
+) -> DrivenRequest:
+    """Drive one request against an ASGI app, disconnecting the instant the
+    first chunk of the response arrives.
+
+    For a request body, `receive` hands it over on the first call and
+    `http.disconnect` on every one after — a real client never asks again
+    once it has sent its request, so neither does this one.
+    """
+    hung_up = asyncio.Event()
+    first_chunk = asyncio.Event()
+    sent_body = False
+    messages: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        nonlocal sent_body
+        if not sent_body:
+            sent_body = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        await hung_up.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+        if message["type"] == "http.response.body" and message.get("body"):
+            first_chunk.set()
+
+    headers = [(b"host", b"askwell"), (b"cookie", cookies.encode())]
+    if body:
+        headers.append((b"content-type", b"application/json"))
+        headers.append((b"content-length", str(len(body)).encode()))
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": method,
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": headers,
+        "client": ("127.0.0.1", 50000),
+        "server": ("127.0.0.1", 8000),
+    }
+
+    async def drive() -> None:
+        task = asyncio.create_task(app(scope, receive, send))
+        await first_chunk.wait()
+        hung_up.set()
+        await task
+
+    await asyncio.wait_for(drive(), timeout=10)
+    return DrivenRequest(messages=messages)

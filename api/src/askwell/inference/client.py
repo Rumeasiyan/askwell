@@ -14,6 +14,8 @@ deployment profile (`docs/architecture.md` §6); a name written into code is a
 name that cannot change without a release.
 """
 
+import json
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import Any
 
@@ -51,6 +53,24 @@ class InferenceFailed(RuntimeError):
 class Completion:
     text: str
     tokens: int
+
+
+@dataclass(frozen=True, slots=True)
+class StreamChunk:
+    """One piece of a streamed completion.
+
+    `done` marks the final chunk llama.cpp sends for a generation — its own
+    `content`, if any, is delivered like every other chunk before it, so a
+    caller that only appends `text` never has to special-case the last one.
+    `truncated` is only meaningful on that final chunk: llama.cpp's own signal
+    that generation stopped because `n_predict` was reached, not because the
+    model chose to stop, which is the fact `docs/ux/ask.md` §5's "if a limit is
+    reached it is stated" needs and cannot recover once the stream is gone.
+    """
+
+    text: str
+    done: bool
+    truncated: bool = False
 
 
 class InferenceClient:
@@ -146,6 +166,80 @@ class InferenceClient:
             raise InferenceFailed("The assistant's answer had no text in it.")
         tokens = body.get("tokens_predicted")
         return Completion(text=text, tokens=int(tokens) if isinstance(tokens, int) else 0)
+
+    async def stream_generate(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 512,
+        temperature: float = 0.2,
+        timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    ) -> AsyncGenerator[StreamChunk, None]:
+        """Generation, one piece at a time, as llama.cpp produces it.
+
+        A caller reading this loop is what lets tokens reach the browser at
+        the pace they were actually generated (`M1-ASK-API-038`) instead of
+        the whole answer arriving at once behind `generate`'s single request.
+
+        Raises exactly the two exceptions every other method here raises, at
+        whichever point the failure happens — before the first byte, which
+        looks identical to a non-streaming call, or after tokens have already
+        been yielded, which is the "the inference process dies mid-stream"
+        case: whatever text the caller already has stays its problem to keep,
+        not this method's to somehow un-send.
+        """
+        self._require_available()
+        try:
+            async with (
+                self._client(timeout_seconds) as client,
+                client.stream(
+                    "POST",
+                    "/completion",
+                    json={
+                        "prompt": prompt,
+                        "n_predict": max_tokens,
+                        "temperature": temperature,
+                        "cache_prompt": True,
+                        "stream": True,
+                    },
+                ) as response,
+            ):
+                if response.status_code >= 400:
+                    detail = (await response.aread())[:300]
+                    raise InferenceFailed(
+                        f"The assistant refused the request ({response.status_code}): {detail!r}"
+                    )
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    raw = line[len("data:") :].strip()
+                    if not raw:
+                        continue
+                    try:
+                        chunk = json.loads(raw)
+                    except ValueError as error:
+                        raise InferenceFailed(
+                            "The assistant streamed something that is not JSON."
+                        ) from error
+                    piece = chunk.get("content")
+                    stopping = bool(chunk.get("stop"))
+                    yield StreamChunk(
+                        text=piece if isinstance(piece, str) else "",
+                        done=stopping,
+                        truncated=bool(chunk.get("truncated")) if stopping else False,
+                    )
+                    if stopping:
+                        return
+        except httpx.TimeoutException as error:
+            raise InferenceFailed(
+                f"The assistant did not answer within {timeout_seconds:g}s. On a light "
+                f"profile this can mean the question was long rather than that "
+                f"anything is wrong."
+            ) from error
+        except httpx.HTTPError as error:
+            raise InferenceUnavailable(
+                f"The assistant stopped answering: {type(error).__name__}."
+            ) from error
 
     # --- embedding ----------------------------------------------------------
 

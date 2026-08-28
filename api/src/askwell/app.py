@@ -13,6 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from askwell import __version__
+from askwell.ask import register_ask
 from askwell.assistant import read as read_assistant
 from askwell.config import ConfigurationError, Environment, Settings, load_settings
 from askwell.db.engine import build_engine, session_factory
@@ -86,6 +87,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_roots(app, app.state.sessions)
     register_sources(app, resolved, app.state.sessions)
     register_ingest(app, resolved, app.state.sessions)
+    register_ask(app, resolved, app.state.sessions)
 
     @app.get("/health")
     async def health(request: Request) -> JSONResponse:
