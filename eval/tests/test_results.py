@@ -1,8 +1,16 @@
+import inspect
 import json
 from datetime import datetime
 from pathlib import Path
 
-from eval.results import RunResult, SuiteRunReport, TaskResult, format_summary, write_report
+from eval.results import (
+    RunResult,
+    SuiteRunReport,
+    TaskResult,
+    format_mean_worst,
+    format_summary,
+    write_report,
+)
 
 
 def _report(*, pass_bar: float = 0.85, strict: bool = False) -> SuiteRunReport:
@@ -68,3 +76,25 @@ def test_format_summary_shows_pass_fail_for_strict_suite() -> None:
     text = format_summary(_report(strict=True, pass_bar=1.0))
     assert "FAIL" in text
     assert "strict" in text
+
+
+def test_format_summary_never_prints_a_mean_without_its_worst_case() -> None:
+    """`M2-EVAL-TEST-066`'s reporting-discipline requirement, checked the
+    only way it can be from outside: every summary line naming a mean also
+    names a worst-of-3, for the category line and every per-task line."""
+    text = format_summary(_report(strict=False))
+    lines_with_mean = [line for line in text.splitlines() if "mean" in line]
+    assert lines_with_mean
+    assert all("worst-of-3" in line for line in lines_with_mean)
+
+
+def test_format_mean_worst_pairs_mean_and_worst_in_one_string() -> None:
+    assert format_mean_worst(0.9, 0.55) == "mean: 0.90  worst-of-3: 0.55"
+
+
+def test_format_mean_worst_has_no_way_to_omit_worst_case() -> None:
+    """The harness has no code path that can print a mean-only summary: the
+    only rendering function has two required positional parameters, with no
+    default that would let a caller supply one and skip the other."""
+    parameters = inspect.signature(format_mean_worst).parameters
+    assert all(parameter.default is inspect.Parameter.empty for parameter in parameters.values())

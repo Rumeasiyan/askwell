@@ -136,3 +136,66 @@ def test_resolve_grounded_qa_suite_has_forty_tasks() -> None:
     for task in suite.tasks:
         assert task.expected_documents
         assert task.expected_passages
+
+
+def test_conflict_mode_reads_conflict_fields(tmp_path: Path) -> None:
+    payload = _valid_payload()
+    payload["mode"] = "conflict"
+    payload["tasks"] = [
+        {
+            "id": "a",
+            "prompt": "hi",
+            "scorer": "conflict",
+            "expected": None,
+            "expected_documents": ["a.pdf", "b.pdf"],
+            "position_values": ["thirty days", "forty-five days"],
+            "expect_conflict": True,
+        }
+    ]
+    suite = load_suite(_write(tmp_path, payload))
+    assert suite.mode == "conflict"
+    assert suite.tasks[0].expected_documents == ("a.pdf", "b.pdf")
+    assert suite.tasks[0].position_values == ("thirty days", "forty-five days")
+    assert suite.tasks[0].expect_conflict is True
+
+
+def test_conflict_mode_defaults_expect_conflict_to_true(tmp_path: Path) -> None:
+    payload = _valid_payload()
+    payload["mode"] = "conflict"
+    payload["tasks"] = [
+        {
+            "id": "a",
+            "prompt": "hi",
+            "scorer": "conflict",
+            "expected": None,
+            "expected_documents": ["a.pdf"],
+            "position_values": ["thirty days"],
+        }
+    ]
+    suite = load_suite(_write(tmp_path, payload))
+    assert suite.tasks[0].expect_conflict is True
+
+
+def test_conflict_mode_requires_conflict_fields(tmp_path: Path) -> None:
+    payload = _valid_payload()
+    payload["mode"] = "conflict"
+    with pytest.raises(SuiteError, match="position_values"):
+        load_suite(_write(tmp_path, payload))
+
+
+def test_resolve_conflicting_sources_suite_has_ten_tasks() -> None:
+    suite = load_suite(resolve_suite_path("conflicting_sources.v1"))
+    assert suite.mode == "conflict"
+    assert suite.category == "conflicting-sources"
+    assert suite.pass_bar == 0.75
+    assert len(suite.tasks) == 10
+    for task in suite.tasks:
+        assert task.expected_documents
+        assert task.position_values
+    genuine = [task for task in suite.tasks if task.expect_conflict]
+    not_genuine = [task for task in suite.tasks if not task.expect_conflict]
+    assert len(genuine) == 8
+    assert len(not_genuine) == 2
+    for task in genuine:
+        assert len(task.position_values) == 2
+        assert len(task.expected_documents) == 2

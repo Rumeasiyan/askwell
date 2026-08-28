@@ -34,6 +34,19 @@ class Task:
     """`mode: "grounded"` only: substrings (case-insensitive) of which at
     least one must appear in the cited chunk's content. Several entries
     exist for the same "two places" edge case as `expected_documents`."""
+    expect_conflict: bool = True
+    """`mode: "conflict"` only: `true` for a genuine two-position task —
+    scored on presenting and citing both `expected_documents`. `false` for
+    the false-conflict-on-wording and superseded-document edge cases
+    (`M2-EVAL-TEST-066`), where a single, non-conflict answer is correct and
+    presenting one anyway is the over-detection failure this field exists
+    to catch."""
+    position_values: tuple[str, ...] = ()
+    """`mode: "conflict"` only: substrings (case-insensitive) the composed
+    answer must contain. For a genuine conflict, both positions' values —
+    the "no silent preference" check, since a silently preferred source
+    would only surface one. For a false conflict or a superseded pair, the
+    single correct value."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,7 +68,11 @@ class Suite:
     path against the fixture corpus, needed once a suite's tasks carry
     `expected_documents`/`expected_passages` (`M2-EVAL-TEST-064`). `"abstain"`
     runs `eval.abstain` — the same real `askwell.ask` path, scored on whether
-    the turn abstained and named what it searched (`M2-EVAL-TEST-065`)."""
+    the turn abstained and named what it searched (`M2-EVAL-TEST-065`).
+    `"conflict"` runs `eval.conflict` — the same real path again, scored on
+    whether a genuine conflict between two live documents is presented as
+    both positions, cited, with neither silently preferred
+    (`M2-EVAL-TEST-066`)."""
 
     @property
     def strict(self) -> bool:
@@ -95,9 +112,9 @@ def load_suite(path: Path) -> Suite:
         raise SuiteError(f"{path} pass_bar must be in [0, 1], got {pass_bar!r}")
 
     mode = str(raw.get("mode", "completion"))
-    if mode not in ("completion", "grounded", "abstain"):
+    if mode not in ("completion", "grounded", "abstain", "conflict"):
         raise SuiteError(
-            f"{path}: unknown mode {mode!r}. Available: completion, grounded, abstain"
+            f"{path}: unknown mode {mode!r}. Available: completion, grounded, abstain, conflict"
         )
     if mode == "grounded":
         for task in tasks:
@@ -105,6 +122,13 @@ def load_suite(path: Path) -> Suite:
                 raise SuiteError(
                     f"{path}: task {task.id!r} is in a 'grounded' suite but is missing "
                     "'expected_documents' and/or 'expected_passages'"
+                )
+    if mode == "conflict":
+        for task in tasks:
+            if not task.expected_documents or not task.position_values:
+                raise SuiteError(
+                    f"{path}: task {task.id!r} is in a 'conflict' suite but is missing "
+                    "'expected_documents' and/or 'position_values'"
                 )
 
     return Suite(
@@ -128,6 +152,8 @@ def _load_task(path: Path, entry: Any) -> Task:
         timeout_seconds=float(entry.get("timeout_seconds", _DEFAULT_TIMEOUT_SECONDS)),
         expected_documents=tuple(entry.get("expected_documents", ())),
         expected_passages=tuple(entry.get("expected_passages", ())),
+        expect_conflict=bool(entry.get("expect_conflict", True)),
+        position_values=tuple(entry.get("position_values", ())),
     )
 
 

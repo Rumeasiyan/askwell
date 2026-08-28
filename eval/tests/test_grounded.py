@@ -107,7 +107,10 @@ def test_fixture_corpus_is_committed_and_reproducible() -> None:
 
 def test_fixture_corpus_covers_the_ticket_scope() -> None:
     """Digital PDFs, a scan, an Office document and a table — the ticket's
-    own scope list, `M2-EVAL-TEST-064`."""
+    own scope list, `M2-EVAL-TEST-064`. `conflict_*.pdf`/`store_hours_*.pdf`
+    are `M2-EVAL-TEST-066`'s own additions, seeded through this same
+    corpus (`eval.conflict.seed_corpus` reuses this module's `seed_corpus`
+    unchanged)."""
     names = {p.name for p in Path(FIXTURES_DIR).iterdir()}
     assert names == {
         "handbook_a.pdf",
@@ -115,6 +118,10 @@ def test_fixture_corpus_covers_the_ticket_scope() -> None:
         "notice_scan.pdf",
         "spec.docx",
         "figures.xlsx",
+        "conflict_2025.pdf",
+        "conflict_2026.pdf",
+        "store_hours_2025.pdf",
+        "store_hours_2026.pdf",
     }
     assert len(HANDBOOK_A_PAGES) == 8
     assert len(HANDBOOK_B_PAGES) == 8

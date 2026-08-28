@@ -172,6 +172,63 @@ FIGURES_ROWS = [
     ("Design", 76000, 12, 3.3),
 ]
 
+# --- conflicting-source pairs, `eval/suites/conflicting_sources.v1.json` ----
+#
+# `CONFLICT_2025_PAGES`/`CONFLICT_2026_PAGES` are two documents that both
+# stay live (neither supersedes the other), dated in their own text, each
+# restating the same fact as the other with a genuinely different value —
+# real conflicts the answer must present as both positions, never one. The
+# "gift card" pair is the deliberate exception: same value, different
+# wording, the ticket's own false-conflict-on-wording edge case. The
+# `STORE_HOURS` pair is a *separate* two-document case where the eval
+# harness itself marks the 2025 page superseded by the 2026 one
+# (`eval/conflict.py`'s `_ensure_superseded`) — retrieval then never sees
+# both at once, so it is not a conflict task's job to detect anything there.
+
+CONFLICT_2025_PAGES = [
+    "As of March 2025, Meridian Loom's standard product return window is "
+    "thirty days.",
+    "As of March 2025, the express shipping fee at Meridian Loom is twelve "
+    "dollars per order.",
+    "As of March 2025, Meridian Loom's loyalty program awards one point per "
+    "ten dollars spent.",
+    "As of March 2025, the maximum trade-in credit for a Loomwear Sensor is "
+    "fifty dollars.",
+    "As of March 2025, a Meridian Loom gift card balance never expires.",
+    "As of March 2025, a Meridian Loom customer support ticket must receive "
+    "a first response within twenty-four hours.",
+    "As of March 2025, Meridian Loom's affiliate commission rate is eight "
+    "percent.",
+    "As of March 2025, Meridian Loom warehouses restock inventory every "
+    "Tuesday.",
+    "As of March 2025, a Meridian Loom extended warranty costs thirty "
+    "dollars annually.",
+]
+
+CONFLICT_2026_PAGES = [
+    "As of January 2026, Meridian Loom's standard product return window is "
+    "forty-five days.",
+    "As of January 2026, the express shipping fee at Meridian Loom is "
+    "eighteen dollars per order.",
+    "As of January 2026, Meridian Loom's loyalty program awards one point "
+    "per eight dollars spent.",
+    "As of January 2026, the maximum trade-in credit for a Loomwear Sensor "
+    "is seventy-five dollars.",
+    "As of January 2026, gift cards issued by Meridian Loom never expire, "
+    "matching the policy stated the previous year.",
+    "As of January 2026, a Meridian Loom customer support ticket must "
+    "receive a first response within twelve hours.",
+    "As of January 2026, Meridian Loom's affiliate commission rate is "
+    "eleven percent.",
+    "As of January 2026, Meridian Loom warehouses restock inventory every "
+    "Thursday.",
+    "As of January 2026, a Meridian Loom extended warranty costs "
+    "forty-five dollars annually.",
+]
+
+STORE_HOURS_2025_LINE = "Meridian Loom retail stores close at 8 PM on weekdays."
+STORE_HOURS_2026_LINE = "Meridian Loom retail stores close at 9 PM on weekdays."
+
 
 def build_handbook_a() -> bytes:
     return _pdf(*HANDBOOK_A_PAGES)
@@ -196,6 +253,22 @@ def build_spec_docx() -> bytes:
     return buffer.getvalue()
 
 
+def build_conflict_2025() -> bytes:
+    return _pdf(*CONFLICT_2025_PAGES)
+
+
+def build_conflict_2026() -> bytes:
+    return _pdf(*CONFLICT_2026_PAGES)
+
+
+def build_store_hours_2025() -> bytes:
+    return _pdf(STORE_HOURS_2025_LINE)
+
+
+def build_store_hours_2026() -> bytes:
+    return _pdf(STORE_HOURS_2026_LINE)
+
+
 def build_figures_xlsx() -> bytes:
     workbook = openpyxl.Workbook()
     sheet = workbook.active
@@ -216,6 +289,10 @@ def main() -> None:
         "notice_scan.pdf": build_notice_scan(),
         "spec.docx": build_spec_docx(),
         "figures.xlsx": build_figures_xlsx(),
+        "conflict_2025.pdf": build_conflict_2025(),
+        "conflict_2026.pdf": build_conflict_2026(),
+        "store_hours_2025.pdf": build_store_hours_2025(),
+        "store_hours_2026.pdf": build_store_hours_2026(),
     }
     for name, data in files.items():
         (OUT_DIR / name).write_bytes(data)

@@ -116,6 +116,20 @@ def write_report(report: SuiteRunReport, results_dir: Path) -> Path:
     return out_path
 
 
+def format_mean_worst(mean: float, worst: float) -> str:
+    """The only place this module renders a mean — always paired with its
+    worst case, by construction.
+
+    Both parameters are required with no default, so a caller cannot render
+    a mean without a worst case by omission the way an optional argument
+    would allow (`M2-EVAL-TEST-066`'s reporting-discipline requirement:
+    "the harness must not emit a mean without a worst case"). `format_summary`
+    and every per-task line route through this rather than building their
+    own `f"mean: ..."` string.
+    """
+    return f"mean: {mean:.2f}  worst-of-3: {worst:.2f}"
+
+
 def format_summary(report: SuiteRunReport) -> str:
     lines = [
         f"suite: {report.suite_name} ({report.category})",
@@ -128,12 +142,12 @@ def format_summary(report: SuiteRunReport) -> str:
     else:
         lines.append(
             f"pass_bar: {report.pass_bar:.2f}  "
-            f"mean: {report.category_mean:.2f}  worst-of-3: {report.category_worst:.2f}"
+            f"{format_mean_worst(report.category_mean, report.category_worst)}"
         )
     for task in report.task_results:
         errors = [run.error for run in task.runs if run.error]
         error_note = f"  errors: {errors}" if errors else ""
-        lines.append(f"  {task.task_id}: mean={task.mean:.2f} worst={task.worst:.2f}{error_note}")
+        lines.append(f"  {task.task_id}: {format_mean_worst(task.mean, task.worst)}{error_note}")
     return "\n".join(lines)
 
 
@@ -149,6 +163,7 @@ __all__ = [
     "RunResult",
     "SuiteRunReport",
     "TaskResult",
+    "format_mean_worst",
     "format_summary",
     "now",
     "suite_default_results_dir",
