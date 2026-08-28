@@ -241,7 +241,107 @@ def test_a_page_s_extracted_text_is_readable(
         response = client.get(f"/documents/{document_id}/pages/1")
 
     assert response.status_code == 200
-    assert response.json() == {"text": "Notice is ninety days.", "has_text": True}
+    assert response.json() == {
+        "text": "Notice is ninety days.",
+        "has_text": True,
+        "anchor_label": None,
+        "ocr_confidence": None,
+        "low_confidence": False,
+    }
+
+
+def test_a_page_carries_its_anchor_label(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """`M1-VIEW-FE-047`'s converted-text renderers anchor on a heading, a
+    slide number or a spreadsheet row label — this is where that label comes
+    from, distinct from the PDF page's plain ordinal."""
+    _truncate(database_url)
+    document_id = _seed_document(database_url, tmp_path)
+    with psycopg.connect(database_url, autocommit=True) as db:
+        db.execute(
+            "UPDATE document_pages SET anchor_label = 'Termination' "
+            "WHERE document_id = %s AND page_number = 1",
+            (document_id,),
+        )
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+
+    with client:
+        _with_session(client)
+        response = client.get(f"/documents/{document_id}/pages/1")
+
+    assert response.status_code == 200
+    assert response.json()["anchor_label"] == "Termination"
+
+
+def test_a_scanned_page_reports_its_ocr_confidence(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """The OCR-text-alongside panel needs to know both the figure and whether
+    it falls under `settings.ocr_confidence_threshold` — computed server-side
+    so the browser never carries its own copy of the cut line."""
+    _truncate(database_url)
+    document_id = _seed_document(database_url, tmp_path)
+    with psycopg.connect(database_url, autocommit=True) as db:
+        db.execute(
+            "UPDATE document_pages SET ocr_confidence = 0.42 "
+            "WHERE document_id = %s AND page_number = 1",
+            (document_id,),
+        )
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+
+    with client:
+        _with_session(client)
+        response = client.get(f"/documents/{document_id}/pages/1")
+
+    body = response.json()
+    assert body["ocr_confidence"] == pytest.approx(0.42)
+    assert body["low_confidence"] is True
+
+
+def test_a_confident_scanned_page_is_not_flagged(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    _truncate(database_url)
+    document_id = _seed_document(database_url, tmp_path)
+    with psycopg.connect(database_url, autocommit=True) as db:
+        db.execute(
+            "UPDATE document_pages SET ocr_confidence = 0.95 "
+            "WHERE document_id = %s AND page_number = 1",
+            (document_id,),
+        )
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+
+    with client:
+        _with_session(client)
+        response = client.get(f"/documents/{document_id}/pages/1")
+
+    assert response.json()["low_confidence"] is False
+
+
+def test_every_page_is_listed_in_order(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """The spreadsheet renderer's own data source — a row highlighted in
+    isolation is not a table, so the viewer fetches every row once."""
+    _truncate(database_url)
+    document_id = _seed_document(database_url, tmp_path)
+    with psycopg.connect(database_url, autocommit=True) as db:
+        db.execute(
+            "INSERT INTO document_pages (document_id, page_number, text, has_text, anchor_label) "
+            "VALUES (%s, 2, 'Sheet1, row 2 | a | b', true, 'Sheet1, row 2')",
+            (document_id,),
+        )
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+
+    with client:
+        _with_session(client)
+        response = client.get(f"/documents/{document_id}/pages")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [row["page_number"] for row in body] == [1, 2]
+    assert body[1]["anchor_label"] == "Sheet1, row 2"
 
 
 def test_documents_require_a_session(

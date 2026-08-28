@@ -5,11 +5,16 @@ import { useSearchParams } from "next/navigation";
 import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
 import type { TextItem } from "pdfjs-dist/types/src/display/api";
 
+import { documentFormat } from "@/lib/document-format";
 import { locateOnPage, searchTargets,
   pageNote,
   type PageNote,
 } from "@/lib/pdf-highlight";
 import { buildPageText, itemsInRange } from "@/lib/pdf-text-map";
+
+import { ConvertedTextView } from "./converted-text-view";
+import { SpreadsheetView } from "./spreadsheet-view";
+import { PageNav, UnrenderableFallback, highlightSpan } from "./viewer-shared";
 
 /**
  * The source viewer. `M1-VIEW-FE-046`.
@@ -40,24 +45,16 @@ type ViewerState =
   | { kind: "loading" }
   | { kind: "error"; message: string }
   | { kind: "unsupported"; filename: string; mime: string | null }
-  | { kind: "ready"; meta: DocumentMetadata };
+  | { kind: "ready"; meta: DocumentMetadata }
+  | { kind: "converted"; meta: DocumentMetadata }
+  | { kind: "spreadsheet"; meta: DocumentMetadata };
 
 const RENDER_SCALE = 1.4;
 
-function highlightSpan(div: HTMLElement | undefined, start: number, end: number): void {
-  if (div === undefined) return;
-  const text = div.textContent ?? "";
-  const before = text.slice(0, start);
-  const match = text.slice(start, end);
-  const after = text.slice(end);
-
-  div.replaceChildren();
-  if (before !== "") div.appendChild(document.createTextNode(before));
-  const mark = document.createElement("mark");
-  mark.className = "ask-pdf-highlight";
-  mark.textContent = match;
-  div.appendChild(mark);
-  if (after !== "") div.appendChild(document.createTextNode(after));
+interface OcrPanel {
+  text: string | null;
+  has_text: boolean;
+  low_confidence: boolean;
 }
 
 export function DocumentViewer() {
@@ -71,6 +68,7 @@ export function DocumentViewer() {
   const [pageNumber, setPageNumber] = useState(Number.isFinite(requestedPage) && requestedPage > 0 ? requestedPage : 1);
   const [pinpointNote, setPinpointNote] = useState<PageNote>("located");
   const [fallbackText, setFallbackText] = useState<string | null>(null);
+  const [ocrPanel, setOcrPanel] = useState<OcrPanel | null>(null);
   const pageContainerRef = useRef<HTMLDivElement | null>(null);
 
   // Metadata: whether the document exists, is a PDF, and is still on disk.
@@ -102,11 +100,20 @@ export function DocumentViewer() {
         });
         return;
       }
-      if (meta.mime !== "application/pdf") {
-        setState({ kind: "unsupported", filename: meta.filename, mime: meta.mime });
-        return;
+      switch (documentFormat(meta.mime)) {
+        case "pdf":
+          setState({ kind: "ready", meta });
+          break;
+        case "converted-text":
+          setState({ kind: "converted", meta });
+          break;
+        case "spreadsheet":
+          setState({ kind: "spreadsheet", meta });
+          break;
+        case "unsupported":
+          setState({ kind: "unsupported", filename: meta.filename, mime: meta.mime });
+          break;
       }
-      setState({ kind: "ready", meta });
     })();
     return () => {
       cancelled = true;
@@ -128,6 +135,7 @@ export function DocumentViewer() {
     let pdf: PDFDocumentProxy | null = null;
     setPinpointNote("located");
     setFallbackText(null);
+    setOcrPanel(null);
 
     void (async () => {
       const pdfjsLib = await import("pdfjs-dist");
@@ -247,8 +255,37 @@ export function DocumentViewer() {
         // A scan and a genuine miss are the same event here and opposite facts
         // for the reader, so they are told apart by whether the page has a text
         // layer at all rather than left to share one message.
-        setPinpointNote(pageNote(pageText, false));
+        const note = pageNote(pageText, false);
+        setPinpointNote(note);
         pageEl.scrollIntoView({ block: "start" });
+        // The "image" rendering kind, `M1-VIEW-FE-047`: a scanned page's own
+        // OCR text, alongside the page image already on screen — this is
+        // what lets someone discover a bad scan is why an answer was wrong.
+        if (note === "scanned") await loadOcrPanel(id, number);
+      }
+    }
+
+    async function loadOcrPanel(documentId: string, page: number): Promise<void> {
+      try {
+        const response = await fetch(`/documents/${documentId}/pages/${page}`, {
+          cache: "no-store",
+        });
+        const body = response.ok
+          ? ((await response.json()) as {
+              text: string | null;
+              has_text: boolean;
+              low_confidence: boolean;
+            })
+          : null;
+        if (!cancelled) {
+          setOcrPanel(
+            body === null
+              ? { text: null, has_text: false, low_confidence: false }
+              : { text: body.text, has_text: body.has_text, low_confidence: body.low_confidence },
+          );
+        }
+      } catch {
+        if (!cancelled) setOcrPanel({ text: null, has_text: false, low_confidence: false });
       }
     }
 
@@ -289,6 +326,32 @@ export function DocumentViewer() {
     );
   }
 
+  if (state.kind === "converted") {
+    return (
+      <ConvertedTextView
+        documentId={state.meta.id}
+        filename={state.meta.filename}
+        pageNumber={pageNumber}
+        pageCount={state.meta.page_count}
+        quotedSpan={quotedSpan}
+        passage={passage}
+        onChangePage={setPageNumber}
+      />
+    );
+  }
+
+  if (state.kind === "spreadsheet") {
+    return (
+      <SpreadsheetView
+        documentId={state.meta.id}
+        filename={state.meta.filename}
+        pageNumber={pageNumber}
+        quotedSpan={quotedSpan}
+        passage={passage}
+      />
+    );
+  }
+
   return (
     <section className="flex flex-col gap-3 p-4">
       <header className="flex items-baseline justify-between gap-3">
@@ -315,6 +378,11 @@ export function DocumentViewer() {
           instead.
         </p>
       ) : null}
+      {ocrPanel !== null && ocrPanel.low_confidence ? (
+        <p className="ask-prose ask-pdf-page-note">
+          This scan read poorly — Askwell has low confidence in the text below.
+        </p>
+      ) : null}
 
       {fallbackText !== null ? (
         <UnrenderableFallback
@@ -323,84 +391,23 @@ export function DocumentViewer() {
           note="This page could not be rendered. Its extracted text is shown instead."
           text={fallbackText}
         />
+      ) : ocrPanel !== null ? (
+        <div className="flex gap-4" style={{ alignItems: "flex-start" }}>
+          <div ref={pageContainerRef} style={{ overflow: "auto" }} />
+          <div className="flex flex-col gap-2" style={{ flex: 1, minWidth: 0 }}>
+            <h2 className="ask-micro">What Askwell read from this page</h2>
+            {ocrPanel.has_text && ocrPanel.text !== null && ocrPanel.text !== "" ? (
+              <p className="ask-prose" style={{ whiteSpace: "pre-wrap" }}>
+                {ocrPanel.text}
+              </p>
+            ) : (
+              <p className="ask-prose">Nothing was read from this page.</p>
+            )}
+          </div>
+        </div>
       ) : (
         <div ref={pageContainerRef} style={{ overflow: "auto" }} />
       )}
-    </section>
-  );
-}
-
-function PageNav({
-  pageNumber,
-  pageCount,
-  onChange,
-}: {
-  pageNumber: number;
-  pageCount: number | null;
-  onChange: (page: number) => void;
-}) {
-  return (
-    <div className="flex items-center gap-2 ask-micro">
-      <button
-        type="button"
-        onClick={() => onChange(Math.max(1, pageNumber - 1))}
-        disabled={pageNumber <= 1}
-        className="ask-navigates px-2 py-1"
-        style={{ border: "1px solid var(--rule)" }}
-      >
-        Previous
-      </button>
-      <span>
-        Page {pageNumber}
-        {pageCount !== null ? ` of ${pageCount}` : ""}
-      </span>
-      <button
-        type="button"
-        onClick={() => onChange(pageCount !== null ? Math.min(pageCount, pageNumber + 1) : pageNumber + 1)}
-        disabled={pageCount !== null && pageNumber >= pageCount}
-        className="ask-navigates px-2 py-1"
-        style={{ border: "1px solid var(--rule)" }}
-      >
-        Next
-      </button>
-    </div>
-  );
-}
-
-/** The unrenderable-PDF and unsupported-format edge cases share one shape:
- * extracted text (when there is any) plus a note plus a way to fall back to
- * the system's own viewer — the ticket's own "extracted text with a note and
- * an open-in-system-app option." */
-function UnrenderableFallback({
-  filename,
-  documentId,
-  note,
-  text,
-}: {
-  filename: string;
-  documentId: string;
-  note: string;
-  text?: string;
-}) {
-  return (
-    <section className="flex flex-col gap-3 p-4">
-      <h1 style={{ fontSize: "var(--t-title)", lineHeight: "var(--t-title-lh)" }}>{filename}</h1>
-      <p className="ask-prose">{note}</p>
-      {text !== undefined ? (
-        <pre
-          className="ask-prose"
-          style={{ whiteSpace: "pre-wrap", background: "var(--surface)", padding: "1rem" }}
-        >
-          {text}
-        </pre>
-      ) : null}
-      <a
-        href={`/documents/${documentId}/file`}
-        className="ask-navigates inline-block px-4 py-2 w-fit"
-        style={{ border: "1px solid var(--rule-strong)", fontSize: "var(--t-ui)" }}
-      >
-        Open in system app
-      </a>
     </section>
   );
 }

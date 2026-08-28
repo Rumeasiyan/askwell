@@ -4,6 +4,16 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.31 — 2026-08-28
+
+Non-PDF renderings and OCR text beside scans. `M1-VIEW-FE-047`.
+
+### Added
+
+- **Converted-text and spreadsheet renderers** (`web/components/documents/converted-text-view.tsx`, `spreadsheet-view.tsx`, `web/lib/document-format.ts`) — Word, PowerPoint, plain text, Markdown and HTML open at the cited anchor with structure preserved and the passage marked; a document with no headings lands at its chunk position with a stated note. A spreadsheet opens as a table, hand-windowed (no new dependency) to keep a many-thousand-row sheet to a few dozen live DOM rows, scrolled to and highlighting the cited row.
+- **OCR-text-alongside for a scanned PDF page** (`document-viewer.tsx`) — the rendering table's "Image" row: a scanned page now shows its own OCR'd text beside the rendered page image, flagged when Askwell's confidence in it is low, and stated plainly when nothing was read at all. Standalone image files remain unsupported — no extractor reads one yet (issue #185).
+- **`GET /documents/{id}/pages/{n}`** now also returns `anchor_label`, `ocr_confidence` and a server-computed `low_confidence` (against `settings.ocr_confidence_threshold`, so the browser carries no second copy of the cut line); new **`GET /documents/{id}/pages`** lists every anchor for the spreadsheet renderer's own table.
+
 ## 0.2.30 — 2026-08-28
 
 The uncited-claim query. `M1-CITE-TEST-045`.

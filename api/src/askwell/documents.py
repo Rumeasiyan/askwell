@@ -59,7 +59,7 @@ async def _find(session: AsyncSession, document_id: uuid.UUID) -> dict[str, obje
 
 
 def register_documents(
-    app: FastAPI, _settings: Settings, factory: async_sessionmaker[AsyncSession]
+    app: FastAPI, settings: Settings, factory: async_sessionmaker[AsyncSession]
 ) -> None:
     """Attach the document-viewing surface. Register before the interface catch-all."""
 
@@ -122,16 +122,23 @@ def register_documents(
 
     @app.get("/documents/{document_id}/pages/{page_number}")
     async def document_page(document_id: uuid.UUID, page_number: int) -> JSONResponse:
-        """One page's own extracted text.
+        """One page's (or slide's, or section's, or scanned page's) own
+        extracted text.
 
-        Used for the unrenderable-PDF fallback (extracted text plus a note,
-        per the ticket's own edge case) — not for search, which reads the
+        Used for the unrenderable-PDF fallback, `M1-VIEW-FE-047`'s converted-text
+        renderers (Word, PowerPoint, text, Markdown, HTML), and the OCR-text-
+        alongside panel for a scanned PDF page — not for search, which reads the
         rendered PDF's own text layer client-side.
+
+        `low_confidence` is computed here, against `settings.ocr_confidence_threshold`
+        — the same cut line `askwell.ingest.refresh_source` flags a source's OCR
+        with — rather than shipping the threshold to the browser for it to compare
+        itself, which would be a second copy of the cut line to keep in sync.
         """
         async with factory() as db:
             result = await db.execute(
                 text(
-                    "SELECT text, has_text FROM document_pages "
+                    "SELECT text, has_text, anchor_label, ocr_confidence FROM document_pages "
                     "WHERE document_id = :id AND page_number = :page"
                 ),
                 {"id": document_id, "page": page_number},
@@ -139,4 +146,46 @@ def register_documents(
             row = result.first()
         if row is None:
             return JSONResponse({"error": "No such page."}, status_code=404)
-        return JSONResponse({"text": row[0], "has_text": row[1]})
+        confidence = row[3]
+        return JSONResponse(
+            {
+                "text": row[0],
+                "has_text": row[1],
+                "anchor_label": row[2],
+                "ocr_confidence": float(confidence) if confidence is not None else None,
+                "low_confidence": confidence is not None
+                and float(confidence) < settings.ocr_confidence_threshold,
+            }
+        )
+
+    @app.get("/documents/{document_id}/pages")
+    async def document_pages(document_id: uuid.UUID) -> JSONResponse:
+        """Every page's anchor label and text, in order.
+
+        The spreadsheet renderer's own data source (`M1-VIEW-FE-047`): a row
+        highlighted in isolation is not a table, so the viewer needs every row
+        to scroll and virtualise against, not the one row a citation names. Kept
+        to one query rather than one request per row — a workbook citation
+        landing on row 4,000 must not cost 4,000 round trips to render the rows
+        around it.
+        """
+        async with factory() as db:
+            result = await db.execute(
+                text(
+                    "SELECT page_number, anchor_label, text, has_text FROM document_pages "
+                    "WHERE document_id = :id ORDER BY page_number"
+                ),
+                {"id": document_id},
+            )
+            rows = result.all()
+        return JSONResponse(
+            [
+                {
+                    "page_number": row[0],
+                    "anchor_label": row[1],
+                    "text": row[2],
+                    "has_text": row[3],
+                }
+                for row in rows
+            ]
+        )

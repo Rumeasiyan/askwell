@@ -353,4 +353,11 @@
     border-left: 2px solid var(--provenance);
     padding-left: 8px;
   }
+
+  /* The cited row in the spreadsheet renderer (`M1-VIEW-FE-047`) — the same
+     `--provenance` fill `.ask-pdf-highlight` uses for a passage, at a lighter
+     mix because it tints a whole row rather than a few words. */
+  .ask-row-highlight {
+    background: color-mix(in srgb, var(--provenance) 20%, transparent);
+  }
 }
