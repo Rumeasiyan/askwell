@@ -753,7 +753,12 @@ def test_no_candidate_above_threshold_abstains_rather_than_answering(
         content, summary, source_count = db.execute(
             "SELECT content, summary, source_count FROM messages WHERE id = %s", (message_id,)
         ).fetchone()
-    assert content == ""
+    # `M2-ABSTAIN-BE-054`: the empty-corpus variant, distinct from a
+    # below-threshold near-miss — no counts, no nearest topic, because
+    # there is no search to prove happened and nothing to name as closest.
+    assert content == (
+        "Nothing in your files answers this — nothing is indexed yet.\nAdd a source, and ask again."
+    )
     assert source_count is None
     assert "did not cover" in summary.lower()
 
@@ -788,10 +793,19 @@ def test_all_candidates_below_threshold_abstains_with_the_near_miss_stored(
 
     assert not any(kind == "token" for kind, _ in events)
     with psycopg.connect(database_url, autocommit=True) as db:
-        source_count = db.execute(
-            "SELECT source_count FROM messages WHERE id = %s", (message_id,)
-        ).fetchone()[0]
+        content, source_count = db.execute(
+            "SELECT content, source_count FROM messages WHERE id = %s", (message_id,)
+        ).fetchone()
     assert source_count is None
+    # `M2-ABSTAIN-BE-054`: real counts (one passage, one document, the
+    # seeded chunk has no `heading` so its `filename` names the near miss)
+    # rather than the empty-corpus wording — a candidate did exist here.
+    assert content == (
+        "Nothing in your files answers this.\n"
+        "I searched 1 passage across 1 document. The closest material was "
+        "about file.txt, which does not cover this.\n"
+        "Add the source you'd expect this in, and ask again."
+    )
 
     trace = _trace(database_url, message_id)
     retrieve_step = next(step for step in trace["steps"] if step["kind"] == "retrieve")
@@ -867,6 +881,19 @@ def test_a_source_scoped_question_against_a_still_indexing_source_says_so(
         message_id = uuid.UUID(
             next(data for kind, data in _events(response.text) if kind == "done")["message_id"]
         )
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        content = db.execute(
+            "SELECT content FROM messages WHERE id = %s", (message_id,)
+        ).fetchone()[0]
+    # `M2-ABSTAIN-BE-054`: its own third variant — distinct from both
+    # `empty_corpus` and a below-threshold near-miss, since something is
+    # indexed under this source, just not everything yet.
+    assert content == (
+        "Nothing in your files answers this yet — this source is still "
+        "indexing, so not everything in it has been searched.\n"
+        "Ask again once it finishes, or add the source you'd expect this in."
+    )
 
     trace = _trace(database_url, message_id)
     abstain_step = next(step for step in trace["steps"] if step["kind"] == "abstain")

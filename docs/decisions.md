@@ -22,6 +22,22 @@ Template:
 
 ---
 
+## 2026-08-28 — The abstention message's "documents and databases" count is `sources.kind`, and persisting it does not mean streaming it
+
+**Decision:** `M2-ABSTAIN-BE-054`. The proof-of-search sentence's source count splits on `sources.kind`: `file`/`csv` count as documents, `dump`/`connection` count as databases (`docs/ux/ask.md` §6's own example, "38 documents and 2 databases"). The count itself — passages, documents, databases — is a fresh query in `askwell.ask._abstain_reason` using the identical `chunks` ⋈ `documents` ⋈ `sources` join and `WHERE` clause `askwell.retrieve._dense_search`/`_lexical_search` filter on, not a re-derivation from the top-K `candidates` list already in memory. Separately: the composed message is written to `messages.content` and the audit record's `answer` for an abstained turn, but is not emitted as an SSE `token` event.
+
+**Why:** Phase 3 (database ingestion) is not built yet, so `dump`/`connection` sources do not exist in any real corpus today — but `sources.kind`'s check constraint (`ck_sources_kind`) already names all four, and `docs/data-sources.md` §3/§4 already commits to schema notes for a sandboxed dump or live connection being indexed exactly like document chunks, joined through the same `chunks` table. Splitting on `kind` now costs one `CASE WHEN` and means the phrasing is correct the day Phase 3 lands, rather than a second ticket to stop saying "documents" for something that is not one. The alternative — a generic "N sources" — was rejected because it is what the ticket's own acceptance criteria explicitly moved away from (the example scenario is deliberately specific).
+
+The count could not reuse `candidates`/`scored_candidates`: `retrieve()` caps at `Settings.retrieval_candidate_count`, so on a large corpus the top-K list under-reports exactly the case `docs/ux/ask.md` §6 names as an edge case ("a very large corpus — counts are accurate, not rounded to something reassuring"). A second, purpose-built query was the only way to report the true population searched rather than the slice retrieval happened to look at closely.
+
+Not streaming the composed message as a `token` event was a scope call, not an oversight. The ticket's own Out of Scope line names rendering (`-FE-055`) explicitly, and `docs/ux/ask.md` §6 describes a rendering treatment (full measure, `--ink`/`--muted`, never an error colour) that is that ticket's job to build, not a plain token stream indistinguishable from a generated answer. Persisting to `messages.content` was still required — the audit requirement ("the abstention and its counts are in the interaction record") and `-FE-055` both need the finished text to exist somewhere before either can do its job — so the split is: this ticket produces and stores the copy, the next one decides how it reaches the browser and renders.
+
+**Consequences:** `test_ask_api.py`'s three abstention tests that previously asserted `content == ""` (a placeholder `M2-ABSTAIN-RET-053` left deliberately, per its own docstring) now assert the real composed message — not a weakening of anything C5 measures, since the abstention *decision* itself is untouched and those same tests still assert `not any(kind == "token" ...)`. `-FE-055` has real text waiting in `messages.content`/the SSE reconnect replay to render, rather than needing to compose it itself.
+
+**Refs:** `api/src/askwell/agent/abstain.py`, `api/src/askwell/agent/prompts/abstention.v1.md`, `api/src/askwell/ask.py` (`_abstain_reason`, `_SEARCH_EXTENT_SQL`), `api/tests/test_abstain.py`, `docs/ux/ask.md` §6, `docs/data-sources.md` §3–4.
+
+---
+
 ## 2026-08-28 — A reranked score is compared to the threshold through a sigmoid, not raw
 
 **Decision:** `M2-ABSTAIN-RET-053`. The abstention decision (`askwell.ask._run_generation`, taken before `compose()` ever runs) compares each candidate's score, via the new `askwell.retrieve.candidate_score`, against `Settings.retrieval_score_threshold`. For a candidate the reranker scored, that score is the raw cross-encoder logit passed through a sigmoid, `1 / (1 + e^-x)`, giving a `[0, 1]` relevance probability. For a candidate reranking never touched — the reranker unavailable, or the candidate outside `rerank_candidate_count`'s window — the real dense cosine similarity is used, falling back to the lexical `ts_rank` only when dense search never found it.
