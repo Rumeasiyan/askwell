@@ -380,7 +380,10 @@ class Chunk(Base):
     `content_tsv` is a generated column rather than something the application
     maintains: a trigger or an application write can be forgotten, and a stale
     search index is invisible until someone cannot find a document they know
-    they added.
+    they added. Its expression (`c7e2f814a5b3`) replaces hyphens with spaces
+    before tokenising, so a reference number like `INV-2024-0917` indexes as
+    three independent, signless lexemes rather than the parser reading each
+    `-<digits>` run as a negative number and burying the sign in the lexeme.
     """
 
     __tablename__ = "chunks"

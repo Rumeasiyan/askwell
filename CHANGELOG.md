@@ -4,6 +4,18 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.14 — 2026-08-28
+
+A reference number is findable by the part someone actually remembers. `M1-INDEX-DB-033`.
+
+### Fixed
+
+- **`content_tsv` no longer buries a reference number's sign inside its own lexeme.** Postgres's default parser reads a hyphen before a digit run as a minus sign, so `INV-2024-0917` tokenised as `inv`, `-2024`, `-0917` — a search for just `0917` never matched. `chunks.content_tsv`'s generated-column expression now replaces hyphens with spaces before tokenising, so each group indexes independently and matches alone. Migration `c7e2f814a5b3`; reasoning in `docs/decisions.md`.
+
+### Verified
+
+- The column and its GIN index (`ix_chunks_content_tsv`) already existed and already auto-populated on every write (`a8208099ef38`) — nothing new to build there. `api/tests/test_index_db_records.py` proves: every written chunk gets a populated value; a chunk with no content gets an empty, non-null vector rather than dropping out of the index; a reference number matches both in full and by its trailing group; a pure-numeric or very long chunk indexes without error; re-chunking a document leaves exactly one row, not two; and, seeded to 300,000 chunks, a lexical query's `EXPLAIN` plan uses `ix_chunks_content_tsv` rather than a sequential scan.
+
 ## 0.2.13 — 2026-08-28
 
 Chunks are actually embedded — the last stage of the ingestion pipeline, and the first thing that makes anything searchable. `M1-INDEX-ING-032`.
