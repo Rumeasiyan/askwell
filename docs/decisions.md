@@ -1115,6 +1115,18 @@ The reversal of the "static" rule was made deliberately and with the owner's agr
 
 ## 2026-08-10 — `institution` profile is Qwen3 32B, not a "Qwen3.6 27B"
 
+> **Superseded, and wrong.** See *2026-08-26 — Model names corrected; registry
+> verification is now a rule*, above. Qwen3.5 and Qwen3.6 are real releases; the
+> PRD names this entry "corrected" were right, and this entry downgraded the
+> generation model by a family version. Kept rather than deleted because
+> `AGENTS.md` §4's registry-verification rule exists *because of* this entry, and
+> deleting it would leave the rule looking arbitrary.
+>
+> This banner is here because the file is read by grep as often as it is read
+> top-down. Newest-first ordering puts the correction above this, which protects
+> a person reading the file and not an agent that searched for a model name and
+> landed here.
+
 **Decision:** Deployment profiles use `Qwen3 4B` (edge), `Qwen3 8B` (standard), `Qwen3 32B` (institution), all `Q4_K_M`.
 
 **Why:** The PRD draft named `Qwen3.5 4B` and `Qwen3.6 27B` — neither is a real release, and 27B is a Gemma parameter count, not a Qwen one. Left in place, a deployer would have gone looking for a GGUF that does not exist, on an air-gapped install where they cannot simply search for the right name. Corrected to real models on the same family as the already-correct `standard` row, so all three profiles share one tokeniser and one prompt format — which matters because the eval suite's pass bars in `docs/PRD.md` §7 are meant to be comparable across profiles.
