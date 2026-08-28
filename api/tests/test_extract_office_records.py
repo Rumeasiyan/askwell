@@ -26,8 +26,10 @@ from pptx.util import Inches
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from askwell import ingest
+from askwell import chunk as chunk_module
+from askwell import extract, ingest
 from askwell.config import Settings
+from askwell.ingest import Stage
 
 from .test_ingest_records import TABLES, nominate, recorded
 
@@ -82,6 +84,20 @@ def unreachable_queue(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> It
         return len(document_ids)
 
     monkeypatch.setattr(ingest, "dispatch", fake_dispatch)
+    # This module is about `extract`, not `embed` — `M1-INDEX-ING-032` made
+    # `embed` real and it needs a running inference process none of these
+    # tests stand one up for. Frozen at real `extract` + `chunk` with `embed`
+    # left unbuilt, matching every test's own assertion that a document
+    # "parks" once extraction and chunking are done.
+    monkeypatch.setattr(
+        ingest,
+        "STAGES",
+        (
+            Stage("extract", "M1-EXTRACT-ING-026", extract.run),
+            Stage("chunk", "M1-INDEX-ING-031", chunk_module.run),
+            Stage("embed", "M1-INDEX-ING-032"),
+        ),
+    )
     yield settings
 
 

@@ -19,20 +19,20 @@ holding it — and each of those loses work the user believes is underway. So
 about. Dispatch failing is a delay; it is never a loss.
 
 **A stage that has not been built is `parked`, not finished and not failed.**
-The pipeline is declared in full — extract, chunk, embed — and at the time this
-was written none of it existed: those are `M1-EXTRACT-ING-026`,
-`M1-INDEX-ING-031` and `M1-INDEX-ING-032`, and `M1-ADD-ING-025`'s own scope put
-them out of it. `M1-EXTRACT-ING-026` and `M1-INDEX-ING-031` have since
-installed `extract` and `chunk`, so a job now runs both for real and parks at
-`embed`. A PDF with no usable text layer no longer parks separately —
-`M1-EXTRACT-ING-028` put OCR inside `extract` itself, so that document still
-parks at `embed` too, just later than a text-layer PDF. It does not mark the
-document `ready`, which would tell the library a file is searchable when
-nothing has embedded it yet; and it does not mark it failed, which would fill
-a fresh install with red for a file nothing is wrong with.
-`docs/states-and-edge-cases.md` §3 asks for exactly this sentence — "files
-queued but nothing indexed yet ... an honest sentence, not a progress bar that
-never moves" — and `awaiting` is what lets the surface name what has to arrive
+The pipeline was declared in full before any of it existed — extract, chunk,
+embed, `M1-EXTRACT-ING-026`, `M1-INDEX-ING-031`, `M1-INDEX-ING-032` — because
+`M1-ADD-ING-025`'s own scope put building them out of it, and a queued
+document had to say something truer than "queued" with no further detail.
+All three are installed now, so nothing parks in the ordinary run of things;
+the mechanism stays, because a future stage (reranking metadata, a language
+pack, whatever M2 or M3 need) will need exactly the same honest resting place.
+It does not mark a document `ready` on a stage that has not run, which would
+tell the library a file is searchable when it is not; and it does not mark it
+failed, which would fill a fresh install with red for a file nothing is wrong
+with. `docs/states-and-edge-cases.md` §3 asks for exactly this sentence —
+"files queued but nothing indexed yet ... an honest sentence, not a progress
+bar that never moves" — and `awaiting` is what lets the surface name what has
+to arrive
 first.
 
 **Progress is measured inside a file as well as between them.** A single 900-page
@@ -66,7 +66,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from askwell import chunk, extract
+from askwell import chunk, embed, extract
 from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
@@ -139,10 +139,13 @@ class Work:
 Report = Callable[[int, int], Awaitable[None]]
 """How a stage says how far into a file it is: bytes done, bytes total."""
 
-StageFn = Callable[[Work, Report, async_sessionmaker[AsyncSession]], Awaitable[None]]
-"""What a stage is handed: the file, a way to report progress, and a session
+StageFn = Callable[[Work, Report, async_sessionmaker[AsyncSession], Settings], Awaitable[None]]
+"""What a stage is handed: the file, a way to report progress, a session
 factory of its own — every real stage writes something durable (pages, chunks,
-embeddings), and `Work` alone is not enough to do that."""
+embeddings), and `Work` alone is not enough to do that — and configuration.
+`embed` is the first stage that needs the last one: the inference socket and
+the batch size are not properties of one document, so `Work` is the wrong
+place for them. `extract` and `chunk` take and ignore it."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,7 +170,7 @@ class Stage:
 STAGES: tuple[Stage, ...] = (
     Stage("extract", "M1-EXTRACT-ING-026", extract.run),
     Stage("chunk", "M1-INDEX-ING-031", chunk.run),
-    Stage("embed", "M1-INDEX-ING-032"),
+    Stage("embed", "M1-INDEX-ING-032", embed.run),
 )
 
 
@@ -544,7 +547,7 @@ async def process(
                 await refresh_source(session, work.source_id, settings.ocr_confidence_threshold)
 
         try:
-            await stage.run(work, report, factory)
+            await stage.run(work, report, factory, settings)
         except Exception as error:  # a stage may raise anything at all
             await _fail(factory, settings, work, stage=stage, attempts=attempts, error=error)
             return "failed"

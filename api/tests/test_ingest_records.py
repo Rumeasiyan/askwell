@@ -38,7 +38,8 @@ from PIL import Image, ImageDraw, ImageFont
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from askwell import extract_pdf, ingest
+from askwell import chunk as chunk_module
+from askwell import extract, extract_pdf, ingest
 from askwell.config import Settings
 from askwell.db.engine import session_scope
 from askwell.extract_common import WrongPassword
@@ -204,6 +205,23 @@ def unreachable_queue(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> It
         return len(document_ids)
 
     monkeypatch.setattr(ingest, "dispatch", fake_dispatch)
+    # This module is the harness's own tests — claim, progress, failure,
+    # retry, resume — most of which install a fake stage of their own and are
+    # unaffected by this. The tests that instead rely on the real pipeline
+    # (extraction, OCR, chunking) predate `embed` being real
+    # (`M1-INDEX-ING-032`) and assert a document "parks" once extraction and
+    # chunking are done; frozen here at real `extract` + `chunk` with `embed`
+    # left unbuilt so that premise stays true. `test_embed_records.py` covers
+    # `embed` itself.
+    monkeypatch.setattr(
+        ingest,
+        "STAGES",
+        (
+            Stage("extract", "M1-EXTRACT-ING-026", extract.run),
+            Stage("chunk", "M1-INDEX-ING-031", chunk_module.run),
+            Stage("embed", "M1-INDEX-ING-032"),
+        ),
+    )
     yield settings
 
 
@@ -880,7 +898,7 @@ async def test_a_document_flagged_for_poor_ocr_still_indexes_and_stays_searchabl
     documents = await recorded(session, tmp_path, "poor-scan.pdf")
 
     async def poor_ocr(
-        work: Work, report: Report, factory: async_sessionmaker[AsyncSession]
+        work: Work, report: Report, factory: async_sessionmaker[AsyncSession], _settings: Settings
     ) -> None:
         async with session_scope(factory) as inner:
             await inner.execute(
@@ -924,10 +942,10 @@ async def test_a_flagged_document_is_recognised_before_it_ever_reaches_ready(
     tmp_path: Path,
     unreachable_queue: Settings,
 ) -> None:
-    """`chunk` and `embed` are not built yet (`M1-INDEX-ING-031`/`-032`), so
-    every document parks at `queued` once the real `extract` finishes — this
-    ticket's own dependency is `M1-EXTRACT-ING-028` alone, and the flag must
-    not silently wait for milestones it does not depend on.
+    """`embed` is frozen unbuilt for this module (`unreachable_queue`), so the
+    document parks — never reaching `ready` — once real `extract` and `chunk`
+    finish. This ticket's own dependency is `M1-EXTRACT-ING-028` alone, and
+    the flag must not silently wait for milestones it does not depend on.
     """
     await nominate(session, str(tmp_path))
     written(
@@ -1008,7 +1026,7 @@ async def test_an_installed_stage_runs_and_the_document_becomes_ready(
     seen: list[str] = []
 
     async def extract(
-        work: Work, report: Report, factory: async_sessionmaker[AsyncSession]
+        work: Work, report: Report, factory: async_sessionmaker[AsyncSession], _settings: Settings
     ) -> None:
         seen.append(work.filename)
         await report(len(PDF), len(PDF))
@@ -1053,7 +1071,9 @@ async def test_progress_moves_inside_a_single_enormous_file(
 
     observed: list[tuple[int | None, int | None]] = []
 
-    async def slow(work: Work, report: Report, factory: async_sessionmaker[AsyncSession]) -> None:
+    async def slow(
+        work: Work, report: Report, factory: async_sessionmaker[AsyncSession], _settings: Settings
+    ) -> None:
         for done in (250, 500, 1000):
             await report(done, 1000)
             async with factory() as watcher:
@@ -1102,7 +1122,9 @@ async def test_progress_writes_are_throttled(
     written(tmp_path, "scan.pdf")
     documents = await recorded(session, tmp_path, "scan.pdf")
 
-    async def chatty(work: Work, report: Report, factory: async_sessionmaker[AsyncSession]) -> None:
+    async def chatty(
+        work: Work, report: Report, factory: async_sessionmaker[AsyncSession], _settings: Settings
+    ) -> None:
         for done in (10, 20, 30, 40):
             await report(done, 100)
 
@@ -1139,7 +1161,7 @@ async def test_a_failing_stage_is_retried_and_then_left_failed_with_its_reason(
     documents = await recorded(session, tmp_path, "broken.pdf")
 
     async def always_fails(
-        work: Work, report: Report, factory: async_sessionmaker[AsyncSession]
+        work: Work, report: Report, factory: async_sessionmaker[AsyncSession], _settings: Settings
     ) -> None:
         raise ValueError("the text layer is not readable")
 
@@ -1189,7 +1211,7 @@ async def test_a_wrong_password_is_not_overwritten_by_an_automatic_retry(
     documents = await recorded(session, tmp_path, "locked.pdf")
 
     async def wrong_password(
-        work: Work, report: Report, factory: async_sessionmaker[AsyncSession]
+        work: Work, report: Report, factory: async_sessionmaker[AsyncSession], _settings: Settings
     ) -> None:
         raise WrongPassword("The password entered for locked.pdf was incorrect.")
 
@@ -1226,7 +1248,7 @@ async def test_a_failure_that_a_retry_could_fix_still_retries(
     documents = await recorded(session, tmp_path, "flaky.pdf")
 
     async def transient(
-        work: Work, report: Report, factory: async_sessionmaker[AsyncSession]
+        work: Work, report: Report, factory: async_sessionmaker[AsyncSession], _settings: Settings
     ) -> None:
         raise OSError("the drive went away")
 
@@ -1258,7 +1280,7 @@ async def test_a_failed_document_can_be_retried_and_its_attempts_are_forgiven(
     documents = await recorded(session, tmp_path, "broken.pdf")
 
     async def always_fails(
-        work: Work, report: Report, factory: async_sessionmaker[AsyncSession]
+        work: Work, report: Report, factory: async_sessionmaker[AsyncSession], _settings: Settings
     ) -> None:
         raise OSError("the drive is not connected")
 
@@ -1409,14 +1431,21 @@ async def test_a_document_parked_before_extraction_landed_is_revived_at_startup(
 
 
 async def test_a_document_parked_for_a_stage_still_unbuilt_is_left_alone(
-    session: AsyncSession, tmp_path: Path
+    session: AsyncSession, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The other half of #109's fix: reviving a `parked` row only when its
     stage is actually installed. Without the `awaiting` filter, a document
     waiting on `embed` would be re-claimed by `chunk`, park again on the very
     next stage, forever — the bug this fix exists for, reproduced one stage
     later.
+
+    Every stage is real and installed since `M1-INDEX-ING-032`, so the case
+    this guards against — a row `awaiting` a stage with no `run` — is
+    manufactured here rather than found in the ordinary pipeline; the fix
+    itself is generic and still needs to hold for whatever the next
+    undeclared stage turns out to be.
     """
+    monkeypatch.setattr(ingest, "STAGES", (Stage("extract", "M1-EXTRACT-ING-026", extract.run),))
     await nominate(session, str(tmp_path))
     written(tmp_path, "contract.pdf")
     documents = await recorded(session, tmp_path, "contract.pdf")
@@ -1566,7 +1595,7 @@ async def test_a_source_is_askable_before_every_file_has_finished(
     documents = await recorded(session, tmp_path, "a.pdf", "b.pdf", "c.pdf")
 
     async def extract(
-        work: Work, report: Report, factory: async_sessionmaker[AsyncSession]
+        work: Work, report: Report, factory: async_sessionmaker[AsyncSession], _settings: Settings
     ) -> None:
         await report(1, 1)
 
@@ -1604,7 +1633,7 @@ async def test_a_source_changing_status_is_a_decisions_record(
     documents = await recorded(session, tmp_path, "a.pdf", "b.pdf")
 
     async def extract(
-        work: Work, report: Report, factory: async_sessionmaker[AsyncSession]
+        work: Work, report: Report, factory: async_sessionmaker[AsyncSession], _settings: Settings
     ) -> None:
         await report(1, 1)
 
@@ -1699,7 +1728,7 @@ async def test_the_snapshot_counts_are_this_machines_own_and_nothing_leaves_it(
     documents = await recorded(session, tmp_path, "a.pdf", "b.pdf")
 
     async def extract(
-        work: Work, report: Report, factory: async_sessionmaker[AsyncSession]
+        work: Work, report: Report, factory: async_sessionmaker[AsyncSession], _settings: Settings
     ) -> None:
         if work.filename == "b.pdf":
             raise ValueError("encrypted")

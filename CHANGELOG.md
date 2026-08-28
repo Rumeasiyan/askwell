@@ -4,6 +4,17 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.13 — 2026-08-28
+
+Chunks are actually embedded — the last stage of the ingestion pipeline, and the first thing that makes anything searchable. `M1-INDEX-ING-032`.
+
+### Added
+
+- **An `embed` stage, real for the first time.** `api/src/askwell/embed.py` sends every un-embedded chunk of a document to the native inference process in bounded batches (`ASKWELL_EMBEDDING_BATCH_SIZE`, default 16), retrying a failing batch with backoff before giving up on the document. Wired into `ingest.STAGES`; a document now reaches `ready` only once every one of its chunks has an embedding — never partially.
+- **A batch failure retries; exhaustion is visible and retryable.** A transient inference blip (the process restarting mid-batch, a slow request) retries up to three times with a short linear backoff inside this stage; if that is exhausted, the whole document fails through the pipeline's existing per-document retry and failure surface (`GET /ingest`, `POST /ingest/documents/{id}/retry`) — nothing is silently dropped.
+- **The embedding dimension is checked once, at worker startup.** `askwell.worker.startup` refuses to start — rather than failing one opaque batch at a time — if `ASKWELL_EMBEDDING_DIMENSIONS` does not match the width `chunks.embedding` was actually migrated at.
+- **An empty chunk is refused as a second line of defence.** `askwell.chunk` already guarantees this cannot happen; `embed` checks anyway, so a defect upstream surfaces as a named failure rather than a citation pointing at nothing.
+
 ## 0.2.12 — 2026-08-28
 
 Chunking respects structure instead of cutting at a fixed length. `M1-INDEX-ING-031`.
