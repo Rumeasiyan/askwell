@@ -361,6 +361,28 @@ export async function isFirstAnswer(signal?: AbortSignal): Promise<boolean> {
 
 
 /**
+ * Whether a turn abstained rather than answered. `M2-ABSTAIN-FE-055`.
+ *
+ * The server never adds a fourth `status` for this (`AskDoneData.status` stays
+ * `"completed"` for an abstained turn, `askwell.ask._run_generation`) — it
+ * composes the three-part abstention message (`askwell.agent.abstain.
+ * compose_abstention`) straight into `reason` and never streams it as a
+ * `token` event (see that module's own comment: streaming it was left for
+ * this ticket to decide, and it does not, since the whole message is already
+ * known synchronously — there is nothing to stream token by token). So the
+ * one signal available client-side is exactly what an abstained turn always
+ * has and an answered one never does: `completed`, no answer text, and a
+ * `reason`. The one other `completed` turn with a non-null `reason` — a
+ * truncated answer, `"Reached the answer length limit."` — always has answer
+ * text too, so it never satisfies this.
+ */
+export function isAbstained<T extends { status: string; answer: string; reason: string | null }>(
+  turn: T,
+): boolean {
+  return turn.status === "completed" && turn.answer === "" && turn.reason !== null;
+}
+
+/**
  * The conversation id the server used for this turn.
  *
  * The browser cannot know it: `POST /ask` resolves an existing conversation or

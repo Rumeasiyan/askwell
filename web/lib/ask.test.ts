@@ -16,6 +16,7 @@ import { test } from "node:test";
 import {
   applyAskEvent,
   conversationOf,
+  isAbstained,
   isFirstAnswer,
   type AskTurnState,
   CONVERSATION_PAGE_SIZE,
@@ -399,5 +400,41 @@ test("an event without one yields null rather than a broken id", () => {
   assert.equal(
     conversationOf({ event: "token", data: { message_id: "m1", conversation_id: 7 } } as never),
     null,
+  );
+});
+
+// --- isAbstained -------------------------------------------------------------
+
+test("a completed turn with no answer text and a reason abstained", () => {
+  assert.equal(
+    isAbstained({ status: "completed", answer: "", reason: "Nothing in your files answers this." }),
+    true,
+  );
+});
+
+test("an ordinary answered turn did not abstain", () => {
+  assert.equal(isAbstained({ status: "completed", answer: "Ninety days.", reason: null }), false);
+});
+
+test("a truncated but answered turn — completed, a reason, but real text — did not abstain", () => {
+  // `askwell.ask._run_generation`'s other `completed` + non-null `reason`
+  // combination: "Reached the answer length limit." always comes with
+  // answer text already streamed, which is exactly what distinguishes it
+  // from an abstention.
+  assert.equal(
+    isAbstained({
+      status: "completed",
+      answer: "Ninety days, per",
+      reason: "Reached the answer length limit.",
+    }),
+    false,
+  );
+});
+
+test("a running or failed turn never reads as abstained, whatever its answer", () => {
+  assert.equal(isAbstained({ status: "running", answer: "", reason: null }), false);
+  assert.equal(
+    isAbstained({ status: "failed", answer: "", reason: "Askwell could not reach the assistant." }),
+    false,
   );
 });

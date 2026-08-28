@@ -4,6 +4,22 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.43 — 2026-08-28
+
+Abstention renders as a deliberate state, not a blank answer. `M2-ABSTAIN-FE-055`.
+
+### Added
+
+- **`isAbstained`** (`web/lib/ask.ts`) is the one client-side signal an abstained turn has and an answered one never does: `completed`, no answer text, and a non-null `reason` — the server never streams the composed abstention message (`M2-ABSTAIN-BE-054`) as a `token` event, since the whole message is already known synchronously.
+- **The abstained state** (`AbstentionState`, `ask-screen.tsx`) renders in place of the answer, in `--ink` and `--muted`, generous space, never `--alarm` — the situation on its own line, the rest of the composed message beneath it. Below it, in its own region, an **Add a source** action retains the question (via the same `fillComposer` pattern `context-rail.tsx`'s "Ask about this source" already uses) and navigates to the add flow — the region `M6.5-WEB-FE-186`'s escalation offer will later add two siblings to, never above the abstention statement (C10).
+- **The provenance margin's own empty state for abstention** — "No sources — nothing in your files matched." — distinct from an ordinary uncited answer's "Nothing in this answer was cited."
+- A past abstained turn collapses with no source count already, from `M2-ABSTAIN-BE-054`'s `source_count: null`; this ticket is what makes an *expanded* past abstained turn render the same state rather than nothing.
+
+### Verified
+
+- `scripts/dev.sh web-check` (lint, format, typecheck, 171 tests, build, version/token/contrast/offline checks) clean.
+- No interactive browser walkthrough against the running stack — this environment has no browser tool. Verified by code inspection, unit tests on `isAbstained`, and a static build/typecheck pass instead.
+
 ## 0.2.42 — 2026-08-28
 
 Abstention copy that proves the search happened. `M2-ABSTAIN-BE-054`.
