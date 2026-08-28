@@ -4,6 +4,28 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.46 — 2026-08-28
+
+Conflicting sources: present both, never pick one. `M2-PARTIAL-BE-059`.
+
+### Added
+
+- **`askwell.agent.conflict`**: `compose_conflict` builds the prompt for one turn once at least one candidate has cleared the retrieval threshold, from a new versioned prompt (`prompts/conflicting_sources.v1.md`, a superset of `partial_answer.v1.md`'s content) rather than a variant of it. When two or more retrieved passages give a materially different value for the same asked fact, the model presents both as ordinary cited claims and marks the presentation with a fixed, parseable line, `Conflicting sources on <the fact>:`. `split_conflict_answer` reads that convention back out, the same way `askwell.agent.partial.split_partial_answer` reads back `Not covered:` — both conventions coexist in the same composed text, since a conflict and an uncovered aspect are independent concerns.
+- `askwell.ask._run_generation` now composes every non-abstained turn with `compose_conflict` in place of `compose_partial` — a question with no conflict parses to nothing and composes identically to before this ticket. `messages.trace` gained `conflict_detected`/`conflict_topic`, at both the turn level and the `compose` step; `audit_interactions` gained the same two on the interaction payload (no migration — both stores already carry flexible `jsonb`), satisfying the ticket's own "conflicts detected are recorded on the interaction."
+- A memory-resolution hook, inert until M3: `compose_conflict` takes an optional `memory_fact` parameter that, when given, is delimited into the prompt as a `<memory-fact>` block the model is instructed to treat as authoritative over the conflicting passages, citing it as memory and recording resolution with a `Resolved by memory: <fact>.` line that `split_conflict_answer` also reads back (`resolved_by_memory`). Nothing calls it with a value in this milestone — there is no memory store yet to supply one from.
+
+### Notes
+
+- Supersession is respected without any new code: `askwell.retrieve` already excludes `d.superseded_by IS NOT NULL` from every candidate query (`M1`), so two candidates reaching this module are, by construction, both still current — a conflict here is never a live document against a version it has already replaced.
+- Detection is prompt-driven, not a Python heuristic, for the same reason `M2-PARTIAL-BE-057` gave for partial coverage: there is no reliable way to tell "two passages disagree on substance" from "two passages phrase the same fact differently" without reading them for meaning, which the model is already doing while composing. Over-detection (flagging a wording difference as a conflict) is exactly as much a failure as under-detection per the ticket's own edge case, so the prompt is explicit that only a substance disagreement counts.
+- **Deferred, filed as [#223](https://github.com/Rumeasiyan/askwell/issues/223):** the ticket's own edge case asks that a conflict where one side is low-confidence OCR text note that in the presentation. `Candidate` carries no OCR-confidence signal today — `document_pages.ocr_confidence` exists in the schema but is never selected into a candidate or delimited into any prompt — so the model can only note this if the passage text itself happens to say so. Threading that signal through `retrieve.py` was outside this ticket's stated touchpoints ("Prompt files; `messages.trace`") and its own granularity note ("one detection and one branch").
+- Not measured yet: the conflicting-source eval subset with its 0.75 bar is its own ticket (`M2-EVAL-TEST-` series in `docs/backlog/M2-it-says-when-it-doesnt-know.md`) and has not landed, so detection quality is unmeasured — the same known gap the ticket itself names.
+
+### Verified
+
+- `scripts/dev.sh test` (529 passed, 1 skipped) and `scripts/dev.sh test-db` (243 passed — 2 new in `test_ask_api.py`: two passages disagreeing on the asked fact recorded as a conflict with both citations, and a single consistent answer never marked as one). `lint`, `typecheck`, `fmt-check` all clean.
+- Native inference was not running on the host in this session (`/health` reports the inference component `stopped`), so this was verified through the same fake-inference-client, real-Postgres `TestClient` path `M2-PARTIAL-BE-057` used, not against a live model — recorded here rather than left unstated.
+
 ## 0.2.45 — 2026-08-28
 
 Partial answers: answer the grounded part, name the gap. `M2-PARTIAL-BE-057`.

@@ -82,7 +82,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from askwell.agent.abstain import AbstainReason, compose_abstention
 from askwell.agent.claims import Claim, locate_quoted_span, segment_claims
-from askwell.agent.partial import compose_partial, split_partial_answer
+from askwell.agent.conflict import compose_conflict, split_conflict_answer
+from askwell.agent.partial import split_partial_answer
 from askwell.agent.summarize import fallback_summary, summarize_turn
 from askwell.audit import AuditError, Store, record
 from askwell.config import Settings
@@ -493,6 +494,8 @@ async def _run_generation(
     truncated = False
     partial_coverage = False
     uncovered_aspects: tuple[str, ...] = ()
+    conflict_detected = False
+    conflict_topic: str | None = None
     # The model file's own name, not its full path — read from configuration
     # (never hardcoded, `AGENTS.md` §4) so this ticket's "backend and model
     # used" survives a deployment-profile change with no code edit.
@@ -560,15 +563,18 @@ async def _run_generation(
             document_count = len({candidate.document_id for candidate in candidates})
             turn.emit("step", {"label": _label_for_sources(document_count), "kind": "read"})
 
-            # `compose_partial`, not `compose`: a question can ask about more
-            # than one thing, and only some of it may be covered by what
-            # cleared the threshold above. The prompt this loads
-            # (`agent/prompts/partial_answer.v1.md`) answers, with citations,
-            # exactly what is supported and names anything else plainly
-            # rather than folding it into fluent prose — an ordinary
-            # single-aspect question comes back with nothing to name and
-            # composes identically to before. `M2-PARTIAL-BE-057`.
-            composed = compose_partial(question, candidates)
+            # `compose_conflict`, not `compose`: a question can ask about
+            # more than one thing, and only some of it may be covered by what
+            # cleared the threshold above (`M2-PARTIAL-BE-057`); what cleared
+            # it can also disagree with itself across years of superseding
+            # material (`M2-PARTIAL-BE-059`). The prompt this loads
+            # (`agent/prompts/conflicting_sources.v1.md`) answers, with
+            # citations, exactly what is supported, names anything uncovered
+            # plainly, and presents both sides of a genuine conflict rather
+            # than choosing one — an ordinary single-aspect, single-position
+            # question comes back with neither and composes identically to
+            # before either ticket.
+            composed = compose_conflict(question, candidates)
             injection_flagged = composed.injection_flagged
             injection_patterns = composed.injection_patterns
 
@@ -594,13 +600,21 @@ async def _run_generation(
 
             # C4 and C5 both apply to the same answer here: the grounded part
             # already carries citations from the loop above, and this reads
-            # back the `Not covered: <aspect>.` lines `partial_answer.v1.md`
-            # asks the model to write for the rest, rather than inventing or
-            # smoothing over them. A fully-covered answer parses to nothing
-            # here and `partial_coverage` stays `False`, same as before this
-            # ticket. `M2-PARTIAL-BE-057`.
+            # back the `Not covered: <aspect>.` lines the prompt asks the
+            # model to write for the rest, rather than inventing or smoothing
+            # over them. A fully-covered answer parses to nothing here and
+            # `partial_coverage` stays `False`, same as before `M2-PARTIAL-BE-057`.
             uncovered_aspects = split_partial_answer(turn.text).uncovered
             partial_coverage = bool(uncovered_aspects)
+
+            # `M2-PARTIAL-BE-059`: the "Conflicting sources on ...:" line is
+            # the same kind of explicit, parseable convention — read back
+            # rather than re-detected, so a conflict is never silently
+            # smoothed into fluent prose here either. A single consistent
+            # answer parses to nothing and `conflict_detected` stays `False`.
+            conflict = split_conflict_answer(turn.text)
+            conflict_detected = conflict.is_conflict
+            conflict_topic = conflict.topic
 
             trace_steps.append(
                 {
@@ -610,6 +624,8 @@ async def _run_generation(
                     "citations": len(citation_rows),
                     "partial_coverage": partial_coverage,
                     "uncovered_aspects": list(uncovered_aspects),
+                    "conflict_detected": conflict_detected,
+                    "conflict_topic": conflict_topic,
                 }
             )
 
@@ -640,6 +656,12 @@ async def _run_generation(
         # one or a full abstention, without re-parsing the answer's own prose.
         "partial_coverage": partial_coverage,
         "uncovered_aspects": list(uncovered_aspects),
+        # `M2-PARTIAL-BE-059`: whether the conflict branch was taken and the
+        # fact it named, so the FE and the conflicting-source eval subset can
+        # both tell a conflict answer apart from an ordinary one without
+        # re-parsing the answer's own prose.
+        "conflict_detected": conflict_detected,
+        "conflict_topic": conflict_topic,
     }
 
     # `M1-CONV-BE-177`: the summary and source count a collapsed past turn
@@ -735,6 +757,8 @@ async def _run_generation(
                     "abstained": abstained,
                     "partial": partial_coverage,
                     "uncovered_aspects": list(uncovered_aspects),
+                    "conflict_detected": conflict_detected,
+                    "conflict_topic": conflict_topic,
                     "threshold": (
                         str(retrieval_threshold) if retrieval_threshold is not None else None
                     ),
