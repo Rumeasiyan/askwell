@@ -1,0 +1,154 @@
+{
+  "name": "conflicting_sources.v1",
+  "category": "conflicting-sources",
+  "mode": "conflict",
+  "pass_bar": 0.75,
+  "tasks": [
+    {
+      "id": "return-window",
+      "prompt": "What is Meridian Loom's standard product return window?",
+      "scorer": "conflict",
+      "expected": null,
+      "expected_documents": [
+        "conflict_2025.pdf",
+        "conflict_2026.pdf"
+      ],
+      "position_values": [
+        "thirty days",
+        "forty-five days"
+      ],
+      "expect_conflict": true
+    },
+    {
+      "id": "express-shipping-fee",
+      "prompt": "How much is Meridian Loom's express shipping fee per order?",
+      "scorer": "conflict",
+      "expected": null,
+      "expected_documents": [
+        "conflict_2025.pdf",
+        "conflict_2026.pdf"
+      ],
+      "position_values": [
+        "twelve dollars",
+        "eighteen dollars"
+      ],
+      "expect_conflict": true
+    },
+    {
+      "id": "loyalty-points-rate",
+      "prompt": "How many dollars does a Meridian Loom customer need to spend to earn one loyalty point?",
+      "scorer": "conflict",
+      "expected": null,
+      "expected_documents": [
+        "conflict_2025.pdf",
+        "conflict_2026.pdf"
+      ],
+      "position_values": [
+        "ten dollars",
+        "eight dollars"
+      ],
+      "expect_conflict": true
+    },
+    {
+      "id": "sensor-trade-in-credit",
+      "prompt": "What is the maximum trade-in credit for a Loomwear Sensor at Meridian Loom?",
+      "scorer": "conflict",
+      "expected": null,
+      "expected_documents": [
+        "conflict_2025.pdf",
+        "conflict_2026.pdf"
+      ],
+      "position_values": [
+        "fifty dollars",
+        "seventy-five dollars"
+      ],
+      "expect_conflict": true
+    },
+    {
+      "id": "support-first-response-time",
+      "prompt": "Within how many hours must a Meridian Loom customer support ticket receive a first response?",
+      "scorer": "conflict",
+      "expected": null,
+      "expected_documents": [
+        "conflict_2025.pdf",
+        "conflict_2026.pdf"
+      ],
+      "position_values": [
+        "twenty-four hours",
+        "twelve hours"
+      ],
+      "expect_conflict": true
+    },
+    {
+      "id": "affiliate-commission-rate",
+      "prompt": "What is Meridian Loom's affiliate commission rate?",
+      "scorer": "conflict",
+      "expected": null,
+      "expected_documents": [
+        "conflict_2025.pdf",
+        "conflict_2026.pdf"
+      ],
+      "position_values": [
+        "eight percent",
+        "eleven percent"
+      ],
+      "expect_conflict": true
+    },
+    {
+      "id": "warehouse-restock-day",
+      "prompt": "What day of the week do Meridian Loom warehouses restock inventory?",
+      "scorer": "conflict",
+      "expected": null,
+      "expected_documents": [
+        "conflict_2025.pdf",
+        "conflict_2026.pdf"
+      ],
+      "position_values": [
+        "Tuesday",
+        "Thursday"
+      ],
+      "expect_conflict": true
+    },
+    {
+      "id": "extended-warranty-price",
+      "prompt": "How much does a Meridian Loom extended warranty cost annually?",
+      "scorer": "conflict",
+      "expected": null,
+      "expected_documents": [
+        "conflict_2025.pdf",
+        "conflict_2026.pdf"
+      ],
+      "position_values": [
+        "thirty dollars",
+        "forty-five dollars"
+      ],
+      "expect_conflict": true
+    },
+    {
+      "id": "gift-card-expiry-false-conflict",
+      "prompt": "Do Meridian Loom gift cards expire?",
+      "scorer": "conflict",
+      "expected": null,
+      "expected_documents": [
+        "conflict_2025.pdf"
+      ],
+      "position_values": [
+        "never expire"
+      ],
+      "expect_conflict": false
+    },
+    {
+      "id": "store-closing-time-superseded",
+      "prompt": "What time do Meridian Loom retail stores close on weekdays?",
+      "scorer": "conflict",
+      "expected": null,
+      "expected_documents": [
+        "store_hours_2026.pdf"
+      ],
+      "position_values": [
+        "9 PM"
+      ],
+      "expect_conflict": false
+    }
+  ]
+}

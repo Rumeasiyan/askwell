@@ -27,6 +27,7 @@ for _path in (_REPO_ROOT, _REPO_ROOT / "api" / "src"):
 
 from askwell.config import ConfigurationError, load_settings  # noqa: E402
 from eval.abstain import run_abstain_suite_sync  # noqa: E402
+from eval.conflict import run_conflict_suite_sync  # noqa: E402
 from eval.grounded import run_grounded_suite_sync  # noqa: E402
 from eval.results import format_summary, suite_default_results_dir, write_report  # noqa: E402
 from eval.runner import HarnessError, run_suite_sync  # noqa: E402
@@ -66,6 +67,8 @@ def main(argv: list[str] | None = None) -> int:
             report = run_grounded_suite_sync(settings, suite)
         elif suite.mode == "abstain":
             report = run_abstain_suite_sync(settings, suite)
+        elif suite.mode == "conflict":
+            report = run_conflict_suite_sync(settings, suite)
         else:
             report = run_suite_sync(settings, suite)
     except HarnessError as error:
