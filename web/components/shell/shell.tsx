@@ -1,6 +1,6 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, type ReactNode } from "react";
 
 import { AddProvider } from "@/components/add/add-state";
@@ -12,6 +12,8 @@ import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { Rail } from "@/components/shell/rail";
 import { RailDrawer } from "@/components/shell/rail-drawer";
 import { StatusBanner } from "@/components/shell/status-banner";
+import { fetchIngest } from "@/lib/ingest";
+import { fetchSetupState } from "@/lib/setup";
 import { useStatus } from "@/lib/use-status";
 
 /**
@@ -42,6 +44,7 @@ import { useStatus } from "@/lib/use-status";
 export function Shell({ children }: { children: ReactNode }) {
   const status = useStatus();
   useAskShortcut();
+  useWelcomeGate();
 
   return (
     <AddProvider>
@@ -52,6 +55,43 @@ export function Shell({ children }: { children: ReactNode }) {
       </AskProvider>
     </AddProvider>
   );
+}
+
+/**
+ * `/welcome` — shown until a first source is indexed, then never again
+ * (`docs/ux/first-run.md` §"Route"). Checked once per load rather than on
+ * every navigation: a source finishing mid-session must not yank someone off
+ * whatever screen they are actually looking at, only decide where a *fresh*
+ * load lands.
+ */
+function useWelcomeGate(): void {
+  const pathname = usePathname();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (pathname === "/welcome") return;
+    let cancelled = false;
+
+    Promise.all([fetchIngest(), fetchSetupState("standard")])
+      .then(([ingest, setup]) => {
+        if (cancelled) return;
+        const neverIndexed = ingest.documents_ingested === 0;
+        if (neverIndexed && !setup.welcome_skipped) {
+          router.replace("/welcome");
+        }
+      })
+      .catch(() => {
+        // Askwell not answering yet, or `/setup`/`/ingest` failed: stay put
+        // rather than bouncing someone into a screen that will fail the same
+        // way. The ordinary status banner already says Askwell is down.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+    // Intentionally only on first mount: see docstring above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 }
 
 /**

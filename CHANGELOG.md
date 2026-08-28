@@ -4,6 +4,25 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.38 — 2026-08-28
+
+The first-run sequence: what this is, machine check, model, first question. `M1-LIB-FE-052`.
+
+### Added
+
+- **`/welcome`** (`web/components/welcome/welcome-screen.tsx`) — the four-step sequence listed from the start: what Askwell is (offline, in-place indexing, stated up front), a machine check, the model download, and a first question. Shown until a first source is indexed, then never again (`web/components/shell/shell.tsx`'s `useWelcomeGate`); a "Skip setup" link is reachable throughout and goes straight to Ask.
+- **`askwell.hardware.probe()`** — a basic hardware profile from `/proc/meminfo` and an `nvidia-smi`/`rocm-smi` presence check, standing in for the full probe (`M7-PROBE`) per the ticket's own stated assumption; falls back to `standard` with the reason stated when memory cannot be read at all.
+- **`askwell.model_download.ModelDownloadManager`** and **`askwell.models_catalog`** — the model acquisition step: real progress and a real size/estimate, `Range`-based resume from whatever `<target>.part` already holds (so a restart or a click on Cancel then Resume are the same code path), sha256 verification, and a manual-file path for an offline or badly connected machine. Disk space is checked before any download starts. Registry-verified against Hugging Face on 2026-08-28: `bartowski/Qwen_Qwen3.5-4B-GGUF` (`light`/`standard`) and `bartowski/Qwen_Qwen3.5-9B-GGUF` (`accelerated`/`workstation`), both Apache-2.0 and ungated.
+- **`GET /setup`, `POST /setup/model/start|cancel|verify-manual`, `POST /setup/skip`, `POST /setup/passphrase`** (`askwell/setup.py`) — the welcome screen's API surface. Skip and the passphrase decision (offered once, skippable, consequence stated; no encryption enforcement yet) are written to the `settings` table — its first real reader/writer — and recorded as `audit_decisions`.
+- **`askwell.settings_store`** — thin get/set helpers over the `settings` key/value table.
+
+### Known gaps, filed rather than worked around
+
+- **Issue #191**: the downloaded model file lands at `Settings.inference_model_path` as resolved *inside the API container*, which the native inference supervisor (`M0-MODEL-DEPLOY-018`) does not share a mount with and resolves `~` differently. A completed download does not yet make the assistant reachable.
+- **Issue #192**: the download call is refused by the egress proxy exactly as C1 and `docs/architecture.md` §5.1 design it to be — verified live (`model_download_failed error='403 Forbidden'`) — since model acquisition is not one of the proxy's two named, scoped exceptions. Recommendation on the issue is to move the fetch itself into the browser and keep the API's role to verification.
+
+Both are architecture decisions outside this ticket's scope; `docs/decisions.md`, 2026-08-28, has the full reasoning.
+
 ## 0.2.37 — 2026-08-28
 
 After an answer, up to three suggested follow-ups that fill the composer, not send. `M1-CONV-FE-180`.

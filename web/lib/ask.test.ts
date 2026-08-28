@@ -15,6 +15,7 @@ import { test } from "node:test";
 
 import {
   applyAskEvent,
+  isFirstAnswer,
   type AskTurnState,
   CONVERSATION_PAGE_SIZE,
   conversationWindow,
@@ -330,4 +331,38 @@ test("the server's message id is captured once and not overwritten", () => {
   // It is what `/ask/{id}/stop` addresses; changing it mid-turn would aim stop
   // at something else.
   assert.equal(turn.serverId, "first");
+});
+
+
+// --- the first answer ---------------------------------------------------------
+
+function withFetch<T>(reply: () => Response, body: () => T): T {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => reply()) as typeof fetch;
+  try {
+    return body();
+  } finally {
+    globalThis.fetch = original;
+  }
+}
+
+test("the first completed answer is recognised as the first", () => {
+  return withFetch(
+    () => new Response(JSON.stringify({ started: 1, completed: 1, stopped: 0 }), { status: 200 }),
+    () => isFirstAnswer().then((first) => assert.equal(first, true)),
+  );
+});
+
+test("the second answer is not, so the note is said once", () => {
+  return withFetch(
+    () => new Response(JSON.stringify({ started: 2, completed: 2, stopped: 0 }), { status: 200 }),
+    () => isFirstAnswer().then((first) => assert.equal(first, false)),
+  );
+});
+
+test("a counts endpoint that fails costs the note, never the answer", () => {
+  return withFetch(
+    () => new Response("nope", { status: 500 }),
+    () => isFirstAnswer().then((first) => assert.equal(first, false)),
+  );
 });
