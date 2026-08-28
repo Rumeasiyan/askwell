@@ -25,6 +25,7 @@ from askwell.middleware import register_session
 from askwell.network import read_activity
 from askwell.roots import register_roots
 from askwell.sources import register_sources
+from askwell.suggestions import register_suggestions
 
 log = get_logger(__name__)
 
@@ -100,6 +101,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_sources(app, resolved, app.state.sessions)
     register_ingest(app, resolved, app.state.sessions)
     register_ask(app, resolved, app.state.sessions)
+    register_suggestions(app, app.state.sessions)
 
     @app.get("/health")
     async def health(request: Request) -> JSONResponse:

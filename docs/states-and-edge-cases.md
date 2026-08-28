@@ -161,7 +161,7 @@ Every one of these is a real screen someone will see on day one, and each is an 
 | Collection, no documents | Same, scoped |
 | Database connections | What connecting enables; that credentials must be read-only |
 | Memory, before anything is learned | What the clarification loop will do, and that answering questions makes answers better |
-| Conversation history | — |
+| Conversation history | Nothing asked yet this session. There is no separate history screen before turns collapse (`../ux/conversation.md`, `M1-CONV-FE-178`) — the Ask screen's own empty state stands in for it: the suggestion list once a corpus is indexed, or the indexing notice while it is not (`M1-LIB-FE-051`) |
 | Audit log, filtered to nothing | Distinguish "no events" from "filter excludes everything" |
 | Usage dashboard, pre-traffic | What will appear once questions are asked |
 
