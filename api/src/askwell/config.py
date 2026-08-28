@@ -161,6 +161,14 @@ class Settings(BaseSettings):
     # reaching this be stated, not just that generation stop. `M1-ASK-API-038`.
     generation_max_tokens: int = Field(default=1024, ge=1, le=8192)
 
+    # How many answers may generate at once. Two, the same figure and the
+    # same reason as `ingest_concurrency`: this laptop is also running the
+    # model itself and the user's browser, and a fourth abandoned question
+    # asked while three are already generating waits rather than adding a
+    # fourth full inference pass to a machine already busy with three.
+    # `M1-ASK-BE-040`.
+    generation_max_concurrent: int = Field(default=2, ge=1, le=16)
+
     # How many chunks go into one call to the embedding model. Bounded for the
     # same reason `ingest_concurrency` is: a batch sized to the whole document
     # is a batch sized to whatever the largest document turns out to be, and a

@@ -4,6 +4,17 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.22 — 2026-08-28
+
+Generation continues server-side when the user navigates away, made a fully closed loop. `M1-ASK-BE-040`.
+
+### Added
+
+- **The assistant `messages` row is written `running` before generation starts**, not after it finishes — `POST /ask` inserts it in the same request that starts the background task. A message can no longer exist only in memory: the row `reconcile_interrupted` needs to find is there from the first instant.
+- **`askwell.ask.reconcile_interrupted`**, run once at startup (`api/src/askwell/app.py`, gated on Postgres being reachable) — fails every assistant row still `running`, which can only mean the previous process died mid-answer. The stated edge case: the stack restarts mid-generation, the answer is lost, and the message is marked failed rather than left pending forever.
+- **`Settings.generation_max_concurrent`** (default 2, `ASKWELL_GENERATION_MAX_CONCURRENT`) bounds how many turns retrieve-and-generate at once. Several abandoned questions queue behind the limit rather than each starting a full inference pass immediately — the same reasoning `ingest_concurrency` already applies to ingestion.
+- **`GET /ask/counts`** gained `abandoned` — turns `reconcile_interrupted` failed on the machine's behalf, kept separate from an ordinary inference failure. C1: read from this machine's own `messages` rows, nothing transmitted.
+
 ## 0.2.21 — 2026-08-28
 
 The mic control, reserved and disabled. `M1-ASK-FE-039a`.
