@@ -4,6 +4,18 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.50 — 2026-08-28
+
+The eval harness, offline. `M2-EVAL-TEST-063`.
+
+### Added
+
+- **`eval/bench.py`**: runs a named suite's tasks three times each against the configured model, over the native inference process's Unix socket only (no other network access), and reports mean and worst-of-3 per category — or strict pass/fail for a `pass_bar == 1.0` suite, so a near-perfect score on a suite that must be perfect never reads as fine. `RUNS_PER_TASK` is a fixed constant, not a flag, so a suite cannot be run once and reported as three.
+- A model-unavailable failure (`InferenceUnavailable`) aborts the whole run with a named reason and writes no results file; a per-run failure (timeout, malformed output) is recorded on that run with its reason and the task continues.
+- Results (`eval/results/*.json`, gitignored) carry the model actually loaded, the deployment profile, and every prompt file's version, for before/after comparison.
+- New `scripts/dev.sh eval --suite <name>` command.
+- `eval/suites/smoke.v1.json`, a two-task fixture proving the harness end-to-end — not one of the eight quality-gate categories (`M2-EVAL-TEST-064` onward).
+
 ## 0.2.49 — 2026-08-28
 
 Deletion confirmation and the deleted-source citation card. `M2-DELETE-FE-062`.

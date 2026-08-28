@@ -38,6 +38,11 @@ __pycache__/
 web/node_modules/
 web/.next/
 web/out/
+
+# Eval run output: machine- and timestamp-specific, not source. A before/after
+# comparison quotes the numbers into docs/BRAIN.md; the raw JSON is not the
+# record of the record.
+eval/results/*.json
 next-env.d.ts
 web/tsconfig.tsbuildinfo
 
