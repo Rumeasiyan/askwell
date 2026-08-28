@@ -77,16 +77,18 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from askwell.agent.claims import Claim, locate_quoted_span, segment_claims
 from askwell.agent.compose import compose
-from askwell.audit import Store, record
+from askwell.audit import AuditError, Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
 from askwell.inference.client import InferenceClient, InferenceFailed, InferenceUnavailable
 from askwell.logging import get_logger
 from askwell.retrieve import Candidate, retrieve
+from askwell.traces import TraceRing
 
 log = get_logger(__name__)
 
@@ -362,6 +364,11 @@ async def _run_generation(
     trace_steps: list[dict[str, Any]] = []
     injection_flagged = False
     injection_patterns: tuple[str, ...] = ()
+    # The model file's own name, not its full path — read from configuration
+    # (never hardcoded, `AGENTS.md` §4) so this ticket's "backend and model
+    # used" survives a deployment-profile change with no code edit.
+    model_name = settings.inference_model_path.stem
+    turn_started = time.monotonic()
 
     turn.emit("step", {"label": "Searching your files.", "kind": "retrieve"})
 
@@ -429,9 +436,11 @@ async def _run_generation(
         reason = "Askwell hit an error it did not expect while answering."
         log.exception("ask_generation_failed", message_id=str(turn.message_id))
 
+    duration_ms = int((time.monotonic() - turn_started) * 1000)
+
     trace = {
         "steps": trace_steps,
-        "backend": {"mode": "local"},
+        "backend": {"mode": "local", "model": model_name},
         "stopped_early": status != "completed",
         "injection_flagged": injection_flagged,
         "injection_patterns": list(injection_patterns),
@@ -439,56 +448,118 @@ async def _run_generation(
         "reason": reason,
     }
 
-    async with session_scope(factory) as db:
-        # `ON CONFLICT` rather than a plain `UPDATE`: `ask()` always inserts
-        # the pending row ahead of this, but a caller driving `_generate`
-        # directly against a turn it built itself — every test in
-        # `test_ask_api.py` that isolates stopping or disconnection from the
-        # HTTP layer does exactly this — has not, and a message finishing
-        # with nowhere to write is a worse bug than the one this ticket
-        # exists to close.
-        await db.execute(
-            text(
-                "INSERT INTO messages (id, conversation_id, role, content, trace) "
-                "VALUES (:id, :conversation_id, 'assistant', :content, CAST(:trace AS jsonb)) "
-                "ON CONFLICT (id) DO UPDATE SET content = :content, trace = CAST(:trace AS jsonb)"
-            ),
-            {
-                "id": turn.message_id,
-                "conversation_id": turn.conversation_id,
-                "content": turn.text,
-                "trace": json.dumps(trace),
-            },
-        )
-        for row in citation_rows:
+    # Traces are the ring buffer's own concern and never gate the answer —
+    # `TraceRing.write` cannot raise, matching `askwell.traces`'s own "fails
+    # open" guarantee. Written ahead of the audited write below so a trace
+    # written but a failed audit record still leaves the full detail on disk.
+    TraceRing(settings.trace_dir, settings.trace_max_bytes).write(turn.message_id, trace)
+
+    try:
+        async with session_scope(factory) as db:
+            # `ON CONFLICT` rather than a plain `UPDATE`: `ask()` always
+            # inserts the pending row ahead of this, but a caller driving
+            # `_generate` directly against a turn it built itself — every
+            # test in `test_ask_api.py` that isolates stopping or
+            # disconnection from the HTTP layer does exactly this — has not,
+            # and a message finishing with nowhere to write is a worse bug
+            # than the one this ticket exists to close.
             await db.execute(
                 text(
-                    "INSERT INTO citations (id, message_id, chunk_id, claim_ordinal, quoted_span) "
-                    "VALUES (:id, :message_id, :chunk_id, :ordinal, :quoted_span)"
+                    "INSERT INTO messages (id, conversation_id, role, content, trace) "
+                    "VALUES (:id, :conversation_id, 'assistant', :content, CAST(:trace AS jsonb)) "
+                    "ON CONFLICT (id) DO UPDATE SET "
+                    "content = :content, trace = CAST(:trace AS jsonb)"
                 ),
                 {
-                    "id": uuid.uuid4(),
-                    "message_id": turn.message_id,
-                    "chunk_id": row["chunk_id"],
-                    "ordinal": row["ordinal"],
-                    "quoted_span": row["quoted_span"],
+                    "id": turn.message_id,
+                    "conversation_id": turn.conversation_id,
+                    "content": turn.text,
+                    "trace": json.dumps(trace),
                 },
             )
-        await record(
-            db,
-            Store.INTERACTIONS,
-            ASK_ASKED,
-            {
-                "conversation_id": str(turn.conversation_id),
-                "message_id": str(turn.message_id),
-                "question": question,
-                "answer": turn.text,
-                "status": status,
-                "source_id": str(source_id) if source_id else None,
-                "claim_count": claims_emitted,
-                "citation_count": len(citation_rows),
-            },
-        )
+            for row in citation_rows:
+                await db.execute(
+                    text(
+                        "INSERT INTO citations "
+                        "(id, message_id, chunk_id, claim_ordinal, quoted_span) "
+                        "VALUES (:id, :message_id, :chunk_id, :ordinal, :quoted_span)"
+                    ),
+                    {
+                        "id": uuid.uuid4(),
+                        "message_id": turn.message_id,
+                        "chunk_id": row["chunk_id"],
+                        "ordinal": row["ordinal"],
+                        "quoted_span": row["quoted_span"],
+                    },
+                )
+            # C6/`M1-ASK-OBS-041`: question, answer, retrieved chunk
+            # identifiers and scores, duration, backend and model — one
+            # interaction record, in the same transaction as the answer
+            # itself. `Store.INTERACTIONS` has no update/delete grant and
+            # chains to the previous record (`askwell.audit`); scores are
+            # stringified because `canonical_payload` refuses floats — a
+            # value that must hash identically after a jsonb round trip.
+            await record(
+                db,
+                Store.INTERACTIONS,
+                ASK_ASKED,
+                {
+                    "conversation_id": str(turn.conversation_id),
+                    "message_id": str(turn.message_id),
+                    "question": question,
+                    "answer": turn.text,
+                    "status": status,
+                    "source_id": str(source_id) if source_id else None,
+                    "citation_count": len(citation_rows),
+                    "duration_ms": duration_ms,
+                    "backend": "local",
+                    "model": model_name,
+                    "retrieved_chunks": [
+                        {"chunk_id": str(candidate.chunk_id), "score": str(candidate.score)}
+                        for candidate in candidates
+                    ],
+                },
+            )
+    except (AuditError, SQLAlchemyError) as error:
+        # Both, because `AuditError` alone does not cover the case this ticket
+        # names. `record()` raises it only for a payload that will not hash; a
+        # genuinely unwritable `audit_interactions` — a revoked INSERT grant,
+        # which is precisely how C6 is enforced, a missing table, a full disk —
+        # raises SQLAlchemy's own error instead. Catching only the first meant
+        # the ticket's own scenario, "make the interaction table unwritable",
+        # escaped this handler entirely: the turn ended with an unhandled
+        # exception, the client saw the stream stop with no `done` event, and
+        # the row stayed `running` forever.
+        # The transaction above rolled back in full — `session_scope`'s own
+        # guarantee — so the answer this turn produced was never persisted,
+        # matching this ticket's own acceptance criterion: a write failure
+        # here must not leave an unlogged answer sitting in `messages`. What
+        # is still true is that a client is watching this turn live and the
+        # pending `running` row `ask()` wrote is still there; both are
+        # updated, best-effort, in a fresh transaction so the failure is
+        # visible rather than a turn that silently hangs at `running`
+        # forever. If this second write also fails, `reconcile_interrupted`
+        # is the backstop the next startup already provides for exactly a
+        # row stuck `running` with nothing left generating it.
+        status = "failed"
+        reason = f"Askwell could not save this answer: {error}"
+        log.error("ask_audit_write_failed", message_id=str(turn.message_id), error=str(error))
+        failure_trace = {**trace, "status": status, "reason": reason}
+        try:
+            async with session_scope(factory) as db:
+                await db.execute(
+                    text(
+                        "UPDATE messages SET content = :content, trace = CAST(:trace AS jsonb) "
+                        "WHERE id = :id"
+                    ),
+                    {
+                        "id": turn.message_id,
+                        "content": "",
+                        "trace": json.dumps(failure_trace),
+                    },
+                )
+        except Exception:
+            log.exception("ask_failure_write_failed", message_id=str(turn.message_id))
 
     turn.emit("done", {"status": status, "reason": reason})
     turn.status = status
