@@ -4,6 +4,20 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.37 — 2026-08-28
+
+After an answer, up to three suggested follow-ups that fill the composer, not send. `M1-CONV-FE-180`.
+
+### Added
+
+- **`web/lib/follow-ups.ts`** — `followUpSuggestions` (pure): up to three questions derived from a completed turn's citations and answer text — one per distinct cited document (heading, when extraction found one; otherwise the same distinctive-term heuristic `askwell.suggestions` already uses server-side, applied to the answer), plus a fixed "How did you get this?" filling any remaining slot. No model call, matching the reasoning already settled for the empty-state corpus suggestions (`M1-LIB-FE-051`): this is exactly the moment a slow local model must not delay an answer already on screen. Returns `[]` for an abstained turn, a turn still running, or one with no citations at all — never padded. A local `recordFollowUpUsed`/`getFollowUpUsedCount` counter (in-memory only, C1) tracks use.
+- **`web/components/ask/ask-screen.tsx`** — `FollowUpSuggestions`, rendered beneath a completed live turn's answer. Clicking one fills the composer via the existing `fillComposer` event; it sends nothing.
+
+### Changed
+
+- **`web/components/ask/ask-screen.tsx`** — `Composer`'s fill listener now asks before replacing a non-empty draft (`window.confirm`), rather than overwriting it silently. Applies to every caller of `fillComposer` (the pre-question corpus suggestions and the context rail's "ask about this source", not only this ticket's own follow-ups) since the draft-preservation rule is the composer's, not any one caller's.
+- **`docs/states-and-edge-cases.md`** §2 — three new rows: suggested follow-ups after an answer, a suggestion clicked over an existing draft, and suggestion generation failing or having nothing to suggest.
+
 ## 0.2.36 — 2026-08-28
 
 A collapsed turn opens back up, in place, with its stored answer and margin — and a source count opens it while bringing that margin into view. `M1-CONV-FE-179`.

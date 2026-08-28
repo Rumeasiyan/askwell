@@ -8,6 +8,7 @@ import { type AskTurn, useAsk } from "@/components/ask/ask-state";
 import { useClaimRef, useHoverHandlers, useScrollToClaim } from "@/components/ask/leader";
 import { InlineSourceCards, useRaised } from "@/components/ask/provenance-margin";
 import { CONVERSATION_PAGE_SIZE, conversationWindow, dividerLabel, liveTurnId } from "@/lib/ask";
+import { followUpSuggestions, recordFollowUpUsed } from "@/lib/follow-ups";
 import { fetchIngest } from "@/lib/ingest";
 import { fetchSuggestions, type Suggestion } from "@/lib/suggestions";
 import { segmentClaims } from "@/lib/claims";
@@ -298,6 +299,43 @@ function SuggestedQuestions() {
   );
 }
 
+/**
+ * Up to three suggestions derived from the answer just given
+ * (`conversation.md` §3, `M1-CONV-FE-180`). `followUpSuggestions`
+ * (`lib/follow-ups.ts`) is what decides content and count — none for an
+ * abstained turn, fewer than three rather than padded — this only renders
+ * whatever it returned, or nothing at all. Clicking fills the composer via
+ * the same `fillComposer` the pre-question suggestions and the context
+ * rail's "ask about this source" already use; it never sends.
+ */
+function FollowUpSuggestions({ turn }: { turn: AskTurn }) {
+  const suggestions = useMemo(() => followUpSuggestions(turn), [turn]);
+  if (suggestions.length === 0) return null;
+
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="ask-micro">Follow up</p>
+      <ul className="flex flex-col gap-1 list-none p-0">
+        {suggestions.map((question) => (
+          <li key={question}>
+            <button
+              type="button"
+              onClick={() => {
+                recordFollowUpUsed();
+                fillComposer(question);
+              }}
+              className="ask-navigates ask-prose text-left px-0"
+              style={{ background: "none", border: "none" }}
+            >
+              {question}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function FirstRun() {
   return (
     <section className="flex flex-col gap-4">
@@ -350,6 +388,15 @@ function Composer() {
   const [value, setValue] = useState("");
   const [scope, setScope] = useState<{ sourceId: string; filename: string } | null>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
+  // Read by `apply` below, whose listener effect has an empty dependency
+  // list and would otherwise close over the composer's very first, empty
+  // `value` forever — the same stale-closure fix `AskProvider`'s `current`
+  // ref applies for the same reason.
+  const valueRef = useRef(value);
+
+  useEffect(() => {
+    valueRef.current = value;
+  }, [value]);
 
   useEffect(() => {
     textarea.current?.focus();
@@ -359,7 +406,15 @@ function Composer() {
   }, []);
 
   useEffect(() => {
+    // A suggestion (this ticket, `M1-CONV-FE-180`, and the pre-question
+    // corpus suggestions before it) must not silently destroy a draft
+    // already in progress — the ticket's own edge case. An empty composer
+    // fills without asking; a non-empty one asks first, and declining
+    // leaves the draft exactly as it was.
     const apply = (detail: ComposerFill): void => {
+      if (valueRef.current.trim() !== "" && !window.confirm("Replace your draft with this suggestion?")) {
+        return;
+      }
       setValue(detail.question);
       setScope(detail.scope ?? null);
       textarea.current?.focus();
@@ -745,6 +800,8 @@ function LiveTurn({ turn }: { turn: AskTurn }) {
       {turn.status === "stopped" ? (
         <p className="ask-micro">Stopped. The answer above is partial.</p>
       ) : null}
+
+      {turn.status === "completed" ? <FollowUpSuggestions turn={turn} /> : null}
 
       {isRunning && running?.id === turn.id ? (
         <div>

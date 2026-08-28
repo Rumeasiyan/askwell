@@ -10,7 +10,7 @@
     "dev": "next dev",
     "build": "next build",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --experimental-strip-types lib/add-source.test.ts lib/sources.test.ts lib/ingest.test.ts lib/ask.test.ts lib/claims.test.ts lib/citations.test.ts lib/pairing.test.ts lib/library.test.ts lib/pdf-highlight.test.ts lib/pdf-text-map.test.ts lib/document-format.test.ts",
+    "test": "node --test --experimental-strip-types lib/add-source.test.ts lib/sources.test.ts lib/ingest.test.ts lib/ask.test.ts lib/claims.test.ts lib/citations.test.ts lib/follow-ups.test.ts lib/pairing.test.ts lib/library.test.ts lib/pdf-highlight.test.ts lib/pdf-text-map.test.ts lib/document-format.test.ts",
     "lint": "eslint .",
     "contrast": "node scripts/contrast.mjs",
     "check-offline": "node scripts/check-offline.mjs",
