@@ -7,7 +7,7 @@ import { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "
 import { type AskTurn, useAsk } from "@/components/ask/ask-state";
 import { useClaimRef, useHoverHandlers, useScrollToClaim } from "@/components/ask/leader";
 import { InlineSourceCards, useRaised } from "@/components/ask/provenance-margin";
-import { dividerLabel, liveTurnId } from "@/lib/ask";
+import { CONVERSATION_PAGE_SIZE, conversationWindow, dividerLabel, liveTurnId } from "@/lib/ask";
 import { fetchIngest } from "@/lib/ingest";
 import { fetchSuggestions, type Suggestion } from "@/lib/suggestions";
 import { segmentClaims } from "@/lib/claims";
@@ -92,23 +92,7 @@ export function AskScreen() {
           <Composer />
           {turns.length === 0 && corpus === "indexing" ? <IndexingNotice /> : null}
           {turns.length === 0 && corpus === "ready" ? <SuggestedQuestions /> : null}
-          {turns.length > 0 ? (
-            <div className="flex flex-col gap-4">
-              {turns.map((turn, index) => {
-                const previous = turns[index - 1];
-                const label =
-                  previous !== undefined
-                    ? dividerLabel(previous.createdAt, turn.createdAt)
-                    : null;
-                return (
-                  <div key={turn.id} className="flex flex-col gap-4">
-                    {label !== null ? <TurnDivider label={label} /> : null}
-                    <TurnRow turn={turn} live={turn.id === liveId} />
-                  </div>
-                );
-              })}
-            </div>
-          ) : null}
+          {turns.length > 0 ? <TurnList turns={turns} liveId={liveId} /> : null}
         </>
       )}
     </section>
@@ -140,6 +124,71 @@ function ReturnToClaim(): null {
   }, [searchParams, router, scrollToClaim]);
 
   return null;
+}
+
+/**
+ * The turn list with paging (`conversation.md` §5, §7; `M1-CONV-FE-179`).
+ *
+ * Every turn already lives in `AskProvider`'s own state — there is no reload
+ * of a past conversation yet (issue number 156: `conversation_id` is not
+ * threaded across turns, so nothing survives a refresh to page a request
+ * against) — so "paging in on scroll" here means revealing more of that same
+ * in-memory list, oldest last, never a network call that could fail. `revealed` counts
+ * back from the newest turn (`conversationWindow`, `lib/ask.ts`); scrolling
+ * the boundary row into view grows it by one more page.
+ */
+function TurnList({ turns, liveId }: { turns: AskTurn[]; liveId: string | null }) {
+  const [revealed, setRevealed] = useState(CONVERSATION_PAGE_SIZE);
+  const { turns: windowed, hasMore } = conversationWindow(turns, revealed);
+  const boundaryRef = useRef<HTMLDivElement>(null);
+  const revealMore = () => setRevealed((count) => count + CONVERSATION_PAGE_SIZE);
+
+  useEffect(() => {
+    if (!hasMore) return;
+    const node = boundaryRef.current;
+    if (node === null) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) revealMore();
+      },
+      { rootMargin: "200px 0px 0px 0px" },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [hasMore]);
+
+  return (
+    <div className="flex flex-col gap-4">
+      {turns.length > CONVERSATION_PAGE_SIZE ? (
+        <div ref={boundaryRef} className="flex justify-center py-2">
+          {hasMore ? (
+            <button
+              type="button"
+              onClick={revealMore}
+              className="ask-navigates ask-micro px-3 py-1"
+              style={{ border: "1px solid var(--rule)" }}
+            >
+              Load earlier turns
+            </button>
+          ) : (
+            <p className="ask-micro">Start of this conversation</p>
+          )}
+        </div>
+      ) : null}
+
+      {windowed.map((turn, index) => {
+        const previous = windowed[index - 1];
+        const label =
+          previous !== undefined ? dividerLabel(previous.createdAt, turn.createdAt) : null;
+        return (
+          <div key={turn.id} className="flex flex-col gap-4">
+            {label !== null ? <TurnDivider label={label} /> : null}
+            <TurnRow turn={turn} live={turn.id === liveId} />
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 type CorpusState = "none" | "indexing" | "ready" | null;
@@ -482,21 +531,99 @@ function QueuedTurn({ turn }: { turn: AskTurn }) {
  * to the count alone here — nothing else in this row spends it
  * (`design-system.md` §2's "reserved" note, and this ticket's own validation
  * rule).
+ *
+ * Clicking the row expands it in place with its stored answer and margin,
+ * restoring exactly what was recorded — never re-run against a changed
+ * corpus (`conversation.md` §6). Its own `expanded` state, not lifted to
+ * `AskScreen`: each turn is its own component instance keyed by `turn.id`,
+ * so "expanding one turn collapses nothing else" falls out for free rather
+ * than needing a set of ids tracked anywhere. `M1-CONV-FE-179`.
  */
 function CollapsedTurn({ turn }: { turn: AskTurn }) {
+  const [expanded, setExpanded] = useState(false);
+  const marginRef = useRef<HTMLDivElement>(null);
+  const scrollPending = useRef(false);
+
+  useEffect(() => {
+    if (!expanded || !scrollPending.current) return;
+    scrollPending.current = false;
+    marginRef.current?.scrollIntoView({ block: "center" });
+  }, [expanded]);
+
+  const toggle = (): void => setExpanded((value) => !value);
+
+  const expandAndScrollToMargin = (): void => {
+    if (expanded) {
+      marginRef.current?.scrollIntoView({ block: "center" });
+      return;
+    }
+    scrollPending.current = true;
+    setExpanded(true);
+  };
+
   return (
-    <article className="flex items-baseline gap-3">
-      <p
-        className="ask-prose ask-collapsed-line"
-        style={{ color: "var(--muted)", flex: "0 1 auto", maxWidth: "45%" }}
-        title={turn.question}
+    <article className="flex flex-col gap-3">
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        onClick={toggle}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          toggle();
+        }}
+        className="flex items-baseline gap-3"
+        style={{ cursor: "pointer" }}
       >
-        {turn.question}
-      </p>
-      <p className="ask-micro ask-collapsed-line" style={{ textTransform: "none", flex: 1 }}>
-        {turn.summary ?? ""}
-      </p>
-      <SourceCountBadge count={turn.sourceCount} />
+        <p
+          className="ask-prose ask-collapsed-line"
+          style={{ color: "var(--muted)", flex: "0 1 auto", maxWidth: "45%" }}
+          title={turn.question}
+        >
+          {turn.question}
+        </p>
+        <p className="ask-micro ask-collapsed-line" style={{ textTransform: "none", flex: 1 }}>
+          {turn.summary ?? ""}
+        </p>
+        <SourceCountBadge
+          count={turn.sourceCount}
+          onClick={turn.sourceCount !== null ? expandAndScrollToMargin : undefined}
+        />
+      </div>
+
+      {expanded ? (
+        <div className="flex flex-col gap-2">
+          {turn.answer !== "" ? <AnswerProse turnId={turn.id} text={turn.answer} /> : null}
+          {turn.status === "failed" && turn.reason !== null ? (
+            <p className="ask-prose" style={{ color: "var(--muted)" }}>
+              {turn.reason}
+            </p>
+          ) : null}
+          {/* Every expanded past turn gets its own margin, right here — the
+              shared `<aside>` (`ProvenanceMargin`, `shell.tsx`) only ever
+              shows the live turn's citations, so a second, third, fourth
+              expanded turn cannot borrow it without stealing it from
+              whichever one is actually streaming. Reusing the inline variant
+              unconditionally (`M1-CITE-FE-044`, `design-system.md` §7) rather
+              than only below the breakpoint is the deliberate trade-off:
+              "over presentation that already exists" (this ticket's own
+              granularity note) rather than a second live margin column. */}
+          <div ref={marginRef}>
+            <InlineSourceCards turnId={turn.id} cards={turn.citations} />
+          </div>
+          <div>
+            <button
+              type="button"
+              onClick={toggle}
+              className="ask-navigates px-3 py-1"
+              style={{ border: "1px solid var(--rule-strong)", fontSize: "var(--t-ui)" }}
+            >
+              Collapse
+            </button>
+          </div>
+        </div>
+      ) : null}
     </article>
   );
 }
@@ -508,8 +635,19 @@ function CollapsedTurn({ turn }: { turn: AskTurn }) {
  * (`design-system.md` §8) — a filled dot beside the number versus an open,
  * slashed circle beside "No sources" carries the distinction even in
  * greyscale, and only the answered form spends `--provenance`.
+ *
+ * `onClick`, when given, is a nested real `<button>` inside the row's own
+ * `role="button"` (`CollapsedTurn`) — expanding-and-scrolling is a more
+ * specific action than the row's plain toggle, so it needs its own target
+ * rather than overloading the row's click with "which part was clicked".
  */
-function SourceCountBadge({ count }: { count: number | null }) {
+function SourceCountBadge({
+  count,
+  onClick,
+}: {
+  count: number | null;
+  onClick?: (() => void) | undefined;
+}) {
   if (count === null) {
     return (
       <span
@@ -524,22 +662,41 @@ function SourceCountBadge({ count }: { count: number | null }) {
       </span>
     );
   }
-  return (
-    <span
-      className="flex items-center gap-1"
-      style={{
-        color: "var(--provenance)",
-        fontSize: "var(--t-micro)",
-        letterSpacing: "var(--t-micro-tracking)",
-        whiteSpace: "nowrap",
-      }}
-      aria-label={`${count} source${count === 1 ? "" : "s"}`}
-    >
+  const label = `${count} source${count === 1 ? "" : "s"}`;
+  const content = (
+    <>
       <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
         <circle cx="5" cy="5" r="4" fill="currentColor" />
       </svg>
       {count}
-    </span>
+    </>
+  );
+  const style = {
+    color: "var(--provenance)",
+    fontSize: "var(--t-micro)",
+    letterSpacing: "var(--t-micro-tracking)",
+    whiteSpace: "nowrap" as const,
+  };
+  if (onClick === undefined) {
+    return (
+      <span className="flex items-center gap-1" style={style} aria-label={label}>
+        {content}
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick();
+      }}
+      className="flex items-center gap-1"
+      style={{ ...style, background: "none", border: "none", padding: 0, cursor: "pointer" }}
+      aria-label={label}
+    >
+      {content}
+    </button>
   );
 }
 

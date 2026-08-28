@@ -16,6 +16,8 @@ import { test } from "node:test";
 import {
   applyAskEvent,
   type AskTurnState,
+  CONVERSATION_PAGE_SIZE,
+  conversationWindow,
   dividerLabel,
   liveTurnId,
   looksNonEnglish,
@@ -162,6 +164,44 @@ test("a second question asked mid-answer waits its turn, first in first out", ()
 
 test("nothing queued and nothing running dispatches nothing", () => {
   assert.equal(nextToDispatch([{ id: "a", status: "completed" }]), null);
+});
+
+// --- conversationWindow: paging older turns in on scroll (conversation.md §5, §7) --
+
+test("fewer turns than the page size shows all of them with nothing more to page in", () => {
+  const turns = Array.from({ length: 5 }, (_, i) => ({ id: String(i) }));
+  assert.deepEqual(conversationWindow(turns, CONVERSATION_PAGE_SIZE), { turns, hasMore: false });
+});
+
+test("exactly the page size shows all of them, still with nothing more", () => {
+  const turns = Array.from({ length: CONVERSATION_PAGE_SIZE }, (_, i) => ({ id: String(i) }));
+  const result = conversationWindow(turns, CONVERSATION_PAGE_SIZE);
+  assert.equal(result.turns.length, CONVERSATION_PAGE_SIZE);
+  assert.equal(result.hasMore, false);
+});
+
+test("more turns than revealed shows only the newest, and says more remain", () => {
+  const turns = Array.from({ length: 25 }, (_, i) => ({ id: String(i) }));
+  const result = conversationWindow(turns, 20);
+  assert.equal(result.turns.length, 20);
+  assert.equal(result.turns[0]!.id, "5");
+  assert.equal(result.turns[19]!.id, "24");
+  assert.equal(result.hasMore, true);
+});
+
+test("revealing everything after paging in shows the true first turn and no more", () => {
+  const turns = Array.from({ length: 25 }, (_, i) => ({ id: String(i) }));
+  const result = conversationWindow(turns, 25);
+  assert.equal(result.turns.length, 25);
+  assert.equal(result.turns[0]!.id, "0");
+  assert.equal(result.hasMore, false);
+});
+
+test("revealing more than exist never renders a shorter conversation as if it were the whole one — it is simply capped at the whole one", () => {
+  const turns = Array.from({ length: 3 }, (_, i) => ({ id: String(i) }));
+  const result = conversationWindow(turns, 999);
+  assert.equal(result.turns.length, 3);
+  assert.equal(result.hasMore, false);
 });
 
 // --- liveTurnId: which turn renders full (conversation.md §2, §5) -----------
