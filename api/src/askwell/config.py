@@ -125,6 +125,13 @@ class Settings(BaseSettings):
     # re-embed, not a schema edit. bge-m3 gives 1024.
     embedding_dimensions: int = Field(default=1024, ge=1, le=16000)
 
+    # How many chunks go into one call to the embedding model. Bounded for the
+    # same reason `ingest_concurrency` is: a batch sized to the whole document
+    # is a batch sized to whatever the largest document turns out to be, and a
+    # laptop asked to embed nine hundred passages in one call is a laptop that
+    # stops responding to anything else until it is done. `M1-INDEX-ING-032`.
+    embedding_batch_size: int = Field(default=16, ge=1, le=256)
+
     # How many documents are ingested at once. Two, because this laptop is
     # also running the user's browser and the answer they are waiting for:
     # extraction and embedding are CPU-bound and will take every core they are

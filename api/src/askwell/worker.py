@@ -93,7 +93,7 @@ async def reconcile_queue(ctx: dict[str, Any]) -> int:
 
 
 async def startup(ctx: dict[str, Any]) -> None:
-    from askwell import ingest
+    from askwell import embed, ingest
 
     settings: Settings = ctx["settings"]
     engine = build_engine(settings)
@@ -113,8 +113,18 @@ async def startup(ctx: dict[str, Any]) -> None:
     # reconcile that would otherwise skip straight past it.
     try:
         async with session_scope(ctx["sessions"]) as session:
+            await embed.check_dimension(session, settings)
             resumed = await ingest.resume(session)
         waiting = await ingest.reconcile(ctx["sessions"], settings)
+    except embed.EmbeddingDimensionMismatch:
+        # Fatal, deliberately, unlike everything below. The database is up
+        # and answering — this is not "Postgres is not ready yet", it is
+        # "this install is configured to embed at a width the schema does
+        # not have", which will not fix itself on the next reconcile and
+        # would otherwise fail every single document, one opaque pgvector
+        # error at a time, until someone thought to check the two numbers
+        # against each other.
+        raise
     except Exception as error:  # the database may not be up yet
         # Not fatal. Starting before Postgres is ready is normal on a laptop,
         # and refusing to start would leave the queue with nothing to drain it

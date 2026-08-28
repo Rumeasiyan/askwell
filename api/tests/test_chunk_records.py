@@ -21,7 +21,7 @@ from askwell import chunk as chunk_module
 from askwell import extract, ingest
 from askwell.config import Settings
 from askwell.db.engine import session_scope
-from askwell.ingest import Work
+from askwell.ingest import Stage, Work
 
 from .test_ingest_records import TABLES, nominate, recorded
 
@@ -73,6 +73,20 @@ def unreachable_queue(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> It
         return len(document_ids)
 
     monkeypatch.setattr(ingest, "dispatch", fake_dispatch)
+    # This module is about `chunk`, not `embed` — `M1-INDEX-ING-032` made
+    # `embed` real and it needs a running inference process none of these
+    # tests stand one up for. Frozen at real `extract` + `chunk` with `embed`
+    # left unbuilt, matching every test's own assertion that a document
+    # "parks" once chunking is done. `test_embed_records.py` covers `embed`.
+    monkeypatch.setattr(
+        ingest,
+        "STAGES",
+        (
+            Stage("extract", "M1-EXTRACT-ING-026", extract.run),
+            Stage("chunk", "M1-INDEX-ING-031", chunk_module.run),
+            Stage("embed", "M1-INDEX-ING-032"),
+        ),
+    )
     yield settings
 
 
@@ -216,8 +230,8 @@ async def test_re_running_chunk_replaces_rather_than_duplicates(
     async def report(_done: int, _total: int) -> None:
         return None
 
-    await extract.run(work, report, factory)
-    await chunk_module.run(work, report, factory)
+    await extract.run(work, report, factory, unreachable_queue)
+    await chunk_module.run(work, report, factory, unreachable_queue)
     first_run_count = len(
         (
             await session.execute(
@@ -226,7 +240,7 @@ async def test_re_running_chunk_replaces_rather_than_duplicates(
         ).all()
     )
 
-    await chunk_module.run(work, report, factory)
+    await chunk_module.run(work, report, factory, unreachable_queue)
 
     async with session_scope(factory) as scoped:
         rows = (

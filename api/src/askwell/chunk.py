@@ -58,6 +58,7 @@ from askwell.logging import get_logger
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from askwell.config import Settings
     from askwell.ingest import Report, Work
 
 log = get_logger(__name__)
@@ -366,7 +367,12 @@ def _finalize(drafts: list[_ChunkDraft], hard_max: int) -> list[_ChunkDraft]:
     return finalized
 
 
-async def run(work: "Work", report: "Report", factory: "async_sessionmaker[AsyncSession]") -> None:
+async def run(
+    work: "Work",
+    report: "Report",
+    factory: "async_sessionmaker[AsyncSession]",
+    _settings: "Settings",
+) -> None:
     async with session_scope(factory) as session:
         anchor_kind = (
             await session.execute(
