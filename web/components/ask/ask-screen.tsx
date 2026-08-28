@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { type AskTurn, useAsk } from "@/components/ask/ask-state";
-import { useClaimRef, useHoverHandlers } from "@/components/ask/leader";
+import { useClaimRef, useHoverHandlers, useScrollToClaim } from "@/components/ask/leader";
 import { InlineSourceCards, useRaised } from "@/components/ask/provenance-margin";
 import { fetchIngest } from "@/lib/ingest";
 import { fetchSuggestions, type Suggestion } from "@/lib/suggestions";
@@ -13,11 +14,33 @@ import { VERSION } from "@/lib/version";
 
 /** Fills the composer without sending — `ask.md` §4's suggested-follow-up
  * rule applies here too: lowering the cost of the next question is the
- * point, deciding to ask it is not this screen's to make. */
+ * point, deciding to ask it is not this screen's to make. `scope`, when
+ * given, is the context rail's "ask about this source" (`M1-VIEW-FE-048`):
+ * the filled question is scoped to one document rather than the whole
+ * corpus, until sent or cleared. */
 const FILL_COMPOSER_EVENT = "askwell:fill-composer";
 
-function fillComposer(question: string): void {
-  window.dispatchEvent(new CustomEvent<string>(FILL_COMPOSER_EVENT, { detail: question }));
+export interface ComposerFill {
+  question: string;
+  scope?: { sourceId: string; filename: string } | null;
+}
+
+/**
+ * Set the instant this is called, not only carried by the event: the
+ * context rail's own "ask about this source" (`M1-VIEW-FE-048`) calls this
+ * right before navigating to `/`, and a route change is not synchronous
+ * (`shell.tsx`'s `⌘K` shortcut has the same gap) — a listener that only
+ * exists once `Composer` mounts would miss the dispatch entirely rather
+ * than merely reordering it. `Composer`'s mount effect drains this first,
+ * then the event listener covers every later, same-page fill (unchanged
+ * from before this ticket, e.g. `SuggestedQuestions`).
+ */
+let pendingFill: ComposerFill | null = null;
+
+export function fillComposer(question: string, scope: ComposerFill["scope"] = null): void {
+  const detail: ComposerFill = { question, scope };
+  pendingFill = detail;
+  window.dispatchEvent(new CustomEvent<ComposerFill>(FILL_COMPOSER_EVENT, { detail }));
 }
 
 /**
@@ -44,6 +67,16 @@ export function AskScreen() {
           exactly this string (`AGENTS.md` §7). */}
       <p className="ask-micro">Askwell {VERSION} · nothing leaves this machine</p>
 
+      {/* `useSearchParams` needs a `Suspense` boundary, and this is the one
+          piece of the screen that reads it (`M1-VIEW-FE-048`'s "back to
+          answer") — isolated in its own tiny, invisible subtree rather than
+          wrapping the whole screen, so the static export still prerenders
+          everything above and below this line in full rather than a
+          fallback. */}
+      <Suspense fallback={null}>
+        <ReturnToClaim />
+      </Suspense>
+
       {corpus === "none" ? (
         <FirstRun />
       ) : (
@@ -62,6 +95,33 @@ export function AskScreen() {
       )}
     </section>
   );
+}
+
+/**
+ * "Back to answer" from the context rail (`M1-VIEW-FE-048`): `?turn=…&claim=…`
+ * names the exact claim the citation supported, and this scrolls to it once
+ * the turn (already live in `AskProvider`, above the router) re-renders its
+ * `ClaimSpan` here. Cleared from the URL immediately after — a return is a
+ * one-time jump, not a state to keep re-applying on every later render or
+ * survive a refresh into a claim that may no longer exist.
+ */
+function ReturnToClaim(): null {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const scrollToClaim = useScrollToClaim();
+  const handled = useRef(false);
+
+  useEffect(() => {
+    if (handled.current) return;
+    const turn = searchParams.get("turn");
+    const claim = searchParams.get("claim");
+    if (turn === null || claim === null) return;
+    handled.current = true;
+    scrollToClaim(`${turn}:${claim}`);
+    router.replace("/");
+  }, [searchParams, router, scrollToClaim]);
+
+  return null;
 }
 
 type CorpusState = "none" | "indexing" | "ready" | null;
@@ -221,6 +281,7 @@ function FirstRun() {
 function Composer() {
   const { ask } = useAsk();
   const [value, setValue] = useState("");
+  const [scope, setScope] = useState<{ sourceId: string; filename: string } | null>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -231,9 +292,18 @@ function Composer() {
   }, []);
 
   useEffect(() => {
-    const onFill = (event: Event): void => {
-      setValue((event as CustomEvent<string>).detail);
+    const apply = (detail: ComposerFill): void => {
+      setValue(detail.question);
+      setScope(detail.scope ?? null);
       textarea.current?.focus();
+    };
+    if (pendingFill !== null) {
+      apply(pendingFill);
+      pendingFill = null;
+    }
+    const onFill = (event: Event): void => {
+      pendingFill = null;
+      apply((event as CustomEvent<ComposerFill>).detail);
     };
     window.addEventListener(FILL_COMPOSER_EVENT, onFill);
     return () => window.removeEventListener(FILL_COMPOSER_EVENT, onFill);
@@ -241,12 +311,26 @@ function Composer() {
 
   const submit = (): void => {
     if (value.trim() === "") return;
-    ask(value);
+    ask(value, scope?.sourceId ?? null);
     setValue("");
+    setScope(null);
   };
 
   return (
     <div className="flex flex-col gap-2">
+      {scope !== null ? (
+        <p className="ask-micro flex items-center gap-2">
+          Scoped to {scope.filename}
+          <button
+            type="button"
+            onClick={() => setScope(null)}
+            className="ask-navigates px-0"
+            style={{ background: "none", border: "none" }}
+          >
+            Clear
+          </button>
+        </p>
+      ) : null}
       <textarea
         ref={textarea}
         value={value}

@@ -4,6 +4,22 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.32 — 2026-08-28
+
+The source viewer's context rail: back to the answer, and citation stepping. `M1-VIEW-FE-048`.
+
+### Added
+
+- **`web/components/documents/context-rail.tsx`** — the viewer's right-hand rail: which answer and claim sent someone here (read straight out of the live `AskProvider` turn, `useAsk`), a "back to answer" control that lands on the exact claim, next/previous stepping across every passage the answer cited (including across documents, absent rather than disabled for a single citation), plain-text search within the source (`window.find`), copy passage with source and page appended, and "ask about this source" (scoped, via a new `sourceId` on `AskApi.ask`). Arriving with no turn in scope — the library, once it links here, or a reloaded tab that dropped `AskProvider`'s in-memory state — falls back to plain source context with no broken return, per the ticket's own edge case.
+- **`SupersededBanner`** (same file) — "this version was replaced on `<date>`, with a link to current," resolving issue #141: `GET /documents/{id}` now reports `superseded_by` and `superseded_at` (the superseding document's own `added_at`, since `sources.py`'s `supersede()` already sets both in one transaction — nothing new to store).
+- **`web/lib/citations.ts`** — `documentHref` grew an optional `origin` (`turnId`, `claimOrdinal`) carrying `turn`/`claim`/`chunk` query parameters; `stepCitations`, a pure function computing next/previous/current position among an answer's own citations, tested independently of any component.
+- **`AskApi.ask(question, sourceId?)`** and `AskTurn.sourceId` (`ask-state.tsx`) — threads the context rail's scoped question through to `POST /ask`'s existing `source_id`, previously reachable only from the server. `fillComposer` gained a module-level pending slot so a scope set immediately before `router.push` survives the non-synchronous route change, the same gap `shell.tsx`'s `⌘K` shortcut already lived with.
+- **`ReturnToClaim`** (`ask-screen.tsx`) — reads `?turn=&claim=` on the Ask screen and scrolls to the named `ClaimSpan` via a new `useScrollToClaim` (`leader.tsx`), reusing the leader-line registry rather than a second DOM lookup. Isolated behind its own `Suspense` boundary so the rest of the screen — the version line `scripts/check-version.mjs` reads, every corpus state — keeps prerendering in full under the static export rather than a fallback.
+
+### Changed
+
+- **Provenance cards now navigate with `next/link`, not a plain `<a>`** (`provenance-margin.tsx`) — a full page load would drop `AskProvider`'s in-memory turn entirely, which is fatal to "back to answer." Client-side navigation is what makes the live turn survive the round trip to the viewer and back.
+
 ## 0.2.31 — 2026-08-28
 
 Non-PDF renderings and OCR text beside scans. `M1-VIEW-FE-047`.

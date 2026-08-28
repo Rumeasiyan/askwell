@@ -49,13 +49,26 @@ DOCUMENT_OPENED = "document_opened"
 async def _find(session: AsyncSession, document_id: uuid.UUID) -> dict[str, object] | None:
     result = await session.execute(
         text(
-            "SELECT id, filename, path, mime, page_count, anchor_kind, status "
-            "FROM documents WHERE id = :id AND deleted_at IS NULL"
+            "SELECT id, filename, path, mime, page_count, anchor_kind, status, "
+            "superseded_by FROM documents WHERE id = :id AND deleted_at IS NULL"
         ),
         {"id": document_id},
     )
     row = result.mappings().first()
     return dict(row) if row is not None else None
+
+
+async def _superseded_at(session: AsyncSession, new_document_id: uuid.UUID) -> str | None:
+    """The date the superseding version was added — `sources.py`'s own
+    `supersede()` sets the old row's `superseded_by` in the same transaction
+    it inserts the new one, so the new row's `added_at` *is* the date the old
+    version stopped being current, with nothing new to store for it."""
+    result = await session.execute(
+        text("SELECT added_at FROM documents WHERE id = :id"),
+        {"id": new_document_id},
+    )
+    row = result.first()
+    return row[0].isoformat() if row is not None else None
 
 
 def register_documents(
@@ -71,6 +84,12 @@ def register_documents(
             return JSONResponse({"error": "No such document."}, status_code=404)
 
         available = await asyncio.to_thread(Path(str(found["path"])).is_file)
+
+        superseded_by = found["superseded_by"]
+        superseded_at: str | None = None
+        if superseded_by is not None:
+            async with factory() as db:
+                superseded_at = await _superseded_at(db, uuid.UUID(str(superseded_by)))
 
         async with session_scope(factory) as db:
             # Interaction-adjacent, not a decision: opening a source is
@@ -93,6 +112,8 @@ def register_documents(
                 "anchor_kind": found["anchor_kind"],
                 "status": found["status"],
                 "available": available,
+                "superseded_by": str(superseded_by) if superseded_by is not None else None,
+                "superseded_at": superseded_at,
             }
         )
 

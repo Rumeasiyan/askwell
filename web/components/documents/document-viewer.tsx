@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
 import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
 import type { TextItem } from "pdfjs-dist/types/src/display/api";
@@ -12,6 +12,7 @@ import { locateOnPage, searchTargets,
 } from "@/lib/pdf-highlight";
 import { buildPageText, itemsInRange } from "@/lib/pdf-text-map";
 
+import { ContextRail, SupersededBanner } from "./context-rail";
 import { ConvertedTextView } from "./converted-text-view";
 import { SpreadsheetView } from "./spreadsheet-view";
 import { PageNav, UnrenderableFallback, highlightSpan } from "./viewer-shared";
@@ -39,12 +40,14 @@ interface DocumentMetadata {
   anchor_kind: string | null;
   status: string;
   available: boolean;
+  superseded_by: string | null;
+  superseded_at: string | null;
 }
 
 type ViewerState =
   | { kind: "loading" }
   | { kind: "error"; message: string }
-  | { kind: "unsupported"; filename: string; mime: string | null }
+  | { kind: "unsupported"; meta: DocumentMetadata }
   | { kind: "ready"; meta: DocumentMetadata }
   | { kind: "converted"; meta: DocumentMetadata }
   | { kind: "spreadsheet"; meta: DocumentMetadata };
@@ -63,6 +66,16 @@ export function DocumentViewer() {
   const requestedPage = Number.parseInt(searchParams.get("page") ?? "1", 10);
   const quotedSpan = searchParams.get("span");
   const passage = searchParams.get("passage");
+
+  // The context rail's own origin, `M1-VIEW-FE-048`: which answer, which
+  // claim, which citation among that answer's own list this is. All three
+  // travel together — `documentHref`'s own `origin` param never sets one
+  // without the others — so reading them here as a single optional group
+  // rather than three independent nullable reads.
+  const turnParam = searchParams.get("turn");
+  const claimParam = searchParams.get("claim");
+  const chunkParam = searchParams.get("chunk");
+  const claimOrdinal = claimParam !== null ? Number.parseInt(claimParam, 10) : null;
 
   const [state, setState] = useState<ViewerState>({ kind: "loading" });
   const [pageNumber, setPageNumber] = useState(Number.isFinite(requestedPage) && requestedPage > 0 ? requestedPage : 1);
@@ -111,7 +124,7 @@ export function DocumentViewer() {
           setState({ kind: "spreadsheet", meta });
           break;
         case "unsupported":
-          setState({ kind: "unsupported", filename: meta.filename, mime: meta.mime });
+          setState({ kind: "unsupported", meta });
           break;
       }
     })();
@@ -316,98 +329,137 @@ export function DocumentViewer() {
     );
   }
 
+  const rail = (meta: DocumentMetadata): ReactNode => (
+    <ContextRail
+      documentId={meta.id}
+      filename={meta.filename}
+      pageNumber={pageNumber}
+      passage={passage}
+      turnId={turnParam}
+      claimOrdinal={claimOrdinal}
+      chunkId={chunkParam}
+    />
+  );
+
+  const banner = (meta: DocumentMetadata): ReactNode =>
+    meta.superseded_by !== null ? (
+      <SupersededBanner supersededBy={meta.superseded_by} supersededAt={meta.superseded_at} />
+    ) : null;
+
   if (state.kind === "unsupported") {
     return (
-      <UnrenderableFallback
-        filename={state.filename}
-        documentId={documentId ?? ""}
-        note={`Askwell does not render ${state.mime ?? "this format"} in the viewer yet.`}
-      />
+      <div className="flex min-w-0 flex-1 gap-4">
+        <div className="flex min-w-0 flex-1 flex-col gap-3">
+          {banner(state.meta)}
+          <UnrenderableFallback
+            filename={state.meta.filename}
+            documentId={documentId ?? ""}
+            note={`Askwell does not render ${state.meta.mime ?? "this format"} in the viewer yet.`}
+          />
+        </div>
+        {rail(state.meta)}
+      </div>
     );
   }
 
   if (state.kind === "converted") {
     return (
-      <ConvertedTextView
-        documentId={state.meta.id}
-        filename={state.meta.filename}
-        pageNumber={pageNumber}
-        pageCount={state.meta.page_count}
-        quotedSpan={quotedSpan}
-        passage={passage}
-        onChangePage={setPageNumber}
-      />
+      <div className="flex min-w-0 flex-1 gap-4">
+        <div className="flex min-w-0 flex-1 flex-col gap-3">
+          {banner(state.meta)}
+          <ConvertedTextView
+            documentId={state.meta.id}
+            filename={state.meta.filename}
+            pageNumber={pageNumber}
+            pageCount={state.meta.page_count}
+            quotedSpan={quotedSpan}
+            passage={passage}
+            onChangePage={setPageNumber}
+          />
+        </div>
+        {rail(state.meta)}
+      </div>
     );
   }
 
   if (state.kind === "spreadsheet") {
     return (
-      <SpreadsheetView
-        documentId={state.meta.id}
-        filename={state.meta.filename}
-        pageNumber={pageNumber}
-        quotedSpan={quotedSpan}
-        passage={passage}
-      />
+      <div className="flex min-w-0 flex-1 gap-4">
+        <div className="flex min-w-0 flex-1 flex-col gap-3">
+          {banner(state.meta)}
+          <SpreadsheetView
+            documentId={state.meta.id}
+            filename={state.meta.filename}
+            pageNumber={pageNumber}
+            quotedSpan={quotedSpan}
+            passage={passage}
+          />
+        </div>
+        {rail(state.meta)}
+      </div>
     );
   }
 
   return (
-    <section className="flex flex-col gap-3 p-4">
-      <header className="flex items-baseline justify-between gap-3">
-        <h1 style={{ fontSize: "var(--t-title)", lineHeight: "var(--t-title-lh)" }}>
-          {state.meta.filename}
-        </h1>
-        <PageNav
-          pageNumber={pageNumber}
-          pageCount={state.meta.page_count}
-          onChange={setPageNumber}
-        />
-      </header>
+    <div className="flex min-w-0 flex-1 gap-4">
+      <section className="flex min-w-0 flex-1 flex-col gap-3 p-4">
+        {banner(state.meta)}
+        <header className="flex items-baseline justify-between gap-3">
+          <h1 style={{ fontSize: "var(--t-title)", lineHeight: "var(--t-title-lh)" }}>
+            {state.meta.filename}
+          </h1>
+          <PageNav
+            pageNumber={pageNumber}
+            pageCount={state.meta.page_count}
+            onChange={setPageNumber}
+          />
+        </header>
 
-      {pinpointNote === "scanned" ? (
-        <p className="ask-prose ask-pdf-page-note">
-          This page is a scan, so the citation points to the whole page rather than to a
-          passage on it. Askwell read it with OCR, which recovers the words but not where
-          on the page they sit.
-        </p>
-      ) : null}
-      {pinpointNote === "not-found" ? (
-        <p className="ask-prose ask-pdf-page-note">
-          The exact passage could not be pinpointed on this page — showing the cited page
-          instead.
-        </p>
-      ) : null}
-      {ocrPanel !== null && ocrPanel.low_confidence ? (
-        <p className="ask-prose ask-pdf-page-note">
-          This scan read poorly — Askwell has low confidence in the text below.
-        </p>
-      ) : null}
+        {pinpointNote === "scanned" ? (
+          <p className="ask-prose ask-pdf-page-note">
+            This page is a scan, so the citation points to the whole page rather than to a
+            passage on it. Askwell read it with OCR, which recovers the words but not where
+            on the page they sit.
+          </p>
+        ) : null}
+        {pinpointNote === "not-found" ? (
+          <p className="ask-prose ask-pdf-page-note">
+            The exact passage could not be pinpointed on this page — showing the cited page
+            instead.
+          </p>
+        ) : null}
+        {ocrPanel !== null && ocrPanel.low_confidence ? (
+          <p className="ask-prose ask-pdf-page-note">
+            This scan read poorly — Askwell has low confidence in the text below.
+          </p>
+        ) : null}
 
-      {fallbackText !== null ? (
-        <UnrenderableFallback
-          filename={state.meta.filename}
-          documentId={state.meta.id}
-          note="This page could not be rendered. Its extracted text is shown instead."
-          text={fallbackText}
-        />
-      ) : ocrPanel !== null ? (
-        <div className="flex gap-4" style={{ alignItems: "flex-start" }}>
-          <div ref={pageContainerRef} style={{ overflow: "auto" }} />
-          <div className="flex flex-col gap-2" style={{ flex: 1, minWidth: 0 }}>
-            <h2 className="ask-micro">What Askwell read from this page</h2>
-            {ocrPanel.has_text && ocrPanel.text !== null && ocrPanel.text !== "" ? (
-              <p className="ask-prose" style={{ whiteSpace: "pre-wrap" }}>
-                {ocrPanel.text}
-              </p>
-            ) : (
-              <p className="ask-prose">Nothing was read from this page.</p>
-            )}
+        {fallbackText !== null ? (
+          <UnrenderableFallback
+            filename={state.meta.filename}
+            documentId={state.meta.id}
+            note="This page could not be rendered. Its extracted text is shown instead."
+            text={fallbackText}
+          />
+        ) : ocrPanel !== null ? (
+          <div className="flex gap-4" style={{ alignItems: "flex-start" }}>
+            <div ref={pageContainerRef} style={{ overflow: "auto" }} />
+            <div className="flex flex-col gap-2" style={{ flex: 1, minWidth: 0 }}>
+              <h2 className="ask-micro">What Askwell read from this page</h2>
+              {ocrPanel.has_text && ocrPanel.text !== null && ocrPanel.text !== "" ? (
+                <p className="ask-prose" style={{ whiteSpace: "pre-wrap" }}>
+                  {ocrPanel.text}
+                </p>
+              ) : (
+                <p className="ask-prose">Nothing was read from this page.</p>
+              )}
+            </div>
           </div>
-        </div>
-      ) : (
-        <div ref={pageContainerRef} style={{ overflow: "auto" }} />
-      )}
-    </section>
+        ) : (
+          <div ref={pageContainerRef} style={{ overflow: "auto" }} />
+        )}
+      </section>
+      {rail(state.meta)}
+    </div>
   );
 }

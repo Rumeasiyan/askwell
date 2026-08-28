@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 
 import { useCardRef, useHoveredKey, useHoverHandlers, type LeaderPair } from "@/components/ask/leader";
@@ -140,8 +141,12 @@ function SourceCard({
         borderRadius: "var(--radius)",
       }}
     >
-      <a
-        href={documentHref(card)}
+      <Link
+        // A plain `<a>` here would reload the whole application on click,
+        // which is fatal to the context rail's "back to answer": the live
+        // turn (`AskProvider`, above the router in `shell.tsx`) only
+        // survives a *client-side* route change. `M1-VIEW-FE-048`.
+        href={documentHref(card, { turnId, claimOrdinal: card.claimOrdinals[0]! })}
         onClick={() => recordCardClick()}
         onFocus={onHover}
         onBlur={onUnhover}
@@ -158,7 +163,7 @@ function SourceCard({
         >
           &ldquo;{shown}&rdquo;
         </span>
-      </a>
+      </Link>
 
       {isLong ? (
         <button

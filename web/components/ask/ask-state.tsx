@@ -55,6 +55,10 @@ export interface AskTurn {
   id: string;
   serverId: string | null;
   question: string;
+  /** `null` for an ordinary question against the whole corpus. Set from the
+   * context rail's "ask about this source" (`M1-VIEW-FE-048`), which is the
+   * one place a question is deliberately scoped before it is even typed. */
+  sourceId: string | null;
   status: TurnStatus;
   steps: { label: string; kind: string }[];
   answer: string;
@@ -70,7 +74,7 @@ export interface AskApi {
   /** The turn actually streaming right now, as opposed to merely queued
    * behind one — what the composer's stop control acts on. */
   running: AskTurn | null;
-  ask: (question: string) => void;
+  ask: (question: string, sourceId?: string | null) => void;
   stop: () => void;
 }
 
@@ -96,11 +100,17 @@ export function useLiveTurn(): AskTurn | null {
 const NON_ENGLISH_REASON =
   "Askwell answers in English in this version. Ask again in English, and it will search your files.";
 
-function blankTurn(question: string, status: TurnStatus, reason: string | null = null): AskTurn {
+function blankTurn(
+  question: string,
+  status: TurnStatus,
+  reason: string | null = null,
+  sourceId: string | null = null,
+): AskTurn {
   return {
     id: crypto.randomUUID(),
     serverId: null,
     question,
+    sourceId,
     status,
     steps: [],
     answer: "",
@@ -127,13 +137,13 @@ export function AskProvider({ children }: { children: ReactNode }) {
     setTurns((queue) => queue.map((turn) => (turn.id !== id ? turn : { ...turn, ...changes })));
   }, []);
 
-  const ask = useCallback((question: string): void => {
+  const ask = useCallback((question: string, sourceId: string | null = null): void => {
     const trimmed = question.trim();
     // No request for an empty question — the edge case named explicitly.
     if (trimmed === "") return;
 
     if (looksNonEnglish(trimmed)) {
-      setTurns((queue) => [...queue, blankTurn(trimmed, "failed", NON_ENGLISH_REASON)]);
+      setTurns((queue) => [...queue, blankTurn(trimmed, "failed", NON_ENGLISH_REASON, sourceId)]);
       return;
     }
 
@@ -141,7 +151,7 @@ export function AskProvider({ children }: { children: ReactNode }) {
     // one is running still renders as its own turn immediately — nothing
     // submitted is silently dropped — but does not start streaming until the
     // one ahead of it finishes.
-    setTurns((queue) => [...queue, blankTurn(trimmed, "queued")]);
+    setTurns((queue) => [...queue, blankTurn(trimmed, "queued", null, sourceId)]);
   }, []);
 
   const stop = useCallback((): void => {
@@ -166,26 +176,30 @@ export function AskProvider({ children }: { children: ReactNode }) {
       let finalStatus: TurnStatus = "failed";
       let finalReason: string | null = "Askwell could not reach the assistant.";
       try {
-        await streamAsk(next.question, { conversationId: null }, (event: AskEvent) => {
-          if (event.event === "done") {
-            finalStatus = event.data.status;
-            finalReason = event.data.reason;
-            return;
-          }
-          // Derived from the previous turn inside the updater, never from a ref.
-          // `current` is refreshed by an effect, so it lags a render behind: two
-          // tokens in one frame would both read the same answer and the second
-          // would overwrite the first, losing words the user was watching arrive.
-          setTurns((queue) =>
-            queue.map((turn) => {
-              if (turn.id !== id) return turn;
-              if (event.event === "citation") {
-                return { ...turn, citations: applyCitation(turn.citations, event.data) };
-              }
-              return { ...turn, ...applyAskEvent(turn, event) };
-            }),
-          );
-        });
+        await streamAsk(
+          next.question,
+          { conversationId: null, sourceId: next.sourceId },
+          (event: AskEvent) => {
+            if (event.event === "done") {
+              finalStatus = event.data.status;
+              finalReason = event.data.reason;
+              return;
+            }
+            // Derived from the previous turn inside the updater, never from a ref.
+            // `current` is refreshed by an effect, so it lags a render behind: two
+            // tokens in one frame would both read the same answer and the second
+            // would overwrite the first, losing words the user was watching arrive.
+            setTurns((queue) =>
+              queue.map((turn) => {
+                if (turn.id !== id) return turn;
+                if (event.event === "citation") {
+                  return { ...turn, citations: applyCitation(turn.citations, event.data) };
+                }
+                return { ...turn, ...applyAskEvent(turn, event) };
+              }),
+            );
+          },
+        );
       } catch (error) {
         finalStatus = "failed";
         finalReason = error instanceof Error ? error.message : finalReason;

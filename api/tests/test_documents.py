@@ -128,6 +128,60 @@ def test_metadata_reports_an_available_pdf(
     assert body["available"] is True
 
 
+def test_metadata_reports_the_superseding_version_and_when(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """`M1-VIEW-FE-048`'s own edge case: a cited document that was superseded
+    still resolves, with the banner's own two facts — issue #141."""
+    _truncate(database_url)
+    old_id = _seed_document(database_url, tmp_path)
+    new_id = uuid.uuid4()
+    with psycopg.connect(database_url, autocommit=True) as db:
+        source_id = db.execute(
+            "SELECT source_id FROM documents WHERE id = %s", (old_id,)
+        ).fetchone()[0]
+        db.execute(
+            "INSERT INTO documents "
+            "(id, source_id, filename, path, mime, sha256, page_count, anchor_kind, "
+            "status, version) "
+            "VALUES (%s, %s, 'contract-v2.pdf', %s, 'application/pdf', %s, 1, 'page', "
+            "'ready', 2)",
+            (
+                new_id,
+                source_id,
+                str(tmp_path / "contract-v2.pdf"),
+                uuid.uuid4().hex.ljust(64, "1")[:64],
+            ),
+        )
+        db.execute("UPDATE documents SET superseded_by = %s WHERE id = %s", (new_id, old_id))
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+
+    with client:
+        _with_session(client)
+        response = client.get(f"/documents/{old_id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["superseded_by"] == str(new_id)
+    assert body["superseded_at"] is not None
+
+
+def test_metadata_for_a_live_document_names_no_supersession(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    _truncate(database_url)
+    document_id = _seed_document(database_url, tmp_path)
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+
+    with client:
+        _with_session(client)
+        response = client.get(f"/documents/{document_id}")
+
+    body = response.json()
+    assert body["superseded_by"] is None
+    assert body["superseded_at"] is None
+
+
 def test_metadata_for_an_unknown_document_is_404(
     settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
 ) -> None:
