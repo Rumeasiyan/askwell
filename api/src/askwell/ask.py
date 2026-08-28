@@ -33,6 +33,17 @@ Citations are resolved from the model's own `[index]` references into the
 same index the prompt asks the model to cite by — and persisted to the real
 `citations` table (`docs/architecture.md` §7), never only to `messages.trace`.
 
+**Since `M1-CITE-BE-042`, a citation is tied to a claim, not just an index.**
+`askwell.agent.claims.segment_claims` reads the growing answer text as
+sentences, and a sentence only becomes a claim if it carries a marker — a
+restatement of the question has none and is never counted, matching C5's own
+"abstention over invention" spirit at sentence granularity: no marker means
+nothing was asserted to be cited. A claim naming two indices produces two
+citation rows sharing one `claim_ordinal`. Each row also carries
+`quoted_span` — the claim's own words, if they occur verbatim in the source
+chunk, `None` otherwise — resolved with `askwell.agent.claims.locate_quoted_span`
+rather than dropped, per the ticket's own edge case.
+
 **Since `M1-ASK-BE-040`, the answer's row exists before there is an answer.**
 `POST /ask` writes the assistant `messages` row as `running`, empty, in the
 same request that starts the background task — not once generation finishes.
@@ -48,7 +59,6 @@ behind it rather than each starting a full inference pass immediately.
 
 import asyncio
 import json
-import re
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -61,6 +71,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from askwell.agent.claims import Claim, locate_quoted_span, segment_claims
 from askwell.agent.compose import compose
 from askwell.audit import Store, record
 from askwell.config import Settings
@@ -72,10 +83,6 @@ from askwell.retrieve import Candidate, retrieve
 log = get_logger(__name__)
 
 ASK_ASKED = "ask_asked"
-
-# The bracketed reference the prompt asks the model to cite by — the same
-# `index` `askwell.agent.compose._delimit` wrapped each retrieved passage in.
-_CITATION_PATTERN = re.compile(r"\[(\d+)\]")
 
 # How often a tailer re-checks a turn that has nothing new yet. Matches
 # `askwell.ingest`'s own idle interval — fast enough that a token feels live,
@@ -259,6 +266,45 @@ async def _resolve_conversation(db: AsyncSession, conversation_id: uuid.UUID | N
     return new_id
 
 
+def _cite_claim(
+    turn: _Turn,
+    claim: Claim,
+    candidates: list[Candidate],
+    citation_rows: list[dict[str, Any]],
+) -> None:
+    """Turn one completed claim into a citation row per index it named,
+    sharing `claim.ordinal` — the ticket's own "two passages, one claim,
+    two rows" edge case. An index outside the candidate list is silently
+    skipped rather than raising: the model hallucinating a reference number
+    is a grounding problem `M2`'s eval suite measures, not a reason to fail
+    the whole turn.
+    """
+    for index in claim.indices:
+        if not (1 <= index <= len(candidates)):
+            continue
+        candidate = candidates[index - 1]
+        quoted_span = locate_quoted_span(claim.text, candidate.content)
+        citation_rows.append(
+            {
+                "ordinal": claim.ordinal,
+                "chunk_id": candidate.chunk_id,
+                "quoted_span": quoted_span,
+            }
+        )
+        turn.emit(
+            "citation",
+            {
+                "claim_ordinal": claim.ordinal,
+                "index": index,
+                "chunk_id": str(candidate.chunk_id),
+                "document_id": str(candidate.document_id),
+                "page_from": candidate.page_from,
+                "page_to": candidate.page_to,
+                "quoted_span": quoted_span,
+            },
+        )
+
+
 def _label_for_sources(document_count: int) -> str:
     if document_count == 0:
         return "Found nothing in your files for this."
@@ -299,7 +345,8 @@ async def _run_generation(
     status: Status = "running"
     reason: str | None = None
     candidates: list[Candidate] = []
-    cited_chunks: dict[int, uuid.UUID] = {}
+    citation_rows: list[dict[str, Any]] = []
+    claims_emitted = 0
     trace_steps: list[dict[str, Any]] = []
     injection_flagged = False
     injection_patterns: tuple[str, ...] = ()
@@ -342,22 +389,10 @@ async def _run_generation(
             if chunk.text:
                 turn.text += chunk.text
                 turn.emit("token", {"text": chunk.text})
-                for match in _CITATION_PATTERN.finditer(turn.text):
-                    index = int(match.group(1))
-                    if index in cited_chunks or not (1 <= index <= len(candidates)):
-                        continue
-                    candidate = candidates[index - 1]
-                    cited_chunks[index] = candidate.chunk_id
-                    turn.emit(
-                        "citation",
-                        {
-                            "index": index,
-                            "chunk_id": str(candidate.chunk_id),
-                            "document_id": str(candidate.document_id),
-                            "page_from": candidate.page_from,
-                            "page_to": candidate.page_to,
-                        },
-                    )
+                claims = segment_claims(turn.text)
+                for claim in claims[claims_emitted:]:
+                    _cite_claim(turn, claim, candidates, citation_rows)
+                claims_emitted = len(claims)
             if chunk.done:
                 truncated = chunk.truncated
 
@@ -365,7 +400,8 @@ async def _run_generation(
             {
                 "kind": "compose",
                 "ms": (time.monotonic() - compose_started) * 1000,
-                "claims": len(cited_chunks),
+                "claims": claims_emitted,
+                "citations": len(citation_rows),
             }
         )
 
@@ -412,17 +448,18 @@ async def _run_generation(
                 "trace": json.dumps(trace),
             },
         )
-        for ordinal, chunk_id in enumerate(cited_chunks.values(), start=1):
+        for row in citation_rows:
             await db.execute(
                 text(
-                    "INSERT INTO citations (id, message_id, chunk_id, claim_ordinal) "
-                    "VALUES (:id, :message_id, :chunk_id, :ordinal)"
+                    "INSERT INTO citations (id, message_id, chunk_id, claim_ordinal, quoted_span) "
+                    "VALUES (:id, :message_id, :chunk_id, :ordinal, :quoted_span)"
                 ),
                 {
                     "id": uuid.uuid4(),
                     "message_id": turn.message_id,
-                    "chunk_id": chunk_id,
-                    "ordinal": ordinal,
+                    "chunk_id": row["chunk_id"],
+                    "ordinal": row["ordinal"],
+                    "quoted_span": row["quoted_span"],
                 },
             )
         await record(
@@ -436,7 +473,8 @@ async def _run_generation(
                 "answer": turn.text,
                 "status": status,
                 "source_id": str(source_id) if source_id else None,
-                "citation_count": len(cited_chunks),
+                "claim_count": claims_emitted,
+                "citation_count": len(citation_rows),
             },
         )
 
