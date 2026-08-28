@@ -247,6 +247,17 @@
     color: var(--muted);
   }
 
+  /* A collapsed turn's question and summary (`M1-CONV-FE-178`,
+     `conversation.md` §2): one line, ellipsis rather than a third line —
+     the ticket's own edge case for a question or summary too long to fit. */
+  .ask-collapsed-line {
+    max-width: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+
   /* Mic control (`M1-ASK-FE-039a`): disabled, not hidden. `--muted` reads as
      "not yet" rather than "broken" — no strikethrough, no red. */
   .ask-mic-wrap {

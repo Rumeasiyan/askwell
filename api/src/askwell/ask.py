@@ -202,21 +202,24 @@ async def _tail(turn: _Turn, request: Request) -> AsyncIterator[str]:
 
 async def _load_finished(
     factory: async_sessionmaker[AsyncSession], message_id: uuid.UUID
-) -> tuple[str, str] | None:
+) -> tuple[str, str, str | None, int | None] | None:
     """The stored answer for a turn no longer in memory — finished long
     enough ago to have been retired, or from before this process started."""
     async with session_scope(factory) as db:
         row = (
             await db.execute(
-                text("SELECT content, trace FROM messages WHERE id = :id AND role = 'assistant'"),
+                text(
+                    "SELECT content, trace, summary, source_count FROM messages "
+                    "WHERE id = :id AND role = 'assistant'"
+                ),
                 {"id": message_id},
             )
         ).first()
     if row is None:
         return None
-    content, trace = row
+    content, trace, summary, source_count = row
     status = trace.get("status", "completed") if isinstance(trace, dict) else "completed"
-    return str(content), str(status)
+    return str(content), str(status), summary, source_count
 
 
 async def reconcile_interrupted(factory: async_sessionmaker[AsyncSession]) -> int:
@@ -591,6 +594,7 @@ async def _run_generation(
             )
         except Exception:
             failure_summary = fallback_summary(question)
+        turn_summary = failure_summary
         try:
             async with session_scope(factory) as db:
                 await db.execute(
@@ -610,7 +614,23 @@ async def _run_generation(
         except Exception:
             log.exception("ask_failure_write_failed", message_id=str(turn.message_id))
 
-    turn.emit("done", {"status": status, "reason": reason})
+    # `M1-CONV-FE-178` collapses this turn the moment the next question is
+    # asked, and has no route back to `messages.summary` /
+    # `messages.source_count` other than this event — there is no
+    # conversation-history endpoint yet (`docs/BRAIN.md`), and re-running the
+    # turn to derive its own summary is exactly what `conversation.md` §6
+    # rules out. Carrying the same `turn_summary` already written to the row
+    # above, rather than a second computation, is what keeps the two
+    # guaranteed to agree.
+    turn.emit(
+        "done",
+        {
+            "status": status,
+            "reason": reason,
+            "summary": turn_summary.summary,
+            "source_count": turn_summary.source_count,
+        },
+    )
     turn.status = status
     _retire(turn.message_id)
 
@@ -731,12 +751,21 @@ def register_ask(
         stored = await _load_finished(factory, message_id)
         if stored is None:
             return JSONResponse({"error": "Askwell has no turn with that id."}, status_code=404)
-        content, status = stored
+        content, status, summary, source_count = stored
 
         async def replay() -> AsyncIterator[str]:
             if content:
                 yield _sse("token", {"text": content, "message_id": str(message_id)})
-            yield _sse("done", {"status": status, "reason": None, "message_id": str(message_id)})
+            yield _sse(
+                "done",
+                {
+                    "status": status,
+                    "reason": None,
+                    "message_id": str(message_id),
+                    "summary": summary,
+                    "source_count": source_count,
+                },
+            )
 
         return StreamingResponse(replay(), media_type="text/event-stream", headers=SSE_HEADERS)
 

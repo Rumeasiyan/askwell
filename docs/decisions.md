@@ -22,6 +22,16 @@ Template:
 
 ---
 
+## 2026-08-28 — The `done` SSE event carries the stored turn summary and source count, closing a gap `M1-CONV-BE-177` left open on purpose
+
+**Decision:** `askwell.ask`'s `done` event (both the live path in `_run_generation` and the reconnect-replay path in `_load_finished`/`ask_stream`) now includes `summary` and `source_count` — the exact `TurnSummary` already computed and written to `messages` — rather than only `status` and `reason`.
+
+**Why:** `M1-CONV-BE-177` deliberately stopped at storage: its own manual-test doc reads the two values back with `scripts/dev.sh psql` because "nothing renders these values on screen yet" was correctly out of that ticket's scope. But `M1-CONV-FE-178` (collapsing a past turn to its question, summary and source count) then had no route to either value at all — no conversation-history endpoint exists yet, and `conversation.md` §6 explicitly forbids re-deriving a summary from the corpus on read, so a client-side recomputation was not an option either. Two fixes were considered: build a `GET /conversations/{id}` history endpoint (real scope creep for a frontend-labelled ticket, and speculative ahead of needing to reload history across a page load, which nothing in Askwell does yet), or thread the value already computed for the row onto the wire that already carries every other per-turn fact this screen needs. The second cost two fields on an existing event and reusing a variable already in scope at the emit site.
+
+**Consequences:** the collapsed-turn summary and count are guaranteed to match what was written to `messages` in the same request, because they are the same value, not a second computation. A future conversation-history endpoint (needed once page load restores past turns, `ask-state.tsx`'s own "not threaded across turns" note, issue #156) should read from `messages.summary`/`messages.source_count` directly rather than reintroducing a second code path.
+
+**Refs:** `M1-CONV-FE-178`, `M1-CONV-BE-177`, `api/src/askwell/ask.py`, `docs/ux/conversation.md` §2/§6.
+
 ## 2026-08-28 — A moved file's status is carried by `missing_since` alone, never by `documents.status`; a moved-or-renamed file joins the flagged-OCR pattern rather than a new source status
 
 **Decision:** `M1-VIEW-BE-049`. A document whose recorded path no longer resolves does not change `documents.status` — it stays whatever it was (`ready`, ordinarily) and only gains a `missing_since` timestamp. `askwell.ingest.Coverage` grew a `missing` count alongside the existing `flagged` (poor-OCR) one, and `source_status`/`_attention_reason` treat it exactly the same way flagged is treated: the source becomes `attention`, stays askable, and names how many files need relocating. Detection itself is two call sites sharing one decision — `askwell.documents._availability` at open time, `askwell.ingest.sweep_missing` on a timer (`worker.py`'s new `check_missing` cron, `ASKWELL_MISSING_CHECK_SECONDS`) — both of which check `roots.source_availability` on the document's source first and only mark it `missing_since` when that says the root itself is reachable. A whole root being unmounted, removed or unreadable is reported as `root_unavailable` and never as its documents being missing.

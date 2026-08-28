@@ -16,6 +16,8 @@ import { test } from "node:test";
 import {
   applyAskEvent,
   type AskTurnState,
+  dividerLabel,
+  liveTurnId,
   looksNonEnglish,
   nextToDispatch,
   parseSseFrame,
@@ -160,6 +162,62 @@ test("a second question asked mid-answer waits its turn, first in first out", ()
 
 test("nothing queued and nothing running dispatches nothing", () => {
   assert.equal(nextToDispatch([{ id: "a", status: "completed" }]), null);
+});
+
+// --- liveTurnId: which turn renders full (conversation.md §2, §5) -----------
+
+test("a lone turn is live, whatever its status", () => {
+  assert.equal(liveTurnId([{ id: "a", status: "queued" }]), "a");
+  assert.equal(liveTurnId([{ id: "a", status: "completed" }]), "a");
+});
+
+test("the second turn becomes live once asked, displacing the first", () => {
+  const turns = [
+    { id: "a", status: "completed" },
+    { id: "b", status: "queued" },
+  ];
+  assert.equal(liveTurnId(turns), "b");
+});
+
+test("a question asked mid-answer does not steal live status from the streaming turn", () => {
+  const turns = [
+    { id: "a", status: "completed" },
+    { id: "b", status: "running" },
+    { id: "c", status: "queued" },
+  ];
+  assert.equal(liveTurnId(turns), "b");
+});
+
+test("nothing is live before any question is asked", () => {
+  assert.equal(liveTurnId([]), null);
+});
+
+// --- dividerLabel: time grouping (conversation.md §4) ------------------------
+
+const DAY_MS = 86_400_000;
+
+test("no divider between two turns on the same calendar day", () => {
+  const morning = new Date(2026, 7, 28, 9, 0, 0).getTime();
+  const evening = new Date(2026, 7, 28, 21, 0, 0).getTime();
+  assert.equal(dividerLabel(morning, evening, evening), null);
+});
+
+test("a non-positive day gap — a defensive fallback, not reachable via ordinary chronological turns — reads 'earlier today'", () => {
+  const today = new Date(2026, 7, 28, 9, 0, 0).getTime();
+  const yesterday = today - DAY_MS;
+  assert.equal(dividerLabel(today, yesterday, today), "earlier today");
+});
+
+test("a turn from the day before now divides as 'yesterday'", () => {
+  const now = Date.now();
+  const yesterday = now - DAY_MS;
+  assert.equal(dividerLabel(yesterday, now, now), "yesterday");
+});
+
+test("a turn from further back divides with a calendar date", () => {
+  const now = new Date(2026, 7, 28).getTime();
+  const lastWeek = new Date(2026, 7, 20).getTime();
+  assert.equal(dividerLabel(lastWeek, now, now), "August 20");
 });
 
 // --- looksNonEnglish ---------------------------------------------------------

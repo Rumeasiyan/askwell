@@ -1020,7 +1020,7 @@ async def test_load_finished_reads_a_completed_turn_back_from_the_database(
         )
 
     loaded = await ask_module._load_finished(factory, message_id)
-    assert loaded == ("Ninety days.", "completed")
+    assert loaded == ("Ninety days.", "completed", None, None)
 
     missing = await ask_module._load_finished(factory, uuid.uuid4())
     assert missing is None

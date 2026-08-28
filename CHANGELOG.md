@@ -4,6 +4,20 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.35 — 2026-08-28
+
+Past turns collapse; an abstained turn shows no source count. `M1-CONV-FE-178`.
+
+### Added
+
+- **`web/components/ask/ask-screen.tsx`** — `TurnRow` now renders one of three shapes per turn: the single live turn (`LiveTurn`, the pre-existing full render, margin and all), a `QueuedTurn` waiting behind it, or a `CollapsedTurn` — question truncated to one line, the stored summary, and a source-count badge. `SourceCountBadge` renders a filled dot beside the number for an answered turn (`--provenance`, reserved for the count alone in that row) or an outlined, slashed circle beside "No sources" for one that abstained or failed — shape as well as colour carries the distinction (`docs/ux/design-system.md` §8). `TurnDivider` groups turns by calendar day (`docs/ux/conversation.md` §4).
+- **`web/lib/ask.ts`** — `liveTurnId` (pure): the running turn if one exists, otherwise the most recently asked, so a question queued behind a streaming answer never displaces it as live. `dividerLabel` (pure): "earlier today" / "yesterday" / a calendar date between two turns' timestamps, `null` when they fall on the same day.
+- **`AskTurn.createdAt` / `.summary` / `.sourceCount`** (`ask-state.tsx`) — captured from the `done` SSE event once generation finishes.
+
+### Fixed
+
+- **`api/src/askwell/ask.py`** — the `done` event carried only `status`/`reason`; `messages.summary` and `messages.source_count` (`M1-CONV-BE-177`) were written to the database but never reached the browser on any wire, which left this ticket with no way to render them without silently re-deriving a summary the ticket's own spec (`conversation.md` §6) forbids. Both `_run_generation`'s live `done` event and `_load_finished`'s reconnect replay now carry the same `turn_summary`/`failure_summary` already computed for the row, so the two are guaranteed to agree rather than being computed twice.
+
 ## 0.2.34 — 2026-08-28
 
 A one-line summary and a source count, stored with every turn. `M1-CONV-BE-177`.
