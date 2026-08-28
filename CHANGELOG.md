@@ -4,6 +4,24 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.48 — 2026-08-28
+
+Tombstoned deletion that clears content and embedding. `M2-DELETE-BE-061`.
+
+### Added
+
+- **`DELETE /documents/{id}?reason=`** and **`DELETE /sources/{id}`** (`askwell.sources.delete_document`/`delete_source`): deleting a document clears its chunks' `content` and `embedding` in one statement and sets `deleted_at`/`deleted_reason`; the row and its chunks survive so an old citation still resolves to "deleted on `<date>`" rather than breaking. `superseded_by` is never touched by this — versions and deletions stay two separate facts. Deleting a source tombstones every live document under it the same way, deletes its `schema_notes` outright (nothing cites a schema note the way a citation cites a chunk), and leaves general memory untouched. Neither route touches the user's file on disk. Both are decisions records (`document_deleted`/`source_deleted`), so C6 holds — nothing is removed from the audit stores.
+- A queued or running ingestion job for a document being deleted is cancelled (`ingest_jobs` row removed), and `askwell.ingest`'s own stage-transition writes (`_park`, `_finish`, `_fail`, and the `indexing` write in `process`) now all guard `deleted_at IS NULL`, so a job already claimed when the deletion runs cannot write a tombstoned document's status back to `ready`/`attention`/`queued`.
+
+### Notes
+
+- Retrieval already excluded tombstoned material (`deleted_at IS NULL AND superseded_by IS NULL`, `askwell.retrieve`) and the database already refused a cleared chunk keeping its embedding (`ck_chunks_cleared_content_has_no_embedding`, `M0-DATA-DB-014`) — both verified rather than rebuilt.
+
+### Verified
+
+- `scripts/dev.sh test-db` (261 passed, 15 new in `test_sources_records.py`: content and embedding cleared with the tombstone set, the file on disk untouched, a pending job cancelled, idempotent re-deletion, decisions records for both routes, a source deletion cascading to every live document under it including one mid-import, schema notes removed with general memory intact, `SourceNotFound` for an unknown or already-deleted source). `scripts/dev.sh check` (529 passed, 1 skipped; lint, format, typecheck clean).
+- Exercised against the real stack: nominated `/tmp/askwell-demo`, added `client.txt`, `DELETE /documents/{id}?reason=...` — `psql` confirmed `status='deleted'`, `deleted_at` set, `deleted_reason` stored, the chunk's `content` and `embedding` both cleared, and `cat client.txt` on disk was unchanged. `DELETE /sources/{id}` set the source to `deleted`. Both appear in `audit_decisions`.
+
 ## 0.2.47 — 2026-08-28
 
 Degrade to search when the assistant is unavailable. `M2-FAIL-FE-060`.

@@ -22,6 +22,18 @@ Template:
 
 ---
 
+## 2026-08-28 — Deletion tombstones a document rather than removing its row
+
+**Decision:** `askwell.sources.delete_document`/`delete_source` (`M2-DELETE-BE-061`) clear a document's chunks' `content` and `embedding` and set `deleted_at`/`deleted_reason`, but keep the `documents` and `chunks` rows. A source deletion does the same to every live document under it and deletes its `schema_notes` outright, leaving `memory` untouched.
+
+**Why:** a hard `DELETE` was the obvious alternative and was rejected — an old answer's citation points at a `chunks.id`/`documents.id`, and a foreign key with nothing behind it either breaks the citation or forces every citation reader to tolerate a missing row silently, which is indistinguishable from a bug. Tombstoning keeps the row as the anchor a citation still resolves against ("deleted on `<date>`") while satisfying the actual requirement — the content and its embedding, the only parts retrieval or a citation viewer could surface, are gone. `deleted_at`/`deleted_reason` were chosen over reusing `superseded_by` because a version and a deletion are different facts (`docs/build-plan.md`'s own validation rule): a superseded document has a live replacement to point to, a deleted one does not, and conflating them would make "what replaced this" ambiguous with "why is this gone."
+
+**Consequences:** every query that must not see deleted material filters on `documents.deleted_at IS NULL` explicitly rather than relying on row absence — already true of `askwell.retrieve`'s two candidate queries and `askwell.ingest`'s coverage/dispatch queries. A stage write that lands after a tombstone (chunk/embed mid-flight during a delete) is not blocked by this decision alone; tracked separately, issue #230.
+
+**Refs:** `api/src/askwell/sources.py` (`_tombstone_document`, `delete_document`, `delete_source`), `api/src/askwell/db/migrations/versions/20260827_a8208099ef38_v1_schema.py` (`ck_chunks_cleared_content_has_no_embedding`), issue #230.
+
+---
+
 ## 2026-08-28 — Conflict presentation is a superset prompt at the same single call site, not a second model call or a second prompt module competing for it
 
 **Decision:** `M2-PARTIAL-BE-059`. `askwell.agent.conflict.compose_conflict` loads a new prompt, `prompts/conflicting_sources.v1.md`, that is `partial_answer.v1.md`'s full content plus a conflict-presentation section and a memory-resolution section — not a fragment composed at runtime, and not a separate prompt chosen instead of the partial one by some prior branch. `askwell.ask._run_generation`'s single composition call site now loads this prompt in place of `compose_partial`'s; `askwell.agent.partial.compose_partial` and `partial_answer.v1.md` themselves are untouched and still independently tested, exactly as `askwell.agent.compose.compose` and `answer_composition.v1.md` were left in place, tested but unused at the call site, when `M2-PARTIAL-BE-057` took it over.
