@@ -7,6 +7,7 @@ import { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "
 import { type AskTurn, useAsk } from "@/components/ask/ask-state";
 import { useClaimRef, useHoverHandlers, useScrollToClaim } from "@/components/ask/leader";
 import { InlineSourceCards, useRaised } from "@/components/ask/provenance-margin";
+import { dividerLabel, liveTurnId } from "@/lib/ask";
 import { fetchIngest } from "@/lib/ingest";
 import { fetchSuggestions, type Suggestion } from "@/lib/suggestions";
 import { segmentClaims } from "@/lib/claims";
@@ -48,16 +49,23 @@ export function fillComposer(question: string, scope: ComposerFill["scope"] = nu
  *
  * Composer, the live turn, streaming and step labels — the three states this
  * ticket owns (`ask.md` §5: retrieving, streaming, answered). What is not
- * here, on purpose: abstention's own rendering (`M2`), and collapsing past
- * turns (`M1-CONV-FE-180`) — every turn here simply stacks. Since
- * `M1-CITE-FE-043`, `Turn` wraps each cited claim in a span the provenance
- * margin's leader can find (`ProvenanceMargin`, `shell.tsx`) — the margin
- * itself lives there, not here, since it is a sibling column, not a child of
- * this screen.
+ * here, on purpose: abstention's own rendering (`M2`). Since `M1-CITE-FE-043`,
+ * `LiveTurn` wraps each cited claim in a span the provenance margin's leader
+ * can find (`ProvenanceMargin`, `shell.tsx`) — the margin itself lives
+ * there, not here, since it is a sibling column, not a child of this screen.
+ *
+ * Since `M1-CONV-FE-178`, only one turn (`liveTurnId`, `lib/ask.ts`) renders
+ * this way; every other turn is either still `queued` (its own tiny
+ * placeholder) or collapses to a question, a stored summary and a source
+ * count (`CollapsedTurn`, `docs/ux/conversation.md` §2). Time dividers
+ * (`conversation.md` §4) are computed between consecutive turns, not stored
+ * — `dividerLabel` is pure precisely so this list can be a plain map with no
+ * effect recomputing anything as the clock ticks over.
  */
 export function AskScreen() {
   const corpus = useCorpusState();
   const { turns } = useAsk();
+  const liveId = liveTurnId(turns);
 
   return (
     <section className="flex flex-col gap-6">
@@ -85,10 +93,20 @@ export function AskScreen() {
           {turns.length === 0 && corpus === "indexing" ? <IndexingNotice /> : null}
           {turns.length === 0 && corpus === "ready" ? <SuggestedQuestions /> : null}
           {turns.length > 0 ? (
-            <div className="flex flex-col gap-8">
-              {turns.map((turn) => (
-                <Turn key={turn.id} turn={turn} />
-              ))}
+            <div className="flex flex-col gap-4">
+              {turns.map((turn, index) => {
+                const previous = turns[index - 1];
+                const label =
+                  previous !== undefined
+                    ? dividerLabel(previous.createdAt, turn.createdAt)
+                    : null;
+                return (
+                  <div key={turn.id} className="flex flex-col gap-4">
+                    {label !== null ? <TurnDivider label={label} /> : null}
+                    <TurnRow turn={turn} live={turn.id === liveId} />
+                  </div>
+                );
+              })}
             </div>
           ) : null}
         </>
@@ -411,7 +429,121 @@ function MicIcon() {
   );
 }
 
-function Turn({ turn }: { turn: AskTurn }) {
+/**
+ * A simple hairline with its label (`conversation.md` §4) — decorative, so
+ * `--rule` (`design-system.md` §2's own contrast table), never `--provenance`
+ * or `--ink`. Purely visual grouping: nothing below it depends on the label
+ * having rendered, `dividerLabel` (`lib/ask.ts`) already decided that.
+ */
+function TurnDivider({ label }: { label: string }) {
+  return (
+    <div className="flex items-center gap-3" role="separator" aria-label={label}>
+      <span className="ask-micro" style={{ whiteSpace: "nowrap" }}>
+        {label}
+      </span>
+      <span aria-hidden="true" style={{ flex: 1, borderTop: "1px solid var(--rule)" }} />
+    </div>
+  );
+}
+
+/**
+ * One turn, in whichever of the three shapes `conversation.md` §2/§5
+ * describes applies to it right now: still `queued` behind another answer,
+ * the one live turn, or collapsed. `live` comes from `liveTurnId` in the
+ * parent rather than being recomputed here, so every row in the list agrees
+ * on which single turn is full without each one re-deriving it.
+ */
+function TurnRow({ turn, live }: { turn: AskTurn; live: boolean }) {
+  if (live) return <LiveTurn turn={turn} />;
+  if (turn.status === "queued") return <QueuedTurn turn={turn} />;
+  return <CollapsedTurn turn={turn} />;
+}
+
+/**
+ * A turn waiting behind the one actually streaming (`conversation.md` §5:
+ * "queued, not interleaved"). Never collapsed — collapsing shows a stored
+ * summary and source count, and this turn has neither yet.
+ */
+function QueuedTurn({ turn }: { turn: AskTurn }) {
+  return (
+    <article className="flex flex-col gap-1">
+      <p className="ask-prose" style={{ color: "var(--muted)" }}>
+        {turn.question}
+      </p>
+      <p className="ask-micro">Waiting for the question ahead of it.</p>
+    </article>
+  );
+}
+
+/**
+ * A past turn, shrunk to one scannable line (`conversation.md` §2): the
+ * question in full (CSS-truncated, never wrapped — `.ask-collapsed-line`),
+ * the stored one-line summary, and the source count. `--provenance` belongs
+ * to the count alone here — nothing else in this row spends it
+ * (`design-system.md` §2's "reserved" note, and this ticket's own validation
+ * rule).
+ */
+function CollapsedTurn({ turn }: { turn: AskTurn }) {
+  return (
+    <article className="flex items-baseline gap-3">
+      <p
+        className="ask-prose ask-collapsed-line"
+        style={{ color: "var(--muted)", flex: "0 1 auto", maxWidth: "45%" }}
+        title={turn.question}
+      >
+        {turn.question}
+      </p>
+      <p className="ask-micro ask-collapsed-line" style={{ textTransform: "none", flex: 1 }}>
+        {turn.summary ?? ""}
+      </p>
+      <SourceCountBadge count={turn.sourceCount} />
+    </article>
+  );
+}
+
+/**
+ * The count itself, or the visibly-different "no count" shape a turn that
+ * abstained (or failed) shows instead (`conversation.md` §2, §5;
+ * `states-and-edge-cases.md` §7.1). Colour is never the only signal
+ * (`design-system.md` §8) — a filled dot beside the number versus an open,
+ * slashed circle beside "No sources" carries the distinction even in
+ * greyscale, and only the answered form spends `--provenance`.
+ */
+function SourceCountBadge({ count }: { count: number | null }) {
+  if (count === null) {
+    return (
+      <span
+        className="ask-micro flex items-center gap-1"
+        style={{ textTransform: "none", whiteSpace: "nowrap" }}
+      >
+        <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+          <circle cx="5" cy="5" r="4" fill="none" stroke="currentColor" strokeWidth="1.2" />
+          <line x1="1.8" y1="8.2" x2="8.2" y2="1.8" stroke="currentColor" strokeWidth="1.2" />
+        </svg>
+        No sources
+      </span>
+    );
+  }
+  return (
+    <span
+      className="flex items-center gap-1"
+      style={{
+        color: "var(--provenance)",
+        fontSize: "var(--t-micro)",
+        letterSpacing: "var(--t-micro-tracking)",
+        whiteSpace: "nowrap",
+      }}
+      aria-label={`${count} source${count === 1 ? "" : "s"}`}
+    >
+      <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+        <circle cx="5" cy="5" r="4" fill="currentColor" />
+      </svg>
+      {count}
+    </span>
+  );
+}
+
+function LiveTurn({ turn }: { turn: AskTurn }) {
   const { running, stop } = useAsk();
   const isRunning = turn.status === "running";
   const isStreaming = isRunning && turn.answer !== "";

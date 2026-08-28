@@ -46,6 +46,13 @@ export interface AskDoneData {
   message_id: string;
   status: AskStatus;
   reason: string | null;
+  /** The stored one-line summary a collapsed turn renders (`M1-CONV-BE-177`,
+   * `conversation.md` §2). `null` only for a frame this module's own tests
+   * write by hand (`ask.test.ts`); the server always sends a string. */
+  summary?: string | null;
+  /** Distinct documents actually cited, or `null` if the turn abstained —
+   * never `0`, matching `askwell.agent.summarize`'s own contract. */
+  source_count?: number | null;
 }
 
 export type AskEvent =
@@ -175,6 +182,59 @@ export function nextToDispatch<T extends { id: string; status: string }>(
 ): string | null {
   if (turns.some((turn) => turn.status === "running")) return null;
   return turns.find((turn) => turn.status === "queued")?.id ?? null;
+}
+
+/**
+ * Which turn renders full, uncollapsed, margin and all (`conversation.md`
+ * §2, `M1-CONV-FE-178`). The turn actually streaming wins whenever one
+ * exists — the edge case that forces this to be more than "the last turn in
+ * the array": a question asked while an answer streams queues behind it
+ * rather than displacing it, so the streaming turn "stays live and
+ * collapses only when its own answer completes" (`conversation.md` §5).
+ * Once nothing is running, the most recently asked turn is live, whether it
+ * is still `queued` (about to start) or already `completed` — it only
+ * collapses once a *further* question is asked and takes its place here.
+ */
+export function liveTurnId<T extends { id: string; status: string }>(
+  turns: readonly T[],
+): string | null {
+  const running = turns.find((turn) => turn.status === "running");
+  if (running !== undefined) return running.id;
+  return turns.length > 0 ? turns[turns.length - 1]!.id : null;
+}
+
+function startOfDay(ms: number): number {
+  const date = new Date(ms);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
+
+/**
+ * The divider text between `previousTimestamp` (the turn just above) and
+ * `timestamp` (the turn about to render), or `null` when both fall on the
+ * same calendar day and no divider belongs between them at all
+ * (`conversation.md` §4: "no per-turn timestamp, because the interval
+ * matters and the clock time does not"). The label describes *the older
+ * turn's* day relative to `now`, not the newer one's — that is what makes
+ * asking a question the morning after read as "yesterday separates the old
+ * turns" (the ticket's own cold-start walkthrough) rather than labelling the
+ * brand new question that triggered the divider.
+ */
+export function dividerLabel(
+  previousTimestamp: number,
+  timestamp: number,
+  now: number = Date.now(),
+): string | null {
+  const previousDay = startOfDay(previousTimestamp);
+  if (previousDay === startOfDay(timestamp)) return null;
+
+  const diffDays = Math.round((startOfDay(now) - previousDay) / 86_400_000);
+  if (diffDays <= 0) return "earlier today";
+  if (diffDays === 1) return "yesterday";
+  return new Date(previousTimestamp).toLocaleDateString(undefined, {
+    month: "long",
+    day: "numeric",
+  });
 }
 
 /**

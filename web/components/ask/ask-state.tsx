@@ -14,6 +14,7 @@ import {
 import {
   applyAskEvent,
   type AskEvent,
+  liveTurnId,
   looksNonEnglish,
   nextToDispatch,
   stopAsk,
@@ -67,6 +68,19 @@ export interface AskTurn {
    * rendered by this module (`ProvenanceMargin`, `M1-CITE-FE-043`). */
   citations: CitationCard[];
   reason: string | null;
+  /** When this turn was asked, for grouping under a time divider
+   * (`conversation.md` §4) — never rendered per-turn, only compared between
+   * turns. */
+  createdAt: number;
+  /** The stored one-line summary a collapsed turn shows (`M1-CONV-BE-177`).
+   * `null` until the `done` event carries it, and permanently `null` for
+   * the client-only non-English rejection below, which never reaches the
+   * server to be summarised there. */
+  summary: string | null;
+  /** Distinct documents cited, or `null` if the turn abstained — never `0`.
+   * A collapsed turn with `null` here renders no count at all
+   * (`conversation.md` §2, §5). */
+  sourceCount: number | null;
 }
 
 export interface AskApi {
@@ -87,14 +101,16 @@ export function useAsk(): AskApi {
 }
 
 /**
- * The turn the provenance margin belongs to (`ask.md` §8, settled): past
- * turns do not collapse yet (`M1-CONV-FE-180`), but the margin only ever
- * shows one answer's citations, so it tracks the most recently asked turn
- * rather than every turn on screen.
+ * The turn the provenance margin belongs to (`ask.md` §8, settled): the
+ * margin only ever shows one answer's citations, so it tracks whichever
+ * turn `M1-CONV-FE-178`'s own collapse rule (`liveTurnId`, `lib/ask.ts`)
+ * renders full rather than always the newest — the same "streaming turn
+ * stays live" edge case applies to the margin beside it.
  */
 export function useLiveTurn(): AskTurn | null {
   const { turns } = useAsk();
-  return turns.length > 0 ? turns[turns.length - 1]! : null;
+  const id = liveTurnId(turns);
+  return turns.find((turn) => turn.id === id) ?? null;
 }
 
 const NON_ENGLISH_REASON =
@@ -105,6 +121,7 @@ function blankTurn(
   status: TurnStatus,
   reason: string | null = null,
   sourceId: string | null = null,
+  summary: string | null = null,
 ): AskTurn {
   return {
     id: crypto.randomUUID(),
@@ -116,6 +133,9 @@ function blankTurn(
     answer: "",
     citations: [],
     reason,
+    createdAt: Date.now(),
+    summary,
+    sourceCount: null,
   };
 }
 
@@ -143,7 +163,10 @@ export function AskProvider({ children }: { children: ReactNode }) {
     if (trimmed === "") return;
 
     if (looksNonEnglish(trimmed)) {
-      setTurns((queue) => [...queue, blankTurn(trimmed, "failed", NON_ENGLISH_REASON, sourceId)]);
+      setTurns((queue) => [
+        ...queue,
+        blankTurn(trimmed, "failed", NON_ENGLISH_REASON, sourceId, NON_ENGLISH_REASON),
+      ]);
       return;
     }
 
@@ -175,6 +198,8 @@ export function AskProvider({ children }: { children: ReactNode }) {
     void (async () => {
       let finalStatus: TurnStatus = "failed";
       let finalReason: string | null = "Askwell could not reach the assistant.";
+      let finalSummary: string | null = null;
+      let finalSourceCount: number | null = null;
       try {
         await streamAsk(
           next.question,
@@ -183,6 +208,8 @@ export function AskProvider({ children }: { children: ReactNode }) {
             if (event.event === "done") {
               finalStatus = event.data.status;
               finalReason = event.data.reason;
+              finalSummary = event.data.summary ?? null;
+              finalSourceCount = event.data.source_count ?? null;
               return;
             }
             // Derived from the previous turn inside the updater, never from a ref.
@@ -204,7 +231,12 @@ export function AskProvider({ children }: { children: ReactNode }) {
         finalStatus = "failed";
         finalReason = error instanceof Error ? error.message : finalReason;
       }
-      patch(id, { status: finalStatus, reason: finalReason });
+      patch(id, {
+        status: finalStatus,
+        reason: finalReason,
+        summary: finalSummary,
+        sourceCount: finalSourceCount,
+      });
       dispatching.current = false;
     })();
   }, [turns, patch]);
