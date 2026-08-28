@@ -27,7 +27,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from askwell.sources import DOCUMENT_ADDED, SOURCE_ADDED, Outcome, add
+from askwell.sources import DOCUMENT_ADDED, DOCUMENT_SUPERSEDED, SOURCE_ADDED, Outcome, add
 
 pytestmark = pytest.mark.requires_db
 
@@ -228,6 +228,117 @@ async def test_different_content_under_the_same_name_is_two_documents(
 
     assert second.count(Outcome.ADDED) == 1
     assert len(await documents(session)) == 2
+
+
+# --- supersession: M1-INDEX-BE-034 -------------------------------------------
+
+
+async def test_a_changed_file_at_the_same_path_is_offered_not_duplicated(
+    session: AsyncSession, tmp_path: Path
+) -> None:
+    """The June-revision scenario. Nothing is recorded until it is decided."""
+    folder = tmp_path / "clients"
+    written(folder, "contract.pdf", PDF)
+    await nominate(session, str(tmp_path))
+    await add(session, str(folder), ["contract.pdf"])
+
+    written(folder, "contract.pdf", OTHER)
+    offer = await add(session, str(folder), ["contract.pdf"])
+
+    assert offer.count(Outcome.NEW_VERSION) == 1
+    assert offer.count(Outcome.ADDED) == 0
+    file_result = offer.files[0]
+    assert file_result.existing is not None
+    assert file_result.existing.version == 1
+    assert len(await documents(session)) == 1, "an offer records nothing"
+
+
+async def test_accepting_the_offer_supersedes_the_old_version(
+    session: AsyncSession, tmp_path: Path
+) -> None:
+    folder = tmp_path / "clients"
+    written(folder, "contract.pdf", PDF)
+    await nominate(session, str(tmp_path))
+    first = await add(session, str(folder), ["contract.pdf"])
+    old_id = first.files[0].document_id
+    assert old_id is not None
+
+    written(folder, "contract.pdf", OTHER)
+    result = await add(session, str(folder), ["contract.pdf"], {"contract.pdf": "supersede"})
+
+    assert result.count(Outcome.SUPERSEDED) == 1
+    rows = {row.id: row for row in await documents(session)}
+    assert rows[old_id].superseded_by is not None
+    new_id = rows[old_id].superseded_by
+    assert rows[new_id].version == 2
+    assert rows[new_id].superseded_by is None
+    assert rows[old_id].deleted_at is None, "supersession is not deletion"
+
+    superseded = await decisions(session, DOCUMENT_SUPERSEDED)
+    assert len(superseded) == 1
+    assert superseded[0]["old_document_id"] == str(old_id)
+    assert superseded[0]["new_document_id"] == str(new_id)
+
+
+async def test_declining_leaves_both_versions_live(session: AsyncSession, tmp_path: Path) -> None:
+    folder = tmp_path / "clients"
+    written(folder, "contract.pdf", PDF)
+    await nominate(session, str(tmp_path))
+    first = await add(session, str(folder), ["contract.pdf"])
+    old_id = first.files[0].document_id
+
+    written(folder, "contract.pdf", OTHER)
+    result = await add(session, str(folder), ["contract.pdf"], {"contract.pdf": "keep_both"})
+
+    assert result.count(Outcome.ADDED) == 1
+    rows = {row.id: row for row in await documents(session)}
+    assert rows[old_id].superseded_by is None, "declined — the old version stays live"
+    assert len(rows) == 2
+
+
+async def test_superseding_a_superseded_document_chains_rather_than_orphans(
+    session: AsyncSession, tmp_path: Path
+) -> None:
+    folder = tmp_path / "clients"
+    written(folder, "contract.pdf", PDF)
+    await nominate(session, str(tmp_path))
+    v1 = await add(session, str(folder), ["contract.pdf"])
+    v1_id = v1.files[0].document_id
+
+    written(folder, "contract.pdf", OTHER)
+    v2 = await add(session, str(folder), ["contract.pdf"], {"contract.pdf": "supersede"})
+    v2_id = v2.files[0].document_id
+
+    third = b"%PDF-1.7\nRent reviewed annually each January.\n"
+    written(folder, "contract.pdf", third)
+    v3 = await add(session, str(folder), ["contract.pdf"], {"contract.pdf": "supersede"})
+
+    assert v3.count(Outcome.SUPERSEDED) == 1
+    rows = {row.id: row for row in await documents(session)}
+    assert rows[v1_id].superseded_by == v2_id
+    assert rows[v2_id].superseded_by == v3.files[0].document_id
+    assert rows[v3.files[0].document_id].version == 3
+    assert rows[v3.files[0].document_id].superseded_by is None
+
+
+async def test_a_new_path_with_identical_content_is_still_a_duplicate_not_a_version(
+    session: AsyncSession, tmp_path: Path
+) -> None:
+    """Same content, different path — recognised by content, per the module's
+
+    own rule, before the path-based version check ever runs.
+    """
+    clients = tmp_path / "clients"
+    archive = tmp_path / "archive"
+    written(clients, "contract.pdf", PDF)
+    written(archive, "renamed.pdf", PDF)
+    await nominate(session, str(tmp_path))
+
+    await add(session, str(clients), ["contract.pdf"])
+    second = await add(session, str(archive), ["renamed.pdf"])
+
+    assert second.count(Outcome.DUPLICATE) == 1
+    assert second.count(Outcome.NEW_VERSION) == 0
 
 
 # --- what the database refuses ----------------------------------------------

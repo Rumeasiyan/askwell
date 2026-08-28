@@ -4,6 +4,26 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.15 — 2026-08-28
+
+Re-adding a changed document offers to replace the old version rather than duplicating it. `M1-INDEX-BE-034`.
+
+### Added
+
+- **A file at an already-indexed path with different content is offered as a new version, not silently duplicated or silently inserted.** `POST /sources` gains `version_decisions`, a map from relative path to `"supersede"` or `"keep_both"`; a path with no entry that turns out to be a changed revision comes back as `new_version` with nothing recorded, so declining costs nothing to reverse. `"supersede"` retires the old document (`documents.superseded_by`) and records the new one at `version + 1` in the same transaction — never both or neither. `"keep_both"` inserts the new file as an ordinary independent document; the schema's own uniqueness (`uq_documents_live_source_id_sha256`) is keyed on content, not path, so two live documents at one path was already a state it permitted.
+- **A decisions-store record naming both versions**, `document_superseded`, alongside the ordinary `document_added` for the new row — so a later audit read can answer "what replaced what" without inferring it from two independent rows.
+
+### Verified
+
+- `api/tests/test_sources_records.py`: a changed file at the same path is offered, not duplicated, and nothing is recorded until decided; accepting sets `superseded_by` and bumps `version` without touching `deleted_at`; declining leaves both live; superseding a document that is itself already-superseded chains through the current live tip rather than orphaning; a new path with identical content is still recognised as a plain duplicate before the path-based version check ever runs.
+- `scripts/dev.sh check` — 401 passed, 1 skipped (unmarked suite; supersession tests are `requires_db`). `scripts/dev.sh test-db` — 141 passed, up from 136, all 5 new tests among them.
+- On the running stack (`ASKWELL_ROOTS_MOUNT` set to a temporary directory for the session): added a `.txt` file, edited it on disk, re-added it and received `new_version` with nothing changed in the database; re-added with `version_decisions: {"file.txt": "supersede"}` and confirmed via `psql` that the old row's `superseded_by` now points at the new row, the new row is `version` 2, and the old row's `deleted_at` is still null.
+
+### Deferred
+
+- The superseded banner the source viewer would render (`docs/ux/source-viewer.md` §4) has nowhere to attach yet — no document-detail or citation-resolution endpoint exists in the repository. Filed as [#141](https://github.com/Rumeasiyan/askwell/issues/141), owned by whichever ticket builds that surface.
+- Retrieval excluding superseded versions is not yet exercisable — no retrieval component exists (`M1-ASK-RET-035`/`036`). The requirement is recorded in `docs/decisions.md` so the retrieval ticket filters `superseded_by IS NULL` rather than rediscovering the need.
+
 ## 0.2.14 — 2026-08-28
 
 A reference number is findable by the part someone actually remembers. `M1-INDEX-DB-033`.
