@@ -1,8 +1,10 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect, type ReactNode } from "react";
 
 import { AddProvider } from "@/components/add/add-state";
+import { AskProvider } from "@/components/ask/ask-state";
 import { DropTarget } from "@/components/add/drop-target";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { Rail } from "@/components/shell/rail";
@@ -37,12 +39,43 @@ import { useStatus } from "@/lib/use-status";
  */
 export function Shell({ children }: { children: ReactNode }) {
   const status = useStatus();
+  useAskShortcut();
 
   return (
     <AddProvider>
-      <ShellFrame status={status}>{children}</ShellFrame>
+      <AskProvider>
+        <ShellFrame status={status}>{children}</ShellFrame>
+      </AskProvider>
     </AddProvider>
   );
+}
+
+/**
+ * `⌘K` (or `Ctrl+K`) from anywhere reaches the Ask screen (`ask.md` §"Entry
+ * points", this ticket's own Scope: "keyboard entry to the screen from
+ * anywhere"). Lives here rather than on the Ask screen itself because the
+ * whole point is that it works from any route, and a listener owned by a page
+ * component is gone the moment that page is not the one mounted.
+ *
+ * A route change is not synchronous, so the composer this focuses may not
+ * exist in the DOM yet the instant `push` returns — `Composer` listens for
+ * the same event and attaches its own handler on mount, so whichever comes
+ * second (the navigation finishing, or this dispatch) is the one that
+ * actually focuses it.
+ */
+function useAskShortcut(): void {
+  const router = useRouter();
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key.toLowerCase() !== "k" || !(event.metaKey || event.ctrlKey)) return;
+      event.preventDefault();
+      router.push("/");
+      window.dispatchEvent(new Event("askwell:focus-composer"));
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [router]);
 }
 
 function ShellFrame({

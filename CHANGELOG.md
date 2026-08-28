@@ -4,6 +4,22 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.20 — 2026-08-28
+
+The Ask screen, for the first time. `M1-ASK-FE-039`.
+
+### Added
+
+- **The Ask screen** (`web/components/ask/ask-screen.tsx`) — the composer (`Enter` submits, `Shift+Enter` newlines), named step labels ahead of the first token, and tokens streamed into the live turn as `POST /ask` (`M1-ASK-API-038`) produces them.
+- **`AskProvider`** (`web/components/ask/ask-state.tsx`) — the conversation held once above the router, matching `AddProvider`'s own reasoning, so a completed answer survives navigating away and back. A question asked while one is running is queued, not interleaved — one answer at a time, nothing silently dropped.
+- **`⌘K` / `Ctrl+K`** reaches the Ask screen and focuses the composer from anywhere in the shell.
+- **`web/lib/ask.ts`** — the SSE parser and `streamAsk`/`stopAsk` client for `POST /ask`, `POST /ask/{message_id}/stop`.
+- A non-Latin-script question gets Askwell's English-only statement instead of a poor answer — a heuristic, not language detection; documented as such (`web/lib/ask.ts`).
+
+### Known gap
+
+- **`conversation_id` is not threaded across turns.** `askwell.ask` never returns the id it resolved or created, so every question opens its own conversation server-side. Filed as issue [#156](https://github.com/Rumeasiyan/askwell/issues/156) rather than worked around; does not affect this ticket's own acceptance criteria.
+
 ## 0.2.19 — 2026-08-28
 
 A question gets an answer, over the wire, for the first time. `M1-ASK-API-038`.

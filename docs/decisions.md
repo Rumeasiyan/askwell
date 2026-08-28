@@ -22,6 +22,30 @@ Template:
 
 ---
 
+## 2026-08-28 — The English-only statement is triggered by a non-Latin-script heuristic, not language detection
+
+**Decision:** `M1-ASK-FE-039`. `web/lib/ask.ts::looksNonEnglish` flags a question for `docs/ux/ask.md` §5's English-only statement when more than 30% of its letters fall outside the Latin script (and only once there are at least four letters to judge). No language identification library is added; questions in French, German, Tagalog written in Latin script and so on pass through un-flagged, same as any other v1 gap.
+
+**Why:** nothing in the stack does language detection yet — v1 is English-only by scope (`AGENTS.md` §1) and no dependency ticket built one — so this ticket either builds real detection, skips the ticket's own stated validation rule and testing scenario, or ships something narrower and says so plainly. Real detection means a new dependency (`AGENTS.md` §4: "prefer what exists... then a new maintained package, checked for compatibility") for a v1 surface whose own scope is "not multilingual yet," which is a heavier commitment than one ticket should make in passing. The script-based heuristic catches the unambiguous, high-value case — the same reasoning `extract_ocr.py`'s OSD-based script routing already relies on for the identical problem on the ingestion side — at zero dependency cost, and is honest about what it does not catch rather than quietly pretending to be complete.
+
+**Consequences:** a question in a Latin-script non-English language gets a poor English answer rather than the correct statement, until real detection exists. Revisit once usage shows this matters rather than guessing at a threshold now; `30%` and `4` letters are both unmeasured starting points, matching how `retrieval_score_threshold` and `ocr_confidence_threshold` were both introduced as starting values.
+
+**Refs:** `M1-ASK-FE-039`, `web/lib/ask.ts`, `docs/ux/ask.md` §5, `api/src/askwell/extract_ocr.py`.
+
+---
+
+## 2026-08-28 — Turn state lives above the router in memory; reconnect is not wired into the frontend yet
+
+**Decision:** `M1-ASK-FE-039`. `AskProvider` (`web/components/ask/ask-state.tsx`) holds every turn in a React context mounted in `Shell`, above the router — the same placement `AddProvider` already uses and for the same reason. "Navigate away mid-answer and back — the completed answer is present" is satisfied by the component simply never unmounting, not by persisting to `sessionStorage`/`localStorage` or by calling `GET /ask/{message_id}/stream` (`M1-ASK-API-038`'s reconnect endpoint) on mount.
+
+**Why:** the acceptance criterion is about navigating *within* the running application — to the library and back — not about a page reload or a second tab, and the in-memory placement already built for exactly this shape by `AddProvider` covers it with no new mechanism. Reaching for `sessionStorage` would duplicate state that already survives the only navigation this ticket's own testing notes exercise, and reaching for the reconnect endpoint would additionally require threading a `message_id` (fine) and, per the previous decision above, tolerating a full replay of every token on every mount (a client concern that entry already flagged for this ticket to pick up) — real work for a case ("the tab was actually closed and reopened," or "the process was restarted") this ticket's own walkthrough does not test. Deferred rather than built against a guess: reconnect-on-reload is real and worth doing, but belongs with whichever ticket first needs a page reload to survive — filed nowhere yet because nothing has asked for it.
+
+**Consequences:** a hard reload of the tab (not a client-side navigation) loses every in-progress and completed turn from this session — the browser has genuinely forgotten, and there is currently no code path that would recover it even though the server-side `messages` rows still exist. `AskProvider` also cannot thread `conversation_id` across turns today regardless, because `askwell.ask` never returns the one it resolved (issue #156) — every question opens its own conversation server-side, so even a working reconnect would only ever recover one turn's own history, not a conversation's.
+
+**Refs:** `M1-ASK-FE-039`, `web/components/ask/ask-state.tsx`, `web/components/add/add-state.tsx`, issue #156, the `M1-ASK-API-038` entry below.
+
+---
+
 ## 2026-08-28 — A reconnected answer stream replays its own history in full, rather than resuming from where a previous connection left off
 
 **Decision:** `M1-ASK-API-038`. `askwell.ask._tail` starts every connection — the original `POST /ask` response and any later `GET /ask/{message_id}/stream` reconnect — at event index 0 of the turn's own in-memory event list, and sends the whole thing before continuing live. This departs from the ticket's own stated edge case, "reconnect resumes the stream but does not replay tokens already sent."
