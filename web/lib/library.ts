@@ -19,28 +19,37 @@ export const KIND_LABELS: Record<string, string> = {
   connection: "Connection",
 };
 
-/** `docs/ux/library.md` §2's four words. `deleted` never reaches this screen
- * — the snapshot the library reads already excludes it (`M2` scope). */
+/** `docs/ux/library.md` §2's five words — `deleted` included since
+ * `M2-DELETE-FE-062`: a deleted source stays listed, greyed, filterable out
+ * (§4/§5), rather than dropped the moment it is tombstoned. */
 export const STATUS_LABELS: Record<string, string> = {
   queued: "Queued",
   indexing: "Indexing",
   ready: "Ready",
   attention: "Needs attention",
+  deleted: "Deleted",
 };
 
 export interface LibraryFilters {
   kind: string | "all";
   status: string | "all";
   onlyOpenClarifications: boolean;
+  /** Deleted rows are hidden by default — "filtered out" is the resting
+   * state `library.md` §4 describes, not merely an option to reach it. */
+  showDeleted: boolean;
 }
 
 export const DEFAULT_FILTERS: LibraryFilters = {
   kind: "all",
   status: "all",
   onlyOpenClarifications: false,
+  showDeleted: false,
 };
 
 export function matchesFilters(source: SourceCoverage, filters: LibraryFilters): boolean {
+  if (source.status === "deleted" && !filters.showDeleted) {
+    return false;
+  }
   if (filters.kind !== "all" && source.kind !== filters.kind) {
     return false;
   }
@@ -51,6 +60,14 @@ export function matchesFilters(source: SourceCoverage, filters: LibraryFilters):
     return false;
   }
   return true;
+}
+
+/** "Deleted 28 Aug 2026" — the library row's own date, `deletedSentence`
+ * rather than reusing `addedSentence` under a misleading name, even though
+ * the formatting is identical: the two dates answer different questions and
+ * a shared name would blur that at every call site. */
+export function deletedSentence(deletedAt: string): string {
+  return `Deleted ${addedSentence(deletedAt)}`;
 }
 
 /** "Added 28 Aug 2026" — a plain date, not a relative one: someone scanning

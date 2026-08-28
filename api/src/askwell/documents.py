@@ -65,13 +65,16 @@ DOCUMENT_OPENED = "document_opened"
 DOCUMENT_RELOCATED = "document_relocated"
 
 
-async def _find(session: AsyncSession, document_id: uuid.UUID) -> dict[str, object] | None:
+async def _find(
+    session: AsyncSession, document_id: uuid.UUID, *, include_deleted: bool = False
+) -> dict[str, object] | None:
+    clause = "d.id = :id" if include_deleted else "d.id = :id AND d.deleted_at IS NULL"
     result = await session.execute(
         text(
             "SELECT d.id, d.filename, d.path, d.mime, d.page_count, d.anchor_kind, "
             "d.status, d.superseded_by, d.source_id, d.sha256, d.missing_since, "
-            "s.root_path FROM documents d JOIN sources s ON s.id = d.source_id "
-            "WHERE d.id = :id AND d.deleted_at IS NULL"
+            "d.deleted_at, d.deleted_reason, s.root_path "
+            f"FROM documents d JOIN sources s ON s.id = d.source_id WHERE {clause}"
         ),
         {"id": document_id},
     )
@@ -218,9 +221,27 @@ def register_documents(
     @app.get("/documents/{document_id}")
     async def document_metadata(document_id: uuid.UUID) -> JSONResponse:
         async with factory() as db:
-            found = await _find(db, document_id)
+            found = await _find(db, document_id, include_deleted=True)
         if found is None:
             return JSONResponse({"error": "No such document."}, status_code=404)
+
+        # #231: a tombstoned row still answers here, honestly, rather than
+        # 404ing the same as an id that never existed — the row survives
+        # specifically so an old citation can resolve to a deletion date
+        # instead of breaking (`docs/ux/source-viewer.md` §4). Short-circuits
+        # before `_availability`, which assumes a live document and would
+        # otherwise report a cleared row as "moved".
+        if found["deleted_at"] is not None:
+            return JSONResponse(
+                {
+                    "id": str(found["id"]),
+                    "filename": found["filename"],
+                    "deleted": True,
+                    "deleted_at": _isoformat(found["deleted_at"]),
+                    "deleted_reason": found["deleted_reason"],
+                    "source_id": str(found["source_id"]),
+                }
+            )
 
         availability = await _availability(factory, settings, found)
 
@@ -253,6 +274,8 @@ def register_documents(
                 "status": found["status"],
                 "superseded_by": str(superseded_by) if superseded_by is not None else None,
                 "superseded_at": superseded_at,
+                "deleted": False,
+                "source_id": str(found["source_id"]),
                 **availability.as_dict(),
             }
         )

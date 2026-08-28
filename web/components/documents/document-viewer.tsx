@@ -6,6 +6,7 @@ import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
 import type { TextItem } from "pdfjs-dist/types/src/display/api";
 
 import { documentFormat } from "@/lib/document-format";
+import { subscribeIngest } from "@/lib/ingest";
 import { locateOnPage, searchTargets,
   pageNote,
   type PageNote,
@@ -16,6 +17,7 @@ import { ContextRail, SupersededBanner } from "./context-rail";
 import { ConvertedTextView } from "./converted-text-view";
 import { SpreadsheetView } from "./spreadsheet-view";
 import {
+  DeletedSourceNotice,
   MovedFileNotice,
   PageNav,
   RootUnavailableNotice,
@@ -53,11 +55,25 @@ interface DocumentMetadata {
   root_reason: string | null;
   superseded_by: string | null;
   superseded_at: string | null;
+  deleted: false;
+  source_id: string;
+}
+
+/** The tombstoned shape `document_metadata` answers with (issue 231) —
+ * everything the deleted state needs and nothing a live document has. */
+interface DeletedDocumentMetadata {
+  id: string;
+  filename: string;
+  deleted: true;
+  deleted_at: string | null;
+  deleted_reason: string | null;
+  source_id: string;
 }
 
 type ViewerState =
   | { kind: "loading" }
   | { kind: "error"; message: string }
+  | { kind: "deleted"; meta: DeletedDocumentMetadata }
   | { kind: "moved"; meta: DocumentMetadata }
   | { kind: "root_unavailable"; meta: DocumentMetadata }
   | { kind: "unsupported"; meta: DocumentMetadata }
@@ -120,8 +136,15 @@ export function DocumentViewer() {
         setState({ kind: "error", message: "This document could not be opened." });
         return;
       }
-      const meta = (await response.json()) as DocumentMetadata;
+      const meta = (await response.json()) as DocumentMetadata | DeletedDocumentMetadata;
       if (cancelled) return;
+      if (meta.deleted) {
+        // Issue 231's own resolution: a tombstoned row answers here honestly
+        // rather than 404ing, so the viewer renders the deleted state
+        // instead of treating a cleared row as an ordinary read failure.
+        setState({ kind: "deleted", meta });
+        return;
+      }
       if (!meta.available) {
         // `moved` and `root_unavailable` are different facts
         // (`askwell.documents._availability`) and stay different states here
@@ -148,6 +171,22 @@ export function DocumentViewer() {
       cancelled = true;
     };
   }, [documentId, reloadToken]);
+
+  // Live update for the ticket's own edge case: deleting a source while its
+  // document is open in this viewer must land on the deleted state rather
+  // than leaving stale content on screen. The same `subscribeIngest`
+  // connection the library already watches carries this — a source's status
+  // flipping to `deleted` reaches every open tab, not only the one that
+  // clicked delete.
+  useEffect(() => {
+    if (state.kind === "loading" || state.kind === "error" || state.kind === "deleted") return;
+    const sourceId = state.meta.source_id;
+    const stop = subscribeIngest((next) => {
+      const source = next.sources.find((candidate) => candidate.id === sourceId);
+      if (source?.status === "deleted") setReloadToken((token) => token + 1);
+    });
+    return stop;
+  }, [state]);
 
   // Rendering: only once metadata says this is a PDF that is actually there.
   useEffect(() => {
@@ -361,6 +400,14 @@ export function DocumentViewer() {
     meta.superseded_by !== null ? (
       <SupersededBanner supersededBy={meta.superseded_by} supersededAt={meta.superseded_at} />
     ) : null;
+
+  if (state.kind === "deleted") {
+    return (
+      <div className="flex min-w-0 flex-1 gap-4">
+        <DeletedSourceNotice filename={state.meta.filename} deletedAt={state.meta.deleted_at} />
+      </div>
+    );
+  }
 
   if (state.kind === "moved") {
     return (

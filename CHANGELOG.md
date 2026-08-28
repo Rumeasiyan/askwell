@@ -4,6 +4,27 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.49 — 2026-08-28
+
+Deletion confirmation and the deleted-source citation card. `M2-DELETE-FE-062`.
+
+### Added
+
+- **Library deletion**: a "Delete" control on each source row (`DeleteControl`, `web/components/library/library-screen.tsx`) confirms inline, naming the source and stating the three facts a user would otherwise guess wrong — the file on disk is untouched, Askwell forgets its contents, old citations degrade honestly — before calling `DELETE /sources/{id}` (`deleteSource`, `web/lib/ingest.ts`).
+- **Deleted sources stay listed, greyed, filterable.** The library's own `/ingest` snapshot (`askwell.ingest.coverage`) no longer excludes `status = 'deleted'` sources; a new `sources.deleted_at` column (migration `5f3a7c1e9d42`), set by `delete_source`, gives the library row its deletion date (`deletedSentence`, `web/lib/library.ts`). `LibraryFilters.showDeleted` hides deleted rows by default — `library.md` §4's "filtered out" is the resting state — with a checkbox to bring them back in.
+- **Deleted-source citation card**: `ProvenanceMargin`/`InlineSourceCards` (`web/components/ask/provenance-margin.tsx`) check each cited document's live state with `GET /documents/{id}` and render a greyed, non-clickable "Deleted on `<date>`" card in place of the passage when it has been.
+- **Deleted-source viewer state**: `DocumentViewer` renders `DeletedSourceNotice` (`web/components/documents/viewer-shared.tsx`) — "Deleted on `<date>`. Askwell no longer has the contents." — when `/documents/{id}` resolves a tombstone, and stays live: it subscribes to the same `subscribeIngest` stream the library watches, so deleting a source while its document is open in another tab lands the viewer on the deleted state within one poll interval rather than leaving stale content on screen.
+- A local counter of confirmed deletions (`getSourceDeletionCount`, `web/lib/ingest.ts`) — in-memory only, never transmitted (C1), same pattern as `citations.ts`'s `cardClickCount`.
+
+### Fixed
+
+- **Issue [#231](https://github.com/Rumeasiyan/askwell/issues/231):** `GET /documents/{id}` (`askwell.documents.document_metadata`) 404'd a tombstoned document identically to an id that never existed. It now resolves the tombstone — `deleted`, `deleted_at`, `deleted_reason` — before the availability checks that assume a live document, which is what let the citation card and the viewer both render the deleted state honestly instead of a bare "not found." `GET /documents/{id}/file` still 404s a deleted document: the bytes are gone, and only the metadata route has a tombstone to resolve.
+
+### Verified
+
+- `scripts/dev.sh test-db` (263 passed: 2 new in `test_documents.py` for issue #231 — the metadata route resolving a tombstone, the file route still 404ing one; 1 new in `test_ingest_records.py` — a deleted source stays in the snapshot with its date; `test_sources_records.py`'s existing deletion test extended to assert `sources.deleted_at`). `scripts/dev.sh check` (529 passed, 1 skipped). `scripts/dev.sh web-check` clean (lint, typecheck, 177 lib tests including new ones for `showDeleted` filtering and `deletedSentence`, build, contrast, offline check).
+- Exercised against the real stack: rebuilt the API image (the compose service has no source bind mount, unlike `scripts/dev.sh` commands) and ran the migration. `GET /documents/{id}` on a document tombstoned by an earlier manual `M2-DELETE-BE-061` walkthrough returned the deleted payload instead of 404; the same document's `/file` route still 404'd. `DELETE /sources/{id}` against a live source set `deleted_at` and left it in the `/ingest` snapshot with `status: "deleted"`; its document's `/documents/{id}` resolved to `deleted_reason: "source deleted"`. Browser-level rendering (greyed rows, the card, the viewer notice) was not visually checked — no browser tool is available in this session; the API contracts each of them reads are confirmed correct, and the component logic is covered by the type-checked build plus the pure-function tests.
+
 ## 0.2.48 — 2026-08-28
 
 Tombstoned deletion that clears content and embedding. `M2-DELETE-BE-061`.

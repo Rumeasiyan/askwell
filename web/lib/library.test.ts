@@ -15,6 +15,7 @@ import {
   DEFAULT_FILTERS,
   addedSentence,
   attentionCauses,
+  deletedSentence,
   matchesFilters,
   type LibraryFilters,
 } from "./library.ts";
@@ -27,6 +28,7 @@ function source(over: Partial<SourceCoverage> = {}): SourceCoverage {
     kind: "file",
     added_at: "2026-08-28T00:00:00Z",
     last_error: null,
+    deleted_at: null,
     open_clarifications: 0,
     total: 10,
     ready: 10,
@@ -88,9 +90,28 @@ test("has-open-clarifications excludes a source with none", () => {
 });
 
 test("filters combine — a source must pass every one set", () => {
-  const filters: LibraryFilters = { kind: "file", status: "ready", onlyOpenClarifications: false };
+  const filters: LibraryFilters = {
+    kind: "file",
+    status: "ready",
+    onlyOpenClarifications: false,
+    showDeleted: false,
+  };
   assert.equal(matchesFilters(source({ kind: "file", status: "attention" }), filters), false);
   assert.equal(matchesFilters(source({ kind: "file", status: "ready" }), filters), true);
+});
+
+test("a deleted source is filtered out by default", () => {
+  assert.equal(matchesFilters(source({ status: "deleted" }), DEFAULT_FILTERS), false);
+});
+
+test("showDeleted brings a deleted source back in", () => {
+  const filters: LibraryFilters = { ...DEFAULT_FILTERS, showDeleted: true };
+  assert.equal(matchesFilters(source({ status: "deleted" }), filters), true);
+});
+
+test("showDeleted alone does not defeat the other filters", () => {
+  const filters: LibraryFilters = { ...DEFAULT_FILTERS, showDeleted: true, kind: "csv" };
+  assert.equal(matchesFilters(source({ status: "deleted", kind: "file" }), filters), false);
 });
 
 // --- needs-attention expansion -------------------------------------------
@@ -130,4 +151,10 @@ test("the added sentence renders a stable calendar date, not a relative one", ()
   const rendered = addedSentence("2026-08-28T12:00:00Z");
   assert.match(rendered, /2026/);
   assert.doesNotMatch(rendered, /ago/);
+});
+
+test("the deleted sentence names the deletion date", () => {
+  const rendered = deletedSentence("2026-08-28T12:00:00Z");
+  assert.match(rendered, /^Deleted /);
+  assert.match(rendered, /2026/);
 });

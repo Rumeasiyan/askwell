@@ -103,6 +103,31 @@ export function UnrenderableFallback({
 }
 
 /**
+ * The deleted-source state, `docs/ux/source-viewer.md` §4, `M2-DELETE-FE-062`:
+ * "Deleted on <date>. Askwell no longer has the contents." The citation
+ * resolves honestly instead of breaking (issue 11, issue 231) — no relocate
+ * offer, no rail, nothing that implies the content might come back the way
+ * a moved file's does.
+ */
+export function DeletedSourceNotice({
+  filename,
+  deletedAt,
+}: {
+  filename: string;
+  deletedAt: string | null;
+}) {
+  const date = deletedAt !== null ? new Date(deletedAt).toLocaleDateString() : null;
+  return (
+    <section className="flex flex-col gap-2 p-4">
+      <h1 style={{ fontSize: "var(--t-title)", lineHeight: "var(--t-title-lh)" }}>{filename}</h1>
+      <p className="ask-prose" style={{ color: "var(--muted)" }}>
+        Deleted{date !== null ? ` on ${date}` : ""}. Askwell no longer has the contents.
+      </p>
+    </section>
+  );
+}
+
+/**
  * The moved/renamed state, `M1-VIEW-BE-049`. Names the missing path and
  * offers relocation — never says "deleted", which `documents.py`'s own
  * `moved`/`root_unavailable` split exists to keep this component from ever
