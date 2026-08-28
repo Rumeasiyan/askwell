@@ -22,6 +22,18 @@ Template:
 
 ---
 
+## 2026-08-28 — A reconnected answer stream replays its own history in full, rather than resuming from where a previous connection left off
+
+**Decision:** `M1-ASK-API-038`. `askwell.ask._tail` starts every connection — the original `POST /ask` response and any later `GET /ask/{message_id}/stream` reconnect — at event index 0 of the turn's own in-memory event list, and sends the whole thing before continuing live. This departs from the ticket's own stated edge case, "reconnect resumes the stream but does not replay tokens already sent."
+
+**Why:** the literal reading — start a reconnect at wherever the turn currently is, skipping history — has a bug the ticket's own wording does not surface: a browser that reconnects *after* a turn has already finished attaches with nothing pending and the turn no longer `running`, so it receives nothing at all, not even the terminal `done` event. That is worse than replaying — a reconnect after completion is exactly the "close the tab, reopen it" scenario the ticket's own testing notes ask for, and it must not come back empty. Making replay-vs-resume conditional on whether the turn is still running is a second state to get right for a marginal saving; replaying unconditionally is one rule with no failure mode, and the cost is bounded by what it always was — one turn's own text, for one browser, never more than a few kilobytes. The alternative that preserves the literal requirement — track a per-connection cursor and mark only *token* events as non-replayable while still replaying `step`/`citation`/`done` — was considered and rejected as complexity bought for a case (a reconnect mid-answer momentarily re-rendering tokens already shown) that costs the user nothing visible.
+
+**Consequences:** a reconnect mid-answer re-sends every token already delivered before continuing live, which a client must tolerate (re-rendering the same accumulated text is a no-op, not a duplicate-append bug, provided the client replaces rather than concatenates on reconnect — `M1-ASK-FE-039`'s own concern, noted here so it is not rediscovered there). `MAX_FINISHED` (200) still bounds how long a finished turn's history survives in memory; past that, `GET /ask/{message_id}/stream` falls back to `messages`, which never had per-token history to begin with and replays as one block.
+
+**Refs:** `M1-ASK-API-038`, issue #152, `api/src/askwell/ask.py`, `api/tests/test_ask_api.py`, ticket testing notes' "known gaps".
+
+---
+
 ## 2026-08-28 — Reranking window is bounded separately from the fusion candidate count, and degrades in-band rather than raising
 
 **Decision:** `M1-ASK-RET-036`. `askwell.retrieve.retrieve` sends only the top `Settings.rerank_candidate_count` (default 10) of the fused candidates to `InferenceClient.rerank`, not the full fused list (`Settings.retrieval_candidate_count`, default 40). Candidates beyond the window are appended after the reranked ones, in their fused order, unscored. If reranking raises `InferenceUnavailable` or `InferenceFailed` — the reranker absent, refusing, or slower than `Settings.rerank_timeout_seconds` — `_rerank` catches both and returns the fused list unchanged, with a reason string; `retrieve()` never raises because reranking did not work.

@@ -4,6 +4,32 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.19 — 2026-08-28
+
+A question gets an answer, over the wire, for the first time. `M1-ASK-API-038`.
+
+### Added
+
+- **`POST /ask`** — starts a turn: resolves or opens a conversation, records the user's question, and returns a server-sent stream over the same background generation a browser can drop and reconnect to. Runs retrieval (`M1-ASK-RET-035`/`036`) and composition (`M1-ASK-BE-037`) for the first time against a real question, then streams the model's own tokens as `InferenceClient.stream_generate` produces them (new — see below).
+- **`GET /ask/{message_id}/stream`** — reconnects to a turn still running, or replays a finished one from `messages` once it has left memory (a retired turn, or this process having restarted). A turn's own event history is small enough to replay in full rather than tracking what a given browser has already seen; `docs/decisions.md` records why this departs from the ticket's stated "does not replay tokens already sent" and what the alternative design's bug was.
+- **`POST /ask/{message_id}/stop`** — ends generation early; the stored answer is marked partial (`messages.trace.stopped_early`).
+- **`askwell.inference.client.InferenceClient.stream_generate`** — generation as an async stream of `StreamChunk`s over llama.cpp's own SSE `/completion` response, instead of `generate`'s one round trip. Raises the same `InferenceUnavailable`/`InferenceFailed` distinction as every other method, wherever in the stream the failure happens — including after tokens have already been sent, the "inference process dies mid-stream" edge case.
+- **Citations, for the first time.** The model is asked to cite by the same `index` `compose()` delimits candidates with; `askwell.ask` resolves `[index]` references out of the streamed text as they complete and writes them to the real `citations` table (`docs/architecture.md` §7) — C4 having somewhere to attach to, not just `messages.trace`.
+- **`ASKWELL_GENERATION_MAX_TOKENS`** (default 1024) — the ceiling on one answer's length. Reaching it is stated (`trace.reason`), never silent.
+- **`api/tests/conftest.py::drive_and_disconnect`** — the raw-ASGI streaming-test helper issue #110 predicted this ticket would need, extracted so a third streaming endpoint does not rediscover the pattern `test_ingest_api.py` found the hard way.
+
+### Verified
+
+- `scripts/dev.sh test` — 425 passed, 1 skipped (unchanged, pre-existing).
+- `scripts/dev.sh test-db` — 161 passed, including the full acceptance-criteria exchange (steps before tokens, a citation resolved to its chunk, stop marking an answer partial, a disconnected browser's answer still completing and saving) driven against a real Postgres with a stubbed `InferenceClient`.
+- Manual walkthrough against the running stack (`docs/manual-tests/M1-ASK-API-038.md`): a real session, `POST /ask` streaming a `step` event before failing cleanly on `InferenceUnavailable` (no native `llama.cpp` process runs in this environment — the same limitation every ticket since `M0-MODEL-BE-019` has recorded), the assistant/user messages and the audit interaction row all present afterward, `GET /ask/{id}/stream` replaying correctly both while the process was still up and after `podman compose restart api` cleared the in-memory turn registry, and both stream/stop endpoints answering 404 by name for an unknown id.
+
+### Not demonstrable yet, stated plainly
+
+No real model ran: every test and the manual walkthrough stub or fail at `InferenceClient`, so token pacing, citation accuracy against a real model's own output, and whether a real generation actually honours the `<retrieved-content>` boundary are unverified here — the same gap every ticket since `M0-MODEL-BE-019` has recorded. The Ask screen itself does not exist (`M1-ASK-FE-039`), so nothing renders any of this yet. Abstention is still `M2`: this ticket answers from zero or thin candidates rather than refusing, which is correct for its own scope and wrong for a shipped product — `M2` is what makes that a decision instead of an omission.
+
+- **`GET /ask/counts`** — answers started, completed and stopped on this machine, the ticket's Analytics Events line. Derived from `messages` rather than counted in memory, so they survive a restart: a counter held in the process would reset with the container and report "since the last deploy" under a name that reads like a total. Read out of this machine's own database by this machine's own browser; nothing transmitted, no collector to turn off (C1).
+
 ## 0.2.18 — 2026-08-28
 
 A document cannot give Askwell orders. `M1-ASK-BE-037`.
