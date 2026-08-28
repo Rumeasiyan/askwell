@@ -92,6 +92,16 @@ async def reconcile_queue(ctx: dict[str, Any]) -> int:
     return await ingest.reconcile(ctx["sessions"], ctx["settings"])
 
 
+async def check_missing(ctx: dict[str, Any]) -> int:
+    """The periodic half of the moved-file check, `M1-VIEW-BE-049`. The other
+    half runs at open time, in `askwell.documents`."""
+    from askwell import ingest
+    from askwell.db.engine import session_scope
+
+    async with session_scope(ctx["sessions"]) as session:
+        return await ingest.sweep_missing(session, ctx["settings"])
+
+
 async def startup(ctx: dict[str, Any]) -> None:
     from askwell import embed, ingest
 
@@ -216,7 +226,27 @@ def main() -> None:
                 else {0},
                 run_at_startup=False,
                 max_tries=1,
-            )
+            ),
+            cron(
+                check_missing,
+                # Unlike `reconcile_queue`'s interval, this one defaults past
+                # sixty seconds — a moved file is not urgent the way a stuck
+                # queue is — so above a minute the cadence is expressed in
+                # minutes rather than folding silently back to "every minute"
+                # the way `second=range(...)` would above 59.
+                minute=(
+                    None
+                    if settings.missing_check_seconds < 60
+                    else set(range(0, 60, max(1, settings.missing_check_seconds // 60)))
+                ),
+                second=(
+                    set(range(0, 60, settings.missing_check_seconds))
+                    if settings.missing_check_seconds < 60
+                    else 0
+                ),
+                run_at_startup=False,
+                max_tries=1,
+            ),
         ],
     )
     worker.run()

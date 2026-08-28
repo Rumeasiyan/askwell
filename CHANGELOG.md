@@ -4,6 +4,17 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.33 — 2026-08-28
+
+The moved-or-renamed file state, distinct from deleted. `M1-VIEW-BE-049`.
+
+### Added
+
+- **`askwell.documents._availability`** — the open-time check behind `GET /documents/{id}` and `GET /documents/{id}/file`: a document whose recorded path no longer resolves is reported as `moved` (with the missing path and `missing_since`) when its nominated root is otherwise reachable, and as `root_unavailable` (with the root's own reason) when the whole root is unmounted, removed or unreadable — the two are never conflated, so a rename never reads as a deletion and an unplugged drive never reads as forty missing files. A file that reappears at its recorded path clears `missing_since` on the next open.
+- **`POST /documents/{id}/relocate`** — repairs a moved document's path. Verifies the candidate path is inside a nominated root (`roots.covering`) and hashes it (`sources.fingerprint`); a matching hash updates `documents.path`, clears `missing_since`, and writes an `audit_decisions` record naming both paths. A mismatched hash is refused with the mismatch named, and the response points at adding the file as a new one instead of relocating to it — the ticket's own "moved and modified" edge case.
+- **`askwell.ingest.sweep_missing`**, run every `ASKWELL_MISSING_CHECK_SECONDS` (default 300) by a new `worker.py` cron job — the same moved/root-unavailable detection as `_availability`, run on a timer so a moved file is caught even if nobody has opened it. `Coverage.missing` and `source_status`/`_attention_reason` extend the existing flagged-OCR pattern: a moved file makes a source `attention`, stays askable, and names how many files need relocating.
+- **`web/components/documents/viewer-shared.tsx`** — `MovedFileNotice` (names the missing path, a typed-path relocate form using the same seam as root nomination) and `RootUnavailableNotice`, wired into `document-viewer.tsx`'s two new `moved`/`root_unavailable` states, replacing the generic "no longer at its recorded path" message both states previously shared.
+
 ## 0.2.32 — 2026-08-28
 
 The source viewer's context rail: back to the answer, and citation stepping. `M1-VIEW-FE-048`.

@@ -1,5 +1,7 @@
 "use client";
 
+import { useState } from "react";
+
 /**
  * Pieces the source viewer's PDF, converted-text and spreadsheet renderers
  * all need. `M1-VIEW-FE-047`.
@@ -96,6 +98,108 @@ export function UnrenderableFallback({
       >
         Open in system app
       </a>
+    </section>
+  );
+}
+
+/**
+ * The moved/renamed state, `M1-VIEW-BE-049`. Names the missing path and
+ * offers relocation — never says "deleted", which `documents.py`'s own
+ * `moved`/`root_unavailable` split exists to keep this component from ever
+ * having to guess between.
+ *
+ * The typed path is the same seam `add-screen.tsx`'s `Locate` form uses for
+ * nominating a folder: `M7-TAURI-FE-182` replaces the text field with the
+ * platform's own file dialog without this component's request or its
+ * hash-mismatch handling changing at all.
+ */
+export function MovedFileNotice({
+  documentId,
+  filename,
+  path,
+  onRelocated,
+}: {
+  documentId: string;
+  filename: string;
+  path: string;
+  onRelocated: () => void;
+}) {
+  const [candidate, setCandidate] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+
+  async function submit(event: React.FormEvent): Promise<void> {
+    event.preventDefault();
+    setBusy(true);
+    setProblem(null);
+    try {
+      const response = await fetch(`/documents/${documentId}/relocate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: candidate }),
+      });
+      const body = (await response.json()) as { error?: string; relocated?: boolean };
+      if (response.ok && body.relocated === true) {
+        onRelocated();
+        return;
+      }
+      setProblem(body.error ?? "That path could not be used.");
+    } catch {
+      setProblem("Askwell could not be reached.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="flex flex-col gap-3 p-4">
+      <h1 style={{ fontSize: "var(--t-title)", lineHeight: "var(--t-title-lh)" }}>{filename}</h1>
+      <p className="ask-prose">
+        {filename} has moved. Askwell last found it at <code>{path}</code>, but that path no
+        longer resolves. Nothing was deleted.
+      </p>
+      <form onSubmit={(event) => void submit(event)} className="flex flex-col gap-2">
+        <label htmlFor={`relocate-${documentId}`} style={{ fontSize: "var(--t-ui)" }}>
+          Where is it now?
+        </label>
+        <div className="flex gap-2">
+          <input
+            id={`relocate-${documentId}`}
+            value={candidate}
+            onChange={(event) => setCandidate(event.target.value)}
+            placeholder={path}
+            spellCheck={false}
+            autoComplete="off"
+            className="ask-input flex-1 px-3"
+            style={{ fontFamily: "var(--font-app)", fontSize: "var(--t-ui)" }}
+          />
+          <button
+            type="submit"
+            disabled={busy || candidate.trim() === ""}
+            className="ask-action-primary px-4"
+            style={{ fontSize: "var(--t-ui)" }}
+          >
+            Relocate
+          </button>
+        </div>
+      </form>
+      {problem !== null ? <p className="ask-prose ask-pdf-page-note">{problem}</p> : null}
+    </section>
+  );
+}
+
+/** The whole root unreachable — unmounted, removed or unreadable — as
+ * distinct from one file having moved. `M1-VIEW-BE-049`'s own edge case:
+ * conflating the two would ask someone to relocate every file in a folder
+ * that is simply not connected right now. */
+export function RootUnavailableNotice({ filename, reason }: { filename: string; reason: string | null }) {
+  return (
+    <section className="flex flex-col gap-2 p-4">
+      <h1 style={{ fontSize: "var(--t-title)", lineHeight: "var(--t-title-lh)" }}>{filename}</h1>
+      <p className="ask-prose">
+        Askwell cannot reach the folder that holds this file right now.
+        {reason !== null ? ` ${reason}` : ""}
+      </p>
     </section>
   );
 }

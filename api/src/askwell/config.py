@@ -203,6 +203,13 @@ class Settings(BaseSettings):
     # scans a given install actually sees.
     ocr_confidence_threshold: float = Field(default=0.60, ge=0, le=1)
 
+    # How often the worker checks every indexed document's recorded path
+    # against disk, catching a moved or renamed file even when nobody has
+    # clicked its citation yet. `askwell.documents` does the same check at
+    # open time; this is the half that runs without anyone opening anything.
+    # `M1-VIEW-BE-049`.
+    missing_check_seconds: int = Field(default=300, ge=30, le=3600)
+
     # Traces are the largest and fastest-growing of the three audit stores,
     # and the only one that fails open. 256 MB is a few thousand traces —
     # enough that "show me what happened" works for anything recent, and small

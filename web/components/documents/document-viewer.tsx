@@ -15,7 +15,13 @@ import { buildPageText, itemsInRange } from "@/lib/pdf-text-map";
 import { ContextRail, SupersededBanner } from "./context-rail";
 import { ConvertedTextView } from "./converted-text-view";
 import { SpreadsheetView } from "./spreadsheet-view";
-import { PageNav, UnrenderableFallback, highlightSpan } from "./viewer-shared";
+import {
+  MovedFileNotice,
+  PageNav,
+  RootUnavailableNotice,
+  UnrenderableFallback,
+  highlightSpan,
+} from "./viewer-shared";
 
 /**
  * The source viewer. `M1-VIEW-FE-046`.
@@ -35,11 +41,16 @@ import { PageNav, UnrenderableFallback, highlightSpan } from "./viewer-shared";
 interface DocumentMetadata {
   id: string;
   filename: string;
+  path: string;
   mime: string | null;
   page_count: number | null;
   anchor_kind: string | null;
   status: string;
   available: boolean;
+  moved: boolean;
+  missing_since: string | null;
+  root_unavailable: boolean;
+  root_reason: string | null;
   superseded_by: string | null;
   superseded_at: string | null;
 }
@@ -47,6 +58,8 @@ interface DocumentMetadata {
 type ViewerState =
   | { kind: "loading" }
   | { kind: "error"; message: string }
+  | { kind: "moved"; meta: DocumentMetadata }
+  | { kind: "root_unavailable"; meta: DocumentMetadata }
   | { kind: "unsupported"; meta: DocumentMetadata }
   | { kind: "ready"; meta: DocumentMetadata }
   | { kind: "converted"; meta: DocumentMetadata }
@@ -78,6 +91,9 @@ export function DocumentViewer() {
   const claimOrdinal = claimParam !== null ? Number.parseInt(claimParam, 10) : null;
 
   const [state, setState] = useState<ViewerState>({ kind: "loading" });
+  // Bumped after a successful relocation to re-run the metadata fetch below —
+  // `documentId` itself does not change, so nothing else would.
+  const [reloadToken, setReloadToken] = useState(0);
   const [pageNumber, setPageNumber] = useState(Number.isFinite(requestedPage) && requestedPage > 0 ? requestedPage : 1);
   const [pinpointNote, setPinpointNote] = useState<PageNote>("located");
   const [fallbackText, setFallbackText] = useState<string | null>(null);
@@ -107,10 +123,10 @@ export function DocumentViewer() {
       const meta = (await response.json()) as DocumentMetadata;
       if (cancelled) return;
       if (!meta.available) {
-        setState({
-          kind: "error",
-          message: `${meta.filename} is no longer at its recorded path.`,
-        });
+        // `moved` and `root_unavailable` are different facts
+        // (`askwell.documents._availability`) and stay different states here
+        // — never both collapsed into one "file is gone" message.
+        setState({ kind: meta.root_unavailable ? "root_unavailable" : "moved", meta });
         return;
       }
       switch (documentFormat(meta.mime)) {
@@ -131,7 +147,7 @@ export function DocumentViewer() {
     return () => {
       cancelled = true;
     };
-  }, [documentId]);
+  }, [documentId, reloadToken]);
 
   // Rendering: only once metadata says this is a PDF that is actually there.
   useEffect(() => {
@@ -345,6 +361,29 @@ export function DocumentViewer() {
     meta.superseded_by !== null ? (
       <SupersededBanner supersededBy={meta.superseded_by} supersededAt={meta.superseded_at} />
     ) : null;
+
+  if (state.kind === "moved") {
+    return (
+      <div className="flex min-w-0 flex-1 gap-4">
+        <MovedFileNotice
+          documentId={state.meta.id}
+          filename={state.meta.filename}
+          path={state.meta.path}
+          onRelocated={() => setReloadToken((token) => token + 1)}
+        />
+        {rail(state.meta)}
+      </div>
+    );
+  }
+
+  if (state.kind === "root_unavailable") {
+    return (
+      <div className="flex min-w-0 flex-1 gap-4">
+        <RootUnavailableNotice filename={state.meta.filename} reason={state.meta.root_reason} />
+        {rail(state.meta)}
+      </div>
+    );
+  }
 
   if (state.kind === "unsupported") {
     return (
