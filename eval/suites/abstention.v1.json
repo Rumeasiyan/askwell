@@ -1,0 +1,98 @@
+{
+  "name": "abstention.v1",
+  "category": "abstention",
+  "mode": "abstain",
+  "pass_bar": 0.9,
+  "tasks": [
+    {
+      "id": "sick-leave-policy",
+      "prompt": "What is Meridian Loom's policy on sick leave?",
+      "scorer": "abstains",
+      "expected": null
+    },
+    {
+      "id": "termination-notice-near-miss",
+      "prompt": "How many days' notice must Meridian Loom give an employee before terminating them?",
+      "scorer": "abstains",
+      "expected": null
+    },
+    {
+      "id": "part-time-holiday-near-miss",
+      "prompt": "How many paid holiday days do part-time Meridian Loom employees accrue per calendar year?",
+      "scorer": "abstains",
+      "expected": null
+    },
+    {
+      "id": "customer-portal-password-near-miss",
+      "prompt": "What is Meridian Loom's password policy for its customer-facing web portal?",
+      "scorer": "abstains",
+      "expected": null
+    },
+    {
+      "id": "q2-revenue-near-miss",
+      "prompt": "What was Meridian Loom's total revenue in Q2?",
+      "scorer": "abstains",
+      "expected": null
+    },
+    {
+      "id": "sensor-mk2-warranty-near-miss",
+      "prompt": "What is the warranty period for the Loomwear Sensor Mk2?",
+      "scorer": "abstains",
+      "expected": null
+    },
+    {
+      "id": "retreat-location-next-year-near-miss",
+      "prompt": "Where will Meridian Loom's staff retreat be held next year?",
+      "scorer": "abstains",
+      "expected": null
+    },
+    {
+      "id": "ceo-name",
+      "prompt": "Who is Meridian Loom's CEO?",
+      "scorer": "abstains",
+      "expected": null
+    },
+    {
+      "id": "health-insurance-plan",
+      "prompt": "What health insurance plan does Meridian Loom provide to employees?",
+      "scorer": "abstains",
+      "expected": null
+    },
+    {
+      "id": "bug-bounty-high-severity-near-miss",
+      "prompt": "What is the minimum bug bounty payout for a high-severity finding at Meridian Loom?",
+      "scorer": "abstains",
+      "expected": null
+    },
+    {
+      "id": "contractor-guest-vpn-near-miss",
+      "prompt": "How long does a VPN access token last for a Meridian Loom contractor's guest account?",
+      "scorer": "abstains",
+      "expected": null
+    },
+    {
+      "id": "sensor-mk3-operating-temperature",
+      "prompt": "What is the operating temperature range for the Loomwear Sensor Mk3?",
+      "scorer": "abstains",
+      "expected": null
+    },
+    {
+      "id": "sick-day-carryover-near-miss",
+      "prompt": "How many unused sick days can a Meridian Loom employee carry into the next year?",
+      "scorer": "abstains",
+      "expected": null
+    },
+    {
+      "id": "other-office-locations",
+      "prompt": "What office locations does Meridian Loom have besides Cedarbrook?",
+      "scorer": "abstains",
+      "expected": null
+    },
+    {
+      "id": "support-department-headcount-near-miss",
+      "prompt": "What was Meridian Loom's headcount in the Support department?",
+      "scorer": "abstains",
+      "expected": null
+    }
+  ]
+}
