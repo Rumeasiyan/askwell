@@ -139,7 +139,22 @@ class _Turn:
     def emit(
         self, kind: Literal["step", "token", "citation", "done"], data: dict[str, Any]
     ) -> None:
-        self.events.append(_Event(kind, {**data, "message_id": str(self.message_id)}))
+        # Both ids on every event, for the same reason: the browser cannot know
+        # either one until the server says so. `conversation_id` is resolved or
+        # created server-side and was never returned, so the screen had nothing
+        # to send back and every question started a fresh conversation — a
+        # product built around asking follow-ups where no follow-up could reach
+        # the turn before it.
+        self.events.append(
+            _Event(
+                kind,
+                {
+                    **data,
+                    "message_id": str(self.message_id),
+                    "conversation_id": str(self.conversation_id),
+                },
+            )
+        )
 
 
 _turns: dict[uuid.UUID, _Turn] = {}
@@ -202,14 +217,14 @@ async def _tail(turn: _Turn, request: Request) -> AsyncIterator[str]:
 
 async def _load_finished(
     factory: async_sessionmaker[AsyncSession], message_id: uuid.UUID
-) -> tuple[str, str, str | None, int | None] | None:
+) -> tuple[str, str, str | None, int | None, str] | None:
     """The stored answer for a turn no longer in memory — finished long
     enough ago to have been retired, or from before this process started."""
     async with session_scope(factory) as db:
         row = (
             await db.execute(
                 text(
-                    "SELECT content, trace, summary, source_count FROM messages "
+                    "SELECT content, trace, summary, source_count, conversation_id FROM messages "
                     "WHERE id = :id AND role = 'assistant'"
                 ),
                 {"id": message_id},
@@ -217,9 +232,12 @@ async def _load_finished(
         ).first()
     if row is None:
         return None
-    content, trace, summary, source_count = row
+    content, trace, summary, source_count, conversation_id = row
     status = trace.get("status", "completed") if isinstance(trace, dict) else "completed"
-    return str(content), str(status), summary, source_count
+    # The conversation id comes back with it: a browser reconnecting to a
+    # finished turn needs it as much as one watching a live turn, and after a
+    # reload it has no other way to learn which conversation it is in.
+    return str(content), str(status), summary, source_count, str(conversation_id)
 
 
 async def reconcile_interrupted(factory: async_sessionmaker[AsyncSession]) -> int:
@@ -751,17 +769,25 @@ def register_ask(
         stored = await _load_finished(factory, message_id)
         if stored is None:
             return JSONResponse({"error": "Askwell has no turn with that id."}, status_code=404)
-        content, status, summary, source_count = stored
+        content, status, summary, source_count, conversation_id = stored
 
         async def replay() -> AsyncIterator[str]:
             if content:
-                yield _sse("token", {"text": content, "message_id": str(message_id)})
+                yield _sse(
+                    "token",
+                    {
+                        "text": content,
+                        "message_id": str(message_id),
+                        "conversation_id": str(conversation_id),
+                    },
+                )
             yield _sse(
                 "done",
                 {
                     "status": status,
                     "reason": None,
                     "message_id": str(message_id),
+                    "conversation_id": conversation_id,
                     "summary": summary,
                     "source_count": source_count,
                 },

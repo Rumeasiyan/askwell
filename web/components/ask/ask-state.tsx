@@ -12,6 +12,7 @@ import {
 } from "react";
 
 import {
+  conversationOf,
   applyAskEvent,
   type AskEvent,
   liveTurnId,
@@ -148,6 +149,11 @@ export function AskProvider({ children }: { children: ReactNode }) {
   // scheduled it.
   const current = useRef<AskTurn[]>([]);
   const dispatching = useRef(false);
+  // The conversation every question after the first belongs to. Null until the
+  // server names one: it resolves or creates the conversation, so the browser
+  // cannot know the id until an event carries it back. A ref rather than state
+  // because nothing renders from it and a re-render per token is the cost.
+  const conversation = useRef<string | null>(null);
 
   useEffect(() => {
     current.current = turns;
@@ -203,9 +209,10 @@ export function AskProvider({ children }: { children: ReactNode }) {
       try {
         await streamAsk(
           next.question,
-          { conversationId: null, sourceId: next.sourceId },
+          { conversationId: conversation.current, sourceId: next.sourceId },
           (event: AskEvent) => {
-            if (event.event === "done") {
+            conversation.current ??= conversationOf(event);
+          if (event.event === "done") {
               finalStatus = event.data.status;
               finalReason = event.data.reason;
               finalSummary = event.data.summary ?? null;
