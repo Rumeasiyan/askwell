@@ -12,7 +12,7 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from askwell import __version__
+from askwell import __version__, ask
 from askwell.ask import register_ask
 from askwell.assistant import read as read_assistant
 from askwell.config import ConfigurationError, Environment, Settings, load_settings
@@ -56,6 +56,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # laptop, and refusing to start would leave the user with no surface
         # to find out why.
         log.warning("startup_components_unreachable", components=unreachable)
+
+    if "database" not in unreachable:
+        # Any answer still `running` in `messages` at this point belongs to
+        # the process that just stopped, not this one — `M1-ASK-BE-040`'s own
+        # "a message must never remain pending with nothing generating it."
+        # Skipped when Postgres is not up yet rather than failing startup
+        # over it; the ordinary reconcile-on-first-use pattern this codebase
+        # already uses elsewhere (`askwell.ingest`) does not apply here since
+        # there is no timer to retry it on, only the next restart.
+        reconciled = await ask.reconcile_interrupted(app.state.sessions)
+        if reconciled:
+            log.warning("ask_turns_reconciled", count=reconciled)
 
     try:
         yield

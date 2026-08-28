@@ -32,6 +32,18 @@ Citations are resolved from the model's own `[index]` references into the
 `<retrieved-content index="…">` blocks `askwell.agent.compose` built — the
 same index the prompt asks the model to cite by — and persisted to the real
 `citations` table (`docs/architecture.md` §7), never only to `messages.trace`.
+
+**Since `M1-ASK-BE-040`, the answer's row exists before there is an answer.**
+`POST /ask` writes the assistant `messages` row as `running`, empty, in the
+same request that starts the background task — not once generation finishes.
+That is what lets a restart be told apart from a turn genuinely still in
+progress: nothing in `_turns` survives a process exit, so a `running` row a
+fresh process finds at startup can only belong to the process before it.
+`reconcile_interrupted` fails every one of those before the first request is
+served, so a message can never sit `running` with nothing left generating it.
+`_semaphore` bounds how many turns retrieve-and-generate at once
+(`Settings.generation_max_concurrent`) — several tabs abandoned at once queue
+behind it rather than each starting a full inference pass immediately.
 """
 
 import asyncio
@@ -115,6 +127,23 @@ class _Turn:
 _turns: dict[uuid.UUID, _Turn] = {}
 _finished_order: list[uuid.UUID] = []
 
+# Bounds how many turns actually retrieve-and-generate at once. Resized
+# whenever the configured figure changes rather than fixed at first use —
+# one process serves one machine for its whole life so this never happens in
+# production, but a test process building several `Settings` in a row must
+# not have the first one it saw stick for every test after it.
+_generation_semaphore: asyncio.Semaphore | None = None
+_generation_semaphore_size: int | None = None
+
+
+def _semaphore(settings: Settings) -> asyncio.Semaphore:
+    global _generation_semaphore, _generation_semaphore_size
+    limit = settings.generation_max_concurrent
+    if _generation_semaphore is None or _generation_semaphore_size != limit:
+        _generation_semaphore = asyncio.Semaphore(limit)
+        _generation_semaphore_size = limit
+    return _generation_semaphore
+
 
 def _retire(message_id: uuid.UUID) -> None:
     _finished_order.append(message_id)
@@ -172,6 +201,37 @@ async def _load_finished(
     return str(content), str(status)
 
 
+async def reconcile_interrupted(factory: async_sessionmaker[AsyncSession]) -> int:
+    """Fail every turn this process finds still `running` at startup.
+
+    Nothing in `_turns` survives a restart — that registry is memory, not a
+    table — so any assistant row still marked `running` when a fresh process
+    starts is, by definition, one the last process died in the middle of:
+    there is one worker on one machine, and this function itself only runs
+    once, before `register_ask`'s routes take their first request, so no
+    turn genuinely in flight can be caught by it. Left alone, that row would
+    satisfy no query for "finished" or "in progress" — `GET
+    /ask/{id}/stream` would tail it forever, since nothing will ever append
+    to a `_Turn` object that no longer exists. Marked `failed` instead, with
+    `interrupted: true` so `/ask/counts` can report it as an abandoned
+    generation distinct from an ordinary inference failure.
+
+    Returns the number reconciled, so the caller can log it rather than the
+    reconciliation being invisible when it matters.
+    """
+    async with session_scope(factory) as db:
+        result = await db.execute(
+            text(
+                "UPDATE messages SET trace = trace"
+                ' || \'{"status": "failed", "stopped_early": true,'
+                ' "interrupted": true,'
+                ' "reason": "Askwell restarted before this answer finished."}\'::jsonb'
+                " WHERE role = 'assistant' AND trace ->> 'status' = 'running'"
+            )
+        )
+        return int(result.rowcount)  # type: ignore[attr-defined]
+
+
 class AskRequest(BaseModel):
     """One question. `source_id` scopes retrieval the same way `retrieve()`
     already allows; omitted, the whole live corpus is searched."""
@@ -215,7 +275,26 @@ async def _generate(
     source_id: uuid.UUID | None,
 ) -> None:
     """Retrieve, compose and stream one answer. Runs independently of every
-    HTTP connection — see the module docstring."""
+    HTTP connection — see the module docstring.
+
+    Bounded by `_semaphore`: beyond `Settings.generation_max_concurrent`
+    turns already retrieving-and-generating, a newly started one waits here
+    before doing anything expensive. The pending `messages` row `ask()`
+    already wrote is what makes that wait safe to observe from outside —
+    the turn is on the record as `running` whether or not it has started
+    the actual work yet.
+    """
+    async with _semaphore(settings):
+        await _run_generation(settings, factory, turn, question, source_id)
+
+
+async def _run_generation(
+    settings: Settings,
+    factory: async_sessionmaker[AsyncSession],
+    turn: _Turn,
+    question: str,
+    source_id: uuid.UUID | None,
+) -> None:
     client = InferenceClient(settings)
     status: Status = "running"
     reason: str | None = None
@@ -313,10 +392,18 @@ async def _generate(
     }
 
     async with session_scope(factory) as db:
+        # `ON CONFLICT` rather than a plain `UPDATE`: `ask()` always inserts
+        # the pending row ahead of this, but a caller driving `_generate`
+        # directly against a turn it built itself — every test in
+        # `test_ask_api.py` that isolates stopping or disconnection from the
+        # HTTP layer does exactly this — has not, and a message finishing
+        # with nowhere to write is a worse bug than the one this ticket
+        # exists to close.
         await db.execute(
             text(
                 "INSERT INTO messages (id, conversation_id, role, content, trace) "
-                "VALUES (:id, :conversation_id, 'assistant', :content, CAST(:trace AS jsonb))"
+                "VALUES (:id, :conversation_id, 'assistant', :content, CAST(:trace AS jsonb)) "
+                "ON CONFLICT (id) DO UPDATE SET content = :content, trace = CAST(:trace AS jsonb)"
             ),
             {
                 "id": turn.message_id,
@@ -382,6 +469,13 @@ def register_ask(
         started. `running` is carried separately rather than folded into
         started-minus-the-rest, so a turn that died with the process is visible
         as itself rather than silently inflating any of the other three.
+
+        `abandoned` is the ticket's own local counter (`M1-ASK-BE-040`): a
+        turn `reconcile_interrupted` found still `running` at some earlier
+        startup and failed on the machine's behalf, not one that failed
+        because the assistant itself errored. A subset of `failed`, kept
+        separate so "the model keeps erroring" and "the machine keeps
+        getting restarted mid-answer" read as the different facts they are.
         """
         async with session_scope(factory) as db:
             result = await db.execute(
@@ -390,7 +484,8 @@ def register_ask(
                     "count(*) FILTER (WHERE trace ->> 'status' = 'completed') AS completed, "
                     "count(*) FILTER (WHERE trace ->> 'status' = 'stopped') AS stopped, "
                     "count(*) FILTER (WHERE trace ->> 'status' = 'failed') AS failed, "
-                    "count(*) FILTER (WHERE trace ->> 'status' = 'running') AS running "
+                    "count(*) FILTER (WHERE trace ->> 'status' = 'running') AS running, "
+                    "count(*) FILTER (WHERE (trace ->> 'interrupted')::boolean) AS abandoned "
                     "FROM messages WHERE role = 'assistant'"
                 )
             )
@@ -402,6 +497,7 @@ def register_ask(
                 "stopped": row[2],
                 "failed": row[3],
                 "running": row[4],
+                "abandoned": row[5],
             }
         )
 
@@ -424,7 +520,25 @@ def register_ask(
                 {"id": question_id, "conversation_id": conversation_id, "content": body.question},
             )
 
-        turn = _Turn(message_id=uuid.uuid4(), conversation_id=conversation_id)
+            # A pending row goes in before the background task is even
+            # created, not after it finishes — a turn a client never sees
+            # started must still be a row `reconcile_interrupted` can find
+            # and fail on the next startup, rather than nothing at all.
+            message_id = uuid.uuid4()
+            await db.execute(
+                text(
+                    "INSERT INTO messages (id, conversation_id, role, content, trace) "
+                    "VALUES (:id, :conversation_id, 'assistant', '', "
+                    "CAST(:trace AS jsonb))"
+                ),
+                {
+                    "id": message_id,
+                    "conversation_id": conversation_id,
+                    "trace": json.dumps({"status": "running", "steps": []}),
+                },
+            )
+
+        turn = _Turn(message_id=message_id, conversation_id=conversation_id)
         _turns[turn.message_id] = turn
         asyncio.create_task(  # noqa: RUF006 — deliberately outlives this request; see module docstring
             _generate(settings, factory, turn, body.question, body.source_id)

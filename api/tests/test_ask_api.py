@@ -402,6 +402,7 @@ def test_the_local_counters_come_from_the_rows_rather_than_from_memory(
             "stopped": 0,
             "failed": 0,
             "running": 0,
+            "abandoned": 0,
         }
 
         client.post("/ask", json={"question": "Anything?"})
@@ -568,3 +569,181 @@ def test_reconnecting_to_an_unknown_turn_is_a_client_error(
         _with_session(client)
         response = client.get(f"/ask/{uuid.uuid4()}/stream")
         assert response.status_code == 404
+
+
+# --- crash recovery and bounded concurrency, `M1-ASK-BE-040` -----------------
+
+
+def test_a_pending_row_exists_before_anything_has_generated(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """`POST /ask` writes the assistant row as `running` before the
+    background task runs at all — the row `reconcile_interrupted` needs to
+    find something to fail if the process dies before generation starts."""
+    _truncate(database_url)
+    fake = _FakeInferenceClient(settings, tokens=["one ", "two "], vector=_vector(0.0), delay=1.0)
+    _patch_client(monkeypatch, fake)
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        cookies = "; ".join(f"{name}={value}" for name, value in client.cookies.items())
+        app = client.app
+
+        async def run() -> None:
+            driven = await drive_and_disconnect(
+                app,
+                method="POST",
+                path="/ask",
+                cookies=cookies,
+                body=json.dumps({"question": "Anything?"}).encode(),
+            )
+            assert driven.start["status"] == 200
+            with psycopg.connect(database_url, autocommit=True) as db:
+                row = db.execute(
+                    "SELECT content, trace ->> 'status' FROM messages WHERE role = 'assistant'"
+                ).fetchone()
+            assert row == ("", "running")
+
+        asyncio.run(run())
+
+
+async def test_reconcile_interrupted_fails_a_stale_running_turn(
+    database_url: str, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """The edge case by name: the stack restarts mid-generation. Nothing in
+    `_turns` survives that — this is what stands in for a fresh process
+    finding the previous one's row."""
+    _truncate(database_url)
+    message_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    with psycopg.connect(database_url, autocommit=True) as db:
+        db.execute("INSERT INTO conversations (id) VALUES (%s)", (conversation_id,))
+        db.execute(
+            "INSERT INTO messages (id, conversation_id, role, content, trace) "
+            "VALUES (%s, %s, 'assistant', '', %s)",
+            (message_id, conversation_id, json.dumps({"status": "running", "steps": []})),
+        )
+        # A genuinely finished turn in the same table must be left alone.
+        db.execute(
+            "INSERT INTO messages (id, conversation_id, role, content, trace) "
+            "VALUES (%s, %s, 'assistant', 'Done.', %s)",
+            (uuid.uuid4(), conversation_id, json.dumps({"status": "completed", "steps": []})),
+        )
+
+    reconciled = await ask_module.reconcile_interrupted(factory)
+    assert reconciled == 1
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        rows = dict(
+            db.execute("SELECT id, trace FROM messages WHERE role = 'assistant'").fetchall()
+        )
+    assert rows[message_id]["status"] == "failed"
+    assert rows[message_id]["stopped_early"] is True
+    assert rows[message_id]["interrupted"] is True
+    assert "restarted" in rows[message_id]["reason"]
+
+    completed = next(trace for mid, trace in rows.items() if mid != message_id)
+    assert completed["status"] == "completed"
+
+
+async def test_reconcile_interrupted_is_idempotent_on_a_clean_database(
+    database_url: str, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    _truncate(database_url)
+    assert await ask_module.reconcile_interrupted(factory) == 0
+
+
+def test_generation_is_bounded_so_abandoned_turns_do_not_all_run_at_once(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    database_url: str,
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The edge case by name: several abandoned generations at once, bounded
+    so the machine stays usable. With the limit at one, a second turn must
+    not touch the fake assistant until the first has released it."""
+    _truncate(database_url)
+    bounded = settings.model_copy(update={"generation_max_concurrent": 1})
+    monkeypatch.setattr(ask_module, "_generation_semaphore", None)
+    monkeypatch.setattr(ask_module, "_generation_semaphore_size", None)
+
+    conversation_id = uuid.uuid4()
+    with psycopg.connect(database_url, autocommit=True) as db:
+        db.execute("INSERT INTO conversations (id) VALUES (%s)", (conversation_id,))
+
+    started: list[str] = []
+
+    class _TrackingClient(_FakeInferenceClient):
+        async def stream_generate(
+            self,
+            prompt: str,
+            *,
+            max_tokens: int = 512,
+            temperature: float = 0.2,
+            timeout_seconds: float = 0.0,
+        ) -> AsyncIterator[StreamChunk]:
+            started.append(self.tag)  # type: ignore[attr-defined]
+            async for chunk in super().stream_generate(
+                prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                timeout_seconds=timeout_seconds,
+            ):
+                yield chunk
+
+    first = _TrackingClient(bounded, tokens=["a "], vector=_vector(0.0), delay=0.2)
+    first.tag = "first"  # type: ignore[attr-defined]
+    second = _TrackingClient(bounded, tokens=["b "], vector=_vector(0.0))
+    second.tag = "second"  # type: ignore[attr-defined]
+
+    clients = iter([first, second])
+    monkeypatch.setattr(ask_module, "InferenceClient", lambda _settings: next(clients))
+
+    async def run() -> None:
+        turn_a = ask_module._Turn(message_id=uuid.uuid4(), conversation_id=conversation_id)
+        turn_b = ask_module._Turn(message_id=uuid.uuid4(), conversation_id=conversation_id)
+        task_a = asyncio.create_task(ask_module._generate(bounded, factory, turn_a, "Q1?", None))
+        # Give the first turn a chance to acquire the semaphore before the
+        # second one is even created.
+        await asyncio.sleep(0.05)
+        task_b = asyncio.create_task(ask_module._generate(bounded, factory, turn_b, "Q2?", None))
+        await asyncio.sleep(0.05)
+        # The bound is holding: only the first has actually started
+        # generating, even though both tasks exist.
+        assert started == ["first"]
+        await task_a
+        await task_b
+        assert started == ["first", "second"]
+        assert turn_a.status == "completed"
+        assert turn_b.status == "completed"
+
+    asyncio.run(run())
+
+
+def test_the_same_question_asked_twice_produces_two_completed_answers(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """The edge case by name: the user asks the same question again while
+    the first is still running — both complete, both appear. Driven as two
+    sequential requests (`TestClient` cannot hold two open at once, the same
+    limitation the stop test above already works around) — nothing in `ask()`
+    deduplicates by question text, so this is really a test that no such
+    deduplication exists to trip over."""
+    _truncate(database_url)
+    fake = _FakeInferenceClient(settings, tokens=["Yes."], vector=_vector(0.0))
+    _patch_client(monkeypatch, fake)
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        question = {"question": "Is the deadline Friday?"}
+        first = client.post("/ask", json=question)
+        second = client.post("/ask", json=question)
+        assert first.status_code == 200
+        assert second.status_code == 200
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        rows = db.execute(
+            "SELECT content, trace ->> 'status' FROM messages WHERE role = 'assistant'"
+        ).fetchall()
+    assert len(rows) == 2
+    assert all(content == "Yes." and status == "completed" for content, status in rows)
