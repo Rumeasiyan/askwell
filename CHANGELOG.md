@@ -4,6 +4,15 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.30 — 2026-08-28
+
+The uncited-claim query. `M1-CITE-TEST-045`.
+
+### Added
+
+- **`askwell.agent.citation_check.check_citations`** (`api/src/askwell/agent/citation_check.py`) — reconciles every stored assistant answer's claims (re-segmented from `messages.content` independently of however the citation rows were written) against its `citations` rows, reporting the percentage with every claim covered and naming any answer with an uncited claim, quoting the claim's own text. An answer with no claims at all (abstention) counts as compliant. An answer with any `fact_usage` row is excluded rather than checked and counted separately — nothing populates `fact_usage` before `M3`, so a memory-backed claim cannot yet be told apart from an actually-uncited one. Runs against the already-open database session; no network call of any kind.
+- **`api/tests/test_citation_check.py`** — four database-backed tests: a fully cited five-answer corpus reports 100%; deleting a citation row directly drops the figure below the bar and names that exact answer with its quoted claim; an abstention counts as compliant; a `fact_usage` row excludes rather than flags.
+
 ## 0.2.29 — 2026-08-28
 
 The source viewer: in-app PDF at the cited page, passage highlighted. `M1-VIEW-FE-046`.

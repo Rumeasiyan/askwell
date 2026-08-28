@@ -22,6 +22,18 @@ Template:
 
 ---
 
+## 2026-08-28 — The uncited-claim check excludes fact-usage answers rather than counting them compliant, and re-segments instead of trusting the citations table
+
+**Decision:** `M1-CITE-TEST-045`. `askwell.agent.citation_check.check_citations` re-runs `segment_claims` against each stored assistant message's own `content`, rather than trusting that every `citations` row it can join to still reflects a real claim. A message carrying any `fact_usage` row is excluded from the checked total and reported separately as excluded, not folded into the compliant count and not flagged a violation.
+
+**Why:** the whole point of the ticket is that `citations` rows and the answer text can drift apart — a row can be deleted, or a chunk it points at can stop existing meaningfully, without `messages.content` changing at all — so a check that only asked "does a citation row exist for this message" would measure the write path `M1-CITE-BE-042` already guarantees, not the thing C4 actually needs proven. Re-segmenting independently is what makes "delete a citation row and the check catches it" true rather than trivially true. Counting a `fact_usage` message compliant was rejected: nothing populates `fact_usage` before `M3`, so there is no way yet to tell a claim that correctly cites a memory fact apart from one that cites nothing at all, and calling it compliant would let a real uncited claim hide behind a `fact_usage` row inserted for an unrelated reason. Counting it a violation was also rejected, for the opposite reason — it would fail messages this check cannot yet judge fairly. Exclusion, named, is the only option that does not claim more than the check currently knows.
+
+**Consequences:** the excluded count is not zero the moment `M3` starts writing `fact_usage` rows for real, and whoever builds that ticket should re-read this check before assuming a rising excluded count is fine — it will be, once fact-usage claims are actually verified elsewhere, but that verification does not exist yet either. Recording the check's result "alongside eval runs" (the ticket's own requirement) is deferred to whenever `eval/bench.py` exists (`M2`) — filed as [#182](https://github.com/Rumeasiyan/askwell/issues/182) rather than built against a guessed shape now.
+
+**Refs:** `api/src/askwell/agent/citation_check.py`, `api/tests/test_citation_check.py`, `docs/success-metrics.md` §2, issue #182.
+
+---
+
 ## 2026-08-28 — The document viewer is a query string, not a dynamic route segment
 
 **Decision:** `M1-VIEW-FE-046`. `web/app/documents/page.tsx` is one static page. A document's id, the page to land on, and the two search targets for highlighting (`span` — the claim's own quoted words, `passage` — the full retrieved chunk) travel as query parameters (`/documents/?id=...&page=...&span=...&passage=...`), read client-side with `useSearchParams`. `web/lib/citations.ts`'s `documentHref` builds this; `web/components/ask/provenance-margin.tsx`'s card link was updated in the same change. This supersedes `M1-CITE-FE-043`'s own guess (2026-08-28, below) of `/documents/{document_id}?page=...`.
