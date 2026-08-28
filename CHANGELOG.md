@@ -22,6 +22,20 @@ A document cannot give Askwell orders. `M1-ASK-BE-037`.
 
 No `ask` endpoint exists (`M1-ASK-API-038`, next), so nothing calls `compose()` against a real question and real retrieved candidates end to end, and `ComposedPrompt.injection_flagged`/`.prompt_version` are captured but written nowhere — `messages.trace.injection_flagged` (`docs/architecture.md` §7.1) has no writer until that ticket exists. This matches exactly how `M1-ASK-RET-035`/`036` left their own new fields captured and unread until a consumer existed.
 
+The passage that actually answers the question is the one at the top, not just among the fused candidates. `M1-ASK-RET-036`.
+
+### Added
+
+- **A reranking pass in `askwell.retrieve.retrieve`.** After fusion, the top `Settings.rerank_candidate_count` candidates (default 10, bounded separately from `retrieval_candidate_count` to keep latency inside budget) are scored by `InferenceClient.rerank` — the cross-encoder pass already built and unused since `M0-MODEL-BE-019`/`M1-ASK-RET-035`. `Candidate.rerank_score` retains the raw cross-encoder score alongside the fused, dense and lexical scores already there, never mixed with them. Candidates beyond the window are appended unreordered rather than padded or dropped.
+- **`RetrievalResult.reranked`, `.rerank_duration_ms` and `.rerank_skipped_reason`.** If the reranker is unavailable or fails or times out, `retrieve()` returns fusion order unchanged and `reranked = False` with a reason — an answer still comes back rather than the request failing.
+- Two new settings: `ASKWELL_RERANK_CANDIDATE_COUNT` (default 10) and `ASKWELL_RERANK_TIMEOUT_SECONDS` (default 10.0).
+
+### Verified
+
+- `api/tests/test_rerank.py`: `_rerank` in isolation against a real Unix socket stub — reordering happens and both scores are retained; fewer candidates than the window needs no padding; candidates beyond the window are appended unreordered; an unavailable or failing reranker degrades to fusion order with a stated reason; no candidates skips reranking without asking the assistant; tied scores keep a stable order.
+- `api/tests/test_retrieve_records.py`, against real Postgres: on five chunks scoring identically under fusion, the right supplier's passage is promoted to the top by reranking; with the reranker unavailable, `retrieve()` still returns the fusion-ordered result.
+- On the running stack, rebuilt to `0.2.17`, against real Postgres: a fake client promoting the Meridian passage produced `reranked=True` with the right passage first and both score sets populated; the real `InferenceClient.rerank` against the actual absent inference socket in this environment produced `reranked=False`, `rerank_skipped_reason='reranker unavailable: The assistant is stopped.'`, and the fusion-ordered candidate still came back. A live walkthrough with a real reranker model actually scoring was not run — no native `llama.cpp` process is available in this environment, the same limitation every ticket since `M0-MODEL-BE-019` has recorded.
+
 ## 0.2.17 — 2026-08-28
 
 The passage that actually answers the question is the one at the top, not just among the fused candidates. `M1-ASK-RET-036`.
