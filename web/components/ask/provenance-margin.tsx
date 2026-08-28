@@ -7,6 +7,8 @@ import { useCardRef, useHoveredKey, useHoverHandlers, type LeaderPair } from "@/
 import { useLiveTurn } from "@/components/ask/ask-state";
 import { anchorLabel, documentHref, pageLabel, recordCardClick, type CitationCard } from "@/lib/citations";
 import { isAbstained } from "@/lib/ask";
+import { isConflict, parseAnswerAnnotations } from "@/lib/answer-annotations";
+import { addedDateLabel, supersededDateLabel, useDocumentDate } from "@/lib/document-dates";
 import { isRaised } from "@/lib/pairing";
 
 /**
@@ -20,6 +22,11 @@ import { isRaised } from "@/lib/pairing";
 export function ProvenanceMargin() {
   const turn = useLiveTurn();
   const cards = turn?.citations ?? [];
+  // `docs/ux/ask.md` §5: a conflicting answer's cards each show their
+  // document's date and, when superseded since the answer was given,
+  // that too — an ordinary answer's cards show neither, since a date on
+  // every citation everywhere is not what this ticket asks for.
+  const conflict = turn !== null && isConflict(parseAnswerAnnotations(turn.answer));
 
   if (turn === null || cards.length === 0) {
     return (
@@ -41,7 +48,7 @@ export function ProvenanceMargin() {
     <ul className="flex flex-col gap-3 p-4" style={{ listStyle: "none" }}>
       {cards.map((card) => (
         <li key={card.chunkId}>
-          <SourceCard turnId={turn.id} card={card} variant="margin" />
+          <SourceCard turnId={turn.id} card={card} variant="margin" showDate={conflict} />
         </li>
       ))}
     </ul>
@@ -56,13 +63,21 @@ export function ProvenanceMargin() {
  * `.ask-inline-cards` (`ask-screen.tsx`'s `Turn`), matching the margin
  * `<aside>`'s own `hidden @5xl:block` pattern in reverse.
  */
-export function InlineSourceCards({ turnId, cards }: { turnId: string; cards: CitationCard[] }) {
+export function InlineSourceCards({
+  turnId,
+  cards,
+  showDate = false,
+}: {
+  turnId: string;
+  cards: CitationCard[];
+  showDate?: boolean;
+}) {
   if (cards.length === 0) return null;
   return (
     <ul className="flex flex-col gap-3" style={{ listStyle: "none" }}>
       {cards.map((card) => (
         <li key={card.chunkId}>
-          <SourceCard turnId={turnId} card={card} variant="inline" />
+          <SourceCard turnId={turnId} card={card} variant="inline" showDate={showDate} />
         </li>
       ))}
     </ul>
@@ -117,16 +132,24 @@ function SourceCard({
   turnId,
   card,
   variant,
+  showDate = false,
 }: {
   turnId: string;
   card: CitationCard;
   variant: "margin" | "inline";
+  showDate?: boolean;
 }) {
   const cardKey = `${turnId}:${card.chunkId}`;
   const marginRef = useCardRef(variant === "margin" ? cardKey : "");
   const { onHover, onUnhover } = useHoverHandlers(cardKey);
   const raised = useRaised(cardKey);
   const [expanded, setExpanded] = useState(false);
+  // `ask.md` §5's own edge case: a conflict where one source has since been
+  // superseded is labelled as such rather than shown as an equal — fetched
+  // only for a conflict's own cards (`showDate`), not on every citation.
+  const date = useDocumentDate(card.documentId, showDate);
+  const addedLabel = showDate ? addedDateLabel(date) : null;
+  const supersededLabel = showDate ? supersededDateLabel(date) : null;
 
   const label = pageLabel(card) ?? anchorLabel(card);
   const passage = card.passage.trim();
@@ -171,6 +194,15 @@ function SourceCard({
           &ldquo;{shown}&rdquo;
         </span>
       </Link>
+
+      {showDate && (addedLabel !== null || supersededLabel !== null) ? (
+        <p className="ask-micro flex items-center gap-2" style={{ textTransform: "none" }}>
+          {addedLabel !== null ? <span>{addedLabel}</span> : null}
+          {supersededLabel !== null ? (
+            <span style={{ color: "var(--muted)" }}>{supersededLabel}</span>
+          ) : null}
+        </p>
+      ) : null}
 
       {isLong ? (
         <button

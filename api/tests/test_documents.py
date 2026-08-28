@@ -127,6 +127,7 @@ def test_metadata_reports_an_available_pdf(
     assert body["mime"] == "application/pdf"
     assert body["page_count"] == 1
     assert body["available"] is True
+    assert body["added_at"] is not None
 
 
 def test_metadata_reports_the_superseding_version_and_when(

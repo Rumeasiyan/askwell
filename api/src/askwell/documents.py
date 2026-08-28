@@ -69,7 +69,7 @@ async def _find(session: AsyncSession, document_id: uuid.UUID) -> dict[str, obje
     result = await session.execute(
         text(
             "SELECT d.id, d.filename, d.path, d.mime, d.page_count, d.anchor_kind, "
-            "d.status, d.superseded_by, d.source_id, d.sha256, d.missing_since, "
+            "d.status, d.superseded_by, d.source_id, d.sha256, d.missing_since, d.added_at, "
             "s.root_path FROM documents d JOIN sources s ON s.id = d.source_id "
             "WHERE d.id = :id AND d.deleted_at IS NULL"
         ),
@@ -253,6 +253,15 @@ def register_documents(
                 "status": found["status"],
                 "superseded_by": str(superseded_by) if superseded_by is not None else None,
                 "superseded_at": superseded_at,
+                # `M2-PARTIAL-FE-058`: the conflicting-sources card needs a
+                # date to show beside each position, and `added_at` — already
+                # on every row — is the only one that exists yet (no
+                # ingestion-metadata or filename-derived date is extracted
+                # anywhere in this codebase). The ticket's own fallback rule
+                # ("where neither exists, the added date is used and
+                # labelled as such") is met by always sending this one and
+                # letting the caller label it "Added".
+                "added_at": _isoformat(found["added_at"]),
                 **availability.as_dict(),
             }
         )

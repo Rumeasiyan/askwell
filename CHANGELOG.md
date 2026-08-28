@@ -4,6 +4,26 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.47 — 2026-08-28
+
+Partial and conflicting-sources rendering on the Ask screen. `M2-PARTIAL-FE-058`.
+
+### Added
+
+- `web/lib/answer-annotations.ts`: a client-side mirror of `askwell.agent.partial.split_partial_answer` and `askwell.agent.conflict.split_conflict_answer`, reading the same "Not covered:"/"Conflicting sources on ...:"/"Resolved by memory:" lines back out of the streamed answer text the browser already has, with no new SSE field. `AnsweredContent` (`ask-screen.tsx`) uses it to render a partial answer's uncovered part in a visually distinct block (`--muted` text behind a `--rule-strong` edge) rather than folded into the answer's own prose, and a conflicting answer under its own "Conflicting sources on ..." heading (`--ink`, never `--alarm` — an honest state, not a failure) with both positions staying in the normal citation flow so both cards populate the margin as usual.
+- A resolve offer (`ResolveOffer`) on a detected conflict: choosing one of the turn's own cited documents records the choice in local component state only and says plainly it is not saved yet — the memory store this eventually writes to does not exist until M3 (`askwell.agent.conflict`'s own inert `memory_fact` hook).
+- `web/lib/document-dates.ts`: fetches `GET /documents/{id}` per cited document to show its date on a conflict's own cards, and a "Superseded" label when the document has been superseded since. `GET /documents/{id}` (`api/src/askwell/documents.py`) gained one field, `added_at` — the only date source that exists anywhere in this codebase yet, so it backs the ticket's own fallback rule unconditionally rather than as a fallback branch.
+- A local, untransmitted counter of conflicts presented (`getConflictsPresentedCount`), the ticket's own Analytics Events line (C1: nothing leaves the machine).
+
+### Notes
+
+- Native inference was not running on the host in this session (no bundled model files in this environment), so the real model composing a "Conflicting sources on ...:"/"Not covered:" line end-to-end was not exercised — verified instead by mirroring the exact fixtures `api/tests/test_partial.py` and `api/tests/test_conflict.py` already use, and by loading the built Ask screen in a real headless browser to confirm it renders with no hydration or console error, the same limitation `M2-ABSTAIN-FE-055` recorded for the same reason.
+- **Deferred, filed as [#225](https://github.com/Rumeasiyan/askwell/issues/225):** the edge case asking that a conflict's superseded source be labelled as such is built (the margin fetches live document state per card), but `askwell.retrieve` already excludes a superseded document from every candidate query, so it can only ever be exercised for a past turn re-viewed after its cited document was later superseded, never for a conflict as it first streams.
+
+### Verified
+
+- `scripts/dev.sh web-check` (lint, typecheck, 186 tests — 15 new across `answer-annotations.test.ts` and `document-dates.test.ts`, build, contrast, offline scan) and `scripts/dev.sh check`/`scripts/dev.sh test-db tests/test_documents.py tests/test_ask_api.py` (backend `added_at` field and full suite) all clean.
+
 ## 0.2.46 — 2026-08-28
 
 Conflicting sources: present both, never pick one. `M2-PARTIAL-BE-059`.

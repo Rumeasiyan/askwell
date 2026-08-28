@@ -7,6 +7,7 @@ import { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "
 import { type AskTurn, useAsk } from "@/components/ask/ask-state";
 import { useClaimRef, useHoverHandlers, useScrollToClaim } from "@/components/ask/leader";
 import { InlineSourceCards, useRaised } from "@/components/ask/provenance-margin";
+import type { CitationCard } from "@/lib/citations";
 import { CONVERSATION_PAGE_SIZE, conversationWindow, dividerLabel, liveTurnId,
   isAbstained,
   isFirstAnswer,
@@ -15,6 +16,12 @@ import { followUpSuggestions, recordFollowUpUsed } from "@/lib/follow-ups";
 import { fetchIngest } from "@/lib/ingest";
 import { fetchSuggestions, type Suggestion } from "@/lib/suggestions";
 import { segmentClaims } from "@/lib/claims";
+import {
+  isConflict,
+  isPartial,
+  parseAnswerAnnotations,
+  recordConflictPresented,
+} from "@/lib/answer-annotations";
 import { VERSION } from "@/lib/version";
 
 /** Fills the composer without sending — `ask.md` §4's suggested-follow-up
@@ -694,9 +701,7 @@ function CollapsedTurn({ turn }: { turn: AskTurn }) {
       {expanded ? (
         <div className="flex flex-col gap-2">
           {isAbstained(turn) ? <AbstentionState turn={turn} /> : null}
-          {!isAbstained(turn) && turn.answer !== "" ? (
-            <AnswerProse turnId={turn.id} text={turn.answer} />
-          ) : null}
+          {!isAbstained(turn) && turn.answer !== "" ? <AnsweredContent turn={turn} /> : null}
           {turn.status === "failed" && turn.reason !== null ? (
             <p className="ask-prose" style={{ color: "var(--muted)" }}>
               {turn.reason}
@@ -712,7 +717,11 @@ function CollapsedTurn({ turn }: { turn: AskTurn }) {
               "over presentation that already exists" (this ticket's own
               granularity note) rather than a second live margin column. */}
           <div ref={marginRef}>
-            <InlineSourceCards turnId={turn.id} cards={turn.citations} />
+            <InlineSourceCards
+              turnId={turn.id}
+              cards={turn.citations}
+              showDate={isConflict(parseAnswerAnnotations(turn.answer))}
+            />
           </div>
           <div>
             <button
@@ -828,9 +837,7 @@ function LiveTurn({ turn }: { turn: AskTurn }) {
 
       {isAbstained(turn) ? <AbstentionState turn={turn} /> : null}
 
-      {!isAbstained(turn) && turn.answer !== "" ? (
-        <AnswerProse turnId={turn.id} text={turn.answer} />
-      ) : null}
+      {!isAbstained(turn) && turn.answer !== "" ? <AnsweredContent turn={turn} /> : null}
 
       {/* Below the three-column breakpoint the margin `<aside>` is
           CSS-hidden (`shell.tsx`) — these are the same cards, inline,
@@ -838,7 +845,11 @@ function LiveTurn({ turn }: { turn: AskTurn }) {
           shown below the breakpoint, hidden at width. `M1-CITE-FE-044`. */}
       {!isAbstained(turn) && turn.citations.length > 0 ? (
         <div className="block @5xl:hidden">
-          <InlineSourceCards turnId={turn.id} cards={turn.citations} />
+          <InlineSourceCards
+            turnId={turn.id}
+            cards={turn.citations}
+            showDate={isConflict(parseAnswerAnnotations(turn.answer))}
+          />
         </div>
       ) : null}
 
@@ -945,6 +956,139 @@ function AddSourceAction({ question }: { question: string }) {
     >
       Add a source
     </button>
+  );
+}
+
+/**
+ * The answered body of a non-abstained turn: the prose, the partial and
+ * conflicting-sources states layered on top of it, never in place of it.
+ * `M2-PARTIAL-FE-058`.
+ *
+ * `parseAnswerAnnotations` reads the "Not covered:" and "Conflicting
+ * sources on ...:" lines back out of `turn.answer` — the same convention
+ * `askwell.agent.partial`/`conflict` read server-side (`lib/answer-annotations.ts`'s
+ * own docstring) — and `cleanedText` is what `AnswerProse` renders instead
+ * of the raw answer, so those fixed label lines become their own distinct
+ * elements rather than unstyled prose sitting in the middle of the answer.
+ * The cited position sentences a conflict presents stay in `cleanedText`
+ * unchanged: they carry `[n]` markers and belong in the normal claim flow,
+ * feeding the same provenance margin every other citation does.
+ */
+function AnsweredContent({ turn }: { turn: AskTurn }) {
+  const annotations = useMemo(() => parseAnswerAnnotations(turn.answer), [turn.answer]);
+  const conflict = isConflict(annotations);
+  const partial = isPartial(annotations);
+
+  return (
+    <div className="flex flex-col gap-3">
+      {conflict ? <ConflictBanner topic={annotations.conflictTopic!} /> : null}
+      {annotations.cleanedText !== "" ? (
+        <AnswerProse turnId={turn.id} text={annotations.cleanedText} />
+      ) : null}
+      {partial ? <UncoveredBlock items={annotations.uncovered} /> : null}
+      {conflict ? <ResolveOffer topic={annotations.conflictTopic!} citations={turn.citations} /> : null}
+    </div>
+  );
+}
+
+/**
+ * "Conflicting sources on X" — the heading `docs/ux/ask.md` §5 asks for,
+ * distinguishing this state from an ordinary answer before the reader
+ * reaches the two positions themselves. `--ink`, not `--alarm`: a real
+ * conflict is not an error state, matching the abstention rule's own
+ * reasoning (`AbstentionState`, above) against colouring an honest product
+ * state as a failure.
+ *
+ * Fires the local, untransmitted conflicts-presented counter
+ * (`recordConflictPresented`, ticket's own Analytics Events line) exactly
+ * once per turn: mounted only once `conflictTopic` first resolves out of
+ * the streaming text and never remounted while that stays true, so a
+ * re-render mid-stream cannot double-count it.
+ */
+function ConflictBanner({ topic }: { topic: string }) {
+  useEffect(() => {
+    recordConflictPresented();
+  }, []);
+
+  return (
+    <p className="ask-micro" style={{ textTransform: "none", color: "var(--ink)" }}>
+      Conflicting sources on {topic}
+    </p>
+  );
+}
+
+/**
+ * The ungrounded part of a partial answer, visually distinct from the
+ * answered part above it (`docs/ux/ask.md` §5's own acceptance criterion) —
+ * a rule, not a colour: `--muted` text behind a `--rule-strong` left edge,
+ * the same contrast device `SourceCard`'s own left edge uses for "this is
+ * apparatus, not prose the model asserted".
+ */
+function UncoveredBlock({ items }: { items: string[] }) {
+  if (items.length === 0) return null;
+  return (
+    <div
+      className="flex flex-col gap-1 py-1"
+      style={{ borderLeft: "2px solid var(--rule-strong)", paddingLeft: "0.75rem" }}
+    >
+      <p className="ask-micro">Not covered by your files</p>
+      {items.map((item, index) => (
+        <p key={index} className="ask-prose" style={{ color: "var(--muted)" }}>
+          {item}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * The resolve offer (`docs/ux/ask.md` §5, this ticket's own scope line: "an
+ * offer to resolve which writes a memory fact once memory exists in M3.
+ * Until then the offer records the user's choice as a pending resolution
+ * and says so"). Options are the turn's own cited documents — the same
+ * dates and citations the reader just weighed — never a re-typed summary
+ * of each position, since the card above already stated it with a
+ * citation.
+ *
+ * Client-only state, not sent anywhere (C1): there is nothing to write yet
+ * (`askwell.agent.conflict`'s own `memory_fact` hook is inert until M3), so
+ * the honest interface is a choice that is remembered for this turn, in
+ * this tab, and says plainly that it does not survive past that.
+ */
+function ResolveOffer({ topic, citations }: { topic: string; citations: CitationCard[] }) {
+  const [resolvedChunkId, setResolvedChunkId] = useState<string | null>(null);
+  const resolved = citations.find((card) => card.chunkId === resolvedChunkId) ?? null;
+
+  if (resolved !== null) {
+    return (
+      <p className="ask-micro" style={{ textTransform: "none" }}>
+        Noted {resolved.filename} as current for {topic}. This is not saved yet — Askwell
+        will remember it once memory ships.
+      </p>
+    );
+  }
+
+  if (citations.length < 2) return null;
+
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="ask-micro" style={{ textTransform: "none" }}>
+        Which one is current?
+      </p>
+      <div className="flex flex-wrap gap-2">
+        {citations.map((card) => (
+          <button
+            key={card.chunkId}
+            type="button"
+            onClick={() => setResolvedChunkId(card.chunkId)}
+            className="ask-navigates px-3 py-1"
+            style={{ border: "1px solid var(--rule-strong)", fontSize: "var(--t-ui)" }}
+          >
+            {card.filename}
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 
