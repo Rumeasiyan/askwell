@@ -4,6 +4,17 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.27 — 2026-08-28
+
+Empty states that teach rather than say "no items". `M1-LIB-FE-051`.
+
+### Added
+
+- **Ask, sources present but nothing asked yet** — up to three suggested questions named from what was actually ingested, generated without a model call: a document's own chunk heading if it has one, its most frequent non-stopword term if it does not, or just its filename if it has neither (`api/src/askwell/suggestions.py`, new `GET /suggestions`). Clicking one fills the composer; it does not send.
+- **Ask, sources present but none indexed yet** — an explicit "still indexing" notice in place of suggestions, rather than suggesting questions nothing can answer yet.
+- **Library, empty** — names all four routes from `docs/ux/add-source.md` §1, the two shipping in Phase 1 and the two arriving in Phase 3 marked as such, replacing the placeholder copy `M1-LIB-FE-050` left in its place.
+- `docs/states-and-edge-cases.md` §7's "Conversation history" row, previously unfilled: there is no separate history screen before past turns collapse (`M1-CONV-FE-178`), so the Ask screen's own empty state — suggestions or the indexing notice — stands in for it.
+
 ## 0.2.26 — 2026-08-28
 
 The library screen renders, for the first time. `M1-LIB-FE-050`.

@@ -7,8 +7,18 @@ import { type AskTurn, useAsk } from "@/components/ask/ask-state";
 import { useClaimRef, useHoverHandlers } from "@/components/ask/leader";
 import { InlineSourceCards, useRaised } from "@/components/ask/provenance-margin";
 import { fetchIngest } from "@/lib/ingest";
+import { fetchSuggestions, type Suggestion } from "@/lib/suggestions";
 import { segmentClaims } from "@/lib/claims";
 import { VERSION } from "@/lib/version";
+
+/** Fills the composer without sending — `ask.md` §4's suggested-follow-up
+ * rule applies here too: lowering the cost of the next question is the
+ * point, deciding to ask it is not this screen's to make. */
+const FILL_COMPOSER_EVENT = "askwell:fill-composer";
+
+function fillComposer(question: string): void {
+  window.dispatchEvent(new CustomEvent<string>(FILL_COMPOSER_EVENT, { detail: question }));
+}
 
 /**
  * The Ask screen. `docs/ux/ask.md`, `M1-ASK-FE-039`.
@@ -23,22 +33,24 @@ import { VERSION } from "@/lib/version";
  * this screen.
  */
 export function AskScreen() {
-  const hasSources = useHasSources();
+  const corpus = useCorpusState();
   const { turns } = useAsk();
 
   return (
     <section className="flex flex-col gap-6">
       {/* Rendered unconditionally, statically — not only inside `FirstRun` —
-          so it reaches the exported `index.html` before `hasSources` resolves
-          on the client. `scripts/check-version.mjs` reads exactly that file
-          for exactly this string (`AGENTS.md` §7). */}
+          so it reaches the exported `index.html` before `corpus` resolves on
+          the client. `scripts/check-version.mjs` reads exactly that file for
+          exactly this string (`AGENTS.md` §7). */}
       <p className="ask-micro">Askwell {VERSION} · nothing leaves this machine</p>
 
-      {hasSources === false ? (
+      {corpus === "none" ? (
         <FirstRun />
       ) : (
         <>
           <Composer />
+          {turns.length === 0 && corpus === "indexing" ? <IndexingNotice /> : null}
+          {turns.length === 0 && corpus === "ready" ? <SuggestedQuestions /> : null}
           {turns.length > 0 ? (
             <div className="flex flex-col gap-8">
               {turns.map((turn) => (
@@ -52,35 +64,111 @@ export function AskScreen() {
   );
 }
 
+type CorpusState = "none" | "indexing" | "ready" | null;
+
 /**
- * Whether any source has ever been recorded on this machine — `null` while
- * that is still being found out, so the first-run card never flashes in
- * ahead of a real answer. Reuses `fetchIngest` (`M1-ADD-ING-025`) rather than
- * a new endpoint; a source's coverage list is exactly "does anything exist",
- * one call away, and this ticket adds no backend of its own.
+ * Three states, not two (`ask.md` §5's own edge case): nothing added yet,
+ * something added but nothing askable yet, and something actually
+ * searchable. `null` while that is still being found out, so neither the
+ * first-run card nor the suggestion state flashes in ahead of a real answer.
+ * Reuses `fetchIngest` (`M1-ADD-ING-025`) rather than a new endpoint — a
+ * source's own `askable` flag already answers "is there one indexed
+ * document", one call away.
  */
-function useHasSources(): boolean | null {
-  const [hasSources, setHasSources] = useState<boolean | null>(null);
+function useCorpusState(): CorpusState {
+  const [corpus, setCorpus] = useState<CorpusState>(null);
 
   useEffect(() => {
     let cancelled = false;
     void fetchIngest()
       .then((state) => {
-        if (!cancelled) setHasSources(state.sources.length > 0);
+        if (cancelled) return;
+        if (state.sources.length === 0) setCorpus("none");
+        else setCorpus(state.sources.some((source) => source.askable) ? "ready" : "indexing");
       })
       .catch(() => {
         // Unreachable is `StatusBanner`'s job to say, loudly, above this
-        // screen. Here it only decides which of two states to show, and
-        // guessing "no sources" is the safer of two guesses — it still lets
-        // someone type a question once the assistant comes back.
-        if (!cancelled) setHasSources(true);
+        // screen. Here it only decides which state to show, and guessing
+        // "ready" is the safer of the three — it still lets someone type a
+        // question once the assistant comes back, rather than steering them
+        // toward adding a source they already have.
+        if (!cancelled) setCorpus("ready");
       });
     return () => {
       cancelled = true;
     };
   }, []);
 
-  return hasSources;
+  return corpus;
+}
+
+/**
+ * Sources exist, none are indexed yet (`ask.md` §5, `states-and-edge-cases.md`
+ * §7's own edge case: "a corpus with sources but none indexed yet — the
+ * suggestion state says so rather than suggesting questions nothing can
+ * answer"). Never a spinner with no words — the composer above still works,
+ * once retrieval actually has something to search.
+ */
+function IndexingNotice() {
+  return (
+    <p className="ask-prose" style={{ color: "var(--muted)" }}>
+      Still indexing what you added. Questions will search it once at least one file is ready —
+      check the{" "}
+      <Link href="/library/" className="ask-navigates">
+        library
+      </Link>{" "}
+      for progress.
+    </p>
+  );
+}
+
+/**
+ * Up to three questions named from what was actually ingested — real
+ * filenames, real headings, real terms (`ask.md` §5, `first-run.md` §6,
+ * both settled: no model call, generated from what ingestion already
+ * extracted). Fewer than three shown rather than padded with anything
+ * generic if the corpus cannot support three (`M1-LIB-FE-051`'s own edge
+ * case). Clicking fills the composer; it does not send — the same rule
+ * `conversation.md` §3 gives suggested follow-ups after an answer.
+ */
+function SuggestedQuestions() {
+  const [suggestions, setSuggestions] = useState<Suggestion[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchSuggestions()
+      .then((result) => {
+        if (!cancelled) setSuggestions(result);
+      })
+      .catch(() => {
+        if (!cancelled) setSuggestions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (suggestions === null || suggestions.length === 0) return null;
+
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="ask-micro">From what you have added</p>
+      <ul className="flex flex-col gap-1 list-none p-0">
+        {suggestions.map((suggestion) => (
+          <li key={suggestion.question}>
+            <button
+              type="button"
+              onClick={() => fillComposer(suggestion.question)}
+              className="ask-navigates ask-prose text-left px-0"
+              style={{ background: "none", border: "none" }}
+            >
+              {suggestion.question}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 function FirstRun() {
@@ -140,6 +228,15 @@ function Composer() {
     const onFocusRequest = (): void => textarea.current?.focus();
     window.addEventListener("askwell:focus-composer", onFocusRequest);
     return () => window.removeEventListener("askwell:focus-composer", onFocusRequest);
+  }, []);
+
+  useEffect(() => {
+    const onFill = (event: Event): void => {
+      setValue((event as CustomEvent<string>).detail);
+      textarea.current?.focus();
+    };
+    window.addEventListener(FILL_COMPOSER_EVENT, onFill);
+    return () => window.removeEventListener(FILL_COMPOSER_EVENT, onFill);
   }, []);
 
   const submit = (): void => {

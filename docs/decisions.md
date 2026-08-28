@@ -22,6 +22,22 @@ Template:
 
 ---
 
+## 2026-08-28 — Corpus-derived suggestions get a new endpoint, computed server-side, inside a frontend ticket
+
+**Decision:** `M1-LIB-FE-051` calls for the Ask screen's empty-with-sources state to show up to three suggested questions "generated from what was actually ingested — real filenames and real terms", assembled without a model call. No ticket anywhere in `docs/backlog/` builds a way to read that data back out: `GET /ingest` (`M1-ADD-ING-025`, widened by `M1-LIB-FE-050`) only ever carries filenames for documents in a transient or failed state — a `ready` document's filename disappears from every array in that payload the moment it finishes, which is the normal case this ticket needs to read. There is no `GET /documents` or `GET /chunks` at all. A new `GET /suggestions` (`api/src/askwell/suggestions.py`) was added rather than filing this as blocked.
+
+The heuristic itself also runs server-side, not client-side against raw rows: a ready document's first chunk carrying a heading names the question (`"What does {filename} say about {heading}?"`); failing that, its most frequent word outside a short stopword list (`"... mention about {term}?"`); failing that, the filename alone. Postgres already has the chunk content in front of it — the API returns three finished question strings, not filenames-plus-passages for the browser to guess with a second, duplicate heuristic in TypeScript.
+
+**Why:** the alternative considered was widening `GET /ingest` again, the way `M1-LIB-FE-050`'s own entry above did for its three fields — rejected because `ingest.snapshot`'s per-document arrays exist to describe *problems and progress*, not the steady-state "ready and fine" case, and stuffing headings and passage text into a payload that is polled by SSE while the machine is indexing (`ingest.py`'s own "cheap even while busy" reasoning) is the wrong place to add a term-frequency scan. A dedicated, request-driven endpoint that only runs when the Ask screen actually needs three suggestions is cheaper in aggregate than computing them on every progress tick nobody asked for.
+
+Doing the heuristic in Python rather than shipping raw headings/content to the client and matching `M1-CITE-FE-043`'s `segmentClaims`-mirrored-client-side pattern was also considered and rejected: that pattern exists there because the server's own claim numbering has to be reproduced exactly on both sides for the leader lines to line up. Nothing here needs two sides to agree — only one side needs to produce a sentence, and duplicating a tokenizer and a stopword list in TypeScript to save one field in a response body is not a trade worth making.
+
+**Consequences:** `askwell.suggestions.suggested_questions` is a second, narrower door into `chunks` and `documents` beyond `askwell.retrieve` — a future ticket touching either table's shape should grep both. The stopword list and "most frequent word" heuristic are deliberately unsophisticated (`suggestions.py`'s own docstring says so); if suggestion quality is ever complained about, the fix is a better heuristic in this one function, not a model call at load time, which is the exact softening `ask.md` §6 warns against for a different state but the same reasoning applies here — cheap and occasionally dull beats an LLM call at the moment the machine is busiest.
+
+**Refs:** `docs/ux/ask.md` §5, §8; `docs/ux/first-run.md` §6; `docs/backlog/M1-it-answers-from-my-documents.md` (`M1-LIB-FE-051`); `api/src/askwell/suggestions.py`; `api/tests/test_suggestions.py`; `web/lib/suggestions.ts`; `web/components/ask/ask-screen.tsx` (`useCorpusState`, `SuggestedQuestions`, `IndexingNotice`).
+
+---
+
 ## 2026-08-28 — The library's backend surface is built inside its frontend ticket, and re-index is not retry
 
 **Decision:** `M1-LIB-FE-050`. No `docs/backlog/` ticket anywhere — under any milestone — builds a "list sources" or "re-index a source" endpoint; the whole backlog's Backend section has no `M1-LIB-BE-*` at all. Rather than stopping the ticket on a dependency the backlog itself never named, three small additive changes went into `api/src/askwell/ingest.py` and `sources.py`, all reusing infrastructure `M1-ADD-ING-025`/`M1-EXTRACT-ING-029` already built rather than inventing new plumbing:

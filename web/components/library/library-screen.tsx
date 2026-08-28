@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import {
@@ -31,10 +32,9 @@ import { StatusMark } from "./status-mark";
  * The same `IngestState` the add screen already watches is the data here
  * too: nothing new is polled, this is a second reading of one stream.
  *
- * The empty and no-corpus states are deliberately plain. `M1-LIB-FE-051`
- * owns the taught, reviewed copy for "nothing added yet"; what is here is
- * factual placeholder text so the screen is never blank while that ticket's
- * own work is pending.
+ * `EmptyLibrary` (`M1-LIB-FE-051`) names all four routes from
+ * `../ux/add-source.md` §1 — the two that ship in Phase 1 as live links, the
+ * two arriving in Phase 3 named and marked so, never omitted.
  */
 export function LibraryScreen() {
   const [state, setState] = useState<IngestState | null>(null);
@@ -90,10 +90,30 @@ export function LibraryScreen() {
   );
 }
 
+/**
+ * The four routes named at `../ux/add-source.md` §1, in the same order —
+ * two live in Phase 1, two arriving in Phase 3 and said so rather than
+ * omitted (`library.md` §5: "the four ways to add one").
+ */
+const ADD_ROUTES: { name: string; forWhat: string; available: boolean }[] = [
+  { name: "Files", forWhat: "PDF, Word, Excel, PowerPoint, text, images", available: true },
+  { name: "Spreadsheet or CSV", forWhat: "tabular exports", available: true },
+  {
+    name: "Database dump",
+    forWhat: "a PostgreSQL .sql, .dump or .backup file",
+    available: false,
+  },
+  {
+    name: "Connect a database",
+    forWhat: "PostgreSQL, MySQL/MariaDB, SQL Server",
+    available: false,
+  },
+];
+
 function EmptyLibrary() {
   return (
     <div
-      className="flex flex-col gap-3 px-4 py-3"
+      className="flex flex-col gap-4 px-4 py-3"
       style={{
         background: "var(--surface)",
         borderRadius: "var(--radius)",
@@ -101,9 +121,27 @@ function EmptyLibrary() {
       }}
     >
       <p className="ask-prose">
-        Nothing has been added yet. Drop files or a folder anywhere on this window, or add them
-        from the add-source screen.
+        A source is anything Askwell can read and answer questions about — a document, a
+        spreadsheet, or a database. Nothing has been added yet, so there is nothing to ask about.
+        Four ways to add one:
       </p>
+      <ul className="flex flex-col gap-1 list-none p-0">
+        {ADD_ROUTES.map((route) => (
+          <li key={route.name} className="ask-prose" style={{ color: "var(--muted)" }}>
+            <strong style={{ color: "var(--ink)" }}>{route.name}</strong> — {route.forWhat}
+            {route.available ? "" : " (arriving later)"}
+          </li>
+        ))}
+      </ul>
+      <div>
+        <Link
+          href="/sources/add/"
+          className="ask-navigates inline-block px-4 py-2"
+          style={{ border: "1px solid var(--rule-strong)", fontSize: "var(--t-ui)" }}
+        >
+          Add a source
+        </Link>
+      </div>
     </div>
   );
 }
