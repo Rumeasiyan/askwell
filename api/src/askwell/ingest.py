@@ -55,6 +55,7 @@ render — "this file failed, here is why, retry" — has to survive Redis.
 
 import asyncio
 import json
+import os
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
@@ -66,7 +67,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from askwell import chunk, embed, extract
+from askwell import chunk, embed, extract, roots
 from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
@@ -568,7 +569,14 @@ async def process(
 
 
 def source_status(
-    *, total: int, ready: int, running: int, outstanding: int, failed: int, flagged: int = 0
+    *,
+    total: int,
+    ready: int,
+    running: int,
+    outstanding: int,
+    failed: int,
+    flagged: int = 0,
+    missing: int = 0,
 ) -> str:
     """What a source's status is, given what its documents are doing.
 
@@ -592,10 +600,16 @@ def source_status(
     the moment it is flagged. Checked ahead of `ready == total` for exactly
     that reason: a source that is otherwise wholly ready still has something
     the library needs to say.
+
+    **A moved file follows the same rule.** `M1-VIEW-BE-049`: a document
+    whose recorded path no longer resolves is still `ready` and still
+    askable from what was already indexed — it needs relocating, not
+    re-indexing — so `missing` joins `flagged` here rather than sitting in
+    `outstanding` waiting for a retry that would never fix it.
     """
     if total == 0:
         return "queued"
-    if flagged:
+    if flagged or missing:
         return "attention"
     if ready == total:
         return "ready"
@@ -625,6 +639,11 @@ class Coverage:
     # these are already askable, and stay that way. `M1-EXTRACT-ING-029`.
     flagged: int = 0
 
+    # Documents whose recorded path no longer resolves (`missing_since` is
+    # set). Also not a `failed` — the content is still indexed and still
+    # askable, only the file needs relocating. `M1-VIEW-BE-049`.
+    missing: int = 0
+
     @property
     def askable(self) -> bool:
         """The partial-coverage marker: one indexed file is enough to ask.
@@ -643,6 +662,7 @@ class Coverage:
             "running": self.running,
             "outstanding": self.outstanding,
             "flagged": self.flagged,
+            "missing": self.missing,
             "askable": self.askable,
             "fraction": round(self.ready / self.total, 4) if self.total else 0.0,
         }
@@ -665,7 +685,8 @@ async def coverage(
             # pipeline has otherwise progressed — a flag must not wait for
             # milestones this ticket does not depend on.
             "count(*) FILTER (WHERE d.ocr_confidence IS NOT NULL "
-            "AND d.ocr_confidence < :threshold) AS flagged "
+            "AND d.ocr_confidence < :threshold) AS flagged, "
+            "count(*) FILTER (WHERE d.missing_since IS NOT NULL) AS missing "
             "FROM documents d LEFT JOIN ingest_jobs j ON j.document_id = d.id "
             "WHERE d.source_id = :id AND d.deleted_at IS NULL"
         ),
@@ -679,16 +700,18 @@ async def coverage(
         running=int(row[3]),
         outstanding=int(row[4]),
         flagged=int(row[5]),
+        missing=int(row[6]),
     )
 
 
-def _attention_reason(*, failed: int, flagged: int, total: int) -> str | None:
+def _attention_reason(*, failed: int, flagged: int, missing: int, total: int) -> str | None:
     """The sentence `sources.last_error` carries while a source needs attention.
 
-    Both causes named when both are true — a source can have two failed files
-    and a third read poorly, and collapsing that into one cause would hide
-    whichever it left out. Poor OCR is stated as what it is, not as a failure:
-    that distinction is the whole of `M1-EXTRACT-ING-029`.
+    Every cause named when several are true — a source can have two failed
+    files, a third read poorly and a fourth moved, and collapsing that into
+    one cause would hide whichever it left out. Poor OCR and a moved file are
+    each stated as what they are, not as a failure: that distinction is the
+    whole of `M1-EXTRACT-ING-029` and, for the moved case, `M1-VIEW-BE-049`.
     """
     parts = []
     if failed:
@@ -696,6 +719,9 @@ def _attention_reason(*, failed: int, flagged: int, total: int) -> str | None:
     if flagged:
         noun = "file" if flagged == 1 else "files"
         parts.append(f"{flagged} {noun} scanned poorly and may be hard to search")
+    if missing:
+        noun, verb = ("file", "needs") if missing == 1 else ("files", "need")
+        parts.append(f"{missing} {noun} moved or renamed and {verb} relocating")
     return ". ".join(parts) + "." if parts else None
 
 
@@ -725,6 +751,7 @@ async def refresh_source(
         outstanding=counts.outstanding,
         failed=counts.failed,
         flagged=counts.flagged,
+        missing=counts.missing,
     )
     if wanted == found[0]:
         return wanted
@@ -744,7 +771,10 @@ async def refresh_source(
             "status": wanted,
             "became_ready": wanted == "ready",
             "last_error": _attention_reason(
-                failed=counts.failed, flagged=counts.flagged, total=counts.total
+                failed=counts.failed,
+                flagged=counts.flagged,
+                missing=counts.missing,
+                total=counts.total,
             ),
             "id": source_id,
         },
@@ -761,6 +791,7 @@ async def refresh_source(
             "total": counts.total,
             "failed": counts.failed,
             "flagged": counts.flagged,
+            "missing": counts.missing,
         },
     )
     log.info(
@@ -773,6 +804,68 @@ async def refresh_source(
         flagged=counts.flagged,
     )
     return wanted
+
+
+# --- the moved-or-renamed check ---------------------------------------------
+
+
+async def sweep_missing(session: AsyncSession, settings: Settings) -> int:
+    """Check every live document's recorded path against disk, and record what
+    changed. `M1-VIEW-BE-049`.
+
+    Runs on a timer (`worker.py`'s `check_missing` cron) so a moved file is
+    caught even when nobody has clicked its citation — `askwell.documents`
+    does the same check at open time, and this is the half that does not wait
+    for a click.
+
+    A whole root being unreachable is never read as its documents being
+    missing. `roots.source_availability` is checked per source first, and a
+    source whose root is down is skipped entirely rather than marking every
+    document under it `missing_since` one at a time — the ticket's own edge
+    case for "the whole root is unmounted".
+    """
+    live = await roots.listing(session, settings)
+    removed = await roots.tombstoned(session)
+
+    rows = (
+        await session.execute(
+            text(
+                "SELECT d.id, d.path, d.missing_since, d.source_id, s.root_path "
+                "FROM documents d JOIN sources s ON s.id = d.source_id "
+                "WHERE d.deleted_at IS NULL AND s.status <> 'deleted'"
+            )
+        )
+    ).all()
+
+    changed_sources: set[uuid.UUID] = set()
+    touched = 0
+    for document_id, path, missing_since, source_id, root_path in rows:
+        if root_path is None:
+            continue
+        state, _ = roots.source_availability(root_path, live, removed)
+        if state is not roots.SourceState.READABLE:
+            continue
+
+        exists = await asyncio.to_thread(os.path.isfile, path)
+        if exists and missing_since is not None:
+            await session.execute(
+                text("UPDATE documents SET missing_since = NULL WHERE id = :id"),
+                {"id": document_id},
+            )
+            changed_sources.add(source_id)
+            touched += 1
+        elif not exists and missing_since is None:
+            await session.execute(
+                text("UPDATE documents SET missing_since = now() WHERE id = :id"),
+                {"id": document_id},
+            )
+            changed_sources.add(source_id)
+            touched += 1
+
+    for source_id in changed_sources:
+        await refresh_source(session, source_id, settings.ocr_confidence_threshold)
+
+    return touched
 
 
 # --- resuming ---------------------------------------------------------------

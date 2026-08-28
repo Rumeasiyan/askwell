@@ -1837,3 +1837,83 @@ async def test_the_snapshot_counts_are_this_machines_own_and_nothing_leaves_it(
     assert state["documents_failed"] == 1
     assert state["failures"][0]["filename"] == "b.pdf"
     assert "encrypted" in state["failures"][0]["error"]
+
+
+# --- the periodic moved-file check (`M1-VIEW-BE-049`) -----------------------
+
+
+async def test_sweep_missing_flags_a_file_gone_from_an_available_root(
+    session: AsyncSession, tmp_path: Path, settings: Settings
+) -> None:
+    """The half of the ticket that runs on a timer rather than a click —
+    `askwell.documents._availability` covers the open-time half."""
+    await nominate(session, str(tmp_path))
+    written(tmp_path, "a.pdf")
+    (document_id,) = await recorded(session, tmp_path, "a.pdf")
+    await session.execute(
+        text("UPDATE documents SET status = 'ready' WHERE id = :id"), {"id": document_id}
+    )
+    (tmp_path / "a.pdf").unlink()
+
+    rooted = settings.model_copy(update={"roots_mount": tmp_path})
+    touched = await ingest.sweep_missing(session, rooted)
+
+    assert touched == 1
+    row = (
+        await session.execute(
+            text("SELECT missing_since FROM documents WHERE id = :id"), {"id": document_id}
+        )
+    ).first()
+    assert row is not None
+    assert row[0] is not None
+
+
+async def test_sweep_missing_clears_a_file_that_reappeared(
+    session: AsyncSession, tmp_path: Path, settings: Settings
+) -> None:
+    await nominate(session, str(tmp_path))
+    written(tmp_path, "a.pdf")
+    (document_id,) = await recorded(session, tmp_path, "a.pdf")
+    await session.execute(
+        text("UPDATE documents SET status = 'ready', missing_since = now() WHERE id = :id"),
+        {"id": document_id},
+    )
+
+    rooted = settings.model_copy(update={"roots_mount": tmp_path})
+    touched = await ingest.sweep_missing(session, rooted)
+
+    assert touched == 1
+    row = (
+        await session.execute(
+            text("SELECT missing_since FROM documents WHERE id = :id"), {"id": document_id}
+        )
+    ).first()
+    assert row is not None
+    assert row[0] is None
+
+
+async def test_sweep_missing_skips_a_source_whose_root_is_unreachable(
+    session: AsyncSession, tmp_path: Path, settings: Settings
+) -> None:
+    """The ticket's own edge case: a whole root being unmounted must not be
+    read as every document under it being individually missing."""
+    await nominate(session, str(tmp_path))
+    written(tmp_path, "a.pdf")
+    (document_id,) = await recorded(session, tmp_path, "a.pdf")
+    await session.execute(
+        text("UPDATE documents SET status = 'ready' WHERE id = :id"), {"id": document_id}
+    )
+    (tmp_path / "a.pdf").unlink()
+
+    # `settings` on its own has no `roots_mount`, so the nominated root probes
+    # as `not_mounted` rather than available.
+    touched = await ingest.sweep_missing(session, settings)
+
+    assert touched == 0
+    row = (
+        await session.execute(
+            text("SELECT missing_since FROM documents WHERE id = :id"), {"id": document_id}
+        )
+    ).first()
+    assert row is not None
+    assert row[0] is None

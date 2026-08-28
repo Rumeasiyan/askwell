@@ -25,37 +25,170 @@ exactly this reason — it reads the cross-reference table first, then only the
 pages it needs — so "the cited page loads first and the rest streams" is
 satisfied by a correct `Accept-Ranges` response, not by any code in this
 module deciding what order to send bytes in.
+
+**The moved/deleted distinction (`M1-VIEW-BE-049`) lives here too.**
+`_availability` is the open-time check, shared by `document_metadata` and
+`document_file` so the two cannot disagree about whether a document is there,
+moved, or unreachable because its whole root is. `askwell.ingest.sweep_missing`
+is the same decision (`roots.source_availability` first, a per-file check only
+once that says the root itself is fine) run on a timer instead of a click —
+kept in `askwell.ingest` rather than imported from here, since `_availability`
+already depends on `askwell.ingest.refresh_source` and the reverse import
+would be a cycle.
 """
 
 import asyncio
 import uuid
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, Response
 from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
+from askwell.ingest import refresh_source
 from askwell.logging import get_logger
+from askwell.roots import SourceState, covering, source_availability
+from askwell.roots import listing as roots_listing
+from askwell.roots import tombstoned as roots_tombstoned
+from askwell.sources import FileUnsettled, fingerprint
 
 log = get_logger(__name__)
 
 DOCUMENT_OPENED = "document_opened"
+DOCUMENT_RELOCATED = "document_relocated"
 
 
 async def _find(session: AsyncSession, document_id: uuid.UUID) -> dict[str, object] | None:
     result = await session.execute(
         text(
-            "SELECT id, filename, path, mime, page_count, anchor_kind, status, "
-            "superseded_by FROM documents WHERE id = :id AND deleted_at IS NULL"
+            "SELECT d.id, d.filename, d.path, d.mime, d.page_count, d.anchor_kind, "
+            "d.status, d.superseded_by, d.source_id, d.sha256, d.missing_since, "
+            "s.root_path FROM documents d JOIN sources s ON s.id = d.source_id "
+            "WHERE d.id = :id AND d.deleted_at IS NULL"
         ),
         {"id": document_id},
     )
     row = result.mappings().first()
     return dict(row) if row is not None else None
+
+
+@dataclass(frozen=True, slots=True)
+class Availability:
+    """Whether a document's bytes can actually be read right now, and why not
+    when they cannot. `M1-VIEW-BE-049`.
+
+    **Moved and root-unavailable are different facts and must stay different
+    ones.** A file gone from under an otherwise-reachable root is `moved`: the
+    user renamed or relocated one file, and Askwell says so and offers to fix
+    it. A root that cannot be reached at all — unmounted, removed, unreadable
+    — is `root_unavailable`: none of its documents are individually missing,
+    the whole folder is, and reporting each of them as moved would be as many
+    wrong questions as it has files in it. The distinction comes from
+    `roots.source_availability`, not from anything guessed here.
+    """
+
+    exists: bool
+    moved: bool
+    missing_since: str | None
+    root_unavailable: bool
+    root_reason: str | None
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "available": self.exists,
+            "moved": self.moved,
+            "missing_since": self.missing_since,
+            "root_unavailable": self.root_unavailable,
+            "root_reason": self.root_reason,
+        }
+
+
+def _isoformat(value: object) -> str | None:
+    return value.isoformat() if isinstance(value, datetime) else None
+
+
+async def _availability(
+    factory: async_sessionmaker[AsyncSession], settings: Settings, found: dict[str, object]
+) -> Availability:
+    """Check `found["path"]` against disk and reconcile `missing_since` with
+    what is actually true, right now.
+
+    The write happens here rather than only in the periodic sweep
+    (`askwell.ingest.sweep_missing`) so a moved file is caught the moment
+    someone clicks its citation, not only on the next timer tick — and so a
+    file that quietly came back clears its own flag on the next open rather
+    than waiting for the sweep to notice.
+    """
+    path = Path(str(found["path"]))
+    exists = await asyncio.to_thread(path.is_file)
+    missing_since = found["missing_since"]
+
+    if exists:
+        if missing_since is not None:
+            async with session_scope(factory) as db:
+                await db.execute(
+                    text("UPDATE documents SET missing_since = NULL WHERE id = :id"),
+                    {"id": found["id"]},
+                )
+                await refresh_source(
+                    db, uuid.UUID(str(found["source_id"])), settings.ocr_confidence_threshold
+                )
+        return Availability(
+            exists=True, moved=False, missing_since=None, root_unavailable=False, root_reason=None
+        )
+
+    root_path = found["root_path"]
+    if root_path is None:
+        state, reason = (
+            SourceState.NO_ROOT,
+            "No nominated folder covers this source's own folder.",
+        )
+    else:
+        async with factory() as db:
+            live = await roots_listing(db, settings)
+            removed = await roots_tombstoned(db)
+        state, reason = source_availability(str(root_path), live, removed)
+
+    if state is not SourceState.READABLE:
+        return Availability(
+            exists=False,
+            moved=False,
+            missing_since=_isoformat(missing_since),
+            root_unavailable=True,
+            root_reason=reason,
+        )
+
+    if missing_since is None:
+        async with session_scope(factory) as db:
+            await db.execute(
+                text("UPDATE documents SET missing_since = now() WHERE id = :id"),
+                {"id": found["id"]},
+            )
+            stamped = (
+                await db.execute(
+                    text("SELECT missing_since FROM documents WHERE id = :id"),
+                    {"id": found["id"]},
+                )
+            ).first()
+            missing_since = stamped[0] if stamped is not None else None
+            await refresh_source(
+                db, uuid.UUID(str(found["source_id"])), settings.ocr_confidence_threshold
+            )
+
+    return Availability(
+        exists=False,
+        moved=True,
+        missing_since=_isoformat(missing_since),
+        root_unavailable=False,
+        root_reason=None,
+    )
 
 
 async def _superseded_at(session: AsyncSession, new_document_id: uuid.UUID) -> str | None:
@@ -71,6 +204,12 @@ async def _superseded_at(session: AsyncSession, new_document_id: uuid.UUID) -> s
     return row[0].isoformat() if row is not None else None
 
 
+class RelocateRequest(BaseModel):
+    """A typed or picker-provided path to where a moved file now lives."""
+
+    path: str
+
+
 def register_documents(
     app: FastAPI, settings: Settings, factory: async_sessionmaker[AsyncSession]
 ) -> None:
@@ -83,7 +222,7 @@ def register_documents(
         if found is None:
             return JSONResponse({"error": "No such document."}, status_code=404)
 
-        available = await asyncio.to_thread(Path(str(found["path"])).is_file)
+        availability = await _availability(factory, settings, found)
 
         superseded_by = found["superseded_by"]
         superseded_at: str | None = None
@@ -107,13 +246,14 @@ def register_documents(
             {
                 "id": str(found["id"]),
                 "filename": found["filename"],
+                "path": found["path"],
                 "mime": found["mime"],
                 "page_count": found["page_count"],
                 "anchor_kind": found["anchor_kind"],
                 "status": found["status"],
-                "available": available,
                 "superseded_by": str(superseded_by) if superseded_by is not None else None,
                 "superseded_at": superseded_at,
+                **availability.as_dict(),
             }
         )
 
@@ -124,22 +264,121 @@ def register_documents(
         if found is None:
             return JSONResponse({"error": "No such document."}, status_code=404)
 
-        path = Path(str(found["path"]))
-        if not await asyncio.to_thread(path.is_file):
-            # The moved/deleted distinction is `M1-VIEW-BE-049`'s job. This
-            # is the honest fallback until that ticket lands: not a crash,
-            # not a silent empty body.
+        availability = await _availability(factory, settings, found)
+        if not availability.exists:
+            if availability.root_unavailable:
+                return JSONResponse(
+                    {
+                        "error": f"Askwell cannot reach the folder that holds "
+                        f"{found['filename']} right now.",
+                        "reason": "root_unavailable",
+                        "detail": availability.root_reason,
+                    },
+                    status_code=404,
+                )
             return JSONResponse(
-                {"error": f"{found['filename']} is no longer at its recorded path."},
+                {
+                    "error": f"{found['filename']} is no longer at {found['path']}.",
+                    "reason": "moved",
+                    "path": found["path"],
+                    "missing_since": availability.missing_since,
+                },
                 status_code=404,
             )
 
         return FileResponse(
-            path,
+            Path(str(found["path"])),
             media_type=str(found["mime"]) if found["mime"] else "application/octet-stream",
             filename=str(found["filename"]),
             content_disposition_type="inline",
         )
+
+    @app.post("/documents/{document_id}/relocate")
+    async def relocate_document(document_id: uuid.UUID, body: RelocateRequest) -> JSONResponse:
+        """Repair a moved document's recorded path. `M1-VIEW-BE-049`.
+
+        `RelocateRequest` carries one field, the same seam
+        `roots.NominateRequest` uses for exactly the same reason —
+        `M7-TAURI-FE-182` substitutes the platform's own file dialog for
+        whatever produced this string without this handler, or the
+        verification below it, changing at all.
+        """
+        async with factory() as db:
+            found = await _find(db, document_id)
+        if found is None:
+            return JSONResponse({"error": "No such document."}, status_code=404)
+
+        still_there = await asyncio.to_thread(Path(str(found["path"])).is_file)
+        if still_there and found["missing_since"] is None:
+            return JSONResponse(
+                {"error": f"{found['filename']} is not missing — there is nothing to relocate."},
+                status_code=400,
+            )
+
+        requested = body.path.strip()
+        if not requested:
+            return JSONResponse({"error": "No file was given."}, status_code=400)
+
+        async with factory() as db:
+            root = await covering(db, requested)
+        if root is None:
+            return JSONResponse(
+                {
+                    "error": f"{requested} is outside every folder Askwell may read. "
+                    "Nominate the folder that now holds it before relocating to it."
+                },
+                status_code=400,
+            )
+
+        new_path = Path(requested)
+        if not await asyncio.to_thread(new_path.is_file):
+            return JSONResponse({"error": f"There is no file at {requested}."}, status_code=400)
+
+        try:
+            stamp = await asyncio.to_thread(fingerprint, str(new_path))
+        except FileUnsettled as error:
+            return JSONResponse({"error": str(error)}, status_code=409)
+
+        if stamp.sha256 != found["sha256"]:
+            # The ticket's own edge case: moved *and* modified is a hash
+            # mismatch, not a relocation — offered as a new version instead,
+            # through the ordinary add flow's own version detection rather
+            # than a second copy of that logic built here.
+            return JSONResponse(
+                {
+                    "error": f"{new_path.name} is not the same file as {found['filename']} — "
+                    "its content does not match.",
+                    "reason": "hash_mismatch",
+                    "suggestion": "If this is an updated version rather than the same file "
+                    "moved, add it to Askwell as a new file instead of relocating to it.",
+                },
+                status_code=409,
+            )
+
+        old_path = str(found["path"])
+        async with session_scope(factory) as db:
+            await db.execute(
+                text("UPDATE documents SET path = :path, missing_since = NULL WHERE id = :id"),
+                {"path": str(new_path), "id": document_id},
+            )
+            # A decisions record naming both paths — what actually changed,
+            # not just that something did.
+            await record(
+                db,
+                Store.DECISIONS,
+                DOCUMENT_RELOCATED,
+                {
+                    "document_id": str(document_id),
+                    "filename": found["filename"],
+                    "from_path": old_path,
+                    "to_path": str(new_path),
+                },
+            )
+            await refresh_source(
+                db, uuid.UUID(str(found["source_id"])), settings.ocr_confidence_threshold
+            )
+
+        return JSONResponse({"relocated": True, "path": str(new_path)})
 
     @app.get("/documents/{document_id}/pages/{page_number}")
     async def document_page(document_id: uuid.UUID, page_number: int) -> JSONResponse:

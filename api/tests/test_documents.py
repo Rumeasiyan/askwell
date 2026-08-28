@@ -10,6 +10,7 @@ logged to `audit_interactions`, once, as an interaction rather than a
 decision.
 """
 
+import hashlib
 import uuid
 from pathlib import Path
 
@@ -24,7 +25,7 @@ from askwell.config import Settings
 
 pytestmark = pytest.mark.requires_db
 
-TABLES = "roots, sources, documents, document_pages, audit_interactions"
+TABLES = "roots, sources, documents, document_pages, audit_interactions, audit_decisions"
 
 
 def _pdf(text: str) -> bytes:
@@ -396,6 +397,234 @@ def test_every_page_is_listed_in_order(
     body = response.json()
     assert [row["page_number"] for row in body] == [1, 2]
     assert body[1]["anchor_label"] == "Sheet1, row 2"
+
+
+def _seed_rooted_document(
+    database_url: str,
+    tmp_path: Path,
+    *,
+    write_file: bool = True,
+    content: str = "Notice is ninety days.",
+) -> tuple[uuid.UUID, uuid.UUID, Path, str]:
+    """A document under a nominated root — needed for anything that must
+    tell a genuinely missing file apart from a root Askwell cannot reach.
+    Returns the document id, source id, its path and its real sha256 (unlike
+    `_seed_document`'s placeholder hash, which relocation's hash check would
+    never match)."""
+    document_id, source_id = uuid.uuid4(), uuid.uuid4()
+    pdf_path = tmp_path / "contract.pdf"
+    body = _pdf(content)
+    sha256 = hashlib.sha256(body).hexdigest()
+    if write_file:
+        pdf_path.write_bytes(body)
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        db.execute("INSERT INTO roots (path) VALUES (%s)", (str(tmp_path),))
+        db.execute(
+            "INSERT INTO sources (id, kind, name, root_path) VALUES (%s, 'file', 'a source', %s)",
+            (source_id, str(tmp_path)),
+        )
+        db.execute(
+            "INSERT INTO documents "
+            "(id, source_id, filename, path, mime, sha256, page_count, anchor_kind, status) "
+            "VALUES (%s, %s, 'contract.pdf', %s, 'application/pdf', %s, 1, 'page', 'ready')",
+            (document_id, source_id, str(pdf_path), sha256),
+        )
+    return document_id, source_id, pdf_path, sha256
+
+
+def _rooted(settings: Settings, tmp_path: Path) -> Settings:
+    """Configuration whose mount window actually contains `tmp_path`, so
+    `roots.probe` reports the nominated root as available rather than
+    `not_mounted`."""
+    return settings.model_copy(update={"roots_mount": tmp_path})
+
+
+def test_metadata_names_the_moved_file_and_offers_relocation(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """The ticket's own acceptance criterion: a renamed file is reported as
+    moved, not deleted, with the old path and a relocate offer — never
+    conflated with the root itself being unreachable."""
+    _truncate(database_url)
+    document_id, _source_id, pdf_path, _sha256 = _seed_rooted_document(
+        database_url, tmp_path, write_file=False
+    )
+    client = _app(_rooted(settings, tmp_path), monkeypatch, tmp_path, database_url)
+
+    with client:
+        _with_session(client)
+        response = client.get(f"/documents/{document_id}")
+
+    body = response.json()
+    assert body["available"] is False
+    assert body["moved"] is True
+    assert body["root_unavailable"] is False
+    assert body["missing_since"] is not None
+    assert body["path"] == str(pdf_path)
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        row = db.execute(
+            "SELECT missing_since, deleted_at FROM documents WHERE id = %s", (document_id,)
+        ).fetchone()
+    assert row[0] is not None
+    assert row[1] is None
+
+
+def test_the_missing_state_clears_when_the_file_reappears(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """Edge case: a file that returns to its original path on its own clears
+    on the next open, with no relocation needed."""
+    _truncate(database_url)
+    document_id, _source_id, pdf_path, _sha256 = _seed_rooted_document(
+        database_url, tmp_path, write_file=False
+    )
+    client = _app(_rooted(settings, tmp_path), monkeypatch, tmp_path, database_url)
+
+    with client:
+        _with_session(client)
+        first = client.get(f"/documents/{document_id}")
+        assert first.json()["moved"] is True
+
+        pdf_path.write_bytes(_pdf("Notice is ninety days."))
+        second = client.get(f"/documents/{document_id}")
+
+    body = second.json()
+    assert body["available"] is True
+    assert body["moved"] is False
+    assert body["missing_since"] is None
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        row = db.execute(
+            "SELECT missing_since FROM documents WHERE id = %s", (document_id,)
+        ).fetchone()
+    assert row[0] is None
+
+
+def test_an_unmounted_root_is_reported_as_root_unavailable_not_missing(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """Edge case: the whole root is unmounted — reported as the root being
+    unavailable, not as the document being individually missing, and
+    `missing_since` is never set for it."""
+    _truncate(database_url)
+    document_id, _source_id, _pdf_path, _sha256 = _seed_rooted_document(
+        database_url, tmp_path, write_file=False
+    )
+    # `settings` on its own has no `roots_mount`, so `roots.probe` reports
+    # `not_mounted` for the nominated root regardless of what is on disk.
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+
+    with client:
+        _with_session(client)
+        response = client.get(f"/documents/{document_id}")
+
+    body = response.json()
+    assert body["available"] is False
+    assert body["moved"] is False
+    assert body["root_unavailable"] is True
+    assert body["missing_since"] is None
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        row = db.execute(
+            "SELECT missing_since FROM documents WHERE id = %s", (document_id,)
+        ).fetchone()
+    assert row[0] is None
+
+
+def test_relocating_to_the_renamed_file_verifies_the_hash_and_restores_viewing(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    _truncate(database_url)
+    document_id, _source_id, old_path, _sha256 = _seed_rooted_document(
+        database_url, tmp_path, write_file=False
+    )
+    new_path = tmp_path / "renamed.pdf"
+    new_path.write_bytes(_pdf("Notice is ninety days."))
+    client = _app(_rooted(settings, tmp_path), monkeypatch, tmp_path, database_url)
+
+    with client:
+        _with_session(client)
+        client.get(f"/documents/{document_id}")  # marks it missing first, as a real open would
+        response = client.post(f"/documents/{document_id}/relocate", json={"path": str(new_path)})
+
+    assert response.status_code == 200
+    assert response.json()["path"] == str(new_path)
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        row = db.execute(
+            "SELECT path, missing_since FROM documents WHERE id = %s", (document_id,)
+        ).fetchone()
+        decisions = db.execute(
+            "SELECT payload FROM audit_decisions WHERE kind = 'document_relocated'"
+        ).fetchall()
+    assert row[0] == str(new_path)
+    assert row[1] is None
+    assert len(decisions) == 1
+    assert decisions[0][0]["from_path"] == str(old_path)
+    assert decisions[0][0]["to_path"] == str(new_path)
+    assert decisions[0][0]["document_id"] == str(document_id)
+
+
+def test_relocating_to_a_different_file_is_refused_on_hash_mismatch(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    _truncate(database_url)
+    document_id, _source_id, _old_path, _sha256 = _seed_rooted_document(
+        database_url, tmp_path, write_file=False
+    )
+    different_path = tmp_path / "different.pdf"
+    different_path.write_bytes(_pdf("A completely different notice."))
+    client = _app(_rooted(settings, tmp_path), monkeypatch, tmp_path, database_url)
+
+    with client:
+        _with_session(client)
+        response = client.post(
+            f"/documents/{document_id}/relocate", json={"path": str(different_path)}
+        )
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["reason"] == "hash_mismatch"
+    assert "does not match" in body["error"]
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        row = db.execute("SELECT path FROM documents WHERE id = %s", (document_id,)).fetchone()
+    assert row[0] != str(different_path)
+
+
+def test_relocating_to_a_path_outside_every_root_is_refused(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    _truncate(database_url)
+    document_id, _source_id, _old_path, _sha256 = _seed_rooted_document(
+        database_url, tmp_path, write_file=False
+    )
+    outside = tmp_path.parent / f"unregistered-{uuid.uuid4().hex}" / "contract.pdf"
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    outside.write_bytes(_pdf("Notice is ninety days."))
+    client = _app(_rooted(settings, tmp_path), monkeypatch, tmp_path, database_url)
+
+    with client:
+        _with_session(client)
+        response = client.post(f"/documents/{document_id}/relocate", json={"path": str(outside)})
+
+    assert response.status_code == 400
+
+
+def test_relocating_a_document_that_is_not_missing_is_refused(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    _truncate(database_url)
+    document_id, _source_id, pdf_path, _sha256 = _seed_rooted_document(database_url, tmp_path)
+    client = _app(_rooted(settings, tmp_path), monkeypatch, tmp_path, database_url)
+
+    with client:
+        _with_session(client)
+        response = client.post(f"/documents/{document_id}/relocate", json={"path": str(pdf_path)})
+
+    assert response.status_code == 400
 
 
 def test_documents_require_a_session(

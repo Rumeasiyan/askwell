@@ -104,27 +104,48 @@ def test_a_source_with_no_flagged_documents_is_unaffected() -> None:
 
 def test_the_attention_reason_names_both_causes_when_both_are_true() -> None:
     assert (
-        ingest._attention_reason(failed=2, flagged=1, total=60)
+        ingest._attention_reason(failed=2, flagged=1, missing=0, total=60)
         == "2 of 60 files could not be indexed. 1 file scanned poorly and may be hard to search."
     )
 
 
 def test_the_attention_reason_is_singular_for_one_flagged_file() -> None:
     assert (
-        ingest._attention_reason(failed=0, flagged=1, total=20)
+        ingest._attention_reason(failed=0, flagged=1, missing=0, total=20)
         == "1 file scanned poorly and may be hard to search."
     )
 
 
 def test_the_attention_reason_is_plural_for_more_than_one() -> None:
     assert (
-        ingest._attention_reason(failed=0, flagged=3, total=20)
+        ingest._attention_reason(failed=0, flagged=3, missing=0, total=20)
         == "3 files scanned poorly and may be hard to search."
     )
 
 
 def test_the_attention_reason_is_none_when_nothing_is_wrong() -> None:
-    assert ingest._attention_reason(failed=0, flagged=0, total=20) is None
+    assert ingest._attention_reason(failed=0, flagged=0, missing=0, total=20) is None
+
+
+def test_the_attention_reason_names_a_moved_file_singular() -> None:
+    assert (
+        ingest._attention_reason(failed=0, flagged=0, missing=1, total=20)
+        == "1 file moved or renamed and needs relocating."
+    )
+
+
+def test_the_attention_reason_names_moved_files_plural() -> None:
+    assert (
+        ingest._attention_reason(failed=0, flagged=0, missing=2, total=20)
+        == "2 files moved or renamed and need relocating."
+    )
+
+
+def test_a_source_with_a_missing_file_needs_attention() -> None:
+    assert (
+        ingest.source_status(total=5, ready=5, running=0, outstanding=0, failed=0, missing=1)
+        == "attention"
+    )
 
 
 def test_one_indexed_document_makes_a_source_askable() -> None:
