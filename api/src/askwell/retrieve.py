@@ -55,10 +55,13 @@ import time
 import uuid
 from dataclasses import dataclass, replace
 
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from askwell.config import Settings
+from askwell.db.engine import session_scope
 from askwell.inference.client import InferenceClient, InferenceFailed, InferenceUnavailable
 from askwell.logging import get_logger
 
@@ -397,3 +400,103 @@ async def retrieve(
         rerank_duration_ms=rerank_duration_ms,
         rerank_skipped_reason=rerank_skipped_reason,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class SearchResult:
+    """Retrieval alone, with no composition and no threshold decision — the
+    degraded-assistant surface `M2-FAIL-FE-060` and any future non-chat entry
+    point that wants passages rather than an answer."""
+
+    candidates: list[Candidate]
+    keyword_only: bool  # dense search did not run; every score is lexical
+
+
+async def search(
+    session: AsyncSession,
+    client: InferenceClient,
+    settings: Settings,
+    query: str,
+    *,
+    source_id: uuid.UUID | None = None,
+) -> SearchResult:
+    """Dense and lexical search, degrading to lexical alone when the model is
+    not there to embed the query.
+
+    `retrieve()` calls `client.embed()` unguarded because `askwell.ask` wants
+    exactly that: an unavailable assistant should fail the whole turn, which
+    it already reports plainly (`docs/ux/ask.md` §5). This function exists for
+    the opposite case — the moment the assistant is *not* available and the
+    product still has to answer "does anything I have mention this" — so the
+    same exceptions that would fail a question here mean only "skip dense,
+    lexical still works," matching `InferenceClient`'s own stated distinction
+    between the assistant being absent and a request failing.
+    """
+    try:
+        vectors = await client.embed([query])
+        keyword_only = False
+    except (InferenceUnavailable, InferenceFailed):
+        vectors = []
+        keyword_only = True
+
+    dense_rows = await _dense_search(session, settings, vectors[0], source_id) if vectors else []
+    lexical_rows = await _lexical_search(session, settings, query, source_id)
+    candidates = _fuse(dense_rows, lexical_rows, settings.retrieval_candidate_count)
+    # Reranking already degrades gracefully on its own (`_rerank` catches both
+    # of `InferenceClient`'s exceptions and returns fusion order unchanged),
+    # so it is safe to attempt here even when the embed call above just showed
+    # the assistant is down — it will skip itself the same way.
+    candidates, _reranked, _duration_ms, _skip_reason = await _rerank(
+        client, settings, query, candidates
+    )
+
+    log.info(
+        "search_completed",
+        query_length=len(query),
+        source_id=str(source_id) if source_id else None,
+        keyword_only=keyword_only,
+        hits=len(candidates),
+    )
+
+    return SearchResult(candidates=candidates, keyword_only=keyword_only)
+
+
+def register_search(
+    app: FastAPI, settings: Settings, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """Attach the degraded-assistant search surface. `M2-FAIL-FE-060`.
+
+    Deliberately separate from `askwell.ask`: nothing here writes to
+    `messages` or `citations` — there is no turn, no composition and nothing
+    to persist. It is retrieval read back directly for the moment there is no
+    assistant to ask through.
+    """
+
+    @app.get("/search")
+    async def search_endpoint(q: str, source_id: uuid.UUID | None = None) -> JSONResponse:
+        trimmed = q.strip()
+        if trimmed == "":
+            return JSONResponse({"keyword_only": False, "results": []})
+
+        client = InferenceClient(settings)
+        async with session_scope(factory) as db:
+            result = await search(db, client, settings, trimmed, source_id=source_id)
+
+        return JSONResponse(
+            {
+                "keyword_only": result.keyword_only,
+                "results": [
+                    {
+                        "chunk_id": str(candidate.chunk_id),
+                        "document_id": str(candidate.document_id),
+                        "filename": candidate.filename,
+                        "anchor_kind": candidate.anchor_kind,
+                        "heading": candidate.heading,
+                        "page_from": candidate.page_from,
+                        "page_to": candidate.page_to,
+                        "passage": candidate.content,
+                    }
+                    for candidate in result.candidates
+                ],
+            }
+        )

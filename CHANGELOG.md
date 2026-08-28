@@ -4,6 +4,26 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.47 — 2026-08-28
+
+Degrade to search when the assistant is unavailable. `M2-FAIL-FE-060`.
+
+### Added
+
+- **`GET /search`** (`askwell.retrieve.register_search`): retrieval with no composition and nothing persisted — no `messages` row, no `citations` row — for the moment there is no assistant to ask a question through. `askwell.retrieve.search` runs the same dense-plus-lexical, RRF-fused, reranked-if-possible pipeline `retrieve()` already does, except it catches `InferenceUnavailable`/`InferenceFailed` around the query-embedding call specifically and degrades to lexical search alone rather than failing the whole request — `retrieve()` itself is left unguarded there on purpose, since an unavailable assistant should fail an ordinary question. The response says `keyword_only` so the caller knows which happened.
+- **Ask screen**: a "Search your files while the assistant is unavailable" panel (`DegradedSearch`, `web/components/ask/ask-screen.tsx`) appears above the composer whenever `/assistant` reports `available: false`, offering a keyword search box that calls `/search` and renders ranked passages with filename, page and a link that opens the source at that page (reusing `documentHref`/`pageLabel` from `lib/citations.ts`). Says plainly when a result set is keyword-only. Reads `useStatus()` directly rather than through a prop from `Shell`, so it disappears the moment the assistant reports ready again with no reload needed.
+- `web/lib/search.ts`: the fetch and the snake_case-to-camelCase mapping (`parseSearchResponse`), tested in isolation in `lib/search.test.ts`.
+
+### Notes
+
+- The two other edge cases this ticket names — "restarting" reads differently from "unavailable", and the interface recovers mid-session with no reload — were already true before this change: `askwell.assistant._EXPLANATIONS` already gives `STARTING`/`CRASHED` their own headlines distinct from every other unavailable cause (`M0-MODEL-BE-020`), and `StatusBanner`/`useStatus` already poll and re-render reactively. Verified rather than rebuilt.
+- **Deferred, filed as [#227](https://github.com/Rumeasiyan/askwell/issues/227):** the ticket's ingestion bullet — "embedding queues rather than fails" while the assistant is down, resuming with no manual step — contradicts the deliberate, tested `M1-INDEX-ING-032` decision that every stage failure, `InferenceUnavailable` included, is bounded by `MAX_ATTEMPTS` and then needs a manual retry (`docs/decisions.md`, 2026-08-28; `docs/states-and-edge-cases.md` §3's own "Embedding job failed after retries" row; `test_a_failure_exhausted_after_retries_is_visible_and_the_retry_works`). Left unimplemented rather than silently reversing that decision or breaking the test that encodes it.
+
+### Verified
+
+- `scripts/dev.sh test-db` (246 passed, 3 new in `test_retrieve_records.py`: dense-plus-lexical search when the assistant is up, degrading to lexical-only with `keyword_only` when it is down, and an honest empty result rather than an error when nothing matches). `scripts/dev.sh test` (529 passed, 1 skipped) and `scripts/dev.sh web-check` (173 web tests, 2 new in `lib/search.test.ts`; typecheck, lint, contrast, offline check all clean).
+- Exercised against the real stack with the native inference process genuinely stopped on this machine: `curl /assistant` reported `available: false`; `curl /search?q=Meridian` returned the real chunk from an indexed test document with `keyword_only: true`; a Chrome screenshot of `/` shows both the existing global "The assistant is not running" banner and the new search panel rendered above the composer.
+
 ## 0.2.46 — 2026-08-28
 
 Conflicting sources: present both, never pick one. `M2-PARTIAL-BE-059`.

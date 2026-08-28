@@ -24,6 +24,7 @@ from askwell.interface import register_interface
 from askwell.logging import configure_logging, get_logger
 from askwell.middleware import register_session
 from askwell.network import read_activity
+from askwell.retrieve import register_search
 from askwell.roots import register_roots
 from askwell.setup import register_setup
 from askwell.sources import register_sources
@@ -103,6 +104,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_sources(app, resolved, app.state.sessions)
     register_ingest(app, resolved, app.state.sessions)
     register_ask(app, resolved, app.state.sessions)
+    register_search(app, resolved, app.state.sessions)
     register_suggestions(app, app.state.sessions)
     register_documents(app, resolved, app.state.sessions)
     register_setup(app, resolved, app.state.sessions)
