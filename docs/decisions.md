@@ -22,6 +22,24 @@ Template:
 
 ---
 
+## 2026-08-28 — A reranked score is compared to the threshold through a sigmoid, not raw
+
+**Decision:** `M2-ABSTAIN-RET-053`. The abstention decision (`askwell.ask._run_generation`, taken before `compose()` ever runs) compares each candidate's score, via the new `askwell.retrieve.candidate_score`, against `Settings.retrieval_score_threshold`. For a candidate the reranker scored, that score is the raw cross-encoder logit passed through a sigmoid, `1 / (1 + e^-x)`, giving a `[0, 1]` relevance probability. For a candidate reranking never touched — the reranker unavailable, or the candidate outside `rerank_candidate_count`'s window — the real dense cosine similarity is used, falling back to the lexical `ts_rank` only when dense search never found it.
+
+**Why:** `InferenceClient.rerank`'s own docstring (`M1-ASK-RET-036`) says a raw cross-encoder logit is "negative and unbounded" and that "the caller is not invited to threshold on the number itself" — and `Settings.retrieval_score_threshold` is a `[0, 1]`-bounded configuration value with a `0.65` default that `docs/architecture.md` §7.1's own abstention example ("the right passage scored 0.61") writes as a plain, comparable number. Comparing a threshold in `[0, 1]` against an unbounded logit directly is not a workable reading of either decision; the two exist in different units and neither ticket resolved that gap because neither needed to — `M1-ASK-RET-036` explicitly left "abstaining on it" to this milestone, and this ticket is the first thing that actually needs a single comparable number.
+
+The fused RRF score (`Candidate.score`) was rejected as the comparison value for the same reason it was rejected as the abstention explanation's own score in `M1-ASK-RET-035`'s decision entry: it has no natural ceiling near 1 (`1 / (RRF_K + 1)` at best, ≈ 0.016) and exists to order candidates, not to report a confidence.
+
+Sigmoid was chosen over leaving rerank scores out of the comparison entirely (thresholding only on dense/lexical scores, ignoring reranking) because that would silently discard the more informative signal the whole of `M1-ASK-RET-036` exists to add — an answer could clear the threshold on a strong lexical match a reranker had in fact scored as irrelevant, or vice versa. It was also chosen over inventing a new, unvalidated normalisation (min-max scaling per query, say): a sigmoid is the transform a cross-encoder is trained to be read through and needs no batch of other scores to calibrate against, unlike a per-query min-max which would make one candidate's classification depend on which other candidates happened to be retrieved alongside it.
+
+**Consequences:** `InferenceClient.rerank`'s comment was updated to point at `candidate_score` rather than stand as a blanket "do not threshold" with no caller honouring it. The `0.65` default is unchanged and, per `M1-ASK-RET-036`'s own precedent, still an unmeasured starting point — nothing in this milestone's eval suite (`eval/bench.py`, not yet built) has tuned it against real sigmoid-transformed scores yet; that tuning is real follow-on work once the abstention subset exists. A below-threshold retrieval abstains before `compose()` is ever called — there is no code path from a below-threshold score to a document-grounded answer, which is what keeps C5 true by construction rather than by the model choosing to refuse.
+
+A source-scoped question against a source that is still indexing gets a distinct trace reason (`source_indexing`, via `askwell.ingest.coverage`) rather than being folded into a generic "nothing matched" — the ticket's own edge case. That check is chunk existence for the corpus-wide case (matching exactly what `askwell.retrieve`'s own SQL filters on: `deleted_at`/`superseded_by`, never `documents.status`) and `coverage()`'s existing `ready`/`total` split for the scoped case — deliberately two different queries rather than one, because a document can have an embedded, searchable chunk before its own `status` column reaches `ready`, and conflating the two would report a corpus with something already answerable as having nothing at all.
+
+**Refs:** Issue 144 (`M1-ASK-RET-036`, closed), `api/src/askwell/retrieve.py`, `api/src/askwell/ask.py`, `api/src/askwell/inference/client.py`. Final abstention copy is `M2-ABSTAIN-BE-054`; rendering is `M2-ABSTAIN-FE-055`; threshold tuning against the eval suite is unscheduled follow-on work.
+
+---
+
 ## 2026-08-28 — The one download in the product runs on the host, not through the proxy
 
 **Decision:** Model acquisition does not become a third exception to C1's default-deny egress. The API writes a request file into the models directory and reads progress back; the host supervisor that already runs `llama.cpp` performs the fetch, verifies the published sha256, and discards a file that does not match. No container gains a route out.

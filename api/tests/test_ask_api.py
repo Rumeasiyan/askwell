@@ -62,6 +62,7 @@ class _FakeInferenceClient:
         fail: Exception | None = None,
         fail_after: int | None = None,
         delay: float = 0.0,
+        rerank_score: float | None = None,
     ) -> None:
         self.tokens = tokens
         self.vector = vector
@@ -72,6 +73,11 @@ class _FakeInferenceClient:
         # must survive. Only the first was covered.
         self.fail_after = fail_after
         self.delay = delay
+        # `M2-ABSTAIN-RET-053`: a fixed raw cross-encoder logit for every
+        # document, when a test needs to land on a specific side of
+        # `candidate_score`'s sigmoid rather than the default's ordering-only
+        # descending scores.
+        self.rerank_score = rerank_score
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         return [self.vector for _ in texts]
@@ -79,6 +85,8 @@ class _FakeInferenceClient:
     async def rerank(
         self, query: str, documents: list[str], *, timeout_seconds: float = 0.0
     ) -> list[tuple[int, float]]:
+        if self.rerank_score is not None:
+            return [(index, self.rerank_score) for index in range(len(documents))]
         return [(index, float(len(documents) - index)) for index in range(len(documents))]
 
     async def stream_generate(
@@ -504,10 +512,12 @@ def test_an_unavailable_assistant_ends_the_turn_as_failed(
     settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
 ) -> None:
     _truncate(database_url)
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "Notice is ninety days.", vector)
     fake = _FakeInferenceClient(
         settings,
         tokens=[],
-        vector=_vector(0.0),
+        vector=vector,
         fail=InferenceUnavailable("The assistant is not running."),
     )
     _patch_client(monkeypatch, fake)
@@ -536,8 +546,10 @@ def test_a_truncated_answer_says_it_hit_the_limit(
     from the screen that anything is missing.
     """
     _truncate(database_url)
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "Notice is ninety days.", vector)
     fake = _FakeInferenceClient(
-        settings, tokens=["A long ", "answer "], vector=_vector(0.0), truncated=True
+        settings, tokens=["A long ", "answer "], vector=vector, truncated=True
     )
     _patch_client(monkeypatch, fake)
     client = _app(settings, monkeypatch, tmp_path, database_url)
@@ -643,7 +655,9 @@ def test_an_unwritable_trace_directory_does_not_fail_the_answer(
     blocked.write_text("this is a file")
     settings = settings.model_copy(update={"trace_dir": blocked / "traces"})
 
-    fake = _FakeInferenceClient(settings, tokens=["Ninety days."], vector=_vector(0.0))
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "Notice is ninety days.", vector)
+    fake = _FakeInferenceClient(settings, tokens=["Ninety days."], vector=vector)
     _patch_client(monkeypatch, fake)
     client = _app(settings, monkeypatch, tmp_path, database_url)
     with client:
@@ -676,10 +690,12 @@ def test_an_assistant_that_dies_mid_stream_keeps_what_it_already_said(
     words already on their screen, leaving them unsure whether they misread it.
     """
     _truncate(database_url)
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "The contract terms are below.", vector)
     fake = _FakeInferenceClient(
         settings,
         tokens=["The contract ", "may be ", "terminated "],
-        vector=_vector(0.0),
+        vector=vector,
         fail=InferenceUnavailable("The assistant stopped responding."),
         fail_after=2,
     )
@@ -706,6 +722,197 @@ def test_an_assistant_that_dies_mid_stream_keeps_what_it_already_said(
     assert len(rows) == 1, "the partial answer is a row, not a discarded buffer"
     assert rows[0][0].startswith("The contract "), rows[0][0]
     assert rows[0][1] == "failed"
+
+
+# --- the retrieval threshold and the abstention decision, `M2-ABSTAIN-RET-053` --
+
+
+def _trace(database_url: str, message_id: uuid.UUID) -> dict[str, Any]:
+    with psycopg.connect(database_url, autocommit=True) as db:
+        (trace,) = db.execute("SELECT trace FROM messages WHERE id = %s", (message_id,)).fetchone()
+    return trace  # type: ignore[no-any-return]
+
+
+def test_no_candidate_above_threshold_abstains_rather_than_answering(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """An empty corpus: nothing to match against at all."""
+    _truncate(database_url)
+    fake = _FakeInferenceClient(settings, tokens=["should never be sent"], vector=_vector(0.0))
+    _patch_client(monkeypatch, fake)
+
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "What colour is the office?"})
+        events = _events(response.text)
+        message_id = uuid.UUID(next(data for kind, data in events if kind == "done")["message_id"])
+
+    assert not any(kind == "token" for kind, _ in events), "never reached composition"
+    with psycopg.connect(database_url, autocommit=True) as db:
+        content, summary, source_count = db.execute(
+            "SELECT content, summary, source_count FROM messages WHERE id = %s", (message_id,)
+        ).fetchone()
+    assert content == ""
+    assert source_count is None
+    assert "did not cover" in summary.lower()
+
+    trace = _trace(database_url, message_id)
+    assert trace["status"] == "completed"
+    retrieve_step = next(step for step in trace["steps"] if step["kind"] == "retrieve")
+    assert retrieve_step["threshold"] == settings.retrieval_score_threshold
+    assert retrieve_step["hits"] == []
+    abstain_step = next(step for step in trace["steps"] if step["kind"] == "abstain")
+    assert abstain_step["reason_code"] == "empty_corpus"
+
+
+def test_all_candidates_below_threshold_abstains_with_the_near_miss_stored(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    _truncate(database_url)
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "The weather was mild.", vector)
+    # A raw logit low enough that sigmoid(-5) ≈ 0.0067, well under the
+    # default 0.65 threshold — a candidate exists but is a clear near-miss.
+    fake = _FakeInferenceClient(
+        settings, tokens=["should never be sent"], vector=vector, rerank_score=-5.0
+    )
+    _patch_client(monkeypatch, fake)
+
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "How long is the notice period?"})
+        events = _events(response.text)
+        message_id = uuid.UUID(next(data for kind, data in events if kind == "done")["message_id"])
+
+    assert not any(kind == "token" for kind, _ in events)
+    with psycopg.connect(database_url, autocommit=True) as db:
+        source_count = db.execute(
+            "SELECT source_count FROM messages WHERE id = %s", (message_id,)
+        ).fetchone()[0]
+    assert source_count is None
+
+    trace = _trace(database_url, message_id)
+    retrieve_step = next(step for step in trace["steps"] if step["kind"] == "retrieve")
+    assert retrieve_step["threshold"] == 0.65
+    (hit,) = retrieve_step["hits"]
+    assert hit["score"] < retrieve_step["threshold"]
+    abstain_step = next(step for step in trace["steps"] if step["kind"] == "abstain")
+    assert abstain_step["reason_code"] == "below_threshold"
+
+
+def test_a_clear_match_above_threshold_answers(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    _truncate(database_url)
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "Notice is ninety days.", vector)
+    # sigmoid(2.0) ≈ 0.88, clearly above the default 0.65 threshold.
+    fake = _FakeInferenceClient(
+        settings,
+        tokens=["The notice period ", "is ninety days [1]."],
+        vector=vector,
+        rerank_score=2.0,
+    )
+    _patch_client(monkeypatch, fake)
+
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "How long is the notice period?"})
+        events = _events(response.text)
+        message_id = uuid.UUID(next(data for kind, data in events if kind == "done")["message_id"])
+
+    assert any(kind == "token" for kind, _ in events)
+    with psycopg.connect(database_url, autocommit=True) as db:
+        source_count = db.execute(
+            "SELECT source_count FROM messages WHERE id = %s", (message_id,)
+        ).fetchone()[0]
+    assert source_count == 1
+
+    trace = _trace(database_url, message_id)
+    retrieve_step = next(step for step in trace["steps"] if step["kind"] == "retrieve")
+    (hit,) = retrieve_step["hits"]
+    assert hit["score"] >= retrieve_step["threshold"]
+    assert not any(step["kind"] == "abstain" for step in trace["steps"])
+
+
+def test_a_source_scoped_question_against_a_still_indexing_source_says_so(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """The source exists — a document row under it — but nothing has been
+    embedded yet, so there is nothing for `retrieve()` to find. The reason
+    must name that, not report a generically empty corpus."""
+    _truncate(database_url)
+    source_id, document_id = uuid.uuid4(), uuid.uuid4()
+    with psycopg.connect(database_url, autocommit=True) as db:
+        db.execute(
+            "INSERT INTO sources (id, kind, name) VALUES (%s, 'file', 'a source')", (source_id,)
+        )
+        db.execute(
+            "INSERT INTO documents (id, source_id, filename, path, sha256) "
+            "VALUES (%s, %s, 'file.txt', %s, %s)",
+            (document_id, source_id, f"/tmp/{document_id}.txt", uuid.uuid4().hex.ljust(64, "0")),
+        )
+    fake = _FakeInferenceClient(settings, tokens=["should never be sent"], vector=_vector(0.0))
+    _patch_client(monkeypatch, fake)
+
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post(
+            "/ask", json={"question": "What does it say?", "source_id": str(source_id)}
+        )
+        message_id = uuid.UUID(
+            next(data for kind, data in _events(response.text) if kind == "done")["message_id"]
+        )
+
+    trace = _trace(database_url, message_id)
+    abstain_step = next(step for step in trace["steps"] if step["kind"] == "abstain")
+    assert abstain_step["reason_code"] == "source_indexing"
+
+
+def test_raising_the_threshold_makes_a_previously_answered_question_abstain(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """Proves the threshold is actually applied, not merely stored — the
+    ticket's own testing note."""
+    _truncate(database_url)
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "Notice is ninety days.", vector)
+    fake = _FakeInferenceClient(
+        settings, tokens=["Notice is ninety days [1]."], vector=vector, rerank_score=0.5
+    )
+    _patch_client(monkeypatch, fake)
+
+    lenient = settings.model_copy(update={"retrieval_score_threshold": 0.5})
+    client = _app(lenient, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "How long is the notice period?"})
+        message_id = uuid.UUID(
+            next(data for kind, data in _events(response.text) if kind == "done")["message_id"]
+        )
+    with psycopg.connect(database_url, autocommit=True) as db:
+        lenient_count = db.execute(
+            "SELECT source_count FROM messages WHERE id = %s", (message_id,)
+        ).fetchone()[0]
+    assert lenient_count == 1
+
+    strict = settings.model_copy(update={"retrieval_score_threshold": 0.9})
+    client = _app(strict, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "How long is the notice period?"})
+        message_id = uuid.UUID(
+            next(data for kind, data in _events(response.text) if kind == "done")["message_id"]
+        )
+    with psycopg.connect(database_url, autocommit=True) as db:
+        strict_count = db.execute(
+            "SELECT source_count FROM messages WHERE id = %s", (message_id,)
+        ).fetchone()[0]
+    assert strict_count is None
 
 
 # --- turn summaries and source counts, `M1-CONV-BE-177` ----------------------
@@ -843,10 +1050,12 @@ def test_a_failed_turn_stores_a_summary_naming_the_failure_and_no_count(
     settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
 ) -> None:
     _truncate(database_url)
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "Notice is ninety days.", vector)
     fake = _FakeInferenceClient(
         settings,
         tokens=[],
-        vector=_vector(0.0),
+        vector=vector,
         fail=InferenceUnavailable("The assistant is not running."),
     )
     _patch_client(monkeypatch, fake)
@@ -1208,6 +1417,8 @@ def test_generation_is_bounded_so_abandoned_turns_do_not_all_run_at_once(
     monkeypatch.setattr(ask_module, "_generation_semaphore", None)
     monkeypatch.setattr(ask_module, "_generation_semaphore_size", None)
 
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "Notice is ninety days.", vector)
     conversation_id = uuid.uuid4()
     with psycopg.connect(database_url, autocommit=True) as db:
         db.execute("INSERT INTO conversations (id) VALUES (%s)", (conversation_id,))
@@ -1271,7 +1482,9 @@ def test_the_same_question_asked_twice_produces_two_completed_answers(
     deduplicates by question text, so this is really a test that no such
     deduplication exists to trip over."""
     _truncate(database_url)
-    fake = _FakeInferenceClient(settings, tokens=["Yes."], vector=_vector(0.0))
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "Notice is ninety days.", vector)
+    fake = _FakeInferenceClient(settings, tokens=["Yes."], vector=vector)
     _patch_client(monkeypatch, fake)
     client = _app(settings, monkeypatch, tmp_path, database_url)
     with client:
@@ -1288,3 +1501,9 @@ def test_the_same_question_asked_twice_produces_two_completed_answers(
         ).fetchall()
     assert len(rows) == 2
     assert all(content == "Yes." and status == "completed" for content, status in rows)
+
+    # `database_url` is session-scoped (`conftest_db.py`) and this is the last
+    # test in the file to seed a `sources` row via `_seed_chunk` — leaving it
+    # behind would break `test_audit_chain.py`'s own assumption that `sources`
+    # starts empty, since nothing truncates between files.
+    _truncate(database_url)

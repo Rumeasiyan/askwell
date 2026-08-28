@@ -94,3 +94,55 @@ def test_the_fused_result_is_truncated_to_the_candidate_count() -> None:
     fused = retrieve_module._fuse(dense_rows, [], candidate_count=2)
 
     assert len(fused) == 2
+
+
+# --- `candidate_score`, `M2-ABSTAIN-RET-053` ---------------------------------
+
+
+def _candidate(
+    *,
+    rerank_score: float | None = None,
+    dense_score: float | None = None,
+    lexical_score: float | None = None,
+) -> retrieve_module.Candidate:
+    return retrieve_module.Candidate(
+        chunk_id=uuid.uuid4(),
+        document_id=uuid.uuid4(),
+        filename="doc.pdf",
+        anchor_kind="page",
+        content="content",
+        heading=None,
+        page_from=1,
+        page_to=1,
+        score=0.01,
+        dense_score=dense_score,
+        lexical_score=lexical_score,
+        rerank_score=rerank_score,
+    )
+
+
+def test_a_reranked_candidate_is_scored_by_sigmoid_of_its_logit() -> None:
+    """The reranker returns a raw, unbounded logit — `InferenceClient.rerank`'s
+    own docstring. A logit of 0 is "no information either way" under a
+    sigmoid, which is exactly the 0.5 a threshold in `[0, 1]` needs it to be."""
+    candidate = _candidate(rerank_score=0.0, dense_score=0.99)
+    assert retrieve_module.candidate_score(candidate) == 0.5
+
+
+def test_a_reranked_candidates_score_never_uses_the_fusion_or_dense_score() -> None:
+    high_dense_low_rerank = _candidate(rerank_score=-10.0, dense_score=0.99)
+    assert retrieve_module.candidate_score(high_dense_low_rerank) < 0.01
+
+
+def test_an_unreranked_candidate_falls_back_to_dense_similarity() -> None:
+    candidate = _candidate(dense_score=0.72, lexical_score=0.1)
+    assert retrieve_module.candidate_score(candidate) == 0.72
+
+
+def test_a_dense_miss_falls_back_to_the_lexical_score() -> None:
+    candidate = _candidate(dense_score=None, lexical_score=0.3)
+    assert retrieve_module.candidate_score(candidate) == 0.3
+
+
+def test_a_candidate_with_no_score_at_all_scores_zero() -> None:
+    assert retrieve_module.candidate_score(_candidate()) == 0.0

@@ -17,11 +17,14 @@ no natural units. A candidate found by only one of the two searches carries a
 null score for the other, which is a fact about that candidate, not a missing
 value to paper over with a zero.
 
-**The threshold is captured, not applied.** Deciding whether a score clears
-it is the abstention decision, `M2`'s scope and explicitly out of this
-ticket's. `RetrievalResult.threshold` is `Settings.retrieval_score_threshold`
-as configured at the moment of this call, so a trace written today still
-reads correctly after the setting changes tomorrow.
+**The threshold is captured here, applied by the caller.** `RetrievalResult.threshold`
+is `Settings.retrieval_score_threshold` as configured at the moment of this
+call, so a trace written today still reads correctly after the setting
+changes tomorrow. Deciding whether a candidate clears it — the abstention
+decision itself, `candidate_score()` below and `askwell.ask`'s use of it,
+`M2-ABSTAIN-RET-053` — stays out of this function: `retrieve()` runs the same
+way for every question, and an empty or all-below-threshold candidate list is
+`askwell.ask`'s to act on, not this module's.
 
 **Superseded and deleted documents are excluded at the query, not filtered
 after.** A tombstoned document already has its chunk content and embedding
@@ -47,6 +50,7 @@ is unavailable or times out, `retrieve()` returns fusion order unchanged and
 says so on `RetrievalResult`, rather than silently pretending reranking ran.
 """
 
+import math
 import time
 import uuid
 from dataclasses import dataclass, replace
@@ -90,6 +94,37 @@ class Candidate:
     dense_score: float | None  # cosine similarity, as measured; null if dense search missed it
     lexical_score: float | None  # ts_rank, as measured; null if lexical search missed it
     rerank_score: float | None = None  # raw cross-encoder logit; null unless reranking ran on it
+
+
+def candidate_score(candidate: Candidate) -> float:
+    """The one comparable, 0..1 score `M2-ABSTAIN-RET-053`'s threshold decision
+    is made against.
+
+    None of `Candidate`'s four scores are directly comparable to a configured
+    threshold on their own: the fused RRF score (`.score`) has no natural
+    ceiling near 1 (`1 / (RRF_K + 1)` at best) and exists to order candidates,
+    not to be read as a confidence; a raw cross-encoder logit
+    (`InferenceClient.rerank`'s own docstring) is unbounded and can be
+    negative. Reranking, when it ran, is still the most informative signal
+    available, so its logit is passed through a sigmoid — the transform a
+    cross-encoder is trained to be read through — to get a 0..1 relevance
+    probability that a `[0, 1]`-bounded `Settings.retrieval_score_threshold`
+    can actually mean something against.
+
+    When this candidate was never sent to the reranker (reranking unavailable
+    entirely, or the candidate fell outside `rerank_candidate_count`'s
+    window), the real dense similarity is used instead — already a comparable
+    0..1 cosine, and the score `docs/architecture.md` §7.1's own abstention
+    example ("the right passage scored 0.61") is written in terms of. Lexical
+    `ts_rank` is the last resort, for a candidate dense search never found.
+    """
+    if candidate.rerank_score is not None:
+        return 1.0 / (1.0 + math.exp(-candidate.rerank_score))
+    if candidate.dense_score is not None:
+        return candidate.dense_score
+    if candidate.lexical_score is not None:
+        return candidate.lexical_score
+    return 0.0
 
 
 @dataclass(frozen=True, slots=True)
