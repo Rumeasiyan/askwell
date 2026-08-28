@@ -4,6 +4,14 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.21 — 2026-08-28
+
+The mic control, reserved and disabled. `M1-ASK-FE-039a`.
+
+### Added
+
+- **Mic control in the composer** (`web/components/ask/ask-screen.tsx`) — present beside "Ask" from Phase 1, at its final position and size (`docs/ux/voice.md` §2), so M6 enables it in place rather than reflowing the composer around it. Disabled with `aria-disabled` rather than the `disabled` attribute, so it stays reachable by keyboard and a screen reader announces it as disabled with its reason — a tooltip on hover and on focus — instead of an unlabelled dead stop. No audio work of any kind: no microphone permission is requested, clicking it does nothing.
+
 ## 0.2.20 — 2026-08-28
 
 The Ask screen, for the first time. `M1-ASK-FE-039`.

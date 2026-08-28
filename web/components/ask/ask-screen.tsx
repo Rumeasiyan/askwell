@@ -14,8 +14,8 @@ import { VERSION } from "@/lib/version";
  * ticket owns (`ask.md` §5: retrieving, streaming, answered). What is not
  * here, on purpose: source cards in the margin (`M1-CITE-FE-043`, the margin
  * still renders its permanent empty state from `Shell`), abstention's own
- * rendering (`M2`), the mic control (`M1-ASK-FE-039a`), and collapsing past
- * turns (`M1-CONV-FE-180`) — every turn here simply stacks.
+ * rendering (`M2`), and collapsing past turns (`M1-CONV-FE-180`) — every turn
+ * here simply stacks.
  */
 export function AskScreen() {
   const hasSources = useHasSources();
@@ -161,7 +161,8 @@ function Composer() {
         style={{ resize: "none" }}
         aria-label="Ask a question"
       />
-      <div className="flex justify-end">
+      <div className="flex justify-end items-center gap-2">
+        <MicControl />
         <button
           type="button"
           onClick={submit}
@@ -173,6 +174,54 @@ function Composer() {
         </button>
       </div>
     </div>
+  );
+}
+
+const MIC_REASON = "Voice arrives with the voice release. Type for now.";
+
+/**
+ * Present from Phase 1, disabled with its reason (`ask.md` §4, `M1-ASK-FE-039a`).
+ * No audio work of any kind: no `getUserMedia`, no permission request, no
+ * transport. `aria-disabled` (not the `disabled` attribute) keeps the button
+ * focusable so a screen reader announces it — disabled with its reason —
+ * rather than skipping past an unlabelled dead stop. `voice.md` §2 fixes its
+ * final position (in the composer, beside send) so M6 changes state, not
+ * geometry.
+ */
+function MicControl() {
+  return (
+    <span className="ask-mic-wrap">
+      <button
+        type="button"
+        aria-disabled="true"
+        aria-describedby="ask-mic-reason"
+        className="ask-mic-control"
+      >
+        <MicIcon />
+        <span className="ask-sr-only">Voice input</span>
+      </button>
+      <span role="tooltip" id="ask-mic-reason" className="ask-mic-reason">
+        {MIC_REASON}
+      </span>
+    </span>
+  );
+}
+
+function MicIcon() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      aria-hidden="true"
+    >
+      <rect x="5.5" y="1.5" width="5" height="8" rx="2.5" />
+      <path d="M3 8.5a5 5 0 0 0 10 0" strokeLinecap="round" />
+      <path d="M8 13.5v1.5" strokeLinecap="round" />
+    </svg>
   );
 }
 
