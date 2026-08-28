@@ -13,7 +13,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { looksNonEnglish, nextToDispatch, parseSseFrame, readSseEvents } from "./ask.ts";
+import {
+  applyAskEvent,
+  type AskTurnState,
+  looksNonEnglish,
+  nextToDispatch,
+  parseSseFrame,
+  readSseEvents,
+} from "./ask.ts";
 
 // --- parseSseFrame -----------------------------------------------------------
 
@@ -157,4 +164,87 @@ test("a question written in a non-Latin script is flagged", () => {
 
 test("too few letters to judge is not flagged", () => {
   assert.equal(looksNonEnglish("42?"), false);
+});
+
+
+// --- applying streamed events ------------------------------------------------
+
+function turnState(over: Partial<AskTurnState> = {}): AskTurnState {
+  return { serverId: null, steps: [], answer: "", citationCount: 0, ...over };
+}
+
+test("tokens arriving in one frame all survive", () => {
+  // The bug this replaced: each patch read the turn from a ref an effect
+  // refreshed after render, so both tokens saw answer="" and the second
+  // overwrote the first. The answer lost words with nothing saying so.
+  let turn = turnState();
+  const seen = new Set<number>();
+  for (const text of ["The ", "contract ", "may be ", "terminated."]) {
+    turn = { ...turn, ...applyAskEvent(turn, { event: "token", data: { message_id: "m1", text } }, seen) };
+  }
+  assert.equal(turn.answer, "The contract may be terminated.");
+});
+
+test("steps accumulate rather than replacing one another", () => {
+  let turn = turnState();
+  const seen = new Set<number>();
+  for (const label of ["Searching", "Reading", "Answering"]) {
+    turn = {
+      ...turn,
+      ...applyAskEvent(
+        turn,
+        { event: "step", data: { label, kind: "retrieval", message_id: "m1" } },
+        seen,
+      ),
+    };
+  }
+  assert.deepEqual(
+    turn.steps.map((step) => step.label),
+    ["Searching", "Reading", "Answering"],
+  );
+});
+
+test("the server's message id is captured once and not overwritten", () => {
+  let turn = turnState();
+  const seen = new Set<number>();
+  turn = {
+    ...turn,
+    ...applyAskEvent(
+      turn,
+      { event: "step", data: { label: "a", kind: "retrieval", message_id: "first" } },
+      seen,
+    ),
+  };
+  turn = {
+    ...turn,
+    ...applyAskEvent(
+      turn,
+      { event: "step", data: { label: "b", kind: "retrieval", message_id: "second" } },
+      seen,
+    ),
+  };
+  // It is what `/ask/{id}/stop` addresses; changing it mid-turn would aim stop
+  // at something else.
+  assert.equal(turn.serverId, "first");
+});
+
+test("a repeated citation is counted once", () => {
+  // Counting it twice renders a claim as doubly supported when one source
+  // backs it — C4 is about what the citation actually shows.
+  let turn = turnState();
+  const seen = new Set<number>();
+  for (const index of [1, 1, 2]) {
+    turn = { ...turn, ...applyAskEvent(turn, {
+        event: "citation",
+        data: {
+          message_id: "m1",
+          index,
+          chunk_id: `c${index}`,
+          document_id: "d1",
+          page_from: 1,
+          page_to: 1,
+        },
+      }, seen) };
+  }
+  assert.equal(turn.citationCount, 2);
 });

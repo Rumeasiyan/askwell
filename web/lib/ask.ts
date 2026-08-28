@@ -191,3 +191,50 @@ export function looksNonEnglish(question: string): boolean {
   const nonLatin = letters.filter((letter) => !/[\p{Script=Latin}]/u.test(letter));
   return nonLatin.length / letters.length > 0.3;
 }
+
+
+/**
+ * One turn, after one streamed event has been applied to it.
+ *
+ * Pure, and separated from the component for the reason the bug that produced
+ * it was possible at all. The first version of this read the turn out of a ref
+ * that an effect refreshed after each render, so two tokens arriving in the
+ * same frame both read the same `answer` and the second overwrote the first —
+ * an answer silently missing words, with nothing on screen or in any log
+ * saying so. React can batch, coalesce and replay updates whenever it likes;
+ * the only durable fix is to derive the next turn from the previous *turn*
+ * rather than from a snapshot taken at some other moment.
+ *
+ * `seen` carries citation indices already counted, because the server may
+ * repeat one and a citation counted twice is a claim that looks doubly
+ * supported (C4).
+ */
+export function applyAskEvent<T extends AskTurnState>(
+  turn: T,
+  event: AskEvent,
+  seen: Set<number>,
+): Partial<AskTurnState> {
+  switch (event.event) {
+    case "step":
+      return {
+        serverId: turn.serverId ?? event.data.message_id,
+        steps: [...turn.steps, { label: event.data.label, kind: event.data.kind }],
+      };
+    case "token":
+      return { answer: turn.answer + event.data.text };
+    case "citation":
+      if (seen.has(event.data.index)) return {};
+      seen.add(event.data.index);
+      return { citationCount: turn.citationCount + 1 };
+    default:
+      return {};
+  }
+}
+
+/** The part of a turn `applyAskEvent` reads and writes. */
+export interface AskTurnState {
+  serverId: string | null;
+  steps: { label: string; kind: string }[];
+  answer: string;
+  citationCount: number;
+}

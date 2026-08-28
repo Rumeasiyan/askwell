@@ -11,7 +11,14 @@ import {
   type ReactNode,
 } from "react";
 
-import { type AskEvent, looksNonEnglish, nextToDispatch, stopAsk, streamAsk } from "@/lib/ask";
+import {
+  applyAskEvent,
+  type AskEvent,
+  looksNonEnglish,
+  nextToDispatch,
+  stopAsk,
+  streamAsk,
+} from "@/lib/ask";
 
 /**
  * The conversation, held once for the whole application. `M1-ASK-FE-039`.
@@ -147,27 +154,20 @@ export function AskProvider({ children }: { children: ReactNode }) {
       let finalReason: string | null = "Askwell could not reach the assistant.";
       try {
         await streamAsk(next.question, { conversationId: null }, (event: AskEvent) => {
-          const found = current.current.find((turn) => turn.id === id);
-          switch (event.event) {
-            case "step":
-              patch(id, {
-                serverId: found?.serverId ?? event.data.message_id,
-                steps: [...(found?.steps ?? []), { label: event.data.label, kind: event.data.kind }],
-              });
-              break;
-            case "token":
-              patch(id, { answer: (found?.answer ?? "") + event.data.text });
-              break;
-            case "citation":
-              if (seenCitations.has(event.data.index)) return;
-              seenCitations.add(event.data.index);
-              patch(id, { citationCount: (found?.citationCount ?? 0) + 1 });
-              break;
-            case "done":
-              finalStatus = event.data.status;
-              finalReason = event.data.reason;
-              break;
+          if (event.event === "done") {
+            finalStatus = event.data.status;
+            finalReason = event.data.reason;
+            return;
           }
+          // Derived from the previous turn inside the updater, never from a ref.
+          // `current` is refreshed by an effect, so it lags a render behind: two
+          // tokens in one frame would both read the same answer and the second
+          // would overwrite the first, losing words the user was watching arrive.
+          setTurns((queue) =>
+            queue.map((turn) =>
+              turn.id !== id ? turn : { ...turn, ...applyAskEvent(turn, event, seenCitations) },
+            ),
+          );
         });
       } catch (error) {
         finalStatus = "failed";
