@@ -698,6 +698,218 @@ def test_an_assistant_that_dies_mid_stream_keeps_what_it_already_said(
     assert rows[0][1] == "failed"
 
 
+# --- turn summaries and source counts, `M1-CONV-BE-177` ----------------------
+
+
+def test_a_grounded_answer_stores_a_summary_and_a_source_count(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    _truncate(database_url)
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "Notice is ninety days.", vector)
+    fake = _FakeInferenceClient(
+        settings, tokens=["The notice period ", "is ninety days [1]."], vector=vector
+    )
+    _patch_client(monkeypatch, fake)
+
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "How long is the notice period?"})
+        message_id = uuid.UUID(
+            next(data for kind, data in _events(response.text) if kind == "done")["message_id"]
+        )
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        summary, source_count = db.execute(
+            "SELECT summary, source_count FROM messages WHERE id = %s", (message_id,)
+        ).fetchone()
+    assert summary == "The notice period is ninety days."
+    assert source_count == 1
+
+
+def test_an_abstained_answer_stores_no_source_count_at_all(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """The ticket's headline distinction: absent, not zero."""
+    _truncate(database_url)
+    fake = _FakeInferenceClient(
+        settings, tokens=["The files did not cover this."], vector=_vector(0.0)
+    )
+    _patch_client(monkeypatch, fake)
+
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "What colour is the office?"})
+        message_id = uuid.UUID(
+            next(data for kind, data in _events(response.text) if kind == "done")["message_id"]
+        )
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        summary, source_count = db.execute(
+            "SELECT summary, source_count FROM messages WHERE id = %s", (message_id,)
+        ).fetchone()
+    assert source_count is None
+    assert "did not cover" in summary.lower()
+
+
+def test_deleting_a_cited_source_does_not_change_a_past_turns_stored_count(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """`docs/ux/conversation.md` §6: never re-run a past turn to produce its
+    summary. Deleting the chunk a turn cited must not touch the row this
+    ticket adds — it is read back exactly as written, no recomputation."""
+    _truncate(database_url)
+    vector = _vector(0.0)
+    _document_id, chunk_id = _seed_chunk(database_url, "Notice is ninety days.", vector)
+    fake = _FakeInferenceClient(settings, tokens=["Notice is ninety days [1]."], vector=vector)
+    _patch_client(monkeypatch, fake)
+
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "How long is the notice period?"})
+        message_id = uuid.UUID(
+            next(data for kind, data in _events(response.text) if kind == "done")["message_id"]
+        )
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        before = db.execute(
+            "SELECT summary, source_count FROM messages WHERE id = %s", (message_id,)
+        ).fetchone()
+        # `citations` deliberately has no cascade to `chunks` (`models.py`'s
+        # own docstring) — a citation must survive its chunk's deletion so
+        # it can still resolve to a tombstone, so the row is cleared first.
+        db.execute("DELETE FROM citations WHERE chunk_id = %s", (chunk_id,))
+        db.execute("DELETE FROM chunks WHERE id = %s", (chunk_id,))
+        after = db.execute(
+            "SELECT summary, source_count FROM messages WHERE id = %s", (message_id,)
+        ).fetchone()
+
+    assert before == after
+
+
+async def test_a_stopped_turn_stores_a_summary_marked_partial(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    database_url: str,
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    _truncate(database_url)
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "Notice is ninety days.", vector)
+    fake = _FakeInferenceClient(
+        settings, tokens=["Notice is ninety days [1]. ", "More detail."], vector=vector, delay=0.2
+    )
+    monkeypatch.setattr(ask_module, "InferenceClient", lambda _settings: fake)
+
+    conversation_id = uuid.uuid4()
+    with psycopg.connect(database_url, autocommit=True) as db:
+        db.execute("INSERT INTO conversations (id) VALUES (%s)", (conversation_id,))
+
+    turn = ask_module._Turn(message_id=uuid.uuid4(), conversation_id=conversation_id)
+    task = asyncio.create_task(
+        ask_module._generate(settings, factory, turn, "How long is the notice period?", None)
+    )
+    for _ in range(100):
+        if turn.text:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        raise AssertionError("no token arrived to stop after")
+    turn.stop_requested = True
+    await task
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        summary, source_count = db.execute(
+            "SELECT summary, source_count FROM messages WHERE id = %s", (turn.message_id,)
+        ).fetchone()
+    assert "stopped before finishing" in summary
+    assert source_count == 1
+
+
+def test_a_failed_turn_stores_a_summary_naming_the_failure_and_no_count(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    _truncate(database_url)
+    fake = _FakeInferenceClient(
+        settings,
+        tokens=[],
+        vector=_vector(0.0),
+        fail=InferenceUnavailable("The assistant is not running."),
+    )
+    _patch_client(monkeypatch, fake)
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "Anything?"})
+        message_id = uuid.UUID(
+            next(data for kind, data in _events(response.text) if kind == "done")["message_id"]
+        )
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        summary, source_count = db.execute(
+            "SELECT summary, source_count FROM messages WHERE id = %s", (message_id,)
+        ).fetchone()
+    assert source_count is None
+    assert "not running" in summary
+
+
+def test_an_audit_write_failure_recomputes_the_summary_to_match_the_failure(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """The answer text the original summary would have described is rolled
+    back along with everything else — the stored summary must not still
+    describe a completed answer that was never persisted."""
+    _truncate(database_url)
+    fake = _FakeInferenceClient(settings, tokens=["Ninety days."], vector=_vector(0.0))
+    _patch_client(monkeypatch, fake)
+
+    async def _broken_record(*_args: object, **_kwargs: object) -> None:
+        raise ask_module.AuditError("the interaction table is not writable")
+
+    monkeypatch.setattr(ask_module, "record", _broken_record)
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "Anything?"})
+        message_id = uuid.UUID(
+            next(data for kind, data in _events(response.text) if kind == "done")["message_id"]
+        )
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        summary, source_count = db.execute(
+            "SELECT summary, source_count FROM messages WHERE id = %s", (message_id,)
+        ).fetchone()
+    assert source_count is None
+    assert "could not save this answer" in summary.lower()
+
+
+async def test_a_restart_interrupted_turn_gets_a_fallback_summary(
+    database_url: str, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    _truncate(database_url)
+    message_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    with psycopg.connect(database_url, autocommit=True) as db:
+        db.execute("INSERT INTO conversations (id) VALUES (%s)", (conversation_id,))
+        db.execute(
+            "INSERT INTO messages (id, conversation_id, role, content, trace) "
+            "VALUES (%s, %s, 'assistant', '', %s)",
+            (message_id, conversation_id, json.dumps({"status": "running", "steps": []})),
+        )
+
+    assert await ask_module.reconcile_interrupted(factory) == 1
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        summary, source_count = db.execute(
+            "SELECT summary, source_count FROM messages WHERE id = %s", (message_id,)
+        ).fetchone()
+    assert source_count is None
+    assert "restarted" in summary.lower()
+
+
 def test_the_local_counters_come_from_the_rows_rather_than_from_memory(
     settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
 ) -> None:

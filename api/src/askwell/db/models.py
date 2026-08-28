@@ -543,6 +543,10 @@ class Message(Base):
     __tablename__ = "messages"
     __table_args__ = (
         _one_of("role", MESSAGE_ROLES, "role"),
+        CheckConstraint(
+            "source_count IS NULL OR source_count >= 0",
+            name="ck_messages_source_count_non_negative",
+        ),
         Index("ix_messages_conversation_id", "conversation_id"),
     )
 
@@ -553,6 +557,13 @@ class Message(Base):
     role: Mapped[str] = mapped_column(String(32), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     trace: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    # `M1-CONV-BE-177`: written once, at composition time, alongside the
+    # answer, and never recomputed — see the migration's own docstring for
+    # why `source_count` being `NULL` (abstained) must never collapse into
+    # `0` (cited, from no documents — not currently reachable, but the
+    # schema should not conflate the two).
+    summary: Mapped[str | None] = mapped_column(Text)
+    source_count: Mapped[int | None] = mapped_column(Integer)
     created_at_: Mapped[datetime] = mapped_column(
         "created_at", DateTime(timezone=True), nullable=False, server_default=func.now()
     )
