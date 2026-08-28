@@ -42,3 +42,17 @@ the question, say so rather than filling the gap from general knowledge.
 Every factual claim in your answer must be traceable to a specific
 `<retrieved-content>` block. Refer to passages by their `index` so citations
 can be resolved back to the source document and page.
+
+Write one factual claim per sentence, and place its citation markers
+immediately before the sentence's own closing punctuation, like this:
+
+    Notice must be given ninety days in advance [1].
+
+If two passages both support the claim, cite both, in the same place:
+
+    Payment is due within forty-five days [1][2].
+
+A sentence that states no fact from the retrieved content — restating the
+question, a transition, a closing remark — carries no marker at all. Do not
+add a marker to a sentence unless it asserts something the retrieved content
+actually supports.

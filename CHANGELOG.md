@@ -4,6 +4,21 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.23 — 2026-08-28
+
+Claim-level citations, as data rather than as prose. `M1-CITE-BE-042`.
+
+### Added
+
+- **`askwell.agent.claims.segment_claims`** — reads the model's own answer text as sentences, each one a claim only if it carries a citation marker `[index]` immediately before its closing punctuation. A sentence with no marker (a restatement of the question, a transition) is not a claim, and is never counted as an uncited one.
+- **`askwell.agent.claims.locate_quoted_span`** — the claim's own words, if they occur verbatim (case-insensitive) in the source chunk; `None`, never a dropped citation, when they do not.
+- **`citations.quoted_span` is written for the first time** — left `null` since `M1-ASK-API-038`. A claim citing two passages now produces two citation rows sharing one `claim_ordinal`, rather than one row per unique index across the whole answer.
+- **The `citation` SSE event carries `claim_ordinal` and `quoted_span`** alongside the chunk it already named, so a card can render per claim as it is emitted rather than only once at the end.
+
+### Changed
+
+- `answer_composition.v1.md`'s Citing section now states the convention `segment_claims` reads back: one factual claim per sentence, markers immediately before the sentence's own closing punctuation, no marker at all on a sentence that asserts nothing from the retrieved content.
+
 ## 0.2.22 — 2026-08-28
 
 Generation continues server-side when the user navigates away, made a fully closed loop. `M1-ASK-BE-040`.

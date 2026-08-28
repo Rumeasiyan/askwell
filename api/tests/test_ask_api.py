@@ -136,6 +136,37 @@ def _seed_chunk(
     return document_id, chunk_id
 
 
+def _seed_chunks(
+    database_url: str, contents: list[str], vector: list[float]
+) -> tuple[uuid.UUID, list[uuid.UUID]]:
+    """Several chunks under one document — the ticket's own "claim supported
+    by more than one candidate" and "several claims in one answer" cases,
+    where several `<retrieved-content index="…">` candidates need to exist."""
+    document_id, source_id = uuid.uuid4(), uuid.uuid4()
+    chunk_ids = [uuid.uuid4() for _ in contents]
+    with psycopg.connect(database_url, autocommit=True) as db:
+        db.execute(
+            "INSERT INTO sources (id, kind, name) VALUES (%s, 'file', 'a source')", (source_id,)
+        )
+        db.execute(
+            "INSERT INTO documents (id, source_id, filename, path, sha256) "
+            "VALUES (%s, %s, 'file.txt', %s, %s)",
+            (
+                document_id,
+                source_id,
+                f"/tmp/{document_id}.txt",
+                uuid.uuid4().hex.ljust(64, "0")[:64],
+            ),
+        )
+        for ordinal, (chunk_id, content) in enumerate(zip(chunk_ids, contents, strict=True)):
+            db.execute(
+                "INSERT INTO chunks (id, document_id, ordinal, content, embedding) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (chunk_id, document_id, ordinal, content, str(vector)),
+            )
+    return document_id, chunk_ids
+
+
 def _app(
     settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
 ) -> TestClient:
@@ -215,11 +246,13 @@ def test_a_question_streams_steps_then_tokens_then_a_citation_then_done(
         message_id = uuid.UUID(citation_events[0]["message_id"])
         assert citation_events == [
             {
+                "claim_ordinal": 1,
                 "index": 1,
                 "chunk_id": str(chunk_id),
                 "document_id": str(document_id),
                 "page_from": None,
                 "page_to": None,
+                "quoted_span": None,
                 "message_id": str(message_id),
             }
         ]
@@ -251,6 +284,138 @@ def test_a_question_streams_steps_then_tokens_then_a_citation_then_done(
         assert len(audit_rows) == 1
         assert audit_rows[0][0] == ask_module.ASK_ASKED
         assert audit_rows[0][1]["status"] == "completed"
+
+
+def test_three_factual_claims_produce_three_citation_rows(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """The ticket's own headline acceptance criterion: an answer with three
+    factual claims produces three citation rows referencing real chunks,
+    each carrying the claim ordinal it belongs to."""
+    _truncate(database_url)
+    vector = _vector(0.0)
+    document_id, chunk_ids = _seed_chunks(
+        database_url,
+        ["Rent is $1000 per month.", "Notice is ninety days.", "Pets are not allowed."],
+        vector,
+    )
+    fake = _FakeInferenceClient(
+        settings,
+        tokens=["Rent is $1000 [1]. Notice is ninety days [2]. Pets are not allowed [3]."],
+        vector=vector,
+    )
+    _patch_client(monkeypatch, fake)
+
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "What are the lease terms?"})
+        assert response.status_code == 200, response.text
+
+        events = _events(response.text)
+        citation_events = [data for kind, data in events if kind == "citation"]
+        assert [event["claim_ordinal"] for event in citation_events] == [1, 2, 3]
+        assert {event["document_id"] for event in citation_events} == {str(document_id)}
+        assert {event["chunk_id"] for event in citation_events} <= {str(c) for c in chunk_ids}
+
+        message_id = uuid.UUID(citation_events[0]["message_id"])
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        citation_rows = db.execute(
+            "SELECT chunk_id, claim_ordinal FROM citations "
+            "WHERE message_id = %s ORDER BY claim_ordinal",
+            (message_id,),
+        ).fetchall()
+        assert [ordinal for _chunk_id, ordinal in citation_rows] == [1, 2, 3]
+        assert {chunk_id for chunk_id, _ordinal in citation_rows} <= set(chunk_ids)
+
+
+def test_a_claim_supported_by_two_passages_gets_two_citations_at_one_ordinal(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """The ticket's own edge case."""
+    _truncate(database_url)
+    vector = _vector(0.0)
+    _document_id, chunk_ids = _seed_chunks(
+        database_url, ["Payment terms, page one.", "Payment terms, page two."], vector
+    )
+    fake = _FakeInferenceClient(
+        settings, tokens=["Payment is due within forty-five days [1][2]."], vector=vector
+    )
+    _patch_client(monkeypatch, fake)
+
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "When is payment due?"})
+        assert response.status_code == 200, response.text
+        events = _events(response.text)
+        citation_events = [data for kind, data in events if kind == "citation"]
+
+    assert len(citation_events) == 2
+    assert {event["claim_ordinal"] for event in citation_events} == {1}
+    assert {event["chunk_id"] for event in citation_events} == {str(c) for c in chunk_ids}
+
+
+def test_a_sentence_with_no_marker_is_not_counted_as_a_citation(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """The ticket's own edge case: a restatement of the question is not a
+    factual claim, so it produces no citation and is never counted as an
+    uncited one."""
+    _truncate(database_url)
+    vector = _vector(0.0)
+    _document_id, (chunk_id,) = _seed_chunks(database_url, ["Notice is ninety days."], vector)
+    fake = _FakeInferenceClient(
+        settings,
+        tokens=["The notice period is ninety days [1]. Let me know if you have other questions."],
+        vector=vector,
+    )
+    _patch_client(monkeypatch, fake)
+
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "How long is the notice period?"})
+        assert response.status_code == 200, response.text
+        events = _events(response.text)
+        citation_events = [data for kind, data in events if kind == "citation"]
+
+    assert len(citation_events) == 1
+    assert citation_events[0]["chunk_id"] == str(chunk_id)
+
+
+def test_citations_survive_the_message_trace_being_lost(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """Citations are their own table, not a field inside the rotating trace
+    (`docs/architecture.md` §7) — proven here by discarding the trace
+    entirely and confirming the citation still resolves to its chunk."""
+    _truncate(database_url)
+    vector = _vector(0.0)
+    _document_id, chunk_id = _seed_chunk(database_url, "Notice is ninety days.", vector)
+    fake = _FakeInferenceClient(settings, tokens=["Notice is ninety days [1]."], vector=vector)
+    _patch_client(monkeypatch, fake)
+
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "How long is the notice period?"})
+        events = _events(response.text)
+        message_id = uuid.UUID(next(data for kind, data in events if kind == "done")["message_id"])
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        # Simulate the trace having rotated out of existence — the assistant
+        # message's own `trace` blob is gone, standing in for the file-backed
+        # ring buffer (`askwell.traces.TraceRing`) that never held citations.
+        db.execute("UPDATE messages SET trace = NULL WHERE id = %s", (message_id,))
+        row = db.execute(
+            "SELECT citations.chunk_id, citations.claim_ordinal FROM citations "
+            "JOIN chunks ON chunks.id = citations.chunk_id "
+            "WHERE citations.message_id = %s",
+            (message_id,),
+        ).fetchone()
+        assert row == (chunk_id, 1)
 
 
 def test_a_missing_conversation_is_a_client_error(
