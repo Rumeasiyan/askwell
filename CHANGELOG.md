@@ -4,6 +4,20 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.3.1 - 2026-08-30
+
+Askwell notices what it does not understand about your material. `M3-RAISE-BE-068`.
+
+### Added
+
+- **Clarification candidates raised from an indexed source** - repeated abbreviations, filenames that look like versions of one document, and page-range references - each carrying what raised it so the question can name the evidence rather than asking in the abstract.
+- `memory.origin` gains `inferred`, for a fact Askwell proposed rather than one the user stated.
+
+### Fixed
+
+- **A filename like `contract (2).docx` normalised to `contract (2)` while every other form normalised to `contract`**, so two copies of one document read as two different documents - the thing the normaliser exists to prevent. The `(2)` alternative sat inside a `\b...\b` group, and a word boundary needs a word character on one side; the character before the bracket is a space, so it could never match.
+- **The migration adding `inferred` dropped a constraint under the wrong name.** `op.drop_constraint("ck_memory_origin", ...)` has Alembic's naming convention applied to it again, so it looked for `ck_memory_ck_memory_origin`, which has never existed. It failed every database test at setup - 276 errors whose cause is one missing `op.f()` in a file none of them mention.
+
 ## 0.3.0 — 2026-08-29
 
 M2 — *it says when it doesn't know* — complete, 15 of 15. `M2-EVAL-DEPLOY-067`.
