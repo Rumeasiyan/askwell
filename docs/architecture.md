@@ -252,8 +252,8 @@ chunks             id, document_id, ordinal, page_from, page_to, heading,
 schema_notes       id, source_id, table_name, column_name, description,
                    origin(user|inferred), confidence, superseded_by, embedding
 
-memory             id, subject, fact, origin(clarification|correction|manual),
-                   confidence, superseded_by, created_at
+memory             id, subject, fact, origin(clarification|correction|manual|inferred),
+                   confidence, superseded_by, created_at              -- inferred origin NEW
 
 clarifications     id, source_id, subject, question, options jsonb, evidence jsonb,
                    rank, answer, status(pending|answered|skipped|dismissed),

@@ -58,7 +58,11 @@ SOURCE_KINDS = ("file", "csv", "dump", "connection")
 SOURCE_STATUSES = ("queued", "indexing", "ready", "attention", "deleted")
 DOCUMENT_STATUSES = ("queued", "indexing", "ready", "attention", "deleted")
 NOTE_ORIGINS = ("user", "inferred")
-MEMORY_ORIGINS = ("clarification", "correction", "manual")
+# `inferred` (`M3-RAISE-BE-068`) is a fact nobody was asked about: one of the
+# three tests for asking failed, so Askwell recorded its best guess instead,
+# at low confidence, the same distinction `schema_notes.origin` already draws
+# between `user` and `inferred`.
+MEMORY_ORIGINS = ("clarification", "correction", "manual", "inferred")
 CLARIFICATION_STATUSES = ("pending", "answered", "skipped", "dismissed")
 # What one document's trip through the ingestion pipeline can be doing.
 # `parked` is the one that needs saying out loud: the job ran, it reached a

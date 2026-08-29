@@ -67,7 +67,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from askwell import chunk, embed, extract, roots
+from askwell import chunk, clarify, embed, extract, roots
 from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
@@ -809,6 +809,15 @@ async def refresh_source(
         total=counts.total,
         flagged=counts.flagged,
     )
+
+    # `M3-RAISE-BE-068`: once a source has nothing left outstanding, whatever
+    # it is going to become askable from is already indexed, so this is the
+    # one moment to look for ambiguity across the whole thing rather than one
+    # document at a time. `raise_candidates` is itself idempotent per source,
+    # so a later, unrelated status change here never re-scans it.
+    if wanted in ("ready", "attention") and counts.outstanding == 0 and counts.running == 0:
+        await clarify.raise_candidates(session, source_id, ocr_confidence_threshold)
+
     return wanted
 
 
