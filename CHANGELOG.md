@@ -4,6 +4,16 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.3.2 - 2026-08-30
+
+Writing and superseding for both memory stores, with the precedence rule that makes a correction stick. `M3-STORE-BE-076`.
+
+### Added
+
+- `askwell.memory` - `write_memory_fact`/`write_schema_note` and `correct_memory_fact`/`correct_schema_note` for the two stores. A correction supersedes an active, user-origin row; it never updates one in place, and the superseded row stays readable. An inference is discarded outright, never stored as a competing low-confidence entry, when an active user-supplied fact or note already covers the same subject or table/column position; conversely a user-origin write retires any active inference for that same subject or position, so at most one belief is ever active per subject. `get_active_memory_facts`/`get_active_schema_notes` retrieve with the precedence rule this ticket names: user-origin before inferred, later before earlier.
+- `memory.source_id`, nullable, pointing at the source a fact was learned from. Since a source is soft-deleted rather than row-deleted, the row survives and `get_active_memory_facts` can still say a fact came from a source that is now `deleted_at`-marked, distinct from a fact with no source at all.
+- `askwell.clarify.raise_candidates` now writes its inferred facts through `write_memory_fact`, so an abbreviation or scan inference discovered after the user already answered the same subject is discarded rather than stored as a second, contradicting entry.
+
 ## 0.3.1 - 2026-08-30
 
 Askwell notices what it does not understand about your material. `M3-RAISE-BE-068`.

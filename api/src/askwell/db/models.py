@@ -461,7 +461,10 @@ class MemoryFact(Base):
     """
 
     __tablename__ = "memory"
-    __table_args__ = (_one_of("origin", MEMORY_ORIGINS, "origin"),)
+    __table_args__ = (
+        _one_of("origin", MEMORY_ORIGINS, "origin"),
+        Index("ix_memory_source_id", "source_id", postgresql_where=text("source_id IS NOT NULL")),
+    )
 
     id: Mapped[uuid.UUID] = uuid_pk()
     subject: Mapped[str] = mapped_column(Text, nullable=False)
@@ -470,6 +473,14 @@ class MemoryFact(Base):
     confidence: Mapped[float | None] = mapped_column(Numeric(4, 3))
     superseded_by: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("memory.id", ondelete="SET NULL")
+    )
+    # `sources` are soft-deleted, never row-deleted (`askwell.sources.
+    # delete_source`), so this stays resolvable to a name and a `deleted_at`
+    # for as long as the fact exists — "learned from a deleted source" is a
+    # join, not a snapshot. `ON DELETE SET NULL` guards the path that is not
+    # exercised today rather than one that runs in practice.
+    source_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("sources.id", ondelete="SET NULL")
     )
     created_at_: Mapped[datetime] = mapped_column(
         "created_at", DateTime(timezone=True), nullable=False, server_default=func.now()
