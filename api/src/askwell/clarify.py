@@ -23,6 +23,16 @@ outstanding) rather than per document, so a large import is scanned once
 rather than once per file landing. It will both miss real ambiguity and
 raise on things that turn out to be fine — the cap and the dismissal signal
 (`M3-RAISE-BE-069`) are the designed safeguard, not this module.
+
+`M3-RAISE-BE-071`: every raised candidate's `evidence` is real data pulled
+from the source at raise time, never a paraphrase — a passage with its
+document and page, a contradiction's two passages with their dates, or a
+poor scan's extracted text. `raise_candidates` merges `candidate.inferred_fact`
+into that dict as `current_inference` for every kind, so a raised question
+also carries what Askwell would have guessed had it not been material enough
+to ask. `column_distribution_evidence` is the one exception: no trigger in
+this module raises a column question yet (that is M4's own data source), so
+it exists only as the shared shape M4 needs to fill in with a query.
 """
 
 import json
@@ -92,6 +102,55 @@ _VERSION_TOKEN = re.compile(
 # does not need asking about, and it is exactly what happens anyway.
 _MIN_SCAN_MATERIALITY_FRACTION = 0.05
 
+# --- evidence: real data, bounded, so a clarification record stays small ----
+
+EVIDENCE_KIND_PASSAGE = "passage"
+EVIDENCE_KIND_CONTRADICTION = "contradiction"
+EVIDENCE_KIND_POOR_SCAN = "poor_scan"
+EVIDENCE_KIND_COLUMN_DISTRIBUTION = "column_distribution"
+EVIDENCE_KIND_UNAVAILABLE = "unavailable"
+
+# A passage this long already makes the point; the rest is what "open the
+# source" (`docs/ux/clarifications.md` §3) is for, not more inline text.
+EVIDENCE_PASSAGE_MAX_CHARS = 500
+# How many sample locations one abbreviation or poor-scan question carries —
+# enough to be convincing, not the whole document.
+EVIDENCE_MAX_SAMPLES = 2
+# `docs/backlog/M3-it-learns-my-material.md`'s own edge case: a column with
+# thousands of distinct values shows the top ones plus a remainder count,
+# never everything.
+EVIDENCE_MAX_COLUMN_VALUES = 10
+
+
+def _bound_text(value: str, max_chars: int = EVIDENCE_PASSAGE_MAX_CHARS) -> str:
+    value = " ".join(value.split())
+    if len(value) <= max_chars:
+        return value
+    return value[: max_chars - 1].rstrip() + "…"
+
+
+def _unavailable_evidence(reason: str) -> dict[str, Any]:
+    """The edge case named by the ticket: evidence that cannot be captured
+    still raises the question, with this in place of a paraphrase."""
+    return {"kind": EVIDENCE_KIND_UNAVAILABLE, "reason": reason}
+
+
+def column_distribution_evidence(values: list[tuple[str, int]], row_count: int) -> dict[str, Any]:
+    """The shape a `M4` column-ambiguity trigger will produce — no trigger in
+    this module calls it yet, since no data source exposes a column here
+    before `M4`. `values` is `(value, count)` for a column's distinct values;
+    only the top `EVIDENCE_MAX_COLUMN_VALUES` are kept, with the rest folded
+    into `remainder_count` rather than stored in full.
+    """
+    top = sorted(values, key=lambda item: item[1], reverse=True)[:EVIDENCE_MAX_COLUMN_VALUES]
+    remainder = row_count - sum(count for _value, count in top)
+    return {
+        "kind": EVIDENCE_KIND_COLUMN_DISTRIBUTION,
+        "row_count": row_count,
+        "values": [{"value": value, "count": count} for value, count in top],
+        "remainder_count": max(remainder, 0),
+    }
+
 
 @dataclass(frozen=True, slots=True)
 class Candidate:
@@ -140,16 +199,23 @@ def _normalize_filename(filename: str) -> str:
 async def _detect_abbreviations(session: AsyncSession, source_id: uuid.UUID) -> list[Candidate]:
     rows = await session.execute(
         text(
-            "SELECT c.content FROM chunks c JOIN documents d ON d.id = c.document_id "
+            "SELECT c.content, d.filename, c.page_from FROM chunks c "
+            "JOIN documents d ON d.id = c.document_id "
             "WHERE d.source_id = :source_id AND d.deleted_at IS NULL "
             "AND d.superseded_by IS NULL AND d.status = 'ready'"
         ),
         {"source_id": source_id},
     )
     counts: Counter[str] = Counter()
-    for (content,) in rows:
-        if content:
-            counts.update(_ABBREVIATION.findall(content))
+    samples: dict[str, list[tuple[str, int | None, str]]] = defaultdict(list)
+    for content, filename, page_from in rows:
+        if not content:
+            continue
+        found = _ABBREVIATION.findall(content)
+        counts.update(found)
+        for abbreviation in dict.fromkeys(found):
+            if len(samples[abbreviation]) < EVIDENCE_MAX_SAMPLES:
+                samples[abbreviation].append((filename, page_from, content))
     if not counts:
         return []
 
@@ -168,6 +234,19 @@ async def _detect_abbreviations(session: AsyncSession, source_id: uuid.UUID) -> 
             continue
         material = occurrences >= _MIN_ABBREVIATION_OCCURRENCES
         reason = _evaluate(cannot_determine=True, material=material, user_knows=True)
+        found_samples = samples.get(abbreviation, [])
+        evidence: dict[str, Any] = (
+            {
+                "kind": EVIDENCE_KIND_PASSAGE,
+                "occurrences": occurrences,
+                "samples": [
+                    {"document": filename, "page": page_from, "text": _bound_text(content)}
+                    for filename, page_from, content in found_samples
+                ],
+            }
+            if found_samples
+            else _unavailable_evidence(f"no locatable passage for '{abbreviation}'")
+        )
         candidates.append(
             Candidate(
                 trigger="abbreviation",
@@ -175,7 +254,7 @@ async def _detect_abbreviations(session: AsyncSession, source_id: uuid.UUID) -> 
                 question=f"'{abbreviation}' appears throughout. What does it mean?",
                 passes=reason is None,
                 reason=reason or "all three tests held",
-                evidence={"occurrences": occurrences},
+                evidence=evidence,
                 # There is no safe guess at what an unexplained abbreviation
                 # means — a wrong one is worse than no note at all, since a
                 # memory fact is fed straight into future prompts.
@@ -190,7 +269,7 @@ async def _detect_unreadable_scans(
 ) -> list[Candidate]:
     rows = await session.execute(
         text(
-            "SELECT d.filename, "
+            "SELECT d.id, d.filename, "
             "count(*) FILTER (WHERE dp.ocr_confidence < :threshold) AS low_count, "
             "count(*) AS total_count, "
             "array_agg(dp.page_number ORDER BY dp.page_number) "
@@ -207,15 +286,47 @@ async def _detect_unreadable_scans(
         ),
         {"source_id": source_id, "threshold": ocr_confidence_threshold},
     )
+    scanned_documents = rows.all()
 
     candidates = []
-    for filename, low_count, total_count, low_pages in rows:
+    for document_id, filename, low_count, total_count, low_pages in scanned_documents:
         low_pages = sorted(low_pages or [])
         fraction = (low_count / total_count) if total_count else 0.0
         material = fraction >= _MIN_SCAN_MATERIALITY_FRACTION
         reason = _evaluate(cannot_determine=True, material=material, user_knows=True)
         lo, hi = low_pages[0], low_pages[-1]
         pages_label = f"Page {lo}" if lo == hi else f"Pages {lo}-{hi}"
+
+        extracted_rows = await session.execute(
+            text(
+                "SELECT page_number, text FROM document_pages "
+                "WHERE document_id = :document_id AND page_number = ANY(:pages) "
+                "ORDER BY page_number LIMIT :limit"
+            ),
+            {"document_id": document_id, "pages": low_pages, "limit": EVIDENCE_MAX_SAMPLES},
+        )
+        extracted = [
+            {"page": page_number, "text": _bound_text(page_text)}
+            for page_number, page_text in extracted_rows
+            if page_text and page_text.strip()
+        ]
+        # `docs/architecture.md` names no page-image capture anywhere in the
+        # pipeline yet — stated rather than silently omitted, per the
+        # ticket's own edge case for evidence that cannot be captured.
+        evidence: dict[str, Any] = (
+            {
+                "kind": EVIDENCE_KIND_POOR_SCAN,
+                "pages": low_pages,
+                "total_pages": total_count,
+                "extracted_text": extracted,
+                "page_images": "not available",
+            }
+            if extracted
+            else _unavailable_evidence(
+                f"no text extracted from {pages_label.lower()} of '{filename}'"
+            )
+        )
+
         candidates.append(
             Candidate(
                 trigger="unreadable_scan",
@@ -227,7 +338,7 @@ async def _detect_unreadable_scans(
                 passes=reason is None,
                 reason=reason or "all three tests held",
                 options=["Re-scan", "Index as-is"],
-                evidence={"low_confidence_pages": low_pages, "total_pages": total_count},
+                evidence=evidence,
                 inferred_fact=(
                     f"{filename}: indexed as-is. {low_count} of {total_count} page(s) "
                     "scanned poorly, below the materiality threshold to ask about."
@@ -237,18 +348,36 @@ async def _detect_unreadable_scans(
     return candidates
 
 
+async def _document_first_passage(
+    session: AsyncSession, document_id: uuid.UUID
+) -> tuple[int, str] | None:
+    row = (
+        await session.execute(
+            text(
+                "SELECT page_number, text FROM document_pages "
+                "WHERE document_id = :document_id AND text IS NOT NULL "
+                "ORDER BY page_number LIMIT 1"
+            ),
+            {"document_id": document_id},
+        )
+    ).first()
+    if row is None or not row[1] or not row[1].strip():
+        return None
+    return row[0], row[1]
+
+
 async def _detect_document_identity(session: AsyncSession, source_id: uuid.UUID) -> list[Candidate]:
     rows = await session.execute(
         text(
-            "SELECT filename, added_at FROM documents "
+            "SELECT id, filename, added_at FROM documents "
             "WHERE source_id = :source_id AND deleted_at IS NULL "
             "AND superseded_by IS NULL AND status = 'ready'"
         ),
         {"source_id": source_id},
     )
-    clusters: dict[str, list[tuple[str, Any]]] = defaultdict(list)
-    for filename, added_at in rows:
-        clusters[_normalize_filename(filename)].append((filename, added_at))
+    clusters: dict[str, list[tuple[uuid.UUID, str, Any]]] = defaultdict(list)
+    for document_id, filename, added_at in rows:
+        clusters[_normalize_filename(filename)].append((document_id, filename, added_at))
 
     candidates = []
     for stem, members in clusters.items():
@@ -256,9 +385,22 @@ async def _detect_document_identity(session: AsyncSession, source_id: uuid.UUID)
             # One file per normalised stem is not ambiguous — nothing to
             # infer either, since there was never a question here.
             continue
-        members = sorted(members, key=lambda member: member[1])
-        newest = members[-1][0]
-        names = ", ".join(f"*{filename}*" for filename, _ in members)
+        members = sorted(members, key=lambda member: member[2])
+        newest_id, newest, _added_at = members[-1]
+        names = ", ".join(f"*{filename}*" for _id, filename, _added_at in members)
+
+        passage = await _document_first_passage(session, newest_id)
+        evidence: dict[str, Any] = (
+            {
+                "kind": EVIDENCE_KIND_PASSAGE,
+                "samples": [
+                    {"document": newest, "page": passage[0], "text": _bound_text(passage[1])}
+                ],
+            }
+            if passage is not None
+            else _unavailable_evidence(f"no extracted text available for '{newest}'")
+        )
+
         candidates.append(
             Candidate(
                 trigger="document_identity",
@@ -269,8 +411,8 @@ async def _detect_document_identity(session: AsyncSession, source_id: uuid.UUID)
                 ),
                 passes=True,
                 reason="all three tests held",
-                options=[filename for filename, _ in members],
-                evidence={"filenames": [filename for filename, _ in members]},
+                options=[filename for _id, filename, _added_at in members],
+                evidence=evidence,
             )
         )
     return candidates
@@ -279,7 +421,7 @@ async def _detect_document_identity(session: AsyncSession, source_id: uuid.UUID)
 async def _detect_contradictions(session: AsyncSession, source_id: uuid.UUID) -> list[Candidate]:
     rows = await session.execute(
         text(
-            "SELECT d.filename, dp.text FROM document_pages dp "
+            "SELECT d.filename, d.added_at, dp.page_number, dp.text FROM document_pages dp "
             "JOIN documents d ON d.id = dp.document_id "
             "WHERE d.source_id = :source_id AND d.deleted_at IS NULL "
             # A superseded version is excluded here, not filtered afterwards
@@ -290,11 +432,24 @@ async def _detect_contradictions(session: AsyncSession, source_id: uuid.UUID) ->
         ),
         {"source_id": source_id},
     )
-    facts: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
-    for filename, page_text in rows:
-        for subject_raw, number, unit in _FACT_PATTERN.findall(page_text):
+    # Keyed by subject, then by (filename, number, unit) — the first match
+    # for a given document/value pair carries its own page, date and a
+    # bounded passage around the match, which is the real evidence a
+    # contradiction question needs (`M3-RAISE-BE-071`).
+    facts: dict[str, dict[tuple[str, str, str], dict[str, Any]]] = defaultdict(dict)
+    for filename, added_at, page_number, page_text in rows:
+        for match in _FACT_PATTERN.finditer(page_text):
+            subject_raw, number, unit = match.group(1), match.group(2), match.group(3)
             subject = " ".join(subject_raw.lower().split())
-            facts[subject].add((filename, number.strip(), unit.strip()))
+            key = (filename, number.strip(), unit.strip())
+            if key in facts[subject]:
+                continue
+            window = page_text[max(0, match.start() - 100) : match.end() + 100]
+            facts[subject][key] = {
+                "page": page_number,
+                "date": added_at.date().isoformat() if added_at else None,
+                "text": _bound_text(window),
+            }
 
     candidates = []
     for subject, occurrences in sorted(facts.items()):
@@ -319,10 +474,15 @@ async def _detect_contradictions(session: AsyncSession, source_id: uuid.UUID) ->
                 reason=reason or "all three tests held",
                 options=sorted(by_document),
                 evidence={
-                    "values": [
-                        {"document": filename, "value": number, "unit": unit}
+                    "kind": EVIDENCE_KIND_CONTRADICTION,
+                    "passages": [
+                        {
+                            "document": filename,
+                            "value": f"{number} {unit}".rstrip(),
+                            **occurrences[(filename, number, unit)],
+                        }
                         for filename, number, unit in sorted(occurrences)
-                    ]
+                    ],
                 },
                 # A real, unresolved contradiction is never silently resolved
                 # to one side (`docs/memory-and-clarification.md` §8, ranking
@@ -366,6 +526,12 @@ async def raise_candidates(
     raised = inferred = dropped = 0
     for candidate in candidates:
         if candidate.passes:
+            # `current_inference` rides alongside the kind-specific evidence
+            # so the answer field can prefill with what Askwell would have
+            # guessed had this not been material enough to ask
+            # (`docs/ux/clarifications.md` §3) — `None` where there is
+            # nothing safe to guess.
+            evidence = {**candidate.evidence, "current_inference": candidate.inferred_fact}
             await session.execute(
                 text(
                     "INSERT INTO clarifications "
@@ -379,7 +545,7 @@ async def raise_candidates(
                     "subject": candidate.subject,
                     "question": candidate.question,
                     "options": json.dumps(candidate.options) if candidate.options else None,
-                    "evidence": json.dumps(candidate.evidence),
+                    "evidence": json.dumps(evidence),
                 },
             )
             await record(

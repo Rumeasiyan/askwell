@@ -15,10 +15,13 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from askwell.clarify import (
+    EVIDENCE_MAX_COLUMN_VALUES,
     Candidate,
     RaiseResult,
+    _bound_text,
     _evaluate,
     _normalize_filename,
+    column_distribution_evidence,
     raise_candidates,
 )
 
@@ -216,6 +219,25 @@ async def test_a_common_abbreviation_is_never_asked_about(session: AsyncSession)
     assert result == RaiseResult(raised=0, inferred=0, dropped=0)
 
 
+@pytest.mark.asyncio
+async def test_an_abbreviation_carries_real_passages_as_evidence(session: AsyncSession) -> None:
+    source_id = await _source(session)
+    document_id = await _document(session, source_id, "tender.pdf")
+    await _chunk(session, document_id, "The RFQ closes Friday.")
+    await _chunk(session, document_id, "Submit the RFQ to procurement.")
+
+    await raise_candidates(session, source_id, _THRESHOLD)
+
+    evidence = (await session.execute(text("SELECT evidence FROM clarifications"))).scalar_one()
+    assert evidence["kind"] == "passage"
+    assert evidence["occurrences"] == 2
+    assert evidence["samples"]
+    assert "RFQ" in evidence["samples"][0]["text"]
+    assert evidence["samples"][0]["document"] == "tender.pdf"
+    # Nothing safe to guess at what an abbreviation means, so no prefill.
+    assert evidence["current_inference"] is None
+
+
 # --- unreadable scans ---------------------------------------------------------
 
 
@@ -268,6 +290,45 @@ async def test_a_document_with_a_good_scan_raises_nothing(session: AsyncSession)
     assert result == RaiseResult(raised=0, inferred=0, dropped=0)
 
 
+@pytest.mark.asyncio
+async def test_a_poor_scan_carries_extracted_text_and_says_images_are_unavailable(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session)
+    document_id = await _document(session, source_id, "contract-final.pdf", ocr_confidence=0.4)
+    await _page(session, document_id, 1, "clean text", ocr_confidence=0.95)
+    await _page(session, document_id, 2, "gar bled words", ocr_confidence=0.10)
+    await _page(session, document_id, 3, "more gar bled", ocr_confidence=0.10)
+
+    await raise_candidates(session, source_id, _THRESHOLD)
+
+    evidence = (await session.execute(text("SELECT evidence FROM clarifications"))).scalar_one()
+    assert evidence["kind"] == "poor_scan"
+    assert evidence["pages"] == [2, 3]
+    assert evidence["page_images"] == "not available"
+    assert {page["page"] for page in evidence["extracted_text"]} == {2, 3}
+    assert "gar bled" in evidence["extracted_text"][0]["text"]
+    # A guess exists here — "index as-is" — so the answer field can prefill.
+    assert "contract-final.pdf" in evidence["current_inference"]
+
+
+@pytest.mark.asyncio
+async def test_a_poor_scan_with_no_extracted_text_states_evidence_is_unavailable(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session)
+    document_id = await _document(session, source_id, "blank.pdf", ocr_confidence=0.4)
+    await _page(session, document_id, 1, "clean text", ocr_confidence=0.95)
+    await _page(session, document_id, 2, " ", ocr_confidence=0.10)
+    await _page(session, document_id, 3, " ", ocr_confidence=0.10)
+
+    await raise_candidates(session, source_id, _THRESHOLD)
+
+    evidence = (await session.execute(text("SELECT evidence FROM clarifications"))).scalar_one()
+    assert evidence["kind"] == "unavailable"
+    assert "blank.pdf" in evidence["reason"]
+
+
 # --- ambiguous document identity ----------------------------------------------
 
 
@@ -311,6 +372,45 @@ async def test_a_resolved_version_chain_is_not_re_asked(session: AsyncSession) -
     assert result == RaiseResult(raised=0, inferred=0, dropped=0)
 
 
+@pytest.mark.asyncio
+async def test_document_identity_carries_a_passage_from_the_newest_file(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session)
+    now = datetime.now(UTC)
+    await _document(session, source_id, "contract-v1.pdf", added_at=now - timedelta(days=2))
+    newest = await _document(session, source_id, "contract-v2-FINAL.pdf", added_at=now)
+    await _page(session, newest, 1, "This agreement supersedes all prior versions.")
+
+    await raise_candidates(session, source_id, _THRESHOLD)
+
+    evidence = (await session.execute(text("SELECT evidence FROM clarifications"))).scalar_one()
+    assert evidence["kind"] == "passage"
+    assert evidence["samples"] == [
+        {
+            "document": "contract-v2-FINAL.pdf",
+            "page": 1,
+            "text": "This agreement supersedes all prior versions.",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_document_identity_with_no_extracted_text_states_evidence_is_unavailable(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session)
+    now = datetime.now(UTC)
+    await _document(session, source_id, "contract-v1.pdf", added_at=now - timedelta(days=2))
+    await _document(session, source_id, "contract-v2-FINAL.pdf", added_at=now)
+
+    await raise_candidates(session, source_id, _THRESHOLD)
+
+    evidence = (await session.execute(text("SELECT evidence FROM clarifications"))).scalar_one()
+    assert evidence["kind"] == "unavailable"
+    assert "contract-v2-FINAL.pdf" in evidence["reason"]
+
+
 # --- contradictions between sources -------------------------------------------
 
 
@@ -343,6 +443,33 @@ async def test_a_contradiction_against_a_superseded_version_is_not_a_contradicti
     result = await raise_candidates(session, source_id, _THRESHOLD)
 
     assert result == RaiseResult(raised=0, inferred=0, dropped=0)
+
+
+@pytest.mark.asyncio
+async def test_a_contradiction_carries_both_passages_with_their_dates(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session)
+    handbook_date = datetime(2024, 1, 15, tzinfo=UTC)
+    policy_date = datetime(2025, 3, 1, tzinfo=UTC)
+    handbook = await _document(session, source_id, "handbook-2024.pdf", added_at=handbook_date)
+    policy = await _document(session, source_id, "policy-2025.pdf", added_at=policy_date)
+    await _page(session, handbook, 1, "The notice period is 30 days for all staff.")
+    await _page(session, policy, 4, "The notice period is 45 days for all staff.")
+
+    await raise_candidates(session, source_id, _THRESHOLD)
+
+    evidence = (await session.execute(text("SELECT evidence FROM clarifications"))).scalar_one()
+    assert evidence["kind"] == "contradiction"
+    assert len(evidence["passages"]) == 2
+    by_document = {p["document"]: p for p in evidence["passages"]}
+    assert by_document["handbook-2024.pdf"]["date"] == "2024-01-15"
+    assert by_document["handbook-2024.pdf"]["value"] == "30 days"
+    assert by_document["policy-2025.pdf"]["date"] == "2025-03-01"
+    assert by_document["policy-2025.pdf"]["page"] == 4
+    assert "notice period" in by_document["policy-2025.pdf"]["text"]
+    # No safe guess at which side of an unresolved contradiction is right.
+    assert evidence["current_inference"] is None
 
 
 @pytest.mark.asyncio
@@ -419,6 +546,33 @@ async def test_raising_and_dropping_are_both_logged_to_the_decisions_store(
     )
     assert "clarification_raised" in kinds
     assert "clarification_dropped" in kinds
+
+
+# --- evidence helpers ---------------------------------------------------------
+
+
+def test_bound_text_leaves_a_short_passage_untouched() -> None:
+    assert _bound_text("The notice period is 30 days.") == "The notice period is 30 days."
+
+
+def test_bound_text_truncates_a_long_passage_with_an_ellipsis() -> None:
+    bounded = _bound_text("word " * 200)
+    assert len(bounded) <= 500
+    assert bounded.endswith("…")
+
+
+def test_column_distribution_evidence_keeps_only_the_top_values() -> None:
+    values = [(f"value-{i}", i) for i in range(EVIDENCE_MAX_COLUMN_VALUES + 5)]
+    row_count = sum(count for _value, count in values)
+
+    evidence = column_distribution_evidence(values, row_count)
+
+    assert evidence["kind"] == "column_distribution"
+    assert evidence["row_count"] == row_count
+    assert len(evidence["values"]) == EVIDENCE_MAX_COLUMN_VALUES
+    kept = sum(item["count"] for item in evidence["values"])
+    assert evidence["remainder_count"] == row_count - kept
+    assert evidence["remainder_count"] > 0
 
 
 def test_candidate_is_a_frozen_dataclass() -> None:
