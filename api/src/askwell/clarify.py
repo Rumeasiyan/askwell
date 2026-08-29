@@ -75,8 +75,14 @@ _STOPWORDS = frozenset({"the", "a", "an", "of", "in", "on", "for", "to", "and", 
 
 # Strips version-ish tokens from a filename stem so `contract-v1`,
 # `contract-v2-FINAL` and `contract (copy)` all normalise to `contract`.
+# `(2)` sits outside the `\b...\b` group deliberately. A word boundary needs a
+# word character on one side, and in `contract (2)` the character before the
+# bracket is a space — so inside the group that alternative could never match,
+# and `contract (2).docx` normalised to `contract (2)` while every other form
+# normalised to `contract`. Two copies of one document then read as two
+# different documents, which is the thing this function exists to prevent.
 _VERSION_TOKEN = re.compile(
-    r"[\s_.\-]*\b(v\d+|version ?\d*|final|draft|copy|rev ?\d*|\(\d+\))\b[\s_.\-]*",
+    r"[\s_.\-]*(?:\b(?:v\d+|version ?\d*|final|draft|copy|rev ?\d*)\b|\(\d+\))[\s_.\-]*",
     re.IGNORECASE,
 )
 
@@ -209,7 +215,7 @@ async def _detect_unreadable_scans(
         material = fraction >= _MIN_SCAN_MATERIALITY_FRACTION
         reason = _evaluate(cannot_determine=True, material=material, user_knows=True)
         lo, hi = low_pages[0], low_pages[-1]
-        pages_label = f"Page {lo}" if lo == hi else f"Pages {lo}–{hi}"
+        pages_label = f"Page {lo}" if lo == hi else f"Pages {lo}-{hi}"
         candidates.append(
             Candidate(
                 trigger="unreadable_scan",
@@ -231,9 +237,7 @@ async def _detect_unreadable_scans(
     return candidates
 
 
-async def _detect_document_identity(
-    session: AsyncSession, source_id: uuid.UUID
-) -> list[Candidate]:
+async def _detect_document_identity(session: AsyncSession, source_id: uuid.UUID) -> list[Candidate]:
     rows = await session.execute(
         text(
             "SELECT filename, added_at FROM documents "

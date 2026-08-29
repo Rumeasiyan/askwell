@@ -160,9 +160,7 @@ async def test_a_repeated_abbreviation_raises_a_candidate(session: AsyncSession)
     result = await raise_candidates(session, source_id, _THRESHOLD)
 
     assert result == RaiseResult(raised=1, inferred=0, dropped=0)
-    rows = (
-        await session.execute(text("SELECT question, status FROM clarifications"))
-    ).all()
+    rows = (await session.execute(text("SELECT question, status FROM clarifications"))).all()
     assert len(rows) == 1
     assert "RFQ" in rows[0][0]
     assert rows[0][1] == "pending"
@@ -234,10 +232,8 @@ async def test_a_materially_poor_scan_raises_a_candidate_naming_its_pages(
     result = await raise_candidates(session, source_id, _THRESHOLD)
 
     assert result == RaiseResult(raised=1, inferred=0, dropped=0)
-    question = (
-        await session.execute(text("SELECT question FROM clarifications"))
-    ).scalar_one()
-    assert "Pages 2–3" in question
+    question = (await session.execute(text("SELECT question FROM clarifications"))).scalar_one()
+    assert "Pages 2-3" in question
     assert "contract-final.pdf" in question
 
 
@@ -254,9 +250,7 @@ async def test_one_poor_page_in_a_large_document_is_inferred_not_asked(
     result = await raise_candidates(session, source_id, _THRESHOLD)
 
     assert result == RaiseResult(raised=0, inferred=1, dropped=0)
-    fact = await session.execute(
-        text("SELECT fact, origin, confidence FROM memory")
-    )
+    fact = await session.execute(text("SELECT fact, origin, confidence FROM memory"))
     row = fact.one()
     assert "report.pdf" in row[0]
     assert row[1] == "inferred"
@@ -289,9 +283,7 @@ async def test_version_like_filenames_raise_a_candidate_naming_the_newest(
     result = await raise_candidates(session, source_id, _THRESHOLD)
 
     assert result == RaiseResult(raised=1, inferred=0, dropped=0)
-    question = (
-        await session.execute(text("SELECT question FROM clarifications"))
-    ).scalar_one()
+    question = (await session.execute(text("SELECT question FROM clarifications"))).scalar_one()
     assert "contract-v2-FINAL.pdf" in question
     assert "contract-v1.pdf" in question
 
@@ -333,9 +325,7 @@ async def test_disagreeing_sources_raise_a_candidate(session: AsyncSession) -> N
     result = await raise_candidates(session, source_id, _THRESHOLD)
 
     assert result == RaiseResult(raised=1, inferred=0, dropped=0)
-    question = (
-        await session.execute(text("SELECT question FROM clarifications"))
-    ).scalar_one()
+    question = (await session.execute(text("SELECT question FROM clarifications"))).scalar_one()
     assert "notice period" in question
     assert "30" in question and "45" in question
 
@@ -423,8 +413,10 @@ async def test_raising_and_dropping_are_both_logged_to_the_decisions_store(
     await raise_candidates(session, source_id, _THRESHOLD)
 
     kinds = (
-        await session.execute(text("SELECT kind FROM audit_decisions ORDER BY occurred_at"))
-    ).scalars().all()
+        (await session.execute(text("SELECT kind FROM audit_decisions ORDER BY occurred_at")))
+        .scalars()
+        .all()
+    )
     assert "clarification_raised" in kinds
     assert "clarification_dropped" in kinds
 
