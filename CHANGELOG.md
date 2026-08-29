@@ -4,6 +4,21 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.2.51 — 2026-08-29
+
+Partial and conflicting-sources rendering on Ask. `M2-PARTIAL-FE-058`.
+
+### Added
+
+- The Ask screen now renders `askwell.agent.partial`/`conflict`'s composed answers as their own states rather than plain prose: an uncovered part is set off behind a `--rule-strong` left edge under its own "Not covered by your files" label, and a conflict gets a "Conflicting sources on `<fact>`" banner plus a resolve offer over the two cited positions — stated as not yet saved, since memory ships in M3.
+- A conflicting answer's source cards (margin and inline) show their document's date and, when superseded since the answer streamed, that fact too. `GET /documents/{id}` gained `added_at`.
+- Conflicting-sources cards are ordered by date (newest first) with a superseded source demoted to the end, never by the order the model happened to cite them in — `web/lib/document-dates.ts`'s `sortByDateAndSupersession`, fixing issue #226, which had blocked this ticket's first attempt.
+- A local, untransmitted counter of conflicts presented (`recordConflictPresented`).
+
+### Fixed
+
+- Issue #226: conflicting-sources cards previously rendered in citation-stream order, which is model-preference order — the exact ordering `docs/ux/ask.md` §5's own Validation Rule forbids.
+
 ## 0.2.50 — 2026-08-28
 
 The eval harness, offline. `M2-EVAL-TEST-063`.

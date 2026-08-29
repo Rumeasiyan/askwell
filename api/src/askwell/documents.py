@@ -73,7 +73,7 @@ async def _find(
         text(
             "SELECT d.id, d.filename, d.path, d.mime, d.page_count, d.anchor_kind, "
             "d.status, d.superseded_by, d.source_id, d.sha256, d.missing_since, "
-            "d.deleted_at, d.deleted_reason, s.root_path "
+            "d.added_at, d.deleted_at, d.deleted_reason, s.root_path "
             f"FROM documents d JOIN sources s ON s.id = d.source_id WHERE {clause}"
         ),
         {"id": document_id},
@@ -239,6 +239,7 @@ def register_documents(
                     "deleted": True,
                     "deleted_at": _isoformat(found["deleted_at"]),
                     "deleted_reason": found["deleted_reason"],
+                    "added_at": _isoformat(found["added_at"]),
                     "source_id": str(found["source_id"]),
                 }
             )
@@ -275,6 +276,15 @@ def register_documents(
                 "superseded_by": str(superseded_by) if superseded_by is not None else None,
                 "superseded_at": superseded_at,
                 "deleted": False,
+                # `M2-PARTIAL-FE-058`: the conflicting-sources card needs a
+                # date to show beside each position, and `added_at` — already
+                # on every row — is the only one that exists yet (no
+                # ingestion-metadata or filename-derived date is extracted
+                # anywhere in this codebase). The ticket's own fallback rule
+                # ("where neither exists, the added date is used and
+                # labelled as such") is met by always sending this one and
+                # letting the caller label it "Added".
+                "added_at": _isoformat(found["added_at"]),
                 "source_id": str(found["source_id"]),
                 **availability.as_dict(),
             }
