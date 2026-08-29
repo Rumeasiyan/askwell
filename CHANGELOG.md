@@ -4,6 +4,21 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.3.0 — 2026-08-29
+
+M2 — *it says when it doesn't know* — complete, 15 of 15. `M2-EVAL-DEPLOY-067`.
+
+### Added
+
+- `.github/workflows/eval.yml`: the 165-task quality gate now runs in CI, on a self-hosted runner labelled `askwell` (the maintainer's own machine — a hosted runner cannot comfortably load a model), triggered by a change to a prompt file, `retrieve.py`, `config.py`, a suite file, or a suite-mode module, plus manual dispatch.
+- Runs the three suites that exist today (`grounded_qa.v1`, `abstention.v1`, `conflicting_sources.v1`) through `scripts/dev.sh eval`, publishes each summary to the job's step summary, and uploads the full JSON results as a 90-day artifact for before/after comparison.
+- Self-heals the generation model weight from `models_catalog.py`'s registry-verified spec if missing; fails clearly, naming the reason, if the embedding or reranker weight is absent (no automated fetch source yet — issue #244) or the runner never picks the job up (30-minute timeout).
+- A suite that fails for an infrastructure reason (model unavailable, broken fixture corpus) is distinguished in the job log from one that ran and scored below its `docs/build-plan.md` bar.
+
+### Changed
+
+- Naming this workflow's `eval` job as a required branch-protection status check on `main` — the step that actually blocks a merge with no recorded run — is a manual repo-settings step, not done by this change; noted in `docs/BRAIN.md`'s next-task line.
+
 ## 0.2.51 — 2026-08-29
 
 Partial and conflicting-sources rendering on Ask. `M2-PARTIAL-FE-058`.
