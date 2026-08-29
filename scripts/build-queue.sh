@@ -128,8 +128,14 @@ build_one() {   # build_one <ticket>
       git add -A
       git commit -q -m "wip: $ticket, not accepted
 
-Built by $RUNNER. Its audit rejected it, so it is committed here rather than
-merged — read $STATE/logs/$ticket.audit.log before continuing it." \
+Built by $RUNNER, and not accepted — the gate, the audit or the build agent
+itself stopped it. Committed here rather than merged so nothing is lost.
+
+Why is in $STATE/logs/$ticket.*; read those before continuing it. This message
+deliberately does not name a cause: it used to claim the audit rejected the
+work, which was false whenever the build agent had simply run out of quota or
+the gate had failed, and a commit asserting a verdict nobody reached is worse
+than one that admits it does not know." \
         || say "  ${DIM}could not commit the rejected work; the tree is left as it is${RESET}"
     fi
     say ""
@@ -152,18 +158,46 @@ See docs/manual-tests/$ticket.md for what to try by hand." || return 1
 
   # CI is the third opinion, and the one that runs on a machine that is not
   # this one. Merging before it answers would make the other two decorative.
-  local run=""
+  # Every run for this commit, not the newest one. `--limit 1` was wrong the
+  # moment a second workflow existed: M2-EVAL-DEPLOY-067 added `eval.yml`, so a
+  # push now starts two runs, and the queue judged CI on whichever GitHub
+  # happened to list first. It rejected 067 itself that way — six checks green,
+  # parked anyway.
+  #
+  # A settling wait as well, because "no runs yet" and "all runs finished" look
+  # identical the instant after a push, and a newly added workflow can register
+  # a little after the ones that already existed.
   local sha; sha="$(git rev-parse HEAD)"
-  while [ -z "$run" ]; do
-    run="$(gh run list --branch "$branch" --limit 1 --json databaseId,headSha \
-            --jq ".[0] | select(.headSha==\"$sha\") | .databaseId" 2>/dev/null)"
-    [ -n "$run" ] || sleep 10
-  done
-  while [ "$(gh run view "$run" --json status --jq .status 2>/dev/null)" != "completed" ]; do
-    sleep 20
+  local runs=""
+  local settle=0
+  while [ "$settle" -lt 3 ]; do
+    runs="$(gh run list --branch "$branch" --limit 20 --json databaseId,headSha,status \
+            --jq "[.[] | select(.headSha==\"$sha\")] | length" 2>/dev/null || echo 0)"
+    if [ "${runs:-0}" -gt 0 ]; then
+      settle=$((settle + 1))
+    else
+      settle=0
+    fi
+    sleep 10
   done
 
-  if [ "$(gh run view "$run" --json conclusion --jq .conclusion)" != "success" ]; then
+  # Wait for all of them, then require every one to have concluded acceptably.
+  # `skipped` and `neutral` are not failures — a workflow that correctly did not
+  # apply to this change must not read as a red build.
+  local pending=1
+  while [ "$pending" -gt 0 ]; do
+    pending="$(gh run list --branch "$branch" --limit 20 --json headSha,status \
+                --jq "[.[] | select(.headSha==\"$sha\") | select(.status!=\"completed\")] | length" \
+                2>/dev/null || echo 1)"
+    [ "${pending:-1}" -gt 0 ] && sleep 20
+  done
+
+  local bad
+  bad="$(gh run list --branch "$branch" --limit 20 --json headSha,conclusion,workflowName \
+          --jq "[.[] | select(.headSha==\"$sha\") | select(.conclusion!=\"success\" and .conclusion!=\"skipped\" and .conclusion!=\"neutral\") | .workflowName] | join(\", \")" \
+          2>/dev/null || echo "could not read CI")"
+
+  if [ -n "$bad" ]; then
     # The runner marked it done when its own audit passed, which is correct
     # for the runner's scope and wrong for the queue's: a ticket that never
     # reached main is not done, and leaving the mark makes its dependents
@@ -172,7 +206,7 @@ See docs/manual-tests/$ticket.md for what to try by hand." || return 1
     # M1-ADD-BE-023 was in exactly that state — marked done, 2454 lines, CI
     # red, PR open.
     rm -f "$STATE/done/$ticket"
-    say "  ${BOLD}CI rejected $ticket.${RESET} The branch and its PR are left open,"
+    say "  ${BOLD}CI rejected $ticket${RESET} ($bad). The branch and its PR are left open,"
     say "  and it is no longer marked done — nothing may build on it until it lands."
     return 1
   fi
