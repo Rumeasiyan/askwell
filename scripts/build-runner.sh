@@ -409,6 +409,24 @@ assert_prompt_intact() {
 }
 
 # --- agent invocation --------------------------------------------------------
+# How much of a failing gate log is worth putting in a prompt. Enough to see the
+# failure and its summary, far short of what a repeated traceback can produce.
+GATE_EXCERPT_HEAD=400
+GATE_EXCERPT_TAIL=200
+
+gate_excerpt() {   # gate_excerpt <log-file>
+  local log="$1"
+  local lines; lines=$(wc -l < "$log" 2>/dev/null || echo 0)
+  if [ "$lines" -le $((GATE_EXCERPT_HEAD + GATE_EXCERPT_TAIL)) ]; then
+    cat "$log"
+    return 0
+  fi
+  head -n "$GATE_EXCERPT_HEAD" "$log"
+  printf '\n[... %s lines cut from the middle. The whole log is at %s ...]\n\n' \
+    "$((lines - GATE_EXCERPT_HEAD - GATE_EXCERPT_TAIL))" "$log"
+  tail -n "$GATE_EXCERPT_TAIL" "$log"
+}
+
 run_agent() {   # run_agent <lineage> <prompt-file> <log-file> [model] [effort]
   # Defaulted, not read positionally: the runner runs under `set -u`, and
   # calling this with three arguments — which every caller does — otherwise
@@ -727,7 +745,18 @@ main() {
       printf 'this pass. If a check is wrong, say so and stop — a weakened\n'
       printf 'check is worse than a failing one, because it keeps reporting\n'
       printf 'success afterwards.\n\nWhat failed:\n\n'
-      cat "$RUNNER_STATE/logs/${TICKET}.gate.${attempt}.log"
+      # Bounded, because gate output is not. One broken migration in
+      # M3-RAISE-BE-068 failed every database test on setup and produced a
+      # 3.2 MB log of 276 identical tracebacks; the fix prompt built from it
+      # came back "Prompt is too long", so the one repair attempt the runner
+      # allows was spent achieving nothing.
+      #
+      # Head and tail rather than either alone: pytest puts the failing
+      # assertion near the top and its summary line at the bottom, and the
+      # thousands of repeated frames in between are the part that is never
+      # worth sending. What is cut is stated, so an agent that needs the rest
+      # knows the file is there and can read it.
+      gate_excerpt "$RUNNER_STATE/logs/${TICKET}.gate.${attempt}.log"
     } > "$fix"
     PHASE="fix"
     run_agent build "$fix" "$RUNNER_STATE/logs/${TICKET}.fix.$attempt.log" \
