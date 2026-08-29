@@ -1,0 +1,206 @@
+# The eval gate: `AGENTS.md` §4, `docs/build-plan.md`'s quality gate.
+#
+# The 165-task gate needs a model loaded and minutes of CPU/GPU time, which
+# `ci.yml`'s hosted runners do not comfortably give it — that workflow stays
+# fast on every push on purpose. This one runs the three suites that exist
+# today (`docs/build-plan.md`'s other five categories arrive with their
+# features in M3-M6.5) on the one machine that actually has all three model
+# weights on disk already: per `AGENTS.md` §1, "one user, one machine" — the
+# self-hosted runner *is* the maintainer's own machine, registered with the
+# `askwell` label, reusing whatever `.env` and Compose stack are already
+# there rather than standing up a throwaway one. There is deliberately no
+# hosted-runner fallback that downloads all three models on every job: the
+# embedding and reranker weights (`ASKWELL_EMBEDDING_MODEL_PATH`,
+# `ASKWELL_RERANKER_MODEL_PATH`) have no automated fetch source yet —
+# `askwell.model_download`/`models_catalog.py` cover only the generation
+# model — and inventing a download URL for the other two without registry
+# verification is exactly what `AGENTS.md` §4 forbids. Filed as #244.
+#
+# Triggered by a prompt or retrieval-configuration change, or by hand. A
+# prompt change with no run recorded against its commit is meant to be
+# blocked at merge — that block is GitHub's own required-status-check on
+# this workflow's `eval` job (branch protection has to name it, a one-time
+# repo-settings step outside this file's reach), not custom logic here: a
+# required check with no run for a SHA is exactly "blocked, with a reason"
+# in the PR's own UI, and it fails distinctly from a check that ran and
+# scored below bar.
+
+name: Eval gate
+
+on:
+  push:
+    paths: &eval-paths
+      - "api/src/askwell/agent/prompts/**"
+      - "api/src/askwell/retrieve.py"
+      - "api/src/askwell/config.py"
+      - "eval/suites/**"
+      - "eval/scoring.py"
+      - "eval/runner.py"
+      - "eval/grounded.py"
+      - "eval/abstain.py"
+      - "eval/conflict.py"
+  pull_request:
+    paths: *eval-paths
+  workflow_dispatch: {}
+
+concurrency:
+  group: eval-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    name: Eval gate — grounded QA, abstention, conflicting sources
+    runs-on: [self-hosted, askwell]
+    # A runner that never picks this job up must fail loud rather than hang
+    # a PR's checks forever — the "runner offline" edge case the ticket
+    # names. 30 minutes covers three suites' worth of a 4B model with room
+    # to spare; a genuinely offline runner never leaves "queued", so this
+    # bounds that case to a clear timeout instead of an indefinite wait.
+    timeout-minutes: 30
+
+    env:
+      ASKWELL_PROFILE: light
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bring up the stack
+        # Idempotent against the runner's own persistent stack — this is
+        # the maintainer's real machine, not throwaway CI infrastructure,
+        # so this reuses whatever `.env` and volumes are already there
+        # rather than fabricating CI-only credentials the way `ci.yml`
+        # does for hosted runners with no state to preserve.
+        run: |
+          set -euo pipefail
+          [ -f .env ] || {
+            echo "::error::no .env on this runner — copy .env.example, set POSTGRES_APP_PASSWORD and the three ASKWELL_*_MODEL_PATH variables, once, per docs/data-sources.md"
+            exit 1
+          }
+          scripts/dev.sh build
+          (command -v podman >/dev/null 2>&1 && podman compose up -d || docker compose up -d)
+          scripts/dev.sh db upgrade head
+
+      - name: Model weights present
+        # The runner's own disk is the cache — persistent across jobs,
+        # unlike a hosted runner's ephemeral workspace, so there is nothing
+        # to wire up with actions/cache. The generation model can bootstrap
+        # itself on a fresh runner because it has an automated, registry-
+        # verified source (`models_catalog.py`); the other two cannot yet
+        # (see the file-level comment above, #244) and fail the job with a
+        # readable reason rather than a guessed-at download.
+        run: |
+          set -euo pipefail
+          set -a; . ./.env; set +a
+          [ -n "${ASKWELL_INFERENCE_MODEL_PATH:-}" ] || {
+            echo "::error::ASKWELL_INFERENCE_MODEL_PATH is not set in .env"
+            exit 1
+          }
+          GEN_PATH=$(eval echo "$ASKWELL_INFERENCE_MODEL_PATH")
+          if [ ! -f "$GEN_PATH" ]; then
+            echo "generation model missing at $GEN_PATH, fetching once (registry-verified: api/src/askwell/models_catalog.py)"
+            mkdir -p "$(dirname "$GEN_PATH")"
+            URL_AND_SHA=$(python3 - <<'PY'
+import sys
+sys.path.insert(0, "api/src")
+from askwell.models_catalog import spec_for_tier
+spec = spec_for_tier("light")
+print(spec.url)
+print(spec.sha256)
+PY
+)
+            URL=$(echo "$URL_AND_SHA" | sed -n 1p)
+            SHA=$(echo "$URL_AND_SHA" | sed -n 2p)
+            curl -fL --retry 3 -o "$GEN_PATH.part" "$URL"
+            echo "$SHA  $GEN_PATH.part" | sha256sum -c - || {
+              echo "::error::downloaded generation model does not match models_catalog.py's sha256 — deleting, not loading an unverified file"
+              rm -f "$GEN_PATH.part"
+              exit 1
+            }
+            mv "$GEN_PATH.part" "$GEN_PATH"
+          fi
+          for VAR in ASKWELL_EMBEDDING_MODEL_PATH ASKWELL_RERANKER_MODEL_PATH; do
+            VAL=$(eval echo "\${$VAR:-}")
+            if [ -z "$VAL" ] || [ ! -f "$VAL" ]; then
+              echo "::error::$VAR ($VAL) is not on this runner. Embedding and reranker weights have no automated fetch yet (#244) — place the file by hand once."
+              exit 1
+            fi
+          done
+
+      - name: Inference ready
+        # Left running rather than stopped at the end of the job — likely
+        # the maintainer's own persistent process, not something this
+        # workflow owns the lifecycle of.
+        run: |
+          set -euo pipefail
+          if grep -q '"state": "ready"' .run/state.json 2>/dev/null; then
+            echo "inference already running"
+            exit 0
+          fi
+          nohup scripts/dev.sh inference > "$RUNNER_TEMP/inference.log" 2>&1 &
+          for _ in $(seq 1 60); do
+            grep -q '"state": "ready"' .run/state.json 2>/dev/null && exit 0
+            grep -q model_missing .run/state.json 2>/dev/null && {
+              echo "::error::inference supervisor reports model_missing — see $RUNNER_TEMP/inference.log"
+              exit 1
+            }
+            sleep 5
+          done
+          echo "::error::inference never reached ready within 5 minutes — see $RUNNER_TEMP/inference.log"
+          exit 1
+
+      - name: Run the eval suites
+        # `eval/bench.py` exits 2 for a bad suite/config (never reached
+        # here — the three suite names are fixed by this workflow), exits 0
+        # for a suite that ran and passed its bar, and exits 1 for the two
+        # cases the ticket asks to be told apart: a `HarnessError` (the
+        # model going away, a broken fixture corpus — any infrastructure
+        # failure, never reported as a score) or a suite that ran to
+        # completion and scored below bar. Both print a summary, but only
+        # the second ever reaches `write_report` — "written to eval/results"
+        # in stdout is therefore the actual signal a report exists, more
+        # reliable than matching on any one error's wording, since a new
+        # `HarnessError` message would otherwise silently misclassify as a
+        # score failure the way grepping "model unavailable" alone would.
+        run: |
+          set -uo pipefail
+          STATUS=0
+          {
+            echo "## Eval gate results"
+            echo
+            echo "date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          for SUITE in grounded_qa.v1 abstention.v1 conflicting_sources.v1; do
+            echo "::group::$SUITE"
+            OUTPUT=$(scripts/dev.sh eval --suite "$SUITE" 2>&1)
+            CODE=$?
+            echo "$OUTPUT"
+            echo "::endgroup::"
+            {
+              echo "### $SUITE"
+              echo '```'
+              echo "$OUTPUT"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            if [ "$CODE" -ne 0 ]; then
+              if echo "$OUTPUT" | grep -q "^written to "; then
+                echo "::error::$SUITE — scored below its pass bar (docs/build-plan.md's quality gate; the bar is never lowered to make a change pass)"
+              else
+                echo "::error::$SUITE — infrastructure failure, not a score (see the group above for the reason)"
+              fi
+              STATUS=1
+            fi
+          done
+          exit $STATUS
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results-${{ github.sha }}
+          path: eval/results/*.json
+          if-no-files-found: warn
+          retention-days: 90
