@@ -4,6 +4,17 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.3.2 - 2026-08-30
+
+`M3-RAISE-BE-071`.
+
+### Added
+
+- **Every raised clarification carries real evidence**, not a paraphrase: sample passages with their document and page for an abbreviation or an ambiguous document identity, both passages with their dates for a contradiction, and extracted text (with an explicit "page images: not available" note, since nothing in the pipeline captures them) for a poor scan. Evidence a trigger cannot locate raises the question anyway with a stated reason rather than being dropped.
+- **The current inference travels with the question** as `evidence.current_inference`, so the answer field can prefill with what Askwell would have guessed had the question not been material enough to ask; `None` where there is nothing safe to guess.
+- `column_distribution_evidence` - the top-values-plus-remainder shape a `M4` column-ambiguity trigger will produce. No trigger calls it yet; it exists so that work is only the query.
+- Every evidence passage is bounded to 500 characters.
+
 ## 0.3.1 - 2026-08-30
 
 Askwell notices what it does not understand about your material. `M3-RAISE-BE-068`.
