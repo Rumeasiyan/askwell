@@ -37,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from askwell.audit import Store, record
 from askwell.logging import get_logger
+from askwell.memory import write_memory_fact
 
 log = get_logger(__name__)
 
@@ -397,19 +398,23 @@ async def raise_candidates(
             continue
 
         if candidate.inferred_fact is not None:
-            await session.execute(
-                text(
-                    "INSERT INTO memory (id, subject, fact, origin, confidence) "
-                    "VALUES (:id, :subject, :fact, 'inferred', :confidence)"
-                ),
-                {
-                    "id": uuid.uuid4(),
-                    "subject": candidate.subject,
-                    "fact": candidate.inferred_fact,
-                    "confidence": candidate.inferred_confidence,
-                },
+            # `askwell.memory.write_memory_fact` discards this outright,
+            # rather than storing a competing low-confidence entry, if the
+            # subject already carries an active user-supplied fact
+            # (`docs/memory-and-clarification.md` §1's own edge case). That
+            # counts as dropped, not inferred — nothing was written.
+            written = await write_memory_fact(
+                session,
+                subject=candidate.subject,
+                fact=candidate.inferred_fact,
+                origin="inferred",
+                confidence=candidate.inferred_confidence,
+                source_id=source_id,
             )
-            inferred += 1
+            if written is not None:
+                inferred += 1
+            else:
+                dropped += 1
         else:
             dropped += 1
         await record(
