@@ -93,10 +93,28 @@ jobs:
         # does for hosted runners with no state to preserve.
         run: |
           set -euo pipefail
-          [ -f .env ] || {
-            echo "::error::no .env on this runner — copy .env.example, set POSTGRES_APP_PASSWORD and the three ASKWELL_*_MODEL_PATH variables, once, per docs/data-sources.md"
-            exit 1
-          }
+          # Taken from the maintainer's own checkout, never from a GitHub secret.
+          # Actions checks out into its own `_work` directory, so the `.env` the
+          # real repository has is not here — the first run on a registered runner
+          # failed on exactly that.
+          #
+          # A secret would work and is the wrong tool: this file holds database
+          # passwords and absolute model paths for one person's machine. C8 says
+          # secrets are environment variables and never committed, and putting them
+          # in a public repository's secret store to hand them back to the same
+          # machine adds a copy outside the user's control for no gain.
+          #
+          # ASKWELL_ENV_FILE overrides the path for a checkout somewhere else.
+          if [ ! -f .env ]; then
+            SOURCE="${ASKWELL_ENV_FILE:-$HOME/external/quantum-plus/askwell/.env}"
+            if [ -f "$SOURCE" ]; then
+              cp "$SOURCE" .env
+              echo "took .env from $SOURCE"
+            else
+              echo "::error::no .env here and none at $SOURCE. Point ASKWELL_ENV_FILE at your checkout's .env, or copy .env.example and set POSTGRES_APP_PASSWORD and the three model paths."
+              exit 1
+            fi
+          fi
           scripts/dev.sh build
           (command -v podman >/dev/null 2>&1 && podman compose up -d || docker compose up -d)
           scripts/dev.sh db upgrade head
