@@ -4,6 +4,19 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.3.3 - 2026-09-13
+
+`M3-RAISE-BE-070`.
+
+### Added
+
+- **Memory and schema notes are checked before any candidate becomes a question.** A subject with a current fact — from this source or an earlier one, at any confidence — never reaches the clarification pass/fail tests; the existing fact applies instead, and nothing new is written over it (`askwell.clarify._known_facts`). A superseded fact never resurrects the question: only the current row (`superseded_by IS NULL`) is consulted, in `memory` first and `schema_notes` next.
+- Each suppression is logged to the decisions store (`clarification_suppressed`) with the fact that was applied, and counted (`RaiseResult.suppressed`) — a local counter only, never transmitted (C1).
+
+### Changed
+
+- The abbreviation trigger's own inline memory pre-filter is gone; it goes through the same suppression path as every other trigger now, so it is logged the same way instead of silently disappearing.
+
 ## 0.3.2 - 2026-08-30
 
 `M3-RAISE-BE-069`.

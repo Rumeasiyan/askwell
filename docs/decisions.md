@@ -22,6 +22,20 @@ Template:
 
 ---
 
+## 2026-09-13 — Memory-suppression is one check across all four triggers, not per-trigger dedup
+
+**Decision:** `M3-RAISE-BE-070` checks every candidate's subject against `memory` and `schema_notes` in one place, after all four triggers have run and before the pass/fail tests, rather than teaching each trigger its own dedup rule. The abbreviation trigger's existing inline memory pre-filter (`M3-RAISE-BE-068`) was removed in favour of this — it did the same lookup but silently, with no decisions-store record.
+
+**Why:** the ticket's own scope is "one lookup and one suppression rule," and the four triggers already disagree enough on shape (abbreviation text, filenames, normalised stems, extracted phrases) that a per-trigger version would be four slightly-different lookups nobody could audit as a single guarantee. Centralising also fixed a real gap: the abbreviation trigger's pre-filter never logged what it suppressed, so "check memory before raising" held for abbreviations but was unverifiable — no record existed to prove it. The rejected alternative was leaving abbreviations' silent skip in place and adding logged suppression only to the other three triggers; that would have left one trigger's behaviour unlike the rest for no reason a future reader could find in the code.
+
+`schema_notes` is checked as a fallback, matched against `table_name`/`column_name`, even though none of the four M3 triggers currently produce a subject shaped like one — the ticket names it as an explicit touchpoint (`memory-and-clarification.md`'s "memory and schema notes are checked") and the M4 column-ambiguity trigger will produce exactly that shape of subject when it lands, at which point this path stops being unused rather than needing to be added.
+
+**Consequences:** every suppression, including the abbreviation case, now writes a `clarification_suppressed` decisions record naming the fact applied, and counts in `RaiseResult.suppressed`. A subject match is exact only — `docs/backlog/M3-it-learns-my-material.md`'s own Assumption for this ticket rules out fuzzy matching, since a false suppression (asking never happens, and the user never finds out it should have) is worse than the duplicate question it would have prevented.
+
+**Refs:** `api/src/askwell/clarify.py` (`_known_facts`, `raise_candidates`), `api/tests/test_clarify.py`, `docs/backlog/M3-it-learns-my-material.md` (`M3-RAISE-BE-070`).
+
+---
+
 ## 2026-08-30 — `document_identity` ranks second, ahead of abbreviations, though `docs/memory-and-clarification.md` §8 never names it
 
 **Decision:** `M3-RAISE-BE-069`. `askwell.clarify._rank_candidates` orders passing candidates: `contradiction` (0), `document_identity` (1), `abbreviation` (2), `unreadable_scan` (3), each tier then sorted by a per-trigger weight (occurrence count, page count, or document count) descending, subject ascending as the final deterministic tie-break. The cap (`get_clarification_cap`/`set_clarification_cap`, `settings` table, default 5) is applied to that ranked list; anything below it is written to `memory` as a low-confidence inference naming its own rank and the cap, not the candidate's own guessed answer — that stays reserved for a trigger whose `inferred_fact` is genuinely a defensible guess, which contradiction and document identity never have.

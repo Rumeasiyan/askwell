@@ -30,7 +30,8 @@ pytestmark = pytest.mark.requires_db
 
 _THRESHOLD = 0.60
 _TABLES = (
-    "sources, documents, document_pages, chunks, memory, clarifications, audit_decisions, settings"
+    "sources, documents, document_pages, chunks, memory, schema_notes, "
+    "clarifications, audit_decisions, settings"
 )
 
 
@@ -207,8 +208,173 @@ async def test_an_abbreviation_already_in_memory_is_never_asked_twice(
 
     result = await raise_candidates(session, source_id, _THRESHOLD)
 
-    assert result == RaiseResult(raised=0, inferred=0, dropped=0)
+    assert result == RaiseResult(raised=0, inferred=0, dropped=0, suppressed=1)
     assert (await session.execute(text("SELECT 1 FROM clarifications"))).first() is None
+
+
+@pytest.mark.asyncio
+async def test_a_second_source_with_the_same_abbreviation_asks_nothing(
+    session: AsyncSession,
+) -> None:
+    first_source = await _source(session)
+    first_document = await _document(session, first_source, "tender.pdf")
+    await _chunk(session, first_document, "The RFQ closes Friday. Another RFQ follows.")
+    await raise_candidates(session, first_source, _THRESHOLD)
+    await session.execute(
+        text("UPDATE clarifications SET status = 'answered', answer = 'Request for Quotation'")
+    )
+    await session.execute(
+        text(
+            "INSERT INTO memory (id, subject, fact, origin) "
+            "VALUES (:id, 'RFQ', 'Request for Quotation', 'clarification')"
+        ),
+        {"id": uuid.uuid4()},
+    )
+
+    second_source = await _source(session)
+    second_document = await _document(session, second_source, "another-tender.pdf")
+    await _chunk(session, second_document, "Please review the RFQ. The RFQ is attached.")
+
+    result = await raise_candidates(session, second_source, _THRESHOLD)
+
+    assert result == RaiseResult(raised=0, inferred=0, dropped=0, suppressed=1)
+    count = (
+        await session.execute(
+            text("SELECT count(*) FROM clarifications WHERE source_id = :id"),
+            {"id": second_source},
+        )
+    ).scalar_one()
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_a_low_confidence_inferred_fact_still_suppresses_the_question(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session)
+    document_id = await _document(session, source_id, "tender.pdf")
+    await _chunk(session, document_id, "The RFQ closes Friday. Another RFQ follows.")
+    await session.execute(
+        text(
+            "INSERT INTO memory (id, subject, fact, origin, confidence) "
+            "VALUES (:id, 'RFQ', 'guessed meaning of RFQ', 'inferred', 0.3)"
+        ),
+        {"id": uuid.uuid4()},
+    )
+
+    result = await raise_candidates(session, source_id, _THRESHOLD)
+
+    assert result == RaiseResult(raised=0, inferred=0, dropped=0, suppressed=1)
+    assert (await session.execute(text("SELECT 1 FROM clarifications"))).first() is None
+
+
+@pytest.mark.asyncio
+async def test_a_superseded_fact_does_not_resurrect_the_question(session: AsyncSession) -> None:
+    source_id = await _source(session)
+    document_id = await _document(session, source_id, "tender.pdf")
+    await _chunk(session, document_id, "The RFQ closes Friday. Another RFQ follows.")
+    new_id = uuid.uuid4()
+    old_id = uuid.uuid4()
+    await session.execute(
+        text(
+            "INSERT INTO memory (id, subject, fact, origin) "
+            "VALUES (:id, 'RFQ', 'Request for Quotation, current', 'manual')"
+        ),
+        {"id": new_id},
+    )
+    await session.execute(
+        text(
+            "INSERT INTO memory (id, subject, fact, origin, superseded_by) "
+            "VALUES (:id, 'RFQ', 'a retired guess', 'inferred', :new_id)"
+        ),
+        {"id": old_id, "new_id": new_id},
+    )
+
+    result = await raise_candidates(session, source_id, _THRESHOLD)
+
+    assert result == RaiseResult(raised=0, inferred=0, dropped=0, suppressed=1)
+    payload = (
+        await session.execute(
+            text(
+                "SELECT payload->>'applied_fact' FROM audit_decisions "
+                "WHERE kind = 'clarification_suppressed'"
+            )
+        )
+    ).scalar_one()
+    assert payload == "Request for Quotation, current"
+
+
+@pytest.mark.asyncio
+async def test_a_subject_known_only_in_schema_notes_still_suppresses(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session)
+    document_id = await _document(session, source_id, "tender.pdf")
+    await _chunk(session, document_id, "The RFQ closes Friday. Another RFQ follows.")
+    other_source = await _source(session)
+    await session.execute(
+        text(
+            "INSERT INTO schema_notes (id, source_id, table_name, description, origin) "
+            "VALUES (:id, :source_id, 'RFQ', 'Request for Quotation table', 'user')"
+        ),
+        {"id": uuid.uuid4(), "source_id": other_source},
+    )
+
+    result = await raise_candidates(session, source_id, _THRESHOLD)
+
+    assert result == RaiseResult(raised=0, inferred=0, dropped=0, suppressed=1)
+    assert (await session.execute(text("SELECT 1 FROM clarifications"))).first() is None
+
+
+@pytest.mark.asyncio
+async def test_suppression_is_logged_with_the_applied_fact(session: AsyncSession) -> None:
+    source_id = await _source(session)
+    document_id = await _document(session, source_id, "tender.pdf")
+    await _chunk(session, document_id, "The RFQ closes Friday. Another RFQ follows.")
+    await session.execute(
+        text(
+            "INSERT INTO memory (id, subject, fact, origin) "
+            "VALUES (:id, 'RFQ', 'Request for Quotation', 'manual')"
+        ),
+        {"id": uuid.uuid4()},
+    )
+
+    await raise_candidates(session, source_id, _THRESHOLD)
+
+    row = (
+        await session.execute(
+            text(
+                "SELECT kind, payload->>'subject', payload->>'applied_fact' "
+                "FROM audit_decisions WHERE kind = 'clarification_suppressed'"
+            )
+        )
+    ).one()
+    assert row == ("clarification_suppressed", "RFQ", "Request for Quotation")
+
+
+@pytest.mark.asyncio
+async def test_a_skipped_question_is_not_raised_again_for_that_source(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session)
+    document_id = await _document(session, source_id, "tender.pdf")
+    await _chunk(session, document_id, "The RFQ closes Friday. Another RFQ follows.")
+
+    await raise_candidates(session, source_id, _THRESHOLD)
+    await session.execute(text("UPDATE clarifications SET status = 'skipped'"))
+    # New chunks land as if the source were re-indexed.
+    await _chunk(session, document_id, "The RFQ deadline moved. RFQ RFQ.")
+
+    result = await raise_candidates(session, source_id, _THRESHOLD)
+
+    assert result == RaiseResult(raised=0, inferred=0, dropped=0)
+    count = (
+        await session.execute(
+            text("SELECT count(*) FROM clarifications WHERE source_id = :id"),
+            {"id": source_id},
+        )
+    ).scalar_one()
+    assert count == 1
 
 
 @pytest.mark.asyncio
