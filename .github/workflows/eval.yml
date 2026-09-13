@@ -27,21 +27,39 @@
 
 name: Eval gate
 
+# Manual only, until a runner exists to answer it.
+#
+# `runs-on: [self-hosted, askwell]` and no runner carries that label, so every
+# automatic trigger produced a job nothing could pick up, which sat queued and
+# died at the timeout below. Fifteen consecutive red runs, none of which had
+# anything to do with eval quality: the suites have never executed once. The
+# abstention bar is unmeasured, not failing.
+#
+# That is worse than a gap, because a check that always fails is a check nobody
+# reads — and this repository has already been bitten several times by exactly
+# that shape, where something reports a failure the work does not have.
+#
+# The push and pull_request triggers are kept below, commented, so restoring
+# them is one edit rather than an act of reconstruction. Put them back the
+# moment a runner is registered and one manual run has gone green. Tracked in
+# issue 256.
 on:
-  push:
-    paths: &eval-paths
-      - "api/src/askwell/agent/prompts/**"
-      - "api/src/askwell/retrieve.py"
-      - "api/src/askwell/config.py"
-      - "eval/suites/**"
-      - "eval/scoring.py"
-      - "eval/runner.py"
-      - "eval/grounded.py"
-      - "eval/abstain.py"
-      - "eval/conflict.py"
-  pull_request:
-    paths: *eval-paths
   workflow_dispatch: {}
+  # Restore these once a self-hosted runner labelled `askwell` is registered:
+  #
+  # push:
+  #   paths: &eval-paths
+  #     - "api/src/askwell/agent/prompts/**"
+  #     - "api/src/askwell/retrieve.py"
+  #     - "api/src/askwell/config.py"
+  #     - "eval/suites/**"
+  #     - "eval/scoring.py"
+  #     - "eval/runner.py"
+  #     - "eval/grounded.py"
+  #     - "eval/abstain.py"
+  #     - "eval/conflict.py"
+  # pull_request:
+  #   paths: *eval-paths
 
 concurrency:
   group: eval-${{ github.ref }}
@@ -102,15 +120,11 @@ jobs:
           if [ ! -f "$GEN_PATH" ]; then
             echo "generation model missing at $GEN_PATH, fetching once (registry-verified: api/src/askwell/models_catalog.py)"
             mkdir -p "$(dirname "$GEN_PATH")"
-            URL_AND_SHA=$(python3 - <<'PY'
-import sys
-sys.path.insert(0, "api/src")
-from askwell.models_catalog import spec_for_tier
-spec = spec_for_tier("light")
-print(spec.url)
-print(spec.sha256)
-PY
-)
+            # A file, not a heredoc. The heredoc this replaces put its body
+            # at column 0 inside an indented block scalar, which ends the
+            # scalar — so this workflow was invalid YAML and failed instantly
+            # on every one of its fifteen runs. See eval/model_spec.py.
+            URL_AND_SHA=$(python3 eval/model_spec.py light)
             URL=$(echo "$URL_AND_SHA" | sed -n 1p)
             SHA=$(echo "$URL_AND_SHA" | sed -n 2p)
             curl -fL --retry 3 -o "$GEN_PATH.part" "$URL"
