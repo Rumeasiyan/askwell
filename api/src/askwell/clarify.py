@@ -37,11 +37,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from askwell.audit import Store, record
 from askwell.logging import get_logger
+from askwell.settings_store import get_setting, set_setting
 
 log = get_logger(__name__)
 
 CANDIDATE_RAISED = "clarification_raised"
 CANDIDATE_DROPPED = "clarification_dropped"
+CANDIDATE_CAPPED = "clarification_capped"
+CAP_CHANGED = "clarification_cap_changed"
+
+# `docs/memory-and-clarification.md` §8: "cap of 5 questions per source,
+# user-adjustable". Stored under this key in the generic `settings` table
+# rather than `Settings` (`config.py`) because it is a per-install user
+# preference changed at runtime, not a deployment-time value.
+CLARIFICATION_CAP_KEY = "clarification_cap"
+DEFAULT_CLARIFICATION_CAP = 5
 
 # A guess this uncertain is exactly what `origin = 'inferred'` exists to mark
 # — visible, correctable, never confused with something the user actually
@@ -115,6 +125,78 @@ class RaiseResult:
     raised: int
     inferred: int
     dropped: int
+    # Of `inferred`, how many were not asked solely because the source
+    # produced more passing candidates than the cap — as opposed to failing
+    # one of the three tests. `docs/ux/clarifications.md` §5's capped state
+    # needs this number to say what it inferred rather than asked.
+    capped: int = 0
+
+
+# Ranking order, `docs/memory-and-clarification.md` §8: contradictions first,
+# then date-format ambiguity, then unguessable columns, then abbreviations,
+# then low-confidence scans. Date-format and column triggers are M4's
+# (`docs/data-sources.md`, not built yet); `document_identity` is this
+# ticket's own trigger and is not named in that list at all. It is ranked
+# second, ahead of abbreviations — an unresolved "which file is current"
+# question has the same shape of consequence as a contradiction (the wrong
+# document's facts get treated as current) rather than the shape of a
+# vocabulary gap. `docs/decisions.md` has the reasoning.
+_TRIGGER_PRIORITY = {
+    "contradiction": 0,
+    "document_identity": 1,
+    "abbreviation": 2,
+    "unreadable_scan": 3,
+}
+
+
+def _rank_weight(candidate: Candidate) -> float:
+    """Volume behind a candidate, used to order within its own tier.
+
+    Abbreviations rank "by corpus frequency" — occurrence count. Scans rank
+    "weighted by document size" — page count. Contradictions and document
+    identity have no documented weighting rule; the count of documents
+    involved is the closest available proxy to "how much is at stake".
+    """
+    if candidate.trigger == "abbreviation":
+        return float(candidate.evidence.get("occurrences", 0))
+    if candidate.trigger == "unreadable_scan":
+        return float(candidate.evidence.get("total_pages", 0))
+    if candidate.trigger == "document_identity":
+        return float(len(candidate.evidence.get("filenames", [])))
+    if candidate.trigger == "contradiction":
+        return float(len(candidate.evidence.get("values", [])))
+    return 0.0
+
+
+def _rank_candidates(candidates: list[Candidate]) -> list[Candidate]:
+    """Highest priority first. Deterministic: two runs over the same source
+    produce the same order, since the sort key is built only from stored,
+    reproducible data (trigger, evidence counts, subject) — never from
+    insertion order or anything that varies run to run."""
+    return sorted(
+        candidates,
+        key=lambda c: (
+            _TRIGGER_PRIORITY.get(c.trigger, len(_TRIGGER_PRIORITY)),
+            -_rank_weight(c),
+            c.subject,
+        ),
+    )
+
+
+async def get_clarification_cap(session: AsyncSession) -> int:
+    value = await get_setting(session, CLARIFICATION_CAP_KEY)
+    return DEFAULT_CLARIFICATION_CAP if value is None else int(value)
+
+
+async def set_clarification_cap(session: AsyncSession, cap: int) -> None:
+    """The only way the cap is changed. `docs/build-plan.md` M3-RAISE-BE-069's
+    own Validation Rule: "never raised silently" — so every change, in either
+    direction, is a decision record, not just a settings write."""
+    if cap < 1:
+        raise ValueError("clarification cap must be at least 1")
+    previous = await get_clarification_cap(session)
+    await set_setting(session, CLARIFICATION_CAP_KEY, str(cap))
+    await record(session, Store.DECISIONS, CAP_CHANGED, {"previous": previous, "new": cap})
 
 
 def _evaluate(*, cannot_determine: bool, material: bool, user_knows: bool) -> str | None:
@@ -345,9 +427,12 @@ async def raise_candidates(
     Idempotent per source: a source that already has a clarification row —
     asked, answered, skipped or dismissed, it does not matter which — is
     never re-scanned. Newly added documents landing in an already-scanned
-    source are `M3-RAISE-BE-069`/incremental re-ingestion's concern, not
-    this ticket's; scanning here happens exactly once, when a source first
-    finishes with nothing left outstanding.
+    source, and a late-arriving high-ranking candidate displacing an
+    already-raised but unanswered one, are incremental re-ingestion's
+    concern and remain open — see the tracker issue this ticket filed for it
+    (`docs/BRAIN.md`). Scanning here happens exactly once, when a source
+    first finishes with nothing left outstanding, and the cap
+    (`M3-RAISE-BE-069`) is applied to everything found in that one pass.
     """
     already = await session.execute(
         text("SELECT 1 FROM clarifications WHERE source_id = :id LIMIT 1"),
@@ -363,39 +448,82 @@ async def raise_candidates(
         *await _detect_contradictions(session, source_id),
     ]
 
-    raised = inferred = dropped = 0
-    for candidate in candidates:
-        if candidate.passes:
-            await session.execute(
-                text(
-                    "INSERT INTO clarifications "
-                    "(id, source_id, subject, question, options, evidence, status) "
-                    "VALUES (:id, :source_id, :subject, :question, "
-                    "CAST(:options AS jsonb), CAST(:evidence AS jsonb), 'pending')"
-                ),
-                {
-                    "id": uuid.uuid4(),
-                    "source_id": source_id,
-                    "subject": candidate.subject,
-                    "question": candidate.question,
-                    "options": json.dumps(candidate.options) if candidate.options else None,
-                    "evidence": json.dumps(candidate.evidence),
-                },
-            )
-            await record(
-                session,
-                Store.DECISIONS,
-                CANDIDATE_RAISED,
-                {
-                    "source_id": str(source_id),
-                    "trigger": candidate.trigger,
-                    "subject": candidate.subject,
-                    "reason": candidate.reason,
-                },
-            )
-            raised += 1
-            continue
+    cap = await get_clarification_cap(session)
+    ranked = _rank_candidates([c for c in candidates if c.passes])
+    to_raise, to_cap = ranked[:cap], ranked[cap:]
+    failing = [c for c in candidates if not c.passes]
 
+    raised = inferred = dropped = capped = 0
+    for rank, candidate in enumerate(to_raise, start=1):
+        await session.execute(
+            text(
+                "INSERT INTO clarifications "
+                "(id, source_id, subject, question, options, evidence, rank, status) "
+                "VALUES (:id, :source_id, :subject, :question, "
+                "CAST(:options AS jsonb), CAST(:evidence AS jsonb), :rank, 'pending')"
+            ),
+            {
+                "id": uuid.uuid4(),
+                "source_id": source_id,
+                "subject": candidate.subject,
+                "question": candidate.question,
+                "options": json.dumps(candidate.options) if candidate.options else None,
+                "evidence": json.dumps(candidate.evidence),
+                "rank": rank,
+            },
+        )
+        await record(
+            session,
+            Store.DECISIONS,
+            CANDIDATE_RAISED,
+            {
+                "source_id": str(source_id),
+                "trigger": candidate.trigger,
+                "subject": candidate.subject,
+                "reason": candidate.reason,
+                "rank": rank,
+            },
+        )
+        raised += 1
+
+    for offset, candidate in enumerate(to_cap, start=1):
+        rank = cap + offset
+        # Passed all three tests but the source already had `cap` better
+        # candidates — not a case of "nothing safe to guess"
+        # (`Candidate.inferred_fact`'s own docstring), since nothing about
+        # the answer is invented here. Only that it was flagged and ranked
+        # below the cap, which is itself never a guess.
+        await session.execute(
+            text(
+                "INSERT INTO memory (id, subject, fact, origin, confidence) "
+                "VALUES (:id, :subject, :fact, 'inferred', :confidence)"
+            ),
+            {
+                "id": uuid.uuid4(),
+                "subject": candidate.subject,
+                "fact": (
+                    f"{candidate.question} Not asked — ranked {rank} of "
+                    f"{len(ranked)} for this source, below the cap of {cap}."
+                ),
+                "confidence": LOW_CONFIDENCE,
+            },
+        )
+        await record(
+            session,
+            Store.DECISIONS,
+            CANDIDATE_CAPPED,
+            {
+                "source_id": str(source_id),
+                "trigger": candidate.trigger,
+                "subject": candidate.subject,
+                "rank": rank,
+                "cap": cap,
+            },
+        )
+        inferred += 1
+        capped += 1
+
+    for candidate in failing:
         if candidate.inferred_fact is not None:
             await session.execute(
                 text(
@@ -431,5 +559,6 @@ async def raise_candidates(
         raised=raised,
         inferred=inferred,
         dropped=dropped,
+        capped=capped,
     )
-    return RaiseResult(raised=raised, inferred=inferred, dropped=dropped)
+    return RaiseResult(raised=raised, inferred=inferred, dropped=dropped, capped=capped)

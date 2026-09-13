@@ -15,17 +15,23 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from askwell.clarify import (
+    DEFAULT_CLARIFICATION_CAP,
     Candidate,
     RaiseResult,
     _evaluate,
     _normalize_filename,
+    _rank_candidates,
+    get_clarification_cap,
     raise_candidates,
+    set_clarification_cap,
 )
 
 pytestmark = pytest.mark.requires_db
 
 _THRESHOLD = 0.60
-_TABLES = "sources, documents, document_pages, chunks, memory, clarifications, audit_decisions"
+_TABLES = (
+    "sources, documents, document_pages, chunks, memory, clarifications, audit_decisions, settings"
+)
 
 
 @pytest.fixture
@@ -431,3 +437,183 @@ def test_candidate_is_a_frozen_dataclass() -> None:
     )
     assert candidate.evidence == {}
     assert candidate.inferred_fact is None
+
+
+# --- ranking and the cap of five per source ------------------------------------
+
+
+def _abbrev_candidate(subject: str, occurrences: int) -> Candidate:
+    return Candidate(
+        trigger="abbreviation",
+        subject=subject,
+        question=f"What does {subject} mean?",
+        passes=True,
+        reason="all three tests held",
+        evidence={"occurrences": occurrences},
+    )
+
+
+def _contradiction_candidate(subject: str) -> Candidate:
+    return Candidate(
+        trigger="contradiction",
+        subject=subject,
+        question=f"Sources disagree on {subject}.",
+        passes=True,
+        reason="all three tests held",
+        evidence={"values": [{"document": "a"}, {"document": "b"}]},
+    )
+
+
+def _scan_candidate(subject: str, total_pages: int) -> Candidate:
+    return Candidate(
+        trigger="unreadable_scan",
+        subject=subject,
+        question=f"{subject} scanned poorly.",
+        passes=True,
+        reason="all three tests held",
+        evidence={"total_pages": total_pages},
+    )
+
+
+def test_a_contradiction_outranks_an_abbreviation() -> None:
+    ranked = _rank_candidates([_abbrev_candidate("RFQ", 10), _contradiction_candidate("term")])
+    assert [c.trigger for c in ranked] == ["contradiction", "abbreviation"]
+
+
+def test_within_a_tier_higher_volume_ranks_first() -> None:
+    ranked = _rank_candidates([_abbrev_candidate("A", 2), _abbrev_candidate("B", 9)])
+    assert [c.subject for c in ranked] == ["B", "A"]
+
+
+def test_ties_break_deterministically_by_subject() -> None:
+    a = [_abbrev_candidate("B", 5), _abbrev_candidate("A", 5)]
+    b = [_abbrev_candidate("A", 5), _abbrev_candidate("B", 5)]
+    assert [c.subject for c in _rank_candidates(a)] == [c.subject for c in _rank_candidates(b)]
+    assert [c.subject for c in _rank_candidates(a)] == ["A", "B"]
+
+
+@pytest.mark.asyncio
+async def test_the_cap_defaults_to_five(session: AsyncSession) -> None:
+    assert await get_clarification_cap(session) == DEFAULT_CLARIFICATION_CAP == 5
+
+
+@pytest.mark.asyncio
+async def test_a_source_producing_ten_candidates_asks_five_and_infers_the_rest(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session)
+    document_id = await _document(session, source_id, "notes.pdf")
+    for index in range(10):
+        # Distinct occurrence counts give each abbreviation its own rank, so
+        # which five made the cut is unambiguous to assert on.
+        token = chr(65 + index) * 3
+        for _ in range(index + 2):
+            await _chunk(session, document_id, f"The {token} applies here.")
+
+    result = await raise_candidates(session, source_id, _THRESHOLD)
+
+    assert result == RaiseResult(raised=5, inferred=5, dropped=0, capped=5)
+    rows = (
+        await session.execute(text("SELECT subject, rank FROM clarifications ORDER BY rank"))
+    ).all()
+    assert len(rows) == 5
+    assert [subject for subject, _rank in rows] == ["JJJ", "III", "HHH", "GGG", "FFF"]
+    assert [rank for _subject, rank in rows] == [1, 2, 3, 4, 5]
+    memory_rows = (await session.execute(text("SELECT origin, confidence FROM memory"))).all()
+    assert len(memory_rows) == 5
+    assert all(origin == "inferred" for origin, _confidence in memory_rows)
+    assert all(float(confidence) < 0.5 for _origin, confidence in memory_rows)
+
+
+@pytest.mark.asyncio
+async def test_exactly_five_candidates_are_all_asked(session: AsyncSession) -> None:
+    source_id = await _source(session)
+    document_id = await _document(session, source_id, "notes.pdf")
+    for index in range(5):
+        token = chr(65 + index) * 3
+        await _chunk(session, document_id, f"{token} and {token} again.")
+
+    result = await raise_candidates(session, source_id, _THRESHOLD)
+
+    assert result == RaiseResult(raised=5, inferred=0, dropped=0, capped=0)
+
+
+@pytest.mark.asyncio
+async def test_a_contradiction_outranks_an_abbreviation_for_the_cap(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session)
+    handbook = await _document(session, source_id, "handbook-2024.pdf")
+    policy = await _document(session, source_id, "policy-2025.pdf")
+    await _page(session, handbook, 1, "The notice period is 30 days for all staff.")
+    await _page(session, policy, 1, "The notice period is 45 days for all staff.")
+    for index in range(5):
+        token = chr(65 + index) * 3
+        for _ in range(3):
+            await _chunk(session, handbook, f"{token} applies.")
+
+    result = await raise_candidates(session, source_id, _THRESHOLD)
+
+    assert result.raised == 5
+    triggers = (
+        await session.execute(text("SELECT subject, rank FROM clarifications ORDER BY rank"))
+    ).all()
+    assert triggers[0] == ("the notice period", 1)
+
+
+@pytest.mark.asyncio
+async def test_raising_the_cap_asks_more_on_the_next_source(session: AsyncSession) -> None:
+    source_id = await _source(session)
+    document_id = await _document(session, source_id, "notes.pdf")
+    for index in range(7):
+        token = chr(65 + index) * 3
+        for _ in range(index + 2):
+            await _chunk(session, document_id, f"{token} appears.")
+
+    await set_clarification_cap(session, 7)
+    assert await get_clarification_cap(session) == 7
+
+    result = await raise_candidates(session, source_id, _THRESHOLD)
+
+    assert result == RaiseResult(raised=7, inferred=0, dropped=0, capped=0)
+    kinds = (
+        (await session.execute(text("SELECT kind FROM audit_decisions ORDER BY occurred_at")))
+        .scalars()
+        .all()
+    )
+    assert "clarification_cap_changed" in kinds
+
+
+@pytest.mark.asyncio
+async def test_setting_the_cap_below_one_is_rejected(session: AsyncSession) -> None:
+    with pytest.raises(ValueError, match="at least 1"):
+        await set_clarification_cap(session, 0)
+
+
+@pytest.mark.asyncio
+async def test_running_the_same_import_twice_chooses_the_same_five(
+    session: AsyncSession,
+) -> None:
+    async def _run() -> list[str]:
+        source_id = await _source(session)
+        document_id = await _document(session, source_id, "notes.pdf")
+        for index in range(8):
+            token = chr(65 + index) * 3
+            for _ in range(index + 2):
+                await _chunk(session, document_id, f"{token} appears here.")
+        await raise_candidates(session, source_id, _THRESHOLD)
+        rows = (
+            (
+                await session.execute(
+                    text("SELECT subject FROM clarifications WHERE source_id = :id ORDER BY rank"),
+                    {"id": source_id},
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return list(rows)
+
+    first = await _run()
+    second = await _run()
+    assert first == second

@@ -4,6 +4,17 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.3.2 - 2026-08-30
+
+`M3-RAISE-BE-069`.
+
+### Added
+
+- **Clarification candidates are ranked and capped at 5 per source**, user-adjustable (`askwell.clarify.get_clarification_cap`/`set_clarification_cap`, backed by the `settings` table, defaulting to 5). Order: contradictions between sources, then ambiguous document identity, then abbreviations by corpus frequency, then low-confidence scans weighted by document size — date-format and unguessable-column triggers arrive with M4. Ties break deterministically by subject, so two runs over the same source choose the same five.
+- `clarifications.rank` is now written for every raised question.
+- Candidates that pass all three tests but rank below the cap are recorded to memory as low-confidence inferences naming their rank and the cap, distinct from a candidate that failed a test outright — nothing about the answer is invented either way.
+- Changing the cap is a decisions-store record (`clarification_cap_changed`), never a silent settings write.
+
 ## 0.3.1 - 2026-08-30
 
 Askwell notices what it does not understand about your material. `M3-RAISE-BE-068`.
