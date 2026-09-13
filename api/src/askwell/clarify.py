@@ -44,6 +44,7 @@ log = get_logger(__name__)
 CANDIDATE_RAISED = "clarification_raised"
 CANDIDATE_DROPPED = "clarification_dropped"
 CANDIDATE_CAPPED = "clarification_capped"
+CANDIDATE_SUPPRESSED = "clarification_suppressed"
 CAP_CHANGED = "clarification_cap_changed"
 
 # `docs/memory-and-clarification.md` §8: "cap of 5 questions per source,
@@ -130,6 +131,11 @@ class RaiseResult:
     # one of the three tests. `docs/ux/clarifications.md` §5's capped state
     # needs this number to say what it inferred rather than asked.
     capped: int = 0
+    # Never became a candidate for a question at all — a current fact for
+    # the same subject already existed in `memory` or `schema_notes`, from
+    # this source or an earlier one. `M3-RAISE-BE-070`'s own Analytics Event:
+    # a local counter, never transmitted (C1).
+    suppressed: int = 0
 
 
 # Ranking order, `docs/memory-and-clarification.md` §8: contradictions first,
@@ -235,18 +241,9 @@ async def _detect_abbreviations(session: AsyncSession, source_id: uuid.UUID) -> 
     if not counts:
         return []
 
-    known_rows = await session.execute(
-        text(
-            "SELECT DISTINCT subject FROM memory "
-            "WHERE subject = ANY(:subjects) AND superseded_by IS NULL"
-        ),
-        {"subjects": list(counts)},
-    )
-    known = {row[0] for row in known_rows}
-
     candidates = []
     for abbreviation, occurrences in sorted(counts.items()):
-        if abbreviation in _COMMON_ABBREVIATIONS or abbreviation in known:
+        if abbreviation in _COMMON_ABBREVIATIONS:
             continue
         material = occurrences >= _MIN_ABBREVIATION_OCCURRENCES
         reason = _evaluate(cannot_determine=True, material=material, user_knows=True)
@@ -419,6 +416,52 @@ async def _detect_contradictions(session: AsyncSession, source_id: uuid.UUID) ->
     return candidates
 
 
+async def _known_facts(session: AsyncSession, subjects: list[str]) -> dict[str, str]:
+    """Current fact text for each subject already covered, from `memory` or
+    `schema_notes` — whichever has it. `M3-RAISE-BE-070`: checked before any
+    candidate becomes a question, so the same subject is never asked twice,
+    whether the earlier answer came from this source or an earlier one.
+
+    Exact match only (`docs/backlog/M3-it-learns-my-material.md`'s own
+    Assumption for this ticket) — a near-match subject that is not the same
+    thing must not suppress a real question, and fuzzy matching is how that
+    would happen. `superseded_by IS NULL` on both tables is the same
+    "current, not stale" filter used everywhere else in this module: a
+    superseded fact must not resurrect a suppressed question with retired
+    wording, and the fact applied is always the current one.
+
+    A `memory` row of any confidence counts, including a low-confidence
+    inference nobody has reviewed yet — asking about the user's own material
+    twice is the failure this exists to prevent, and that holds even when
+    the existing answer is only a guess (it still surfaces in Memory for
+    review, which is a different problem from asking about it again).
+    """
+    if not subjects:
+        return {}
+    memory_rows = await session.execute(
+        text(
+            "SELECT subject, fact FROM memory "
+            "WHERE subject = ANY(:subjects) AND superseded_by IS NULL"
+        ),
+        {"subjects": subjects},
+    )
+    known: dict[str, str] = {subject: fact for subject, fact in memory_rows}
+
+    remaining = [subject for subject in subjects if subject not in known]
+    if remaining:
+        schema_rows = await session.execute(
+            text(
+                "SELECT COALESCE(column_name, table_name), description FROM schema_notes "
+                "WHERE (table_name = ANY(:subjects) OR column_name = ANY(:subjects)) "
+                "AND superseded_by IS NULL"
+            ),
+            {"subjects": remaining},
+        )
+        for subject, description in schema_rows:
+            known.setdefault(subject, description)
+    return known
+
+
 async def raise_candidates(
     session: AsyncSession, source_id: uuid.UUID, ocr_confidence_threshold: float
 ) -> RaiseResult:
@@ -441,12 +484,20 @@ async def raise_candidates(
     if already.first() is not None:
         return RaiseResult(raised=0, inferred=0, dropped=0)
 
-    candidates = [
+    all_candidates = [
         *await _detect_abbreviations(session, source_id),
         *await _detect_unreadable_scans(session, source_id, ocr_confidence_threshold),
         *await _detect_document_identity(session, source_id),
         *await _detect_contradictions(session, source_id),
     ]
+
+    # `M3-RAISE-BE-070`: memory and schema notes are checked before any
+    # candidate becomes a question. A subject already covered — by this
+    # source or an earlier one — never reaches the pass/fail tests at all;
+    # the existing fact applies instead, and nothing new is inferred over it.
+    known = await _known_facts(session, sorted({c.subject for c in all_candidates}))
+    suppressed_candidates = [c for c in all_candidates if c.subject in known]
+    candidates = [c for c in all_candidates if c.subject not in known]
 
     cap = await get_clarification_cap(session)
     ranked = _rank_candidates([c for c in candidates if c.passes])
@@ -553,6 +604,21 @@ async def raise_candidates(
             },
         )
 
+    suppressed = 0
+    for candidate in suppressed_candidates:
+        await record(
+            session,
+            Store.DECISIONS,
+            CANDIDATE_SUPPRESSED,
+            {
+                "source_id": str(source_id),
+                "trigger": candidate.trigger,
+                "subject": candidate.subject,
+                "applied_fact": known[candidate.subject],
+            },
+        )
+        suppressed += 1
+
     log.info(
         "clarifications_raised",
         source_id=str(source_id),
@@ -560,5 +626,8 @@ async def raise_candidates(
         inferred=inferred,
         dropped=dropped,
         capped=capped,
+        suppressed=suppressed,
     )
-    return RaiseResult(raised=raised, inferred=inferred, dropped=dropped, capped=capped)
+    return RaiseResult(
+        raised=raised, inferred=inferred, dropped=dropped, capped=capped, suppressed=suppressed
+    )
