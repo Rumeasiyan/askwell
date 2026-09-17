@@ -4,6 +4,19 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.3.9 - 2026-09-17
+
+`M3-STORE-BE-076` (closing the ticket's own acceptance-criteria gaps found in review, #283, #284).
+
+### Fixed
+
+- #283 — `write_memory_fact`/`write_schema_note` now default `confidence` to `FULL_CONFIDENCE` for any user-origin write (`origin != "inferred"`) when the caller does not pass one explicitly, matching the ticket's own acceptance criterion ("Answering a clarification writes a fact with origin clarification and full confidence") and the module's own docstring. An explicit `confidence` argument still wins.
+- #284 — `write_memory_fact`/`write_schema_note` now supersede *any* active fact/note for the same subject/position on a user-origin write, not only an inferred one. Previously a second `write_memory_fact`/`write_schema_note` call with a user-origin (bypassing `correct_memory_fact`/`correct_schema_note`) inserted a second simultaneously-active user-origin row instead of superseding the first, violating the ticket's own "two contradicting user answers" edge case for any caller that writes directly rather than through the correct-path functions.
+
+### Known gaps
+
+- #282 — `clarify.py`/`review.py` still write `memory`/`schema_notes` through their own inline `INSERT`s, not `askwell.memory`. Filed as its own ticket (`AGENTS.md` §4's ">3 files, agree first" applies), not rewired here.
+
 ## 0.3.8 - 2026-09-17
 
 `M3-STORE-BE-076`.

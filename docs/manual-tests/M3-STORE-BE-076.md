@@ -1,37 +1,22 @@
 # Manual test — M3-STORE-BE-076, memory and schema notes with origin, confidence and supersession
 
-**Ticket:** `M3-STORE-BE-076` — a dedicated write-side module (`askwell.memory`) for the
-`memory` and `schema_notes` tables: writing, superseding (never overwriting in place), origin
-and confidence semantics, retrieval-time precedence (user over inferred, later over earlier),
-and an inference that is discarded outright rather than stored when an active user-supplied
-fact already covers the same subject or schema position.
-**Version under test:** `0.3.8`
-**Time:** about 30 minutes, plus a first stack build. No native inference needed — nothing here
-embeds, retrieves, or asks a question.
-**Who can run it:** a terminal, `scripts/dev.sh psql`, and `scripts/dev.sh run python3` to call
-the module's functions directly. **No browser interaction reaches this ticket's own code** — see
-"Where this stops on purpose."
+**Ticket:** `M3-STORE-BE-076` — a dedicated write-side module (`askwell.memory`) for two stores: `memory` (general facts) and `schema_notes` (attached to a source, table and column). Both carry origin, confidence, supersession and creation time. A correction supersedes rather than overwrites; an inference is discarded outright if an active user-supplied fact already covers the same subject/position; retrieval orders user-origin before inferred, newer before older.
+**Version under test:** `0.3.9`
+**Time:** about 45 minutes, plus a first stack build and native inference startup.
+**Who can run it:** a browser, a terminal, and `psql` access via `scripts/dev.sh psql`. Two steps use `curl` directly against the API, not the browser — see "Where this stops on purpose" for why.
 
-**What is being checked.** `askwell.memory` (`api/src/askwell/memory.py`): `write_memory_fact`/
-`write_schema_note` (an inference is discarded when an active user-origin row already covers the
-subject/position; a user-origin write retires any active inference for the same one),
-`correct_memory_fact`/`correct_schema_note` (supersede an active user-origin row with a new
-value — the old row is never updated in place and stays readable), `get_active_memory_facts`/
-`get_active_schema_notes` (retrieval precedence: user-origin before inferred, newer before
-older within each). Migration `2ae457a0587a` adds `memory.source_id`, nullable, `ON DELETE SET
-NULL`, so a general fact can say which source taught it and keep saying so after that source is
-soft-deleted. Every write, discard and supersession is an `audit_decisions` record (C6).
+**What is being checked.** `api/src/askwell/memory.py`: `write_memory_fact`, `correct_memory_fact`, `get_active_memory_facts`, `write_schema_note`, `correct_schema_note`, `get_active_schema_notes`, and the discard/supersession rules each enforces. `api/tests/test_memory.py` is the authoritative test of this module — this walkthrough runs it directly (against a real, disposable database) for everything the running app itself cannot exercise yet, and reads `docs/decisions.md`'s 2026-09-17 entries and `CHANGELOG.md`'s `0.3.8`/`0.3.9` sections, which record why.
 
-**Where this stops on purpose.** Nothing in the application calls this module yet. `clarify.py`
-and `review.py` still write `memory`/`schema_notes` rows through their own inline `INSERT`
-statements — unchanged by this ticket, recorded as a known follow-up in
-`docs/decisions.md` (2026-09-17, "`M3-STORE-BE-076` rebuilt fresh..."). There is also no memory
-screen (`M3-MEM-FE-083`, not built) and no clarification-answering UI that would call
-`write_memory_fact` for you (`M3-REVIEW-FE-073` renders questions but nothing saves an answer
-into `memory` through this module). So this walkthrough calls `askwell.memory`'s functions
-directly, inside the API container, the same way `M3-RAISE-BE-071`'s Part F exercised
-`column_distribution_evidence` before anything called it either. Every `psql` query below is
-read-only or a scripted setup step, never a stand-in for a UI action that exists.
+**Where this stops on purpose — read this before reporting anything below as a defect.**
+
+`askwell.memory` has almost no caller in the running application yet:
+
+- Answering a clarification (`api/src/askwell/review.py`, `answer_clarification`) writes straight into `memory` with its own hand-rolled `INSERT`, not `write_memory_fact` — this predates this ticket (`M3-REVIEW-BE-072a`) and is filed as issue **#282**, deliberately not rewired here per `AGENTS.md` §4's "touches more than three files, agree first." Practically: answering a clarification through the real UI does produce a correctly-shaped row (origin `clarification`, confidence `1.000`), because `review.py`'s own constant happens to match this module's, but a **second** answer for the same subject will **not** supersede the first the way `write_memory_fact` would — it will sit active alongside it. That is `review.py`'s gap, not this module's; §2 below shows it.
+- `write_schema_note` has **no caller anywhere in the app.** Nothing writes an inferred or user schema note today — `schema_notes` is read (`api/src/askwell/clarify.py`, the suppression check) but never written outside this module's own tests and migrations. §3 below seeds rows directly to exercise the store and the delete-source cascade.
+- `DELETE /sources/{source_id}` (`api/src/askwell/sources.py`, `delete_source_route`) exists and is what removes schema notes on source deletion, but **no button in the web app calls it.** The Library screen's per-row **Delete** button calls `DELETE /documents/{document_id}` (`M2-DELETE-FE-062`), a different, document-level route. Deleting a whole source is only reachable by calling the API directly — §3 uses `curl` for exactly that one action and names it as a gap rather than pretending a button exists.
+- `correct_memory_fact`/`correct_schema_note` and `get_active_memory_facts`/`get_active_schema_notes` are not exposed over HTTP at all.
+
+None of this is a defect in this ticket — the store is scoped to "writing and superseding for both stores," and wiring it into the clarification/schema-inference flows is out of scope (tracked separately). It does mean most of this ticket is verifiable only through its own test suite and direct database inspection, not by clicking. Sections below say which is which.
 
 ---
 
@@ -39,6 +24,7 @@ read-only or a scripted setup step, never a stand-in for a UI action that exists
 
 ```
 cd ~/external/quantum-plus/askwell
+mkdir -p askwell-test-material
 ```
 
 If you have never run Askwell before:
@@ -47,9 +33,13 @@ If you have never run Askwell before:
 cp -n .env.example .env
 ```
 
-Find `POSTGRES_APP_PASSWORD` in `.env` and put any word after the `=` if it is blank.
-`ASKWELL_ROOTS_MOUNT` and the inference model path are not needed for this walkthrough — nothing
-here ingests a document or asks a question.
+Open `.env`. Find `ASKWELL_ROOTS_MOUNT=` and set it to the folder above, with your own path:
+
+```
+ASKWELL_ROOTS_MOUNT=/home/you/external/quantum-plus/askwell/askwell-test-material
+```
+
+Find `POSTGRES_APP_PASSWORD` and put any word after the `=` if it is blank. Find `ASKWELL_EMBEDDING_MODEL_PATH` and confirm it points at a model that actually exists on this machine.
 
 ---
 
@@ -61,8 +51,7 @@ here ingests a document or asks a question.
 podman compose down -v
 ```
 
-**You should see:** lines about containers and volumes being removed, or a note there was
-nothing to remove.
+**You should see:** lines about containers and volumes being removed, or a note there was nothing to remove.
 
 ### 2. Run the checks
 
@@ -70,517 +59,220 @@ nothing to remove.
 scripts/dev.sh check
 ```
 
-**You should see:** lint, format, typecheck and test stages finish without red error text,
-including `api/tests/test_memory.py`'s cases (`test_answering_a_clarification_writes_a_full_confidence_user_fact`,
-`test_correcting_supersedes_and_the_old_value_stays_readable`,
-`test_an_inference_never_overwrites_a_user_supplied_fact`,
-`test_general_memory_survives_a_deleted_source_and_says_so`, and the rest).
+**You should see:** lint, format, typecheck and unmarked tests finish without red error text.
 
-### 3. Bring the stack up
+### 3. Bring the stack up and migrate
 
 ```
 podman compose up -d
-```
-
-**You should see:** `postgres`, `redis`, `egress-proxy`, `api`, `worker` reported as started.
-Wait about thirty seconds.
-
-### 4. Create the database tables
-
-```
 scripts/dev.sh db upgrade head
 ```
 
-**You should see:** migration lines finish with no error, including `2ae457a0587a` (adds
-`memory.source_id`). Confirm the column exists:
+**You should see:** `postgres`, `redis`, `egress-proxy`, `api`, `worker` reported as started, then migration lines finishing with no error.
+
+### 4. Start native inference, on the host
 
 ```
-scripts/dev.sh psql
+scripts/dev.sh inference
 ```
 
-```sql
-\d memory
-```
+Leave this running in its own terminal for the rest of this document. Wait for it to report the embedding role `ready`.
 
-**You should see:** a `source_id` column (`uuid`, nullable), plus a foreign key to `sources`
-and an index `ix_memory_source_id`. Keep this `psql` session open in its own terminal for the
-rest of the walkthrough.
+### 5. Open the app and nominate the test folder
 
-### 5. Open the app and confirm the shell still loads
+Open a browser at `http://127.0.0.1:8000`. **You should see:** the Askwell shell load with no sign-in prompt.
 
-Open a browser at:
+Click **Settings**, scroll to **Folders Askwell may read**, and nominate:
 
 ```
-http://127.0.0.1:8000
+/home/you/external/quantum-plus/askwell/askwell-test-material
 ```
 
-**You should see:** the Askwell shell load with no sign-in prompt. This confirms the stack is
-sane before testing code no screen in it reaches yet — nothing past this step uses the browser.
+Click **Add a source** in the sidebar, choose that folder, and wait for the **Library** screen to show at least one file as **Ready**. Any small text file works — nothing here depends on its content.
 
 ---
 
-## Part A — answering a clarification writes a full-confidence, user-supplied fact
+## 1. What the real UI still writes correctly (and what it does not)
 
-### 6. Write a fact the way answering a clarification would
+### 6. Get a pending clarification to answer
 
-```bash
-scripts/dev.sh run python3 - <<'PY'
-import asyncio
-from askwell.config import Settings
-from askwell.db import build_engine, session_factory
-from askwell.db.engine import session_scope
-from askwell.memory import FULL_CONFIDENCE, write_memory_fact
+If **Clarifications** in the sidebar shows nothing pending, seed one:
 
-async def main() -> None:
-    engine = build_engine(Settings())
-    factory = session_factory(engine)
-    async with session_scope(factory) as session:
-        fact_id = await write_memory_fact(
-            session,
-            subject="rfq",
-            fact="Request for Quotation",
-            origin="clarification",
-            confidence=FULL_CONFIDENCE,
-        )
-        print(fact_id)
-    await engine.dispose()
-
-asyncio.run(main())
-PY
+```
+scripts/dev.sh psql <<'SQL'
+SELECT id FROM sources WHERE status = 'ready' LIMIT 1;
+SQL
 ```
 
-**You should see:** a printed UUID — no error.
+Copy the `id` printed, then (substituting it below):
 
-### 7. Confirm it in the database directly
-
-```sql
-SELECT subject, fact, origin, confidence, superseded_by FROM memory WHERE subject = 'rfq';
+```
+scripts/dev.sh psql <<'SQL'
+INSERT INTO clarifications (id, source_id, subject, question, evidence, rank, status, asked_at)
+VALUES (
+  '33333333-3333-3333-3333-333333333331',
+  '<source id from above>',
+  'test.subject_one',
+  'What does subject_one mean?',
+  '{"kind":"unavailable","reason":"seeded for M3-STORE-BE-076","current_inference":null}'::jsonb,
+  1, 'pending', now()
+);
+SQL
 ```
 
-**You should see:** one row — `fact = 'Request for Quotation'`, `origin = 'clarification'`,
-`confidence = 1.00` (or `1`), `superseded_by` = `NULL`.
+### 7. Answer it through the real screen
 
-```sql
-SELECT event_type, payload FROM audit_decisions WHERE payload->>'subject' = 'rfq';
+Click **Clarifications**. **You should see:** a card for `test.subject_one`. Type `first answer` into its text field and click **Save**.
+
+**You should see:** the card disappears from the pending list (or the count above it decreases by one).
+
+### 8. Confirm the fact it wrote
+
+```
+scripts/dev.sh psql <<'SQL'
+SELECT subject, fact, origin, confidence, superseded_by FROM memory WHERE subject = 'test.subject_one';
+SQL
 ```
 
-**You should see:** one row, `event_type = 'memory_written'` — the write is itself a
-decisions-store record (C6), whether or not anything downstream ever displays it.
+**You should see:** exactly one row — `test.subject_one | first answer | clarification | 1.000 | <null>`. This matches the ticket's own acceptance criterion: answering a clarification writes a fact with origin `clarification` and full confidence.
+
+### 9. Show the gap: a second answer for the same subject does not supersede
+
+Seed a second pending clarification for the *same* subject and answer it too:
+
+```
+scripts/dev.sh psql <<'SQL'
+INSERT INTO clarifications (id, source_id, subject, question, evidence, rank, status, asked_at)
+VALUES (
+  '33333333-3333-3333-3333-333333333332',
+  '<same source id as step 6>',
+  'test.subject_one',
+  'What does subject_one really mean?',
+  '{"kind":"unavailable","reason":"seeded for M3-STORE-BE-076","current_inference":null}'::jsonb,
+  2, 'pending', now()
+);
+SQL
+```
+
+Answer it through the **Clarifications** screen the same way, typing `second answer`.
+
+```
+scripts/dev.sh psql <<'SQL'
+SELECT fact, origin, superseded_by FROM memory WHERE subject = 'test.subject_one' ORDER BY created_at;
+SQL
+```
+
+**You should see: two active rows** — `first answer` with `superseded_by` still `<null>`, and `second answer` also with `superseded_by <null>`. Neither points at the other. This is issue **#282**'s gap, not a new defect: `write_memory_fact`, if `review.py` called it, would have retired `first answer` the moment `second answer` was written (that exact behaviour is `test_a_second_user_origin_write_supersedes_not_double_actives` in §2 below). It is expected, documented and out of scope to fix here.
 
 ---
 
-## Part B — correcting supersedes; the old value stays readable
+## 2. What only the test suite can show: supersession, discard, correction
 
-### 8. Correct the fact just written
+Everything this ticket actually adds — `correct_memory_fact`, the inference-discard rule, retrieval precedence, the schema-note equivalents — has no route to click through. Run the module's own tests against a real, disposable database:
 
-```bash
-scripts/dev.sh run python3 - <<'PY'
-import asyncio
-import uuid
-from askwell.config import Settings
-from askwell.db import build_engine, session_factory
-from askwell.db.engine import session_scope
-from askwell.memory import correct_memory_fact
-
-FACT_ID = uuid.UUID("<the-id-from-step-6>")
-
-async def main() -> None:
-    engine = build_engine(Settings())
-    factory = session_factory(engine)
-    async with session_scope(factory) as session:
-        new_id = await correct_memory_fact(
-            session, fact_id=FACT_ID, fact="the acronym used on the tender forms for Request for Quotation"
-        )
-        print(new_id)
-    await engine.dispose()
-
-asyncio.run(main())
-PY
+```
+scripts/dev.sh test-db api/tests/test_memory.py -v
 ```
 
-Fill in `<the-id-from-step-6>` with the UUID step 6 printed. **You should see:** a new, different
-UUID printed.
+**You should see:** every test named below reported `PASSED`, nothing skipped:
 
-### 9. Confirm the old row is unchanged and the new one is active
+| Test | What it proves, mapped to the ticket |
+| ---- | ------------------------------------ |
+| `test_answering_a_clarification_writes_a_full_confidence_user_fact` | AC: clarification answer → origin `clarification`, confidence `1.000` |
+| `test_correcting_supersedes_and_the_old_value_stays_readable` | AC: correction supersedes, old value stays readable |
+| `test_two_contradicting_user_answers_the_later_supersedes_both_visible` | Edge case: two contradicting user answers, later supersedes, both visible |
+| `test_a_second_user_origin_write_supersedes_not_double_actives` | The exact behaviour §1 step 9 showed is *missing* from the real UI path today |
+| `test_correcting_a_fact_that_no_longer_exists_raises` | `FactNotFound` on a stale id |
+| `test_correcting_an_already_superseded_fact_raises` | Edge case: a fact superseded twice — chain resolves correctly, re-correcting the old one fails rather than forking the chain |
+| `test_correcting_an_inferred_fact_is_rejected` | `CannotCorrectInference` — nothing to "correct" about a guess |
+| `test_an_inference_never_overwrites_a_user_supplied_fact` | AC: inference never overwrites a user-supplied fact |
+| `test_an_inference_for_a_new_subject_is_stored` | An inference is only discarded when it collides, not always |
+| `test_retrieval_orders_later_before_earlier_within_the_same_origin` | Retrieval precedence: later over earlier |
+| `test_retrieval_orders_user_before_inferred_regardless_of_recency` | Retrieval precedence: user over inferred |
+| `test_general_memory_survives_a_deleted_source_and_says_so` | Edge case: a fact whose source no longer exists |
+| `test_a_fact_with_no_source_is_not_labelled_as_from_a_deleted_source` | The deleted-source label does not leak onto unrelated facts |
+| `test_writing_and_correcting_a_schema_note`, `test_a_second_user_origin_note_supersedes_not_double_actives`, `test_correcting_an_inferred_schema_note_is_rejected` | The schema-note store mirrors every rule above |
+| `test_deleting_a_source_removes_its_schema_notes_but_not_general_memory` | AC: deleting a source removes its schema notes and leaves general memory |
 
-```sql
-SELECT id, fact, origin, superseded_by FROM memory WHERE subject = 'rfq' ORDER BY created_at;
-```
-
-**You should see:** two rows. The first (step 6's id): `fact = 'Request for Quotation'`,
-unchanged, `superseded_by` = the second row's id. The second: `fact = 'the acronym used on the
-tender forms for Request for Quotation'`, `origin = 'correction'`, `superseded_by` = `NULL`.
-This is what "the old value remains readable in history" means concretely — the row was never
-`UPDATE`d, only pointed past.
+If any of these is not `PASSED`, stop — that is a real regression, not a gap.
 
 ---
 
-## Part C — a fact superseded twice resolves to the newest, and both prior values stay visible
+## 3. Delete-source cascade, seen from the database directly
 
-### 10. Correct the same subject again
+Since nothing writes a schema note in the running app, and nothing in the web UI deletes a whole source, this section seeds both directly and drives the one action (`DELETE /sources/{id}`) only reachable via `curl`.
 
-Repeat step 8's script, pointing `FACT_ID` at the id step 8 printed, with
-`fact="RFQ — Request for Quotation"`.
-
-**You should see:** a third UUID printed.
-
-### 11. Walk the chain
-
-```sql
-SELECT id, fact, superseded_by FROM memory WHERE subject = 'rfq' ORDER BY created_at;
-```
-
-**You should see:** three rows, chained id → id → id → `NULL`. Only the last has
-`superseded_by IS NULL`. All three values (`Request for Quotation`, the acronym-on-forms
-sentence, `RFQ — Request for Quotation`) are still present — nothing was deleted or overwritten
-at any step.
-
----
-
-## Part D — an inference never overwrites a user-supplied fact
-
-### 12. Try to write an inferred fact for the same subject
-
-```bash
-scripts/dev.sh run python3 - <<'PY'
-import asyncio
-from askwell.config import Settings
-from askwell.db import build_engine, session_factory
-from askwell.db.engine import session_scope
-from askwell.memory import write_memory_fact
-
-async def main() -> None:
-    engine = build_engine(Settings())
-    factory = session_factory(engine)
-    async with session_scope(factory) as session:
-        result = await write_memory_fact(
-            session, subject="rfq", fact="a low-confidence guess", origin="inferred", confidence=0.3
-        )
-        print(result)
-    await engine.dispose()
-
-asyncio.run(main())
-PY
-```
-
-**You should see:** `None` printed — nothing written.
-
-### 13. Confirm nothing changed in the database and the discard was recorded
-
-```sql
-SELECT count(*) FROM memory WHERE subject = 'rfq' AND fact = 'a low-confidence guess';
-```
-
-**You should see:** `0`.
-
-```sql
-SELECT event_type, payload FROM audit_decisions WHERE payload->>'subject' = 'rfq' AND event_type = 'memory_discarded';
-```
-
-**You should see:** one row, `payload` naming the reason (`active user-supplied fact already
-exists`) — the discard itself is a decisions-store record, not a silent no-op.
-
-### 14. Confirm an inference for a genuinely new subject is stored normally
-
-```bash
-scripts/dev.sh run python3 - <<'PY'
-import asyncio
-from askwell.config import Settings
-from askwell.db import build_engine, session_factory
-from askwell.db.engine import session_scope
-from askwell.memory import write_memory_fact
-
-async def main() -> None:
-    engine = build_engine(Settings())
-    factory = session_factory(engine)
-    async with session_scope(factory) as session:
-        fact_id = await write_memory_fact(
-            session, subject="cda", fact="likely a confidential disclosure agreement", origin="inferred", confidence=0.4
-        )
-        print(fact_id)
-    await engine.dispose()
-
-asyncio.run(main())
-PY
-```
-
-**You should see:** a UUID printed — nothing already existed for `cda`, so the guess is stored.
-
-```sql
-SELECT origin, confidence FROM memory WHERE subject = 'cda';
-```
-
-**You should see:** `origin = 'inferred'`, `confidence = 0.40`.
-
----
-
-## Part E — retrieval precedence: user before inferred, newer before older within each
-
-### 15. Read every active fact back with no subject filter
-
-```bash
-scripts/dev.sh run python3 - <<'PY'
-import asyncio
-from askwell.config import Settings
-from askwell.db import build_engine, session_factory
-from askwell.db.engine import session_scope
-from askwell.memory import get_active_memory_facts
-
-async def main() -> None:
-    engine = build_engine(Settings())
-    factory = session_factory(engine)
-    async with session_scope(factory) as session:
-        for f in await get_active_memory_facts(session):
-            print(f.subject, f.origin, f.fact)
-    await engine.dispose()
-
-asyncio.run(main())
-PY
-```
-
-**You should see:** `rfq` (origin `correction`) listed before `cda` (origin `inferred`), even
-though `cda` was written more recently — user-origin sorts first regardless of recency. If Parts
-A–D above left more than these two subjects active, confirm by eye that every `correction`/
-`clarification`/`manual` row precedes every `inferred` row in the printed order.
-
----
-
-## Part F — general memory survives a deleted source and says so
-
-### 16. Create a source and a fact that names it
-
-```sql
-INSERT INTO sources (id, kind, name) VALUES (gen_random_uuid(), 'file', 'tender-files') RETURNING id;
-```
-
-Note the returned id as `<source-id>`.
-
-```bash
-scripts/dev.sh run python3 - <<'PY'
-import asyncio
-import uuid
-from askwell.config import Settings
-from askwell.db import build_engine, session_factory
-from askwell.db.engine import session_scope
-from askwell.memory import write_memory_fact
-
-SOURCE_ID = uuid.UUID("<source-id>")
-
-async def main() -> None:
-    engine = build_engine(Settings())
-    factory = session_factory(engine)
-    async with session_scope(factory) as session:
-        fact_id = await write_memory_fact(
-            session,
-            subject="tender-close",
-            fact="tenders close at noon on the stated date",
-            origin="manual",
-            source_id=SOURCE_ID,
-        )
-        print(fact_id)
-    await engine.dispose()
-
-asyncio.run(main())
-PY
-```
-
-**You should see:** a UUID printed.
-
-### 17. Soft-delete the source the way `askwell.sources.delete_source` does
-
-```sql
-UPDATE sources SET status = 'deleted', deleted_at = now() WHERE id = '<source-id>';
-```
-
-**You should see:** `UPDATE 1`.
-
-### 18. Confirm the fact survives and now says it came from a deleted source
-
-```bash
-scripts/dev.sh run python3 - <<'PY'
-import asyncio
-from askwell.config import Settings
-from askwell.db import build_engine, session_factory
-from askwell.db.engine import session_scope
-from askwell.memory import get_active_memory_facts
-
-async def main() -> None:
-    engine = build_engine(Settings())
-    factory = session_factory(engine)
-    async with session_scope(factory) as session:
-        for f in await get_active_memory_facts(session, subject="tender-close"):
-            print(f.fact, f.source_name, f.source_deleted)
-    await engine.dispose()
-
-asyncio.run(main())
-PY
-```
-
-**You should see:** `tenders close at noon on the stated date tender-files True` — the fact is
-still active, still names the source (`sources` rows are soft-deleted, never actually removed),
-and `source_deleted` reads `True`.
-
----
-
-## Part G — schema notes: writing, correcting, and inference discarded the same way
-
-### 19. Write an inferred note, then a user note for the same position
-
-```bash
-scripts/dev.sh run python3 - <<'PY'
-import asyncio
-import uuid
-from askwell.config import Settings
-from askwell.db import build_engine, session_factory
-from askwell.db.engine import session_scope
-from askwell.memory import write_schema_note
-
-SOURCE_ID = uuid.UUID("<source-id>")
-
-async def main() -> None:
-    engine = build_engine(Settings())
-    factory = session_factory(engine)
-    async with session_scope(factory) as session:
-        inferred_id = await write_schema_note(
-            session,
-            source_id=SOURCE_ID,
-            table_name="invoices",
-            column_name="st_cd",
-            description="a guess",
-            origin="inferred",
-            confidence=0.3,
-        )
-        user_id = await write_schema_note(
-            session,
-            source_id=SOURCE_ID,
-            table_name="invoices",
-            column_name="st_cd",
-            description="invoice status: O=open, P=paid, W=written off",
-            origin="user",
-        )
-        print("inferred", inferred_id)
-        print("user", user_id)
-    await engine.dispose()
-
-asyncio.run(main())
-PY
-```
-
-**You should see:** two different UUIDs printed.
-
-### 20. Confirm the inferred note was retired, not left active alongside the user one
-
-```sql
-SELECT id, description, origin, superseded_by FROM schema_notes
-WHERE source_id = '<source-id>' AND table_name = 'invoices' AND column_name = 'st_cd';
-```
-
-**You should see:** two rows — the inferred one with `superseded_by` pointing at the user one,
-the user one with `superseded_by` = `NULL`.
-
-### 21. Try to correct the inferred note directly — confirm it is rejected
-
-```bash
-scripts/dev.sh run python3 - <<'PY'
-import asyncio
-import uuid
-from askwell.config import Settings
-from askwell.db import build_engine, session_factory
-from askwell.db.engine import session_scope
-from askwell.memory import CannotCorrectInference, correct_schema_note
-
-NOTE_ID = uuid.UUID("<the-inferred-note-id-from-step-19>")
-
-async def main() -> None:
-    engine = build_engine(Settings())
-    factory = session_factory(engine)
-    async with session_scope(factory) as session:
-        try:
-            await correct_schema_note(session, note_id=NOTE_ID, description="a better guess")
-        except CannotCorrectInference:
-            print("rejected, as expected")
-    await engine.dispose()
-
-asyncio.run(main())
-PY
-```
-
-**You should see:** `rejected, as expected` — even a superseded inferred note (this one already
-lost to the user note in step 19) cannot be "corrected"; `correct_schema_note` only accepts an
-*active* `user`-origin row, and this one is neither.
-
----
-
-## Part H — deleting a source removes its schema notes; general memory is untouched
-
-This module does not delete anything itself — `askwell.sources.delete_source`
-(`M2-DELETE-BE-061`) does the deleting. This part confirms the shape `get_active_schema_notes`/
-`get_active_memory_facts` read back matches what that ticket's own manual test already
-established, now specifically for the tables this ticket wrote to.
-
-### 22. Delete the schema notes the way `delete_source` does
-
-```sql
-DELETE FROM schema_notes WHERE source_id = '<source-id>';
-```
-
-### 23. Confirm schema notes are gone, general memory is not
-
-```bash
-scripts/dev.sh run python3 - <<'PY'
-import asyncio
-import uuid
-from askwell.config import Settings
-from askwell.db import build_engine, session_factory
-from askwell.db.engine import session_scope
-from askwell.memory import get_active_memory_facts, get_active_schema_notes
-
-SOURCE_ID = uuid.UUID("<source-id>")
-
-async def main() -> None:
-    engine = build_engine(Settings())
-    factory = session_factory(engine)
-    async with session_scope(factory) as session:
-        notes = await get_active_schema_notes(session, source_id=SOURCE_ID)
-        facts = await get_active_memory_facts(session, subject="tender-close")
-        print("notes", len(notes))
-        print("facts", len(facts), facts[0].fact if facts else None)
-    await engine.dispose()
-
-asyncio.run(main())
-PY
-```
-
-**You should see:** `notes 0` and `facts 1 tenders close at noon on the stated date` — the
-general fact from Part F is still there, still labelled as coming from the now-deleted source.
-
----
-
-## Cleanup
+### 10. Seed a schema note and a source-attributed memory fact
 
 ```
-podman compose down -v
+scripts/dev.sh psql <<'SQL'
+INSERT INTO sources (id, kind, name, status, added_at)
+VALUES ('44444444-4444-4444-4444-444444444441', 'file', 'cascade-test-source', 'ready', now());
+
+INSERT INTO schema_notes (id, source_id, table_name, column_name, description, origin, confidence)
+VALUES (
+  '44444444-4444-4444-4444-444444444442',
+  '44444444-4444-4444-4444-444444444441',
+  'students', 'st_cd', 'student status code', 'user', 1.0
+);
+
+INSERT INTO memory (id, subject, fact, origin, confidence, source_id)
+VALUES (
+  '44444444-4444-4444-4444-444444444443',
+  'test.cascade_subject', 'learned from cascade-test-source', 'clarification', 1.0,
+  '44444444-4444-4444-4444-444444444441'
+);
+SQL
 ```
 
-Restore `.env` if you changed anything beyond what **Before you start** asked for.
+### 11. Confirm both are visible before deleting anything
+
+```
+scripts/dev.sh psql <<'SQL'
+SELECT table_name, column_name, description FROM schema_notes WHERE source_id = '44444444-4444-4444-4444-444444444441';
+SELECT subject, fact FROM memory WHERE subject = 'test.cascade_subject';
+SQL
+```
+
+**You should see:** one `schema_notes` row (`students`, `st_cd`, `student status code`) and one `memory` row (`test.cascade_subject`, `learned from cascade-test-source`).
+
+### 12. Delete the source — the one step with no button, via `curl`
+
+```
+curl -X DELETE http://127.0.0.1:8000/sources/44444444-4444-4444-4444-444444444441
+```
+
+**You should see:** a JSON body like `{"deleted": true, "source_id": "4444...", "documents_deleted": 0}`.
+
+### 13. Confirm the note is gone and the memory fact survived, labelled
+
+```
+scripts/dev.sh psql <<'SQL'
+SELECT count(*) FROM schema_notes WHERE source_id = '44444444-4444-4444-4444-444444444441';
+SELECT m.subject, m.fact, s.name, s.status, s.deleted_at IS NOT NULL AS source_deleted
+FROM memory m JOIN sources s ON s.id = m.source_id
+WHERE m.subject = 'test.cascade_subject';
+SQL
+```
+
+**You should see:** the schema-note count is `0`, and the memory row still reads `test.cascade_subject | learned from cascade-test-source | cascade-test-source | deleted | t` — the joined shape `get_active_memory_facts` returns (`source_name = 'cascade-test-source'`, `source_deleted = true`), confirmed here as the raw join since no screen renders it yet.
+
+### 14. Clean up
+
+```
+scripts/dev.sh psql <<'SQL'
+DELETE FROM clarifications WHERE subject = 'test.subject_one';
+DELETE FROM memory WHERE subject IN ('test.subject_one', 'test.cascade_subject');
+SQL
+```
 
 ---
 
 ## Known gaps
 
-- **Nothing in the application calls this module.** `clarify.py` and `review.py` still write
-  `memory`/`schema_notes` through their own inline `INSERT` statements, exactly as before this
-  ticket (`docs/decisions.md`, 2026-09-17). Answering a real clarification on the
-  `/clarifications` screen today does **not** go through `write_memory_fact` — this walkthrough
-  calls it directly because nothing else does yet. Do not report that gap as a defect of this
-  ticket; wiring the call sites over is explicitly named as a separate, smaller follow-up in the
-  decision log, not done here.
-- **No memory screen.** `M3-MEM-FE-083` (route `/memory`, `docs/ux/memory.md`) is not built.
-  There is no way to see a fact, its origin marker, or its supersession history by clicking
-  anything — every check above is a `psql` query or a printed value from a direct function call.
-- **No import/export.** Cross-machine memory portability is explicitly out of this ticket's
-  scope and not tested here.
-- **No automatic expiry**, by design — `docs/memory-and-clarification.md` and the ticket's own
-  description both state memory does not expire and supersession is manual. This walkthrough
-  does not test for absence of expiry beyond not doing anything that would trigger it, since
-  nothing in the code attempts to.
+- **Answering the same subject twice through the real UI does not supersede** (§1 step 9) — `review.py`'s `answer_clarification` bypasses `write_memory_fact` entirely. Filed as issue **#282**; deliberately not fixed by this ticket.
+- **No caller writes a `schema_notes` row anywhere in the app.** `write_schema_note` exists and is fully tested, but there is no inference pipeline or UI action that produces a schema note today. §3 exercises the store only via seeded rows.
+- **No button deletes a whole source.** `DELETE /sources/{id}` exists and is what this ticket's "deleting a source" acceptance criterion depends on, but it is reachable only via direct API call, never through the Library screen (which deletes individual documents, a different route).
+- **`correct_memory_fact`, `correct_schema_note`, `get_active_memory_facts`, `get_active_schema_notes` are not exposed over HTTP.** Verified here only through `test-db` and raw SQL.
+- **No memory screen.** `M3-MEM-FE-083`, not built — there is nowhere in the app to see history, a struck-through old value, or a "learned from a deleted source" label rendered as UI.
+- **Import/export across machines is not v1** — out of scope per the ticket itself.
