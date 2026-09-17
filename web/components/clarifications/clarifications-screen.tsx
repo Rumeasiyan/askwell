@@ -453,7 +453,10 @@ function ItemConfirmation({
   );
 }
 
-function EvidenceBlock({ evidence }: { evidence: EvidenceDisplay | null }) {
+/** Exported for `ask-screen.tsx`'s inline clarification (`M3-INLINE-FE-085`)
+ * — the same evidence rendering, whether the question is answered here or
+ * inline in the conversation. */
+export function EvidenceBlock({ evidence }: { evidence: EvidenceDisplay | null }) {
   const mono = { fontFamily: "var(--font-mono)", color: "var(--muted)" } as const;
 
   if (evidence === null) {

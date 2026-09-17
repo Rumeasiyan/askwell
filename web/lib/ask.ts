@@ -41,6 +41,43 @@ export interface AskCitationData {
   quoted_span: string | null;
 }
 
+/** `M3-INLINE-FE-085`: emitted instead of the next `step`/`token` the
+ * moment `askwell.ask` finds a still-pending contradiction or
+ * document-identity clarification relevant to this question — the turn
+ * pauses server-side until `POST /ask/{id}/clarify/resolve` wakes it.
+ * `evidence` is the same wire shape `lib/clarifications.ts`'s
+ * `evidenceDisplay` already turns into a renderable union. */
+export interface AskClarificationData {
+  message_id: string;
+  conversation_id: string;
+  clarification_id: string;
+  subject: string;
+  question: string;
+  options: string[] | null;
+  evidence: Record<string, unknown> | null;
+  deferred_count: number;
+}
+
+/** The turn is no longer paused — answered or skipped, `askwell.ask`'s own
+ * `resolution["skipped"]`. Composition continues immediately after this. */
+export interface AskClarificationResolvedData {
+  message_id: string;
+  conversation_id: string;
+  clarification_id: string;
+  skipped: boolean;
+}
+
+/** The live turn's own paused-on-a-clarification state (`ask-state.tsx`'s
+ * `AskTurn.blocking`), built from one `clarification` event. */
+export interface BlockingClarification {
+  id: string;
+  subject: string;
+  question: string;
+  options: string[] | null;
+  evidence: Record<string, unknown> | null;
+  deferredCount: number;
+}
+
 export type AskStatus = "completed" | "stopped" | "failed";
 
 export interface AskDoneData {
@@ -60,6 +97,8 @@ export type AskEvent =
   | { event: "step"; data: AskStepData }
   | { event: "token"; data: AskTokenData }
   | { event: "citation"; data: AskCitationData }
+  | { event: "clarification"; data: AskClarificationData }
+  | { event: "clarification_resolved"; data: AskClarificationResolvedData }
   | { event: "done"; data: AskDoneData };
 
 /**
@@ -89,6 +128,10 @@ export function parseSseFrame(frame: string): AskEvent | null {
       return { event: "token", data: data as AskTokenData };
     case "citation":
       return { event: "citation", data: data as AskCitationData };
+    case "clarification":
+      return { event: "clarification", data: data as AskClarificationData };
+    case "clarification_resolved":
+      return { event: "clarification_resolved", data: data as AskClarificationResolvedData };
     case "done":
       return { event: "done", data: data as AskDoneData };
     default:
@@ -168,6 +211,40 @@ export async function stopAsk(messageId: string): Promise<void> {
   if (!response.ok && response.status !== 404) {
     throw new Error(`Askwell answered ${response.status} to stop.`);
   }
+}
+
+/**
+ * Wakes a turn paused on an inline clarification (`M3-INLINE-FE-085`). The
+ * browser has already written the answer or the skip through the ordinary
+ * `answerClarification`/`skipClarification` (`lib/clarifications.ts`) before
+ * calling this — it only tells the paused generation to read that back and
+ * continue, never a second way to write a `memory` row.
+ */
+export async function resolveInlineClarification(
+  messageId: string,
+  clarificationId: string,
+): Promise<void> {
+  const response = await fetch(`/ask/${messageId}/clarify/resolve`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ clarification_id: clarificationId }),
+  });
+  if (!response.ok) {
+    throw new Error(`Askwell answered ${response.status} to that clarification.`);
+  }
+}
+
+// A local counter of inline clarifications shown (this ticket's own
+// Analytics Events line) — in-memory only, never persisted or transmitted
+// (C1), same shape as `answer-annotations.ts`'s `conflictsPresentedCount`.
+let inlineClarificationsShownCount = 0;
+
+export function recordInlineClarificationShown(): void {
+  inlineClarificationsShownCount += 1;
+}
+
+export function getInlineClarificationsShownCount(): number {
+  return inlineClarificationsShownCount;
 }
 
 /**

@@ -26,6 +26,7 @@ import pytest
 import pytest_asyncio
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
+from sqlalchemy import text
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -1098,7 +1099,7 @@ def test_two_passages_disagreeing_on_the_asked_fact_are_recorded_as_a_conflict(
     client = _app(settings, monkeypatch, tmp_path, database_url)
     with client:
         _with_session(client)
-        response = client.post("/ask", json={"question": "How much notice must be given?"})
+        response = client.post("/ask", json={"question": "What is the notice period?"})
         events = _events(response.text)
         done = next(data for kind, data in events if kind == "done")
         assert done["status"] == "completed"
@@ -1709,6 +1710,228 @@ def test_generation_is_bounded_so_abandoned_turns_do_not_all_run_at_once(
         assert turn_b.status == "completed"
 
     asyncio.run(run())
+
+
+# --- inline clarification, `M3-INLINE-FE-085` -------------------------------
+
+
+def _seed_pending_clarification(
+    database_url: str, *, subject: str, evidence: dict[str, Any]
+) -> uuid.UUID:
+    """A pending contradiction/document-identity row, inserted directly —
+    this module's own concern is what `askwell.ask` does with a row already
+    sitting in `clarifications`, not re-deriving one through
+    `askwell.clarify`'s detection heuristics, which `test_inline_clarify.py`
+    already covers on its own."""
+    clarification_id = uuid.uuid4()
+    with psycopg.connect(database_url, autocommit=True) as db:
+        source_id = db.execute("SELECT id FROM sources LIMIT 1").fetchone()[0]
+        db.execute(
+            "INSERT INTO clarifications (id, source_id, subject, question, evidence, status) "
+            "VALUES (%s, %s, %s, %s, %s, 'pending')",
+            (
+                clarification_id,
+                source_id,
+                subject,
+                f"Which source is current for {subject}?",
+                json.dumps(evidence),
+            ),
+        )
+    return clarification_id
+
+
+async def _run_turn_until_clarification(
+    settings: Settings,
+    factory: async_sessionmaker[AsyncSession],
+    fake: _FakeInferenceClient,
+    question: str,
+    conversation_id: uuid.UUID,
+) -> tuple[Any, asyncio.Task[None]]:
+    turn = ask_module._Turn(message_id=uuid.uuid4(), conversation_id=conversation_id)
+    task = asyncio.create_task(ask_module._generate(settings, factory, turn, question, None))
+    for _ in range(200):
+        if any(event.kind == "clarification" for event in turn.events):
+            return turn, task
+        await asyncio.sleep(0.01)
+    task.cancel()
+    raise AssertionError("no clarification event arrived")
+
+
+async def test_a_relevant_contradiction_pauses_the_turn_and_answering_resolves_it(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    database_url: str,
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """`docs/ux/ask.md` §5's own worked example: a question that depends on
+    a real, still-pending contradiction pauses composition, renders inline
+    with its evidence, and — once answered through the ordinary
+    `askwell.review` path and resolved via `POST /ask/{id}/clarify/resolve`
+    — completes using the resolved fact rather than presenting both sides."""
+    _truncate(database_url)
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "Notice must be given ninety days in advance.", vector)
+    clarification_id = _seed_pending_clarification(
+        database_url,
+        subject="the notice period",
+        evidence={
+            "kind": "contradiction",
+            "trigger": "contradiction",
+            "passages": [
+                {
+                    "document": "handbook-2024.pdf",
+                    "value": "90 days",
+                    "page": 1,
+                    "date": "2024-01-10",
+                    "text": "...",
+                },
+                {
+                    "document": "policy-2025.pdf",
+                    "value": "45 days",
+                    "page": 2,
+                    "date": "2025-03-20",
+                    "text": "...",
+                },
+            ],
+        },
+    )
+    seen_prompts: list[str] = []
+
+    class _RecordingClient(_FakeInferenceClient):
+        async def stream_generate(
+            self,
+            prompt: str,
+            *,
+            max_tokens: int = 512,
+            temperature: float = 0.2,
+            timeout_seconds: float = 0.0,
+        ) -> AsyncIterator[StreamChunk]:
+            seen_prompts.append(prompt)
+            async for chunk in super().stream_generate(
+                prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                timeout_seconds=timeout_seconds,
+            ):
+                yield chunk
+
+    fake = _RecordingClient(
+        settings,
+        tokens=[
+            "Notice must be given ninety days in advance [1]. "
+            "Resolved by memory: the notice period is ninety days.\n"
+        ],
+        vector=vector,
+    )
+    monkeypatch.setattr(ask_module, "InferenceClient", lambda _settings: fake)
+
+    conversation_id = uuid.uuid4()
+    with psycopg.connect(database_url, autocommit=True) as db:
+        db.execute("INSERT INTO conversations (id) VALUES (%s)", (conversation_id,))
+
+    turn, task = await _run_turn_until_clarification(
+        settings, factory, fake, "What is the notice period?", conversation_id
+    )
+    clarification_event = next(e for e in turn.events if e.kind == "clarification")
+    assert clarification_event.data["subject"] == "the notice period"
+    assert clarification_event.data["clarification_id"] == str(clarification_id)
+    assert clarification_event.data["deferred_count"] == 0
+    assert turn.status == "running"
+
+    # The browser answers through the ordinary queue endpoint
+    # (`askwell.review.answer_clarification`), never a second write path.
+    from askwell.review import answer_clarification
+
+    async with factory() as db:
+        await answer_clarification(db, clarification_id, "handbook-2024.pdf")
+        await db.commit()
+
+    # Then wakes the paused turn — `POST /ask/{id}/clarify/resolve`'s own job.
+    assert turn.clarify_id == clarification_id
+    async with factory() as db:
+        row = (
+            await db.execute(
+                text("SELECT status, answer FROM clarifications WHERE id = :id"),
+                {"id": clarification_id},
+            )
+        ).first()
+    turn.clarify_result = {"skipped": row[0] == "skipped", "answer": row[1]}
+    turn.clarify_event.set()
+
+    await task
+    assert turn.status == "completed"
+    assert any(e.kind == "clarification_resolved" for e in turn.events)
+
+    assert any("the notice period: handbook-2024.pdf" in prompt for prompt in seen_prompts)
+    with psycopg.connect(database_url, autocommit=True) as db:
+        content = db.execute("SELECT content FROM messages WHERE role = 'assistant'").fetchone()[0]
+    assert "Resolved by memory" in content
+    _truncate(database_url)
+
+
+async def test_skipping_an_inline_clarification_states_the_assumption_used(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    database_url: str,
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """`docs/ux/ask.md` §5's own acceptance criterion: skipping continues
+    with the inference and the answer names which assumption it used."""
+    _truncate(database_url)
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "Notice must be given ninety days in advance.", vector)
+    clarification_id = _seed_pending_clarification(
+        database_url,
+        subject="the notice period",
+        evidence={
+            "kind": "contradiction",
+            "trigger": "contradiction",
+            "passages": [
+                {
+                    "document": "handbook-2024.pdf",
+                    "value": "90 days",
+                    "page": 1,
+                    "date": "2024-01-10",
+                    "text": "...",
+                },
+                {
+                    "document": "policy-2025.pdf",
+                    "value": "45 days",
+                    "page": 2,
+                    "date": "2025-03-20",
+                    "text": "...",
+                },
+            ],
+        },
+    )
+    fake = _FakeInferenceClient(
+        settings,
+        tokens=["Notice must be given ninety days in advance [1]."],
+        vector=vector,
+    )
+    monkeypatch.setattr(ask_module, "InferenceClient", lambda _settings: fake)
+
+    conversation_id = uuid.uuid4()
+    with psycopg.connect(database_url, autocommit=True) as db:
+        db.execute("INSERT INTO conversations (id) VALUES (%s)", (conversation_id,))
+
+    turn, task = await _run_turn_until_clarification(
+        settings, factory, fake, "What is the notice period?", conversation_id
+    )
+    from askwell.review import skip_clarification
+
+    async with factory() as db:
+        await skip_clarification(db, clarification_id)
+        await db.commit()
+
+    turn.clarify_result = {"skipped": True, "answer": None}
+    turn.clarify_event.set()
+    await task
+    assert turn.status == "completed"
+    assert "policy-2025.pdf" in turn.text
+    assert "Skipped" in turn.text
+
+    _truncate(database_url)
 
 
 def test_the_same_question_asked_twice_produces_two_completed_answers(

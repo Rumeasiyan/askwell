@@ -90,6 +90,7 @@ from askwell.config import Settings
 from askwell.db.engine import session_scope
 from askwell.inference.client import InferenceClient, InferenceFailed, InferenceUnavailable
 from askwell.ingest import coverage
+from askwell.inline_clarify import default_assumption, find_blocking
 from askwell.logging import get_logger
 from askwell.retrieve import Candidate, candidate_score, retrieve
 from askwell.traces import TraceRing
@@ -124,7 +125,7 @@ Status = Literal["running", "completed", "stopped", "failed"]
 
 @dataclass(frozen=True, slots=True)
 class _Event:
-    kind: Literal["step", "token", "citation", "done"]
+    kind: Literal["step", "token", "citation", "clarification", "clarification_resolved", "done"]
     data: dict[str, Any]
 
 
@@ -138,9 +139,24 @@ class _Turn:
     text: str = ""
     status: Status = "running"
     stop_requested: bool = False
+    # `M3-INLINE-FE-085`: set while this turn is paused on an inline
+    # clarification, `None` the rest of the time. `clarify_event` is what
+    # `POST /ask/{id}/clarify/resolve` sets once the browser has answered or
+    # skipped it through the ordinary `askwell.review` endpoints — a plain
+    # `asyncio.Event` rather than a `Future`, since a turn only ever pauses
+    # on one clarification and the same object can be waited on more than
+    # once without the "already retrieved" `InvalidStateError` a `Future`
+    # would raise on a second `await`.
+    clarify_id: uuid.UUID | None = None
+    clarify_event: asyncio.Event = field(default_factory=asyncio.Event)
+    clarify_result: dict[str, Any] | None = None
 
     def emit(
-        self, kind: Literal["step", "token", "citation", "done"], data: dict[str, Any]
+        self,
+        kind: Literal[
+            "step", "token", "citation", "clarification", "clarification_resolved", "done"
+        ],
+        data: dict[str, Any],
     ) -> None:
         # Both ids on every event, for the same reason: the browser cannot know
         # either one until the server says so. `conversation_id` is resolved or
@@ -286,8 +302,23 @@ class AskRequest(BaseModel):
     source_id: uuid.UUID | None = None
 
 
+class ClarifyResolveRequest(BaseModel):
+    """`POST /ask/{message_id}/clarify/resolve`'s only body: which pending
+    clarification to check for, so a stale or mismatched id is refused by
+    name rather than silently resuming the wrong turn."""
+
+    clarification_id: uuid.UUID
+
+
 class _ConversationNotFound(Exception):
     pass
+
+
+class _ClarificationAbandoned(Exception):
+    """The browser stopped this turn while it was paused on an inline
+    clarification (`_await_clarification`) — a `Stop` click, not a failure,
+    so it is handled where `InferenceUnavailable`/`InferenceFailed` are,
+    never by the generic "hit an error it did not expect" branch."""
 
 
 async def _resolve_conversation(db: AsyncSession, conversation_id: uuid.UUID | None) -> uuid.UUID:
@@ -345,6 +376,32 @@ def _cite_claim(
                 "quoted_span": quoted_span,
             },
         )
+
+
+async def _await_clarification(turn: _Turn) -> dict[str, Any] | None:
+    """Wait for `POST /ask/{id}/clarify/resolve` to answer or skip the
+    clarification just emitted, or for the browser to stop this turn while
+    it waits — `None` on the latter.
+
+    Polled rather than a bare `await turn.clarify_event.wait()` so `Stop`
+    (`docs/ux/clarifications.md` §5's own rule: this never becomes a second
+    place the user is stuck waiting) still works while paused here, the same
+    way the token-streaming loop below already checks `stop_requested` on
+    every chunk. There is no chunk to check between here and an answer that
+    may never come — a user who navigates away and never returns leaves the
+    clarification sitting `pending` in the ordinary queue (never lost, never
+    re-asked) and this turn paused indefinitely, which is the accepted cost
+    of "never bounce the user mid-question" rather than a timeout inventing
+    an answer nobody gave.
+    """
+    while not turn.clarify_event.is_set():
+        if turn.stop_requested:
+            return None
+        try:
+            await asyncio.wait_for(turn.clarify_event.wait(), timeout=0.2)
+        except TimeoutError:
+            continue
+    return turn.clarify_result
 
 
 def _label_for_sources(document_count: int) -> str:
@@ -563,6 +620,61 @@ async def _run_generation(
             document_count = len({candidate.document_id for candidate in candidates})
             turn.emit("step", {"label": _label_for_sources(document_count), "kind": "read"})
 
+            # `M3-INLINE-FE-085`: determined before composition, per the
+            # ticket's own Assumption — never discovered mid-answer. Only a
+            # contradiction or document-identity ambiguity relevant to *this*
+            # question and still `pending` can interrupt; anything else
+            # (nothing pending, or nothing relevant) leaves this turn
+            # composing exactly as it would have before this ticket existed.
+            memory_fact: str | None = None
+            appended_note: str | None = None
+            async with session_scope(factory) as db:
+                blocking, deferred = await find_blocking(db, question, candidates)
+            if blocking is not None:
+                turn.clarify_id = blocking.id
+                turn.emit(
+                    "clarification",
+                    {
+                        "clarification_id": str(blocking.id),
+                        "subject": blocking.subject,
+                        "question": blocking.question,
+                        "options": blocking.options,
+                        "evidence": blocking.evidence,
+                        "deferred_count": deferred,
+                    },
+                )
+                resolution = await _await_clarification(turn)
+                if resolution is None:
+                    raise _ClarificationAbandoned
+                turn.clarify_id = None
+                turn.emit(
+                    "clarification_resolved",
+                    {"clarification_id": str(blocking.id), "skipped": resolution["skipped"]},
+                )
+                if resolution["skipped"]:
+                    assumption = default_assumption(blocking)
+                    appended_note = (
+                        f'\n\nSkipped the question about "{blocking.subject}" — this answer '
+                        f"assumes {assumption}. Answer it anytime in Clarifications."
+                    )
+                else:
+                    memory_fact = f"{blocking.subject}: {resolution['answer']}"
+                if deferred > 0:
+                    appended_note = (appended_note or "") + (
+                        f"\n\n{deferred} more unresolved question"
+                        f"{'' if deferred == 1 else 's'} about your files "
+                        f"{'is' if deferred == 1 else 'are'} waiting in Clarifications."
+                    )
+                trace_steps.append(
+                    {
+                        "kind": "inline_clarification",
+                        "clarification_id": str(blocking.id),
+                        "subject": blocking.subject,
+                        "skipped": resolution["skipped"],
+                        "deferred": deferred,
+                    }
+                )
+
             # `compose_conflict`, not `compose`: a question can ask about
             # more than one thing, and only some of it may be covered by what
             # cleared the threshold above (`M2-PARTIAL-BE-057`); what cleared
@@ -573,8 +685,11 @@ async def _run_generation(
             # plainly, and presents both sides of a genuine conflict rather
             # than choosing one — an ordinary single-aspect, single-position
             # question comes back with neither and composes identically to
-            # before either ticket.
-            composed = compose_conflict(question, candidates)
+            # before either ticket. `memory_fact`, when this turn was just
+            # resolved inline, is the same hook `M2-PARTIAL-BE-059` built and
+            # left inert — the model settles the conflict with it and writes
+            # "Resolved by memory: ..." rather than presenting both sides.
+            composed = compose_conflict(question, candidates, memory_fact=memory_fact)
             injection_flagged = composed.injection_flagged
             injection_patterns = composed.injection_patterns
 
@@ -597,6 +712,10 @@ async def _run_generation(
                     claims_emitted = len(claims)
                 if chunk.done:
                     truncated = chunk.truncated
+
+            if appended_note is not None:
+                turn.text += appended_note
+                turn.emit("token", {"text": appended_note})
 
             # C4 and C5 both apply to the same answer here: the grounded part
             # already carries citations from the loop above, and this reads
@@ -633,6 +752,9 @@ async def _run_generation(
             status = "completed"
         if truncated and status == "completed":
             reason = "Reached the answer length limit."
+    except _ClarificationAbandoned:
+        status = "stopped"
+        reason = "Stopped while waiting on a clarification."
     except (InferenceUnavailable, InferenceFailed) as error:
         status = "failed"
         reason = str(error)
@@ -1007,3 +1129,41 @@ def register_ask(
             )
         turn.stop_requested = True
         return JSONResponse({"message_id": str(message_id), "status": "stopping"}, status_code=202)
+
+    @app.post("/ask/{message_id}/clarify/resolve")
+    async def ask_clarify_resolve(
+        message_id: uuid.UUID, body: ClarifyResolveRequest
+    ) -> JSONResponse:
+        """Wakes a turn paused on an inline clarification (`M3-INLINE-FE-085`).
+
+        Deliberately does not write the answer or the skip itself — the
+        browser has already called the ordinary `POST /clarifications/{id}/answer`
+        or `.../skip` (`askwell.review`) before this, the same endpoints the
+        queue screen uses, so "answered inline" and "answered from the
+        queue" write through exactly one path. This only reads back what
+        that call just committed and lets the paused generation continue
+        with it — never a second way to write a `memory` row.
+        """
+        turn = _turns.get(message_id)
+        if turn is None or turn.clarify_id != body.clarification_id or turn.clarify_event.is_set():
+            return JSONResponse(
+                {"error": "Askwell has no pending clarification for that turn."}, status_code=404
+            )
+        async with session_scope(factory) as db:
+            row = (
+                await db.execute(
+                    text("SELECT status, answer FROM clarifications WHERE id = :id"),
+                    {"id": body.clarification_id},
+                )
+            ).first()
+        if row is None:
+            return JSONResponse({"error": "Askwell has no such clarification."}, status_code=404)
+        status, answer = row
+        if status not in ("answered", "skipped"):
+            return JSONResponse(
+                {"error": "That clarification has not been answered or skipped yet."},
+                status_code=409,
+            )
+        turn.clarify_result = {"skipped": status == "skipped", "answer": answer}
+        turn.clarify_event.set()
+        return JSONResponse({"message_id": str(message_id), "status": "resumed"}, status_code=202)

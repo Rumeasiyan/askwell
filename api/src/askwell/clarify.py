@@ -669,8 +669,16 @@ async def raise_candidates(
         # `current_inference` rides alongside the kind-specific evidence so
         # the answer field can prefill with what Askwell would have guessed
         # had this not been material enough to ask (`docs/ux/clarifications.md`
-        # §3) — `None` where there is nothing safe to guess.
-        evidence = {**candidate.evidence, "current_inference": candidate.inferred_fact}
+        # §3) — `None` where there is nothing safe to guess. `trigger` is
+        # what `askwell.inline_clarify.find_blocking` (`M3-INLINE-FE-085`)
+        # reads to tell a contradiction or document-identity question apart
+        # from an abbreviation or scan note without re-deriving it from the
+        # evidence's own shape.
+        evidence = {
+            **candidate.evidence,
+            "current_inference": candidate.inferred_fact,
+            "trigger": candidate.trigger,
+        }
         await session.execute(
             text(
                 "INSERT INTO clarifications "

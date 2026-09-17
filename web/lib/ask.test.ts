@@ -72,6 +72,39 @@ test("a citation frame parses with its chunk and card data", () => {
   });
 });
 
+test("a clarification frame parses with its subject and evidence", () => {
+  const event = parseSseFrame(
+    'event: clarification\ndata: {"message_id": "m1", "conversation_id": "c1", ' +
+      '"clarification_id": "cl1", "subject": "the notice period", ' +
+      '"question": "Which is current?", "options": ["a.pdf", "b.pdf"], ' +
+      '"evidence": {"kind": "contradiction"}, "deferred_count": 0}',
+  );
+  assert.deepEqual(event, {
+    event: "clarification",
+    data: {
+      message_id: "m1",
+      conversation_id: "c1",
+      clarification_id: "cl1",
+      subject: "the notice period",
+      question: "Which is current?",
+      options: ["a.pdf", "b.pdf"],
+      evidence: { kind: "contradiction" },
+      deferred_count: 0,
+    },
+  });
+});
+
+test("a clarification_resolved frame parses with whether it was skipped", () => {
+  const event = parseSseFrame(
+    'event: clarification_resolved\ndata: {"message_id": "m1", "conversation_id": "c1", ' +
+      '"clarification_id": "cl1", "skipped": false}',
+  );
+  assert.deepEqual(event, {
+    event: "clarification_resolved",
+    data: { message_id: "m1", conversation_id: "c1", clarification_id: "cl1", skipped: false },
+  });
+});
+
 test("a done frame parses with status and reason", () => {
   const event = parseSseFrame(
     'event: done\ndata: {"message_id": "m1", "status": "completed", "reason": null}',
