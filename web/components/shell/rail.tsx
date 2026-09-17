@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import { useClarificationsTotal } from "@/lib/use-clarifications-count";
+
 /**
  * The left rail: the only route to sources, memory and settings.
  *
@@ -13,6 +15,11 @@ import { usePathname } from "next/navigation";
 export const DESTINATIONS = [
   { href: "/", label: "Ask", hint: "Ask a question of your own material" },
   { href: "/library/", label: "Library", hint: "Every source you have added" },
+  {
+    href: "/clarifications/",
+    label: "Clarifications",
+    hint: "Questions Askwell could not work out on its own",
+  },
   { href: "/memory/", label: "Memory", hint: "What Askwell has learned about your material" },
   {
     href: "/settings/",
@@ -29,6 +36,7 @@ export const DESTINATIONS = [
  */
 export function Rail({ onNavigate = () => {} }: { onNavigate?: () => void }) {
   const pathname = usePathname();
+  const clarificationsTotal = useClarificationsTotal();
 
   return (
     <nav aria-label="Askwell" className="flex flex-col gap-1 p-3">
@@ -46,7 +54,7 @@ export function Rail({ onNavigate = () => {} }: { onNavigate?: () => void }) {
             onClick={onNavigate}
             aria-current={active ? "page" : undefined}
             title={destination.hint}
-            className="ask-navigates px-3 py-2"
+            className="ask-navigates flex items-center justify-between px-3 py-2"
             style={{
               background: active ? "var(--sunk)" : "transparent",
               color: active ? "var(--ink)" : "var(--muted)",
@@ -57,10 +65,36 @@ export function Rail({ onNavigate = () => {} }: { onNavigate?: () => void }) {
               borderLeft: active ? "2px solid var(--provenance)" : "2px solid transparent",
             }}
           >
-            {destination.label}
+            <span>{destination.label}</span>
+            {destination.href === "/clarifications/" &&
+            clarificationsTotal !== null &&
+            clarificationsTotal > 0 ? (
+              <RailBadge count={clarificationsTotal} />
+            ) : null}
           </Link>
         );
       })}
     </nav>
+  );
+}
+
+/**
+ * A count, never an alarm. `docs/ux/clarifications.md` §6 rules out a red
+ * dot implying something is broken — this reads a plain number in the same
+ * ink as everything else in the rail, not `--alarm`.
+ */
+function RailBadge({ count }: { count: number }) {
+  return (
+    <span
+      className="ask-micro"
+      style={{
+        background: "var(--sunk)",
+        borderRadius: "var(--radius)",
+        padding: "0 6px",
+        color: "var(--ink)",
+      }}
+    >
+      {count}
+    </span>
   );
 }
