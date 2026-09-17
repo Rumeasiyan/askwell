@@ -1,0 +1,12 @@
+[Unit]
+Description=Check the Askwell build every 15 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=15min
+# A missed window runs on the next boot rather than being skipped — the point
+# is that a machine which was off does not silently lose days.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
