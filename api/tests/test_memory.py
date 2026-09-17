@@ -17,12 +17,15 @@ from askwell.memory import (
     FULL_CONFIDENCE,
     CannotCorrectInference,
     FactNotFound,
+    correct_fact,
     correct_memory_fact,
     correct_schema_note,
+    delete_fact,
     delete_memory_fact,
     delete_schema_note,
     get_active_memory_facts,
     get_active_schema_notes,
+    get_fact_detail,
     retrieve_relevant_facts,
     write_memory_fact,
     write_schema_note,
@@ -32,7 +35,7 @@ pytestmark = pytest.mark.requires_db
 
 _TABLES = (
     "sources, documents, chunks, clarifications, memory, schema_notes, "
-    "reapply_jobs, reapply_items, audit_decisions"
+    "reapply_jobs, reapply_items, audit_decisions, conversations, messages, fact_usage"
 )
 
 
@@ -929,3 +932,208 @@ async def test_a_contradicting_fact_and_note_are_both_labelled_by_confidence(
     assert found.facts[0].confidence == 1.0
     assert found.notes[0].origin == "inferred"
     assert found.notes[0].confidence == 0.4
+
+
+# --- the chip: one entrypoint across both kinds -------------------------
+
+
+async def _conversation(session: AsyncSession) -> uuid.UUID:
+    conversation_id = uuid.uuid4()
+    await session.execute(
+        text("INSERT INTO conversations (id) VALUES (:id)"), {"id": conversation_id}
+    )
+    return conversation_id
+
+
+async def _mark_used(session: AsyncSession, *, fact_kind: str, fact_id: uuid.UUID) -> None:
+    message_id = uuid.uuid4()
+    conversation_id = await _conversation(session)
+    await session.execute(
+        text(
+            "INSERT INTO messages (id, conversation_id, role, content) "
+            "VALUES (:id, :conversation_id, 'assistant', 'x')"
+        ),
+        {"id": message_id, "conversation_id": conversation_id},
+    )
+    await session.execute(
+        text(
+            "INSERT INTO fact_usage (id, message_id, fact_kind, fact_id) "
+            "VALUES (:id, :message_id, :fact_kind, :fact_id)"
+        ),
+        {"id": uuid.uuid4(), "message_id": message_id, "fact_kind": fact_kind, "fact_id": fact_id},
+    )
+
+
+@pytest.mark.asyncio
+async def test_correcting_a_user_origin_fact_from_a_chip_supersedes_in_place(
+    session: AsyncSession,
+) -> None:
+    fact_id = await write_memory_fact(
+        session, subject="st_cd", fact="student status code", origin="clarification"
+    )
+    assert fact_id is not None
+
+    outcome = await correct_fact(session, fact_kind="memory", fact_id=fact_id, value="student code")
+
+    assert outcome.fact_id != fact_id
+    active = await get_active_memory_facts(session, subject="st_cd")
+    assert len(active) == 1
+    assert active[0].id == outcome.fact_id
+    assert active[0].fact == "student code"
+
+
+@pytest.mark.asyncio
+async def test_correcting_an_inferred_fact_from_a_chip_asserts_instead_of_raising(
+    session: AsyncSession,
+) -> None:
+    fact_id = await write_memory_fact(
+        session, subject="rfq", fact="a guess", origin="inferred", confidence=0.3
+    )
+    assert fact_id is not None
+
+    outcome = await correct_fact(
+        session, fact_kind="memory", fact_id=fact_id, value="Request for Quotation"
+    )
+
+    active = await get_active_memory_facts(session, subject="rfq")
+    assert len(active) == 1
+    assert active[0].id == outcome.fact_id
+    assert active[0].fact == "Request for Quotation"
+    assert active[0].origin == "correction"
+    # The inference is retired, not left as a second active row.
+    superseded = (
+        await session.execute(
+            text("SELECT superseded_by FROM memory WHERE id = :id"), {"id": fact_id}
+        )
+    ).scalar_one()
+    assert superseded == outcome.fact_id
+
+
+@pytest.mark.asyncio
+async def test_correcting_an_inferred_schema_note_from_a_chip_asserts_instead_of_raising(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session)
+    note_id = await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name="invoices",
+        column_name="st_cd",
+        description="a guessed status code",
+        origin="inferred",
+        confidence=0.3,
+    )
+    assert note_id is not None
+
+    outcome = await correct_fact(
+        session, fact_kind="schema_note", fact_id=note_id, value="invoice status code"
+    )
+
+    active = await get_active_schema_notes(session, source_id=source_id)
+    assert len(active) == 1
+    assert active[0].id == outcome.fact_id
+    assert active[0].description == "invoice status code"
+    assert active[0].origin == "user"
+
+
+@pytest.mark.asyncio
+async def test_correcting_an_unknown_fact_from_a_chip_raises(session: AsyncSession) -> None:
+    with pytest.raises(FactNotFound):
+        await correct_fact(session, fact_kind="memory", fact_id=uuid.uuid4(), value="x")
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_fact_from_a_chip_dispatches_by_kind(session: AsyncSession) -> None:
+    fact_id = await write_memory_fact(
+        session, subject="st_cd", fact="student status code", origin="manual"
+    )
+    assert fact_id is not None
+
+    await delete_fact(session, fact_kind="memory", fact_id=fact_id)
+
+    assert await get_active_memory_facts(session, subject="st_cd") == []
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_schema_note_from_a_chip_dispatches_by_kind(session: AsyncSession) -> None:
+    source_id = await _source(session)
+    note_id = await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name="invoices",
+        column_name="st_cd",
+        description="invoice status",
+        origin="user",
+    )
+    assert note_id is not None
+
+    await delete_fact(session, fact_kind="schema_note", fact_id=note_id)
+
+    assert await get_active_schema_notes(session, source_id=source_id) == []
+
+
+@pytest.mark.asyncio
+async def test_fact_detail_reports_usage_count(session: AsyncSession) -> None:
+    fact_id = await write_memory_fact(
+        session, subject="st_cd", fact="student status code", origin="manual"
+    )
+    assert fact_id is not None
+    await _mark_used(session, fact_kind="memory", fact_id=fact_id)
+    await _mark_used(session, fact_kind="memory", fact_id=fact_id)
+
+    detail = await get_fact_detail(session, fact_kind="memory", fact_id=fact_id)
+
+    assert detail is not None
+    assert detail.usage_count == 2
+    assert detail.active is True
+    assert detail.current is None
+
+
+@pytest.mark.asyncio
+async def test_fact_detail_names_the_current_version_once_superseded(
+    session: AsyncSession,
+) -> None:
+    fact_id = await write_memory_fact(
+        session, subject="st_cd", fact="student status code", origin="clarification"
+    )
+    assert fact_id is not None
+    await _mark_used(session, fact_kind="memory", fact_id=fact_id)
+    outcome = await correct_memory_fact(session, fact_id=fact_id, fact="student code")
+
+    # The popover for the *old* row — the one an already-rendered chip named
+    # — reports it is no longer active and names what replaced it.
+    old_detail = await get_fact_detail(session, fact_kind="memory", fact_id=fact_id)
+    assert old_detail is not None
+    assert old_detail.active is False
+    assert old_detail.usage_count == 1
+    assert old_detail.current is not None
+    assert old_detail.current.id == outcome.fact_id
+    assert old_detail.current.value == "student code"
+    assert old_detail.current.active is True
+
+
+@pytest.mark.asyncio
+async def test_fact_detail_for_a_schema_note_reports_table_and_column_as_subject(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session)
+    note_id = await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name="invoices",
+        column_name="st_cd",
+        description="invoice status",
+        origin="user",
+    )
+    assert note_id is not None
+
+    detail = await get_fact_detail(session, fact_kind="schema_note", fact_id=note_id)
+
+    assert detail is not None
+    assert detail.subject == "invoices.st_cd"
+    assert detail.value == "invoice status"
+
+
+@pytest.mark.asyncio
+async def test_fact_detail_for_an_unknown_id_is_none(session: AsyncSession) -> None:
+    assert await get_fact_detail(session, fact_kind="memory", fact_id=uuid.uuid4()) is None

@@ -72,6 +72,30 @@ test("a citation frame parses with its chunk and card data", () => {
   });
 });
 
+test("a fact_citation frame parses with its subject, origin and date", () => {
+  const event = parseSseFrame(
+    'event: fact_citation\ndata: {"message_id": "m1", "index": 2, "claim_ordinal": 1, ' +
+      '"fact_kind": "memory", "fact_id": "f1", "subject": "st_cd", ' +
+      '"fact": "student status code", "origin": "clarification", "confidence": 1.0, ' +
+      '"supplied_at": "2026-09-01T00:00:00+00:00"}',
+  );
+  assert.deepEqual(event, {
+    event: "fact_citation",
+    data: {
+      message_id: "m1",
+      index: 2,
+      claim_ordinal: 1,
+      fact_kind: "memory",
+      fact_id: "f1",
+      subject: "st_cd",
+      fact: "student status code",
+      origin: "clarification",
+      confidence: 1.0,
+      supplied_at: "2026-09-01T00:00:00+00:00",
+    },
+  });
+});
+
 test("a clarification frame parses with its subject and evidence", () => {
   const event = parseSseFrame(
     'event: clarification\ndata: {"message_id": "m1", "conversation_id": "c1", ' +

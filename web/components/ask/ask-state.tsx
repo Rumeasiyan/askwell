@@ -23,6 +23,7 @@ import {
   streamAsk,
 } from "@/lib/ask";
 import { applyCitation, type CitationCard } from "@/lib/citations";
+import { applyFactCitation, type FactChip } from "@/lib/memory-chips";
 
 /**
  * The conversation, held once for the whole application. `M1-ASK-FE-039`.
@@ -69,6 +70,10 @@ export interface AskTurn {
    * as `citation` events arrive — the provenance margin's own data, not
    * rendered by this module (`ProvenanceMargin`, `M1-CITE-FE-043`). */
   citations: CitationCard[];
+  /** One chip per `fact_citation` event, unlike `citations` never grouped —
+   * `M3-CORRECT-FE-081`, rendered inline next to the claim that cited it
+   * rather than in the margin (`applyFactCitation`, `lib/memory-chips.ts`). */
+  factChips: FactChip[];
   reason: string | null;
   /** When this turn was asked, for grouping under a time divider
    * (`conversation.md` §4) — never rendered per-turn, only compared between
@@ -141,6 +146,7 @@ function blankTurn(
     steps: [],
     answer: "",
     citations: [],
+    factChips: [],
     reason,
     createdAt: Date.now(),
     summary,
@@ -237,6 +243,9 @@ export function AskProvider({ children }: { children: ReactNode }) {
                 if (turn.id !== id) return turn;
                 if (event.event === "citation") {
                   return { ...turn, citations: applyCitation(turn.citations, event.data) };
+                }
+                if (event.event === "fact_citation") {
+                  return { ...turn, factChips: applyFactCitation(turn.factChips, event.data) };
                 }
                 if (event.event === "clarification") {
                   return {

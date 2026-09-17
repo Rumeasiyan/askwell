@@ -4,6 +4,33 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.3.18 - 2026-09-18
+
+`M3-CORRECT-FE-081` — the memory chip: a fact used in an answer is now clickable, and correcting or deleting it from there actually sticks. `askwell.memory` had every write-side primitive this needs since `M3-STORE-BE-076`/`M3-CORRECT-BE-082`, but no HTTP surface — `docs/BRAIN.md`'s own note on `-082` said plainly that whichever of the chip or the memory screen started next would need one; this is that.
+
+### Added
+
+- `askwell.memory.register_memory` — three new routes: `GET /memory/facts/{kind}/{id}` (what a popover needs: the fact, its origin, date, how many answers used it, and — if superseded since — the current version), `POST /memory/facts/{kind}/{id}/correct`, `POST /memory/facts/{kind}/{id}/delete`. Registered in `app.py` alongside every other route module.
+- `askwell.memory.correct_fact`/`delete_fact` — one dispatcher per action across both `memory` and `schema_note` kinds. `correct_fact` tries `correct_memory_fact`/`correct_schema_note` first and falls back to a fresh user-origin `write_memory_fact`/`write_schema_note` on `CannotCorrectInference` — the chip's "Correct" on an inferred fact is really "assert this instead", which is what the module's own docstring already said an inference has no other path for.
+- `askwell.memory.get_fact_detail`/`FactDetail` — the popover's read, including the "already superseded" edge case (`current`, one level deep) and an exact `usage_count` from `fact_usage`.
+- `web/lib/memory-chips.ts` — `applyFactCitation` folds `fact_citation` SSE events into per-claim chips (never grouped, unlike a citation card — a chip renders once per claim it supports); `fetchFactDetail`/`correctFact`/`deleteFact` call the new routes.
+- `web/lib/ask.ts` — parses the `fact_citation` event `M3-APPLY-BE-079` already emitted but nothing on the frontend read.
+- `AnswerProse` (`ask-screen.tsx`) renders a visible `MemoryChip` right after the claim it supports; clicking opens `MemoryFactPopover` — fact, origin, date, usage count, **Correct** (inline textarea) and **Delete**, wired to the routes above. The confirmation after a correction names what is being re-read (`Reprocessing.label`, already returned by the existing `_reprocess_subject` machinery).
+- Confidence marker (`.ask-confidence-marker`, already in `globals.css` from the design system) reused on the chip itself — filled `--provenance` for a user-supplied fact, hollow `--inferred` for a guess.
+
+### Tests
+
+- `api/tests/test_memory.py` — 12 new cases against a real Postgres: correcting a user-origin fact/note from a chip, correcting an inferred one (asserts instead of raising), an unknown id, deleting by kind, `get_fact_detail`'s usage count and its superseded/current shape for both kinds.
+- `api/tests/test_memory_api.py` — new file, HTTP-level: session requirement, UUID/kind validation, empty-value rejection — same shape as `test_review_api.py`.
+- `web/lib/ask.test.ts` — a `fact_citation` frame parses correctly.
+- `web/lib/memory-chips.test.ts` — new file: `applyFactCitation`'s dedup and per-claim grouping.
+- Verified against the real stack: `scripts/dev.sh check` (lint, format, typecheck, 549 passed/1 skipped) and `scripts/dev.sh test-db` clean; `scripts/dev.sh web-check` clean (208 tests, build, contrast, offline check); routes exercised live with `curl` against a real fact — read, correct (supersedes, returns a reprocessing label), read again (shows `active: false` and the new `current`), delete, 404 on an unknown id.
+
+### Known gaps
+
+- No click-through in a real browser (ask a question, click the chip that lands, correct it, ask again) — native inference was not running this session, same precedent as `0.3.16`/`0.3.17`. The `fact_citation` event itself is already covered end to end by `M3-APPLY-BE-079`'s own `test_ask_api.py`; this ticket's own surface (the routes, the fold, the popover) is verified directly instead (see Tests), including a live `curl` round trip against the real routes.
+- No history view from the popover — out of scope, named as a Known Gap in the ticket itself (belongs to the memory screen, `M3-MEM-FE-083`).
+
 ## 0.3.17 - 2026-09-18
 
 `M3-APPLY-BE-079` — a memory fact or schema note can now be cited the same way a document passage is, attributed to the user and the date it was supplied, with the use recorded so "used in N answers" is a real number the moment the memory screen exists to show it.
