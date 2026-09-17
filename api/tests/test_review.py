@@ -31,7 +31,10 @@ from askwell.review import (
 
 pytestmark = pytest.mark.requires_db
 
-_TABLES = "sources, documents, clarifications, memory, audit_decisions"
+_TABLES = (
+    "sources, documents, chunks, schema_notes, clarifications, memory, "
+    "reapply_jobs, reapply_items, audit_decisions"
+)
 
 
 @pytest_asyncio.fixture

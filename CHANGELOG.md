@@ -4,6 +4,29 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.3.12 - 2026-09-17
+
+`M3-APPLY-ING-080` — answering a clarification now actually re-processes what it affects, closing #264. `M3-STORE-BE-076` (the dependency #264 was waiting on) merged to `main` earlier in the day; this ticket builds on it.
+
+### Added
+
+- `askwell.reapply` — dependency resolution and a durable re-processing queue, the same `arq`-dispatches/Postgres-records shape as `askwell.ingest`. `resolve_dependencies` reuses the exact evidence-derived document set `askwell.review._reprocessing_summary` already names in the confirmation toast (now exposed as `review.documents_named_in_evidence`), so what the user is told gets re-read and what actually does are the same set. Three kinds of item: `chunk` (re-embeds one passage of an affected document), `schema_note` (promotes a matching *inferred* `schema_notes` row to the user's answer, `origin='user'`), `conflict` (dismisses another still-pending clarification asking the same subject a different way — "re-resolve the contradiction" for the case dependency resolution can act on without guessing).
+- `reapply_jobs`/`reapply_items` tables (migration `8ad5ca4aa1a1`). `reapply_items` is polymorphic by `kind`/`target_id`, matching `fact_usage`'s existing shape rather than three nullable foreign keys. A partial unique index on `(kind, target_id)` over `pending` rows is the de-duplication rule named in the ticket's own edge case — two answers naming the same chunk enqueue it once, `ON CONFLICT DO NOTHING`, and the job that loses the race simply reports fewer items rather than double-processing.
+- `askwell.review.answer_clarification` now enqueues a `reapply_jobs` row in the same transaction as the `memory` write, and the answer route dispatches it to the worker after commit. `GET /reapply-jobs/{id}` (per-item progress) and `POST /reapply-jobs/{id}/retry` (resets `failed` items to `pending` and re-dispatches) are new — `../ux/clarifications.md` §5's "Answered, re-processing ... Per-item progress" and "Failures are visible with a retry".
+- `askwell.worker.reapply_job` runs one job's pending items, each in its own short transaction — nothing locks a document or a source, so it stays queryable throughout. A failing item retries inline up to three times (matching `askwell.embed`'s own ceiling) before being marked `failed`; `askwell.reapply.resume`, called at worker startup like `askwell.ingest.resume`, returns an interrupted job to `queued` and re-dispatches it immediately, since nothing else reconciles a `reapply_job` on a timer.
+- `askwell.review.undo_answer` now calls `askwell.reapply.cancel_pending_for_clarification`: not-yet-run items belonging to the undone answer's job are cancelled rather than left to apply a fact that no longer exists. An item already `done` by the time of the undo is a documented known gap, not reverted.
+
+### Known gaps
+
+- Dependency resolution is approximate by the ticket's own Assumption — every chunk of an affected document is queued, not a text-matched subset, and a `schema_note`/`conflict` match is by exact subject name only. Errs toward re-processing more rather than less, per the ticket.
+- Undoing an answer whose re-processing has already completed some items (a chunk already re-embedded, a schema note already promoted) does not revert that work — only not-yet-run items are cancelled. Filed as a known limitation rather than built now, given the ticket's own upper-bound granularity.
+
+### Tests
+
+- `api/tests/test_reapply.py` — 18 cases against a real Postgres: dependency resolution for all three kinds (including the case-insensitive schema-note match and the deliberate exclusion of `user`-origin notes), de-duplication across two overlapping answers, `run_job` for each item kind, retry-to-exhaustion and the visible-failure/retry path, `resume`, and undo's cancellation.
+- `api/tests/test_review.py`, `api/tests/test_models.py` updated for the new tables and the `AnswerOutcome.reapply_job_id` field.
+- Verified against the real stack: seeded a schema-note ambiguity and a duplicate cross-source clarification via `scripts/dev.sh psql`, answered it through `POST /clarifications/{id}/answer` with a real session cookie, watched the worker log pick up and finish the job, and confirmed the inferred schema note was superseded by the user's answer and the stale cross-source clarification was dismissed — `GET /reapply-jobs/{id}` returned per-item progress throughout.
+
 ## 0.3.11 - 2026-09-17
 
 `M3-REVIEW-FE-074` — save, skip, skip-all and undo wired into the clarifications screen, with the specific confirmation `docs/ux/clarifications.md` §4 requires.

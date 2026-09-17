@@ -25,6 +25,8 @@ EXPECTED_TABLES = {
     "schema_notes",
     "memory",
     "clarifications",
+    "reapply_jobs",
+    "reapply_items",
     "conversations",
     "messages",
     "citations",

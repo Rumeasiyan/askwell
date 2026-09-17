@@ -32,7 +32,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from askwell import reapply
 from askwell.audit import Store, record
+from askwell.config import Settings
 from askwell.db.engine import session_scope
 from askwell.logging import get_logger
 
@@ -134,9 +136,14 @@ class AnswerOutcome:
     clarification_id: uuid.UUID
     memory_id: uuid.UUID
     reprocessing: Reprocessing
+    # `None` only when dependency resolution found nothing to touch — the
+    # subject named no document, chunk, schema position or stale conflict.
+    # The confirmation still reads correctly (`reprocessing.count` covers
+    # that), there is just no job to dispatch.
+    reapply_job_id: uuid.UUID | None
 
 
-def _documents_named_in_evidence(evidence: dict[str, Any] | None) -> list[str]:
+def documents_named_in_evidence(evidence: dict[str, Any] | None) -> list[str]:
     """The document names a `-071` evidence blob already carries — a passage's
     or a contradiction's samples were pulled from real documents at raise
     time, so naming them back needs no new query. Sampling is bounded
@@ -144,6 +151,12 @@ def _documents_named_in_evidence(evidence: dict[str, Any] | None) -> list[str]:
     subject that occurs in more documents than were sampled; `_reprocessing_summary`
     falls back to a source-wide count rather than ever asserting a specific
     list it cannot back up.
+
+    Public: `askwell.reapply` uses the exact same names to resolve which
+    documents' chunks actually get re-processed — the confirmation the user
+    reads and the material that gets touched must agree, or "Re-reading 3
+    tables" describing one set while a different set is re-embedded is a
+    silent lie the user has no way to catch.
     """
     if not evidence:
         return []
@@ -168,7 +181,7 @@ async def _reprocessing_summary(
     live document in the source — always true, even where it overstates,
     which honestly-inflated beats a fabricated specific count.
     """
-    named = sorted({*(options or []), *_documents_named_in_evidence(evidence)})
+    named = sorted({*(options or []), *documents_named_in_evidence(evidence)})
     if named:
         count = len(named)
         return Reprocessing(count=count, label=f"{count} document{'' if count == 1 else 's'}")
@@ -253,8 +266,21 @@ async def answer_clarification(
         },
     )
 
+    job_id = await reapply.enqueue(
+        session,
+        subject=subject,
+        source_id=uuid.UUID(source_id),
+        evidence=evidence,
+        options=options,
+        clarification_id=clarification_id,
+        memory_id=memory_id,
+    )
+
     return AnswerOutcome(
-        clarification_id=clarification_id, memory_id=memory_id, reprocessing=reprocessing
+        clarification_id=clarification_id,
+        memory_id=memory_id,
+        reprocessing=reprocessing,
+        reapply_job_id=job_id,
     )
 
 
@@ -364,6 +390,11 @@ async def undo_answer(
         ),
         {"id": clarification_id},
     )
+    # `../memory-and-clarification.md`'s own edge case: undo during
+    # re-processing. Not-yet-run items are cancelled rather than left to
+    # apply an answer that no longer exists; an item already done is a
+    # documented known gap (`askwell.reapply.cancel_pending_for_clarification`).
+    await reapply.cancel_pending_for_clarification(session, clarification_id)
     await record(
         session,
         Store.DECISIONS,
@@ -384,7 +415,9 @@ class UndoRequest(BaseModel):
     memory_id: uuid.UUID
 
 
-def register_review(app: FastAPI, factory: async_sessionmaker[AsyncSession]) -> None:
+def register_review(
+    app: FastAPI, settings: Settings, factory: async_sessionmaker[AsyncSession]
+) -> None:
     """Attach the clarifications surface. Register before the interface catch-all."""
 
     @app.get("/clarifications")
@@ -401,6 +434,11 @@ def register_review(app: FastAPI, factory: async_sessionmaker[AsyncSession]) -> 
             return JSONResponse({"error": "No such clarification."}, status_code=404)
         except AlreadyAnswered:
             return JSONResponse({"error": "This question was already answered."}, status_code=409)
+        if outcome.reapply_job_id is not None:
+            # Best-effort wake-up over a durable queue, same shape as
+            # `askwell.ingest.dispatch` — the row is already committed, so a
+            # Redis hiccup costs a delay, not the re-processing itself.
+            await reapply.dispatch(settings, [outcome.reapply_job_id])
         return JSONResponse(
             {
                 "id": str(outcome.clarification_id),
@@ -412,6 +450,24 @@ def register_review(app: FastAPI, factory: async_sessionmaker[AsyncSession]) -> 
                 },
             }
         )
+
+    @app.get("/reapply-jobs/{job_id}")
+    async def reapply_job_route(job_id: uuid.UUID) -> JSONResponse:
+        async with session_scope(factory) as db:
+            status = await reapply.get_job(db, job_id)
+        if status is None:
+            return JSONResponse({"error": "No such re-processing job."}, status_code=404)
+        return JSONResponse(status)
+
+    @app.post("/reapply-jobs/{job_id}/retry")
+    async def reapply_retry_route(job_id: uuid.UUID) -> JSONResponse:
+        async with session_scope(factory) as db:
+            requeued = await reapply.retry_failed(db, job_id)
+        if requeued is None:
+            return JSONResponse({"error": "No such re-processing job."}, status_code=404)
+        if requeued > 0:
+            await reapply.dispatch(settings, [job_id])
+        return JSONResponse({"id": str(job_id), "requeued": requeued})
 
     @app.post("/clarifications/{clarification_id}/skip")
     async def skip_route(clarification_id: uuid.UUID) -> JSONResponse:

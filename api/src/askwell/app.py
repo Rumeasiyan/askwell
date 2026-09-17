@@ -108,7 +108,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_search(app, resolved, app.state.sessions)
     register_suggestions(app, app.state.sessions)
     register_documents(app, resolved, app.state.sessions)
-    register_review(app, app.state.sessions)
+    register_review(app, resolved, app.state.sessions)
     register_setup(app, resolved, app.state.sessions)
 
     @app.get("/health")
