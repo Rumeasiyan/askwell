@@ -4,6 +4,35 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.3.20 - 2026-09-18
+
+`M3-MEM-FE-084` — the memory screen's six interactions: Edit, Confirm, Delete, History, Filter, Add a fact. `docs/ux/memory.md` §4. Also closes issue #288, filed against `M3-STORE-OBS-077` and deferred to this ticket.
+
+### Added
+
+- `askwell.memory.confirm_memory_fact`/`confirm_schema_note`/`confirm_fact` — promote an inferred row to user-supplied in place, `origin` updated on the same row (`'correction'`/`'user'`) with no new row and no re-processing, since the value itself did not change. Confirming an already-user-origin row is a no-op reported as such. `POST /memory/facts/{fact_kind}/{fact_id}/confirm`.
+- `askwell.memory.add_manual_fact` — manual entry: the same fact shape a clarification answer writes, `origin='manual'` the only difference. A subject that already has an active fact is never double-written — the existing fact is returned so the caller offers a correction instead (`docs/ux/memory.md` §4's own edge case). `POST /memory/facts`.
+- `askwell.memory.delete_all_memory` — deletes every active row the screen shows, reusing `delete_memory_fact`/`delete_schema_note` per row so the #288 fix, the decisions record and re-processing all run exactly as a single delete would. Takes `expected_count` and refuses with `StaleMemoryCount` (409) if memory has changed since the count was confirmed. `POST /memory/delete-all`.
+- `web/lib/memory.ts` — `confirmFact`, `addManualFact`, `deleteAllMemory`, `applyMemoryFilters`/`memorySources` (the three filters: inferred-only, by source, unused) and `deleteAllConfirmationCopy` (the ticket's own Validation Rule: name the count, say it cannot be undone).
+- `web/components/memory/memory-screen.tsx` — every row now has Edit (inline textarea, supersedes on save), Confirm (inferred rows only) and Delete; a filter bar above the list; an "Add a fact" form that offers a correction instead of a competing fact on a duplicate subject; a "Delete all memory" control with the named-count confirmation.
+
+### Fixed
+
+- **Issue #288**: deleting a fact that is itself a correction no longer resurrects the value it superseded. `memory.superseded_by`/`schema_notes.superseded_by` are `ON DELETE SET NULL`, so deleting the active row previously left Postgres nulling the predecessor's `superseded_by`, making an already-corrected-away value active again. `delete_memory_fact`/`delete_schema_note` now re-point any row pointing at the target to itself before the delete — still `superseded_by IS NOT NULL` (never active again), still readable in history (`get_memory_screen`'s history query only checks `IS NOT NULL`, never the target), and no longer named by the row being deleted.
+
+### Tests
+
+- `api/tests/test_memory.py` — 17 new cases against a real Postgres: confirm promotes in place with no new row and no reprocessing decision; confirming an already-user fact and confirming a schema note; confirm-then-edit leaves two records in order; manual entry creates a `manual`-origin fact; a duplicate subject is offered back rather than double-written; delete-all removes everything and refuses a stale count; three cases for #288 (a memory correction, a two-deep chain, a schema-note correction — none resurrect the superseded value).
+- `api/tests/test_memory_api.py` — 6 new cases: session required for confirm/manual-add/delete-all, unknown fact kind is a 404 on confirm, empty subject and negative `expected_count` are 422.
+- `web/lib/memory.test.ts` — filter combinations, `memorySources` de-duplication and ordering, delete-all-memory's confirmation copy.
+- Verified against the real stack: `scripts/dev.sh check` (556 passed/1 skipped) and `scripts/dev.sh test-db` (440 passed) clean; `scripts/dev.sh web-check` clean (222 tests, build, contrast, offline check); rebuilt the API image and exercised the live stack with `curl` — manual add, the duplicate-offered-as-correction response, confirm (no-op on an already-user fact), correct, and the #288 scenario itself: correcting a fact then deleting the correction left the subject with nothing active rather than resurrecting the original value; the stale-count guard on delete-all returned 409 against a wrong count and 200 against the right one.
+
+### Known gaps
+
+- No bulk confirm — an open product question per `docs/ux/memory.md` §7, unchanged by this ticket, and explicitly Out of Scope in it.
+- No memory export/import across machines — not v1 (`docs/memory-and-clarification.md` §9).
+- `GET /memory`'s path collision with the client-rendered `/memory` page (issue #313, filed against `M3-MEM-FE-083`) is unaffected by this ticket.
+
 ## 0.3.19 - 2026-09-18
 
 `M3-MEM-FE-083` — the memory screen is real: one list, both fact kinds, the confidence marker, source and "used in N answers" per row, inferred facts sorted first. `docs/ux/memory.md` §2/§3/§5. Interactions (Edit/Confirm/Delete/History/Filter/Add) are `M3-MEM-FE-084`, out of scope here.
