@@ -22,6 +22,18 @@ Template:
 
 ---
 
+## 2026-09-18 — `M3-MEM-FE-083`: "grouped by subject" is one row per subject with nested history, not a visible group header
+
+**Decision:** `askwell.memory.get_memory_screen` returns one flat, already-sorted list of rows — one row per active `memory` subject or `schema_notes` table/column position — with that row's own supersession history nested inside it (`MemoryScreenRow.history`), rather than a two-level structure of subject-group headers each containing the fact(s) under them.
+
+**Why:** `docs/ux/memory.md` §2 says "One list grouped by subject," and §3's own row example (`▪ invoices.st_cd ... [Edit] [Delete]`) shows a single row per fact, not a header plus children. Reconciling the two: `write_memory_fact`/`write_schema_note`/`correct_memory_fact`/`correct_schema_note` (`M3-STORE-BE-076`, `M3-CORRECT-BE-082`) already guarantee at most one *active* row per subject or position — a user-origin write always retires whatever was active before it. So "grouped by subject" cannot mean multiple simultaneous facts collected under one heading, the way `clarifications.ts`'s `ClarificationGroup` collects several pending items under one source; there is structurally nothing to group. What the doc's "grouped" is actually pointing at is that a subject's *history* — what it used to say — travels with its current row rather than living on a separate screen, which is exactly what §4's "History: every prior value with dates" and §5's "Conflicting facts: later wins, earlier shown struck through" describe. Building a literal two-level group structure to satisfy the word "grouped" would have meant inventing a container that is empty of siblings on every real subject, and made the default sort (inferred-first, `docs/ux/memory.md` §2's own explicit requirement) ambiguous — sorted within groups, or across them? A flat list sorted globally has no such question.
+
+**Consequences:** If a future ticket needs actual multi-fact grouping (e.g., several distinct-but-related subjects clustered under one heading — not named anywhere in `docs/ux/memory.md` today), `get_memory_screen`'s flat shape does not provide it and would need a second grouping key added deliberately, not inferred from "subject" the way this entry reads it. `M3-MEM-FE-084` (interactions) can rely on one row id per subject/position without a second lookup to find "the" active fact for a group.
+
+**Refs:** `api/src/askwell/memory.py` (`get_memory_screen`, `MemoryScreenRow`, `MemoryHistoryEntry`), `docs/ux/memory.md` §2–§5, `web/components/memory/memory-screen.tsx`.
+
+---
+
 ## 2026-09-18 — `M3-CORRECT-FE-081`: the chip's own HTTP surface goes into `askwell.memory` itself, and "Correct" on an inferred fact writes a new fact rather than raising
 
 **Decision:** `askwell.memory` gained `register_memory` (`GET /memory/facts/{kind}/{id}`, `POST .../correct`, `POST .../delete`) in the same module as the write-side logic it calls, not a new `askwell.memory_api`. And `correct_fact`, the dispatcher the chip's "Correct" button calls, does not simply forward to `correct_memory_fact`/`correct_schema_note`: when the target is currently `origin = 'inferred'`, those raise `CannotCorrectInference` by design, so `correct_fact` catches that and calls `write_memory_fact`/`write_schema_note` with a user origin instead — a fresh fact that retires the inference the same way any user-origin write already does, rather than surfacing the raise to the chip as a failure.
