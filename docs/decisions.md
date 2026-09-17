@@ -22,6 +22,18 @@ Template:
 
 ---
 
+## 2026-09-17 — `M3-REVIEW-FE-073` renders evidence without a source link, since evidence has no document id
+
+**Decision:** Item anatomy (`clarifications-screen.tsx`) renders a passage's document name and page as plain mono text, with no click-through to the source viewer, rather than inventing a link or blocking the ticket on the gap.
+
+**Why:** `docs/ux/clarifications.md` §3's own edge case calls for a long passage to be "truncated with a link to the source." `documentHref` (`web/lib/citations.ts`) needs a `documentId`; every evidence shape `askwell.clarify` writes (`passage`, `poor_scan`, `contradiction`, `document_identity`) carries only a `filename`/`document` string, confirmed by reading `clarify.py`'s four detectors directly and by seeding real rows through `GET /clarifications`. Adding `document_id` to evidence is a `clarify.py` change — out of scope for a ticket whose own Scope line is "item rendering," and speculatively touching it here would be exactly the un-agreed multi-file change §4 says to stop and propose first rather than take. Filed as #280 (its own issue, not folded into #251, since it's not poor-scan-specific) instead of silently shipping a broken-looking link or stubbing one.
+
+**Consequences:** The AC's "truncated ... with a link" is only half met — truncation exists (server-side, `_bound_text`, unchanged by this ticket), the link does not, until #280 lands. Reversing this means either accepting evidence as filename-only permanently, or doing #280's backend change first.
+
+**Refs:** `docs/ux/clarifications.md` §3, `web/lib/citations.ts::documentHref`, `api/src/askwell/clarify.py`, issues #280, #251.
+
+---
+
 ## 2026-09-17 — `M3-RAISE-BE-071`'s evidence shape reuses the parked prior attempt, and drops the old key names
 
 **Decision:** Rebuilt `M3-RAISE-BE-071` from scratch against current `main` (`8870b0f9`) rather than resurrecting the local unmerged commit on `feat/m3-raise-be-071` (#275) or the closed PR's branch, but reused the evidence shape from `origin/parked/m3-raise-be-071-attempt-1` almost verbatim — it diffs cleanly against `M3-RAISE-BE-068`'s own commit and its reasoning (`kind`-tagged evidence, `_bound_text` at 500 chars, `EVIDENCE_MAX_SAMPLES`/`EVIDENCE_MAX_COLUMN_VALUES` bounds, an `unavailable` kind for the edge case) was already sound. This changes `clarifications.evidence`'s per-trigger keys: `{"occurrences": n}` becomes `{"kind": "passage", "occurrences": n, "samples": [...]}`, `{"filenames": [...]}` (document identity) becomes `{"kind": "passage", "samples": [...]}`, `{"low_confidence_pages": [...], "total_pages": n}` becomes `{"kind": "poor_scan", "pages": [...], "total_pages": n, "extracted_text": [...], "page_images": "not available"}`, and `{"values": [...]}` (contradiction) becomes `{"kind": "contradiction", "passages": [...]}` with each passage carrying its own page, date and bounded excerpt.

@@ -5,9 +5,13 @@ import { useEffect, useState } from "react";
 import {
   type ClarificationGroup,
   type ClarificationsState,
+  type EvidenceDisplay,
   NONE_PENDING_COPY,
+  currentInference,
+  evidenceDisplay,
   fetchClarifications,
   groupSentence,
+  rowCountLabel,
   totalSentence,
 } from "@/lib/clarifications";
 
@@ -106,25 +110,172 @@ function SourceGroup({ group }: { group: ClarificationGroup }) {
   );
 }
 
+/**
+ * One question's anatomy: subject, question, evidence, answer, current
+ * inference. `M3-REVIEW-FE-073`, `../ux/clarifications.md` §3.
+ *
+ * Save and Skip render here — equal weight, per that section's own rule —
+ * but do nothing yet; wiring them to the API is `M3-REVIEW-FE-074`'s own
+ * territory (Out of Scope here).
+ */
 function ClarificationItemRow({ item }: { item: ClarificationGroup["items"][number] }) {
+  const inference = currentInference(item.evidence);
+  const evidence = evidenceDisplay(item.evidence);
+  const isDiscrete = item.options !== null && item.options.length > 0;
+
   return (
     <div
-      className="flex flex-col gap-1.5 px-4 py-3"
+      className="flex flex-col gap-2 px-4 py-3"
       style={{ background: "var(--surface)", borderRadius: "var(--radius)" }}
     >
-      <span className="ask-micro" style={{ fontFamily: "var(--font-mono)" }}>
-        {item.subject}
-      </span>
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="ask-micro" style={{ fontFamily: "var(--font-mono)" }}>
+          {item.subject}
+        </span>
+      </div>
       <p className="ask-prose">{item.question}</p>
-      {/* Raw for now — the value-distribution rendering `clarifications.md`
-          §3 describes is `M3-REVIEW-FE-073`'s "item anatomy" (Out of Scope
-          here). `JSON.stringify` is what keeps this honest rather than
-          printing "[object Object]" until that ticket formats it properly. */}
-      {item.evidence !== null ? (
-        <p className="ask-micro" style={{ fontFamily: "var(--font-mono)", color: "var(--muted)" }}>
-          {JSON.stringify(item.evidence)}
-        </p>
-      ) : null}
+      <EvidenceBlock evidence={evidence} />
+      {isDiscrete ? (
+        <div className="flex flex-wrap gap-2" role="group" aria-label="Choose an answer">
+          {(item.options ?? []).map((option) => (
+            <button
+              key={option}
+              type="button"
+              className="ask-navigates px-3"
+              style={{
+                minHeight: "var(--control-height)",
+                background: "var(--paper)",
+                border: "1px solid var(--rule)",
+                borderRadius: "var(--radius)",
+                fontFamily: "var(--font-mono)",
+                fontSize: "var(--t-ui)",
+                color: "var(--ink)",
+              }}
+            >
+              {option}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <input
+          type="text"
+          defaultValue={inference ?? ""}
+          aria-label={`Your answer: ${item.question}`}
+          className="ask-input px-3"
+          style={{ fontFamily: "var(--font-text)", fontSize: "var(--t-ui)" }}
+        />
+      )}
+      <div className="flex flex-wrap items-center justify-between gap-3 mt-1">
+        <div className="flex gap-2">
+          <button
+            type="button"
+            className="ask-navigates px-4"
+            style={{
+              minHeight: "var(--control-height)",
+              background: "var(--ink)",
+              color: "var(--paper)",
+              border: "1px solid var(--ink)",
+              borderRadius: "var(--radius)",
+              fontSize: "var(--t-ui)",
+            }}
+          >
+            Save
+          </button>
+          <button
+            type="button"
+            className="ask-navigates px-4"
+            style={{
+              minHeight: "var(--control-height)",
+              background: "var(--ink)",
+              color: "var(--paper)",
+              border: "1px solid var(--ink)",
+              borderRadius: "var(--radius)",
+              fontSize: "var(--t-ui)",
+            }}
+          >
+            Skip
+          </button>
+        </div>
+        {inference !== null ? (
+          <span className="ask-micro flex items-center gap-1.5" style={{ color: "var(--inferred)" }}>
+            <span className="ask-confidence-marker" aria-hidden="true" />I guessed: {inference}
+          </span>
+        ) : null}
+      </div>
     </div>
   );
+}
+
+function EvidenceBlock({ evidence }: { evidence: EvidenceDisplay | null }) {
+  const mono = { fontFamily: "var(--font-mono)", color: "var(--muted)" } as const;
+
+  if (evidence === null) {
+    return (
+      <p className="ask-micro" style={mono}>
+        No evidence available.
+      </p>
+    );
+  }
+
+  switch (evidence.kind) {
+    case "distribution":
+      return (
+        <p className="ask-micro" style={mono}>
+          {rowCountLabel(evidence.rowCount)}. Values:{" "}
+          {evidence.values.map((entry) => `${entry.value} (${entry.count.toLocaleString("en-US")})`).join(" · ")}
+          {evidence.remainderCount > 0
+            ? ` · ${evidence.remainderCount.toLocaleString("en-US")} more`
+            : ""}
+        </p>
+      );
+    case "passage":
+      return evidence.samples.length > 0 ? (
+        <div className="flex flex-col gap-1">
+          {evidence.samples.map((sample, index) => (
+            <p key={index} className="ask-micro" style={mono}>
+              {sample.document}
+              {sample.page !== null ? `, p. ${sample.page}` : ""} — {sample.text}
+            </p>
+          ))}
+        </div>
+      ) : (
+        <p className="ask-micro" style={mono}>
+          No evidence available.
+        </p>
+      );
+    case "poor_scan":
+      return evidence.extracted.length > 0 ? (
+        <div className="flex flex-col gap-1">
+          <p className="ask-micro" style={mono}>
+            {evidence.pages.length} of {evidence.totalPages} page(s) scanned poorly.
+          </p>
+          {evidence.extracted.map((sample, index) => (
+            <p key={index} className="ask-micro" style={mono}>
+              p. {sample.page} — {sample.text}
+            </p>
+          ))}
+        </div>
+      ) : (
+        <p className="ask-micro" style={mono}>
+          No evidence available.
+        </p>
+      );
+    case "contradiction":
+      return (
+        <div className="flex flex-col gap-1">
+          {evidence.passages.map((passage, index) => (
+            <p key={index} className="ask-micro" style={mono}>
+              {passage.document} says {passage.value}
+              {passage.date !== null ? ` (${passage.date})` : ""} — {passage.text}
+            </p>
+          ))}
+        </div>
+      );
+    case "unavailable":
+      return (
+        <p className="ask-micro" style={mono}>
+          No evidence available{evidence.reason !== "" ? ` — ${evidence.reason}` : ""}.
+        </p>
+      );
+  }
 }
