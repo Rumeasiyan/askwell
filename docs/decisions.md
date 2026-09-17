@@ -22,6 +22,18 @@ Template:
 
 ---
 
+## 2026-09-17 — `M3-REVIEW-BE-072a` built despite its two named dependencies not being separately closed
+
+**Decision:** Built `GET /clarifications`, `POST /clarifications/{id}/answer` and `POST /clarifications/{id}/skip` (`api/src/askwell/review.py`) even though the ticket's own Dependencies — `M3-RAISE-BE-071` (evidence capture) and `M3-STORE-BE-076` (a dedicated memory write-side module) — are neither one built as their own ticket.
+
+**Why:** both dependencies exist here only as *capability*, not as a specific ticket closing, and the capability is what this ticket actually needs. `clarifications.evidence` already carries real data — occurrence counts, filenames, low-confidence pages — written by `askwell.clarify` under `M3-RAISE-BE-068`/`069`; `-071`'s own scope (richer per-trigger evidence: full passages, bounded truncation, an inference prefill) is a superset improvement to that column's *content*, not a precondition for reading whatever is in it today, and `072a`'s own scope is only "expose the payload," not "improve its capture." `M3-STORE-BE-076`'s columns (`memory.origin`, `.confidence`, `.superseded_by`) already exist from the initial schema migration — confirmed the same way `docs/decisions.md`'s 2026-08-30 entry for `M3-RAISE-BE-070` confirmed it for that ticket's own lookup — so writing a `memory` row with `origin = 'clarification'` needs no abstraction `076` hasn't built yet; it needs the same raw `INSERT` `askwell.clarify` already uses in three other places. The rejected alternative was stopping and filing a third dependency-blocked issue, which would have repeated `070`'s own finding rather than adding anything a future reader does not already have.
+
+**Consequences:** `076`'s own scope — a shared module for origin/confidence/supersession mechanics, rather than each caller hand-writing the same `INSERT` — remains genuinely open, and `api/src/askwell/review.py` is now a second hand-written copy of that pattern alongside `askwell.clarify`'s. Whichever ticket finally builds `076` should fold both call sites into it rather than leaving `review.py`'s copy to drift. Issues [#257](https://github.com/Rumeasiyan/askwell/issues/257) and [#268](https://github.com/Rumeasiyan/askwell/issues/268) (no `GET /clarifications` endpoint, filed twice by build agents that stopped rather than invent the contract) are closed by this ticket.
+
+**Refs:** `api/src/askwell/review.py`, `api/tests/test_review.py`, `api/tests/test_review_api.py`, `docs/backlog/M3-it-learns-my-material.md` (`M3-REVIEW-BE-072a`), issues #257, #268.
+
+---
+
 ## 2026-09-13 — Memory-suppression is one check across all four triggers, not per-trigger dedup
 
 **Decision:** `M3-RAISE-BE-070` checks every candidate's subject against `memory` and `schema_notes` in one place, after all four triggers have run and before the pass/fail tests, rather than teaching each trigger its own dedup rule. The abbreviation trigger's existing inline memory pre-filter (`M3-RAISE-BE-068`) was removed in favour of this — it did the same lookup but silently, with no decisions-store record.

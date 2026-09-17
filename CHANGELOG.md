@@ -4,6 +4,17 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.3.4 - 2026-09-17
+
+`M3-REVIEW-BE-072a`.
+
+### Added
+
+- **`GET /clarifications`** — pending questions grouped by source, newest source first, each group carrying its source name, count and items (subject, question, options, evidence), plus a total across groups (`askwell.review.list_pending`). A source with `status = 'deleted'` never appears; a source with nothing pending produces no group.
+- **`POST /clarifications/{id}/answer`** — writes a `memory` row (`origin = 'clarification'`, full confidence) and a `clarification_answered` decisions record in one transaction, then marks the item answered. Refused by name, not a second fact, for an item already answered. Answering a skipped item is allowed.
+- **`POST /clarifications/{id}/skip`** — marks the item skipped and writes a `clarification_skipped` decisions record. No `memory` row: a skip is not an answer. Idempotent for an already-skipped item; refused for an already-answered one.
+- Closes issues #257 and #268 (no `GET /clarifications` endpoint, filed independently by two build agents attempting `M3-REVIEW-FE-072` against a contract that did not exist).
+
 ## 0.3.3 - 2026-09-13
 
 `M3-RAISE-BE-070`.
