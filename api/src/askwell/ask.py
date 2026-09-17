@@ -69,7 +69,7 @@ import asyncio
 import json
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, NamedTuple
 
@@ -92,7 +92,7 @@ from askwell.inference.client import InferenceClient, InferenceFailed, Inference
 from askwell.ingest import coverage
 from askwell.inline_clarify import default_assumption, find_blocking
 from askwell.logging import get_logger
-from askwell.memory import retrieve_relevant_facts
+from askwell.memory import MemoryFact, SchemaNote, retrieve_relevant_facts
 from askwell.retrieve import Candidate, candidate_score, retrieve
 from askwell.traces import TraceRing
 
@@ -126,7 +126,15 @@ Status = Literal["running", "completed", "stopped", "failed"]
 
 @dataclass(frozen=True, slots=True)
 class _Event:
-    kind: Literal["step", "token", "citation", "clarification", "clarification_resolved", "done"]
+    kind: Literal[
+        "step",
+        "token",
+        "citation",
+        "fact_citation",
+        "clarification",
+        "clarification_resolved",
+        "done",
+    ]
     data: dict[str, Any]
 
 
@@ -155,7 +163,13 @@ class _Turn:
     def emit(
         self,
         kind: Literal[
-            "step", "token", "citation", "clarification", "clarification_resolved", "done"
+            "step",
+            "token",
+            "citation",
+            "fact_citation",
+            "clarification",
+            "clarification_resolved",
+            "done",
         ],
         data: dict[str, Any],
     ) -> None:
@@ -341,42 +355,98 @@ def _cite_claim(
     claim: Claim,
     candidates: list[Candidate],
     citation_rows: list[dict[str, Any]],
+    facts: Sequence[MemoryFact],
+    notes: Sequence[SchemaNote],
+    fact_usage_rows: list[dict[str, Any]],
 ) -> None:
     """Turn one completed claim into a citation row per index it named,
     sharing `claim.ordinal` — the ticket's own "two passages, one claim,
-    two rows" edge case. An index outside the candidate list is silently
+    two rows" edge case. An index outside every known range is silently
     skipped rather than raising: the model hallucinating a reference number
     is a grounding problem `M2`'s eval suite measures, not a reason to fail
     the whole turn.
+
+    Indices `1..len(candidates)` are documents, same as before `M3-APPLY-
+    BE-079`. `compose_conflict` numbers `facts` and then `notes` straight on
+    from there (`conflict.py`'s `facts_start`/`notes_start`) — an index past
+    the candidates resolves against whichever of those two ranges it falls
+    in, and writes to `fact_usage` instead of `citations`. `fact_usage` has
+    no `claim_ordinal` column (it is "was this fact used in this answer at
+    all", not "which sentence"), so a fact cited by two claims in one answer
+    still produces one row — the caller de-duplicates before the insert.
     """
+    doc_count = len(candidates)
+    facts_start = doc_count + 1
+    notes_start = facts_start + len(facts)
     for index in claim.indices:
-        if not (1 <= index <= len(candidates)):
-            continue
-        candidate = candidates[index - 1]
-        quoted_span = locate_quoted_span(claim.text, candidate.content)
-        citation_rows.append(
-            {
-                "ordinal": claim.ordinal,
-                "chunk_id": candidate.chunk_id,
-                "quoted_span": quoted_span,
-            }
-        )
-        turn.emit(
-            "citation",
-            {
-                "claim_ordinal": claim.ordinal,
-                "index": index,
-                "chunk_id": str(candidate.chunk_id),
-                "document_id": str(candidate.document_id),
-                "filename": candidate.filename,
-                "anchor_kind": candidate.anchor_kind,
-                "heading": candidate.heading,
-                "page_from": candidate.page_from,
-                "page_to": candidate.page_to,
-                "passage": candidate.content,
-                "quoted_span": quoted_span,
-            },
-        )
+        if 1 <= index <= doc_count:
+            candidate = candidates[index - 1]
+            quoted_span = locate_quoted_span(claim.text, candidate.content)
+            citation_rows.append(
+                {
+                    "ordinal": claim.ordinal,
+                    "chunk_id": candidate.chunk_id,
+                    "quoted_span": quoted_span,
+                }
+            )
+            turn.emit(
+                "citation",
+                {
+                    "claim_ordinal": claim.ordinal,
+                    "index": index,
+                    "chunk_id": str(candidate.chunk_id),
+                    "document_id": str(candidate.document_id),
+                    "filename": candidate.filename,
+                    "anchor_kind": candidate.anchor_kind,
+                    "heading": candidate.heading,
+                    "page_from": candidate.page_from,
+                    "page_to": candidate.page_to,
+                    "passage": candidate.content,
+                    "quoted_span": quoted_span,
+                },
+            )
+        elif facts_start <= index < notes_start:
+            fact = facts[index - facts_start]
+            fact_usage_rows.append({"fact_kind": "memory", "fact_id": fact.id})
+            turn.emit(
+                "fact_citation",
+                {
+                    "claim_ordinal": claim.ordinal,
+                    "index": index,
+                    "fact_kind": "memory",
+                    "fact_id": str(fact.id),
+                    "subject": fact.subject,
+                    "fact": fact.fact,
+                    "origin": fact.origin,
+                    "confidence": fact.confidence,
+                    "supplied_at": fact.created_at.isoformat()
+                    if fact.created_at is not None
+                    else None,
+                },
+            )
+        elif notes_start <= index < notes_start + len(notes):
+            note = notes[index - notes_start]
+            fact_usage_rows.append({"fact_kind": "schema_note", "fact_id": note.id})
+            turn.emit(
+                "fact_citation",
+                {
+                    "claim_ordinal": claim.ordinal,
+                    "index": index,
+                    "fact_kind": "schema_note",
+                    "fact_id": str(note.id),
+                    "subject": (
+                        f"{note.table_name}.{note.column_name}"
+                        if note.column_name
+                        else note.table_name
+                    ),
+                    "fact": note.description,
+                    "origin": note.origin,
+                    "confidence": note.confidence,
+                    "supplied_at": note.created_at.isoformat()
+                    if note.created_at is not None
+                    else None,
+                },
+            )
 
 
 async def _await_clarification(turn: _Turn) -> dict[str, Any] | None:
@@ -542,6 +612,7 @@ async def _run_generation(
     reason: str | None = None
     candidates: list[Candidate] = []
     citation_rows: list[dict[str, Any]] = []
+    fact_usage_rows: list[dict[str, Any]] = []
     claims_emitted = 0
     abstained = False
     retrieval_threshold: float | None = None
@@ -736,7 +807,15 @@ async def _run_generation(
                     turn.emit("token", {"text": chunk.text})
                     claims = segment_claims(turn.text)
                     for claim in claims[claims_emitted:]:
-                        _cite_claim(turn, claim, candidates, citation_rows)
+                        _cite_claim(
+                            turn,
+                            claim,
+                            candidates,
+                            citation_rows,
+                            relevant_memory.facts,
+                            relevant_memory.notes,
+                            fact_usage_rows,
+                        )
                     claims_emitted = len(claims)
                 if chunk.done:
                     truncated = chunk.truncated
@@ -769,6 +848,9 @@ async def _run_generation(
                     "ms": (time.monotonic() - compose_started) * 1000,
                     "claims": claims_emitted,
                     "citations": len(citation_rows),
+                    "fact_citations": len(
+                        {(r["fact_kind"], r["fact_id"]) for r in fact_usage_rows}
+                    ),
                     "partial_coverage": partial_coverage,
                     "uncovered_aspects": list(uncovered_aspects),
                     "conflict_detected": conflict_detected,
@@ -889,6 +971,25 @@ async def _run_generation(
                         "chunk_id": row["chunk_id"],
                         "ordinal": row["ordinal"],
                         "quoted_span": row["quoted_span"],
+                    },
+                )
+            # `M3-APPLY-BE-079`: one row per fact per message, however many
+            # claims cited it — `fact_usage` answers "was this used in this
+            # answer", not "which sentence", so de-duplicate in Python ahead
+            # of the unique constraint (`message_id_fact_kind_fact_id`)
+            # rather than relying on it to swallow a duplicate insert.
+            for fact_kind, fact_id in {(r["fact_kind"], r["fact_id"]) for r in fact_usage_rows}:
+                await db.execute(
+                    text(
+                        "INSERT INTO fact_usage (id, message_id, fact_kind, fact_id) "
+                        "VALUES (:id, :message_id, :fact_kind, :fact_id) "
+                        "ON CONFLICT ON CONSTRAINT message_id_fact_kind_fact_id DO NOTHING"
+                    ),
+                    {
+                        "id": uuid.uuid4(),
+                        "message_id": turn.message_id,
+                        "fact_kind": fact_kind,
+                        "fact_id": fact_id,
                     },
                 )
             # C6/`M1-ASK-OBS-041`: question, answer, retrieved chunk

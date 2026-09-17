@@ -221,6 +221,27 @@ def test_empty_retrieved_lists_compose_no_blocks() -> None:
     assert "<schema-notes>" not in result.user_content
 
 
+def test_facts_and_notes_are_indexed_continuing_from_the_candidates() -> None:
+    """`M3-APPLY-BE-079`: one citation index space, not a second marker
+    syntax. Two candidates → the first fact is `[3]`, the first (only)
+    note is `[4]` — `ask._cite_claim` resolves those same numbers."""
+    result = compose_conflict(
+        "What does RFQ mean?",
+        [_candidate("Ninety days."), _candidate("Thirty days.")],
+        retrieved_facts=[_memory_fact()],
+        retrieved_notes=[_schema_note()],
+    )
+    assert "- [3] [user-confirmed] rfq: Request for Quotation" in result.user_content
+    assert (
+        "- [4] [user-confirmed] orders.rfq: an internal request identifier" in result.user_content
+    )
+
+
+def test_facts_index_from_one_when_there_are_no_candidates() -> None:
+    result = compose_conflict("What does RFQ mean?", [], retrieved_facts=[_memory_fact()])
+    assert "- [1] [user-confirmed] rfq: Request for Quotation" in result.user_content
+
+
 # --- split_conflict_answer ------------------------------------------------------
 
 

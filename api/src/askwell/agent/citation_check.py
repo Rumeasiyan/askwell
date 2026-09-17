@@ -13,11 +13,13 @@ trusting that the two were ever consistent.
 An assistant message with no claims at all — an abstention, a purely
 transitional reply — is compliant: `segment_claims` finding nothing is not
 the same as finding an uncited one. A message that has any `fact_usage` rows
-is excluded rather than checked, and named as excluded: nothing populates
-`fact_usage` before `M3`, so a claim resolved against a memory fact instead
-of a chunk cannot yet be told apart from one nobody ever cited, and counting
-it a violation would be measuring segmentation disagreement, not citation
-coverage.
+is excluded rather than checked, and named as excluded: `fact_usage` (written
+by `ask._cite_claim` since `M3-APPLY-BE-079`) records *which* facts a message
+used, not *which claim* used which — there is no `claim_ordinal` on that
+table (`docs/decisions.md`, 2026-09-18) — so a claim resolved against a
+memory fact still cannot be told apart, ordinal for ordinal, from one nobody
+cited, and counting a whole such message a violation would be measuring that
+gap, not citation coverage.
 """
 
 from __future__ import annotations

@@ -4,6 +4,31 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.3.17 - 2026-09-18
+
+`M3-APPLY-BE-079` — a memory fact or schema note can now be cited the same way a document passage is, attributed to the user and the date it was supplied, with the use recorded so "used in N answers" is a real number the moment the memory screen exists to show it.
+
+### Added
+
+- `askwell.agent.conflict.compose_conflict` numbers every retrieved `<memory-facts>`/`<schema-notes>` entry, continuing the citation index straight on from the document candidates' own `1..N` rather than a second marker syntax — one convention the model already knows (`[index]`), extended to a new range instead of taught twice.
+- `askwell.ask._cite_claim` resolves an index past the document candidates against `fact_usage` instead of `citations`: one row per `(message_id, fact_kind, fact_id)`, de-duplicated so a fact cited by two claims in one answer still writes one row. A new `fact_citation` SSE event carries the fact's subject, text, origin, confidence and `created_at` — the attribution date the acceptance criteria ask for.
+- `prompts/conflicting_sources.v1.md` — the "Memory and schema notes" section now teaches citing a fact or note by its index, and states the rule the ticket's Validation Rules ask for: a claim asserting content from the user's own material must cite a document; a claim that only explains what a term means may cite the fact or note directly.
+
+### Fixed
+
+- The uncited-claim check's `fact_usage` exclusion (`M3-APPLY-RET-078`) was dead code until this ticket — nothing populated the table. It now does, for real answers, for the first time.
+
+### Tests
+
+- `api/tests/test_conflict.py` — 2 new cases: facts and notes index correctly after N candidates, and index from 1 with no candidates at all.
+- `api/tests/test_ask_api.py` — 2 new full-turn cases against a real Postgres: a claim citing a memory fact writes `fact_usage` (not `citations`) and the `fact_citation` event attributes it; a fact cited by two claims in one answer still writes one usage row.
+- Verified against the real stack: `scripts/dev.sh check` (lint, format, typecheck, 542 passed/1 skipped) and `scripts/dev.sh test-db` (410 passed) both clean.
+
+### Known gaps
+
+- `fact_usage` has no `claim_ordinal` — the uncited-claim check excludes a whole message that used any fact rather than flagging only the specific claims that did not. `docs/decisions.md`, 2026-09-18, has the reasoning for accepting this rather than a second migration.
+- The correction chip (`M3-CORRECT-FE-081`) and the memory screen's own usage count (`M3-MEM-FE-083`) still do not exist — this ticket only makes the data they will read real.
+
 ## 0.3.16 - 2026-09-18
 
 `M3-APPLY-RET-078` — memory and schema notes are retrieved alongside document chunks at answer time, so a fact the user already taught Askwell applies to every later question that uses it, not just the one it was explained on.
