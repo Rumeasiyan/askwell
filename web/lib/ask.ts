@@ -9,9 +9,12 @@
  * a reconnect against `GET /ask/{message_id}/stream` can share; only the
  * request that opens the stream differs.
  *
- * Four event kinds, matching the server exactly (`askwell.ask._Event`):
- * `step` before and during retrieval, `token` as the answer is generated,
- * `citation` as the model's own `[index]` references resolve, `done` once.
+ * Matches the server exactly (`askwell.ask._Event`): `step` before and
+ * during retrieval, `token` as the answer is generated, `citation`/
+ * `fact_citation` as the model's own `[index]` references resolve to a
+ * document or a memory fact respectively, `clarification`/
+ * `clarification_resolved` around an inline pause (`M3-INLINE-FE-085`),
+ * `done` once.
  */
 
 export interface AskStepData {
@@ -39,6 +42,25 @@ export interface AskCitationData {
   page_to: number | null;
   passage: string;
   quoted_span: string | null;
+}
+
+/** `M3-APPLY-BE-079`: emitted instead of (never alongside) `citation` when a
+ * claim's `[n]` marker resolves past the document candidates, into the
+ * memory facts and schema notes `askwell.agent.conflict.compose_conflict`
+ * numbered straight on from them — the server's one citation-index space,
+ * `askwell.ask._cite_claim`. `M3-CORRECT-FE-081`'s chip renders straight
+ * from this event; only the popover, opened on click, ever re-fetches. */
+export interface AskFactCitationData {
+  message_id: string;
+  index: number;
+  claim_ordinal: number;
+  fact_kind: "memory" | "schema_note";
+  fact_id: string;
+  subject: string;
+  fact: string;
+  origin: string;
+  confidence: number | null;
+  supplied_at: string | null;
 }
 
 /** `M3-INLINE-FE-085`: emitted instead of the next `step`/`token` the
@@ -97,6 +119,7 @@ export type AskEvent =
   | { event: "step"; data: AskStepData }
   | { event: "token"; data: AskTokenData }
   | { event: "citation"; data: AskCitationData }
+  | { event: "fact_citation"; data: AskFactCitationData }
   | { event: "clarification"; data: AskClarificationData }
   | { event: "clarification_resolved"; data: AskClarificationResolvedData }
   | { event: "done"; data: AskDoneData };
@@ -128,6 +151,8 @@ export function parseSseFrame(frame: string): AskEvent | null {
       return { event: "token", data: data as AskTokenData };
     case "citation":
       return { event: "citation", data: data as AskCitationData };
+    case "fact_citation":
+      return { event: "fact_citation", data: data as AskFactCitationData };
     case "clarification":
       return { event: "clarification", data: data as AskClarificationData };
     case "clarification_resolved":

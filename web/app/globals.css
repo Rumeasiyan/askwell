@@ -250,6 +250,55 @@
     background: var(--surface);
   }
 
+  /* A memory chip in the answer prose (`M3-CORRECT-FE-081`, `docs/ux/ask.md`
+     §4) — visible text, not a hidden marker, since it has to be clicked.
+     Mono/`--t-meta`: a chip states what the machine believes, which is
+     apparatus, not language (§3). */
+  .ask-memory-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin: 0 2px;
+    padding: 1px 6px;
+    font-family: var(--font-app);
+    font-size: var(--t-meta);
+    line-height: var(--t-meta-lh);
+    color: var(--muted);
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+    cursor: pointer;
+    vertical-align: middle;
+  }
+
+  .ask-memory-chip:hover,
+  .ask-memory-chip[data-open="true"] {
+    border-color: var(--rule-strong);
+    color: var(--ink);
+  }
+
+  /* The chip's popover — one of the few genuinely floating things (§4), so
+     it earns the drop shadow the rest of this design withholds. */
+  .ask-memory-popover {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 20;
+    width: min(320px, calc(100vw - 32px));
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: var(--surface);
+    border: 1px solid var(--rule-strong);
+    border-radius: var(--radius);
+    box-shadow: 0 4px 16px var(--drop);
+    font-family: var(--font-app);
+    font-size: var(--t-ui);
+    line-height: var(--t-ui-lh);
+    color: var(--ink);
+  }
+
   .ask-prose {
     font-family: var(--font-text);
     font-size: var(--t-body);

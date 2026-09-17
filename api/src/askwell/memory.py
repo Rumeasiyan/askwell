@@ -59,10 +59,16 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from askwell.audit import Store, record
+from askwell.config import Settings
+from askwell.db.engine import session_scope
+from askwell.db.models import FACT_KINDS
 from askwell.logging import get_logger
 from askwell.retrieve import TEXT_SEARCH_CONFIG
 
@@ -172,6 +178,27 @@ class CorrectionOutcome:
 class DeletionOutcome:
     reprocessing: Reprocessing
     reapply_job_id: uuid.UUID | None
+
+
+@dataclass(frozen=True, slots=True)
+class FactDetail:
+    """What a chip's popover needs, whichever kind of fact it names —
+    `M3-CORRECT-FE-081`'s own two edge cases: "how many answers used it"
+    and "the answer used a version since superseded". `current` is only
+    ever one level deep (the active row for the same subject/position, not
+    the full chain to it) — a popover shows where things stand now, not a
+    history, which `docs/ux/memory.md` §4 reserves for the memory screen.
+    """
+
+    fact_kind: str
+    id: uuid.UUID
+    subject: str
+    value: str
+    origin: str
+    created_at: Any
+    usage_count: int
+    active: bool
+    current: "FactDetail | None"
 
 
 async def _reprocess_subject(
@@ -715,6 +742,230 @@ async def get_active_schema_notes(
     ]
 
 
+# --- the chip: one entrypoint across both kinds ---------------------------
+#
+# `M3-CORRECT-FE-081`. `askwell.memory` had every write-side primitive this
+# needs (`M3-STORE-BE-076`, `M3-CORRECT-BE-082`) but no HTTP surface — the
+# same gap `M3-REVIEW-BE-072a`'s own docstring names for `clarifications`:
+# logic with nothing exposing it, until whichever ticket first needed one
+# built it. `docs/BRAIN.md`'s own `M3-CORRECT-BE-082` entry says this
+# plainly: "no route exposes this path over HTTP yet — that is the first
+# thing whichever of those three starts next will need." This is that.
+
+
+async def get_fact_detail(
+    session: AsyncSession, *, fact_kind: str, fact_id: uuid.UUID
+) -> FactDetail | None:
+    """Everything a chip's popover shows, `None` if `fact_id` names nothing
+    at all (a stale link, not a refusal `correct`/`delete` should ever hit
+    since those reject by locking the row, not by a prior read).
+
+    `current` is only populated when this row is no longer active — the
+    ticket's own "answer used an earlier version" edge case — and is the
+    active row for the same subject (memory) or table/column position
+    (schema note), which retrieval-time precedence (`get_active_memory_facts`/
+    `get_active_schema_notes`, both already user-before-inferred,
+    newer-before-older) picks out as its first result.
+    """
+    if fact_kind == "memory":
+        row = (
+            await session.execute(
+                text(
+                    "SELECT id, subject, fact, origin, created_at, superseded_by "
+                    "FROM memory WHERE id = :id"
+                ),
+                {"id": fact_id},
+            )
+        ).first()
+        if row is None:
+            return None
+        id_, subject, fact, origin, created_at, superseded_by = row
+        current = None
+        if superseded_by is not None:
+            active = await get_active_memory_facts(session, subject=subject)
+            if active:
+                head = active[0]
+                current = FactDetail(
+                    fact_kind="memory",
+                    id=head.id,
+                    subject=head.subject,
+                    value=head.fact,
+                    origin=head.origin,
+                    created_at=head.created_at,
+                    usage_count=await _usage_count(session, fact_kind="memory", fact_id=head.id),
+                    active=True,
+                    current=None,
+                )
+        return FactDetail(
+            fact_kind="memory",
+            id=id_,
+            subject=subject,
+            value=fact,
+            origin=origin,
+            created_at=created_at,
+            usage_count=await _usage_count(session, fact_kind="memory", fact_id=id_),
+            active=superseded_by is None,
+            current=current,
+        )
+    if fact_kind == "schema_note":
+        row = (
+            await session.execute(
+                text(
+                    "SELECT id, source_id, table_name, column_name, description, "
+                    "origin, created_at, superseded_by FROM schema_notes WHERE id = :id"
+                ),
+                {"id": fact_id},
+            )
+        ).first()
+        if row is None:
+            return None
+        id_, source_id, table_name, column_name = row[0], row[1], row[2], row[3]
+        description, origin, created_at, superseded_by = row[4], row[5], row[6], row[7]
+        subject = f"{table_name}.{column_name}" if column_name else table_name
+        current = None
+        if superseded_by is not None:
+            active_notes = await get_active_schema_notes(session, source_id=source_id)
+            match = next(
+                (
+                    n
+                    for n in active_notes
+                    if n.table_name == table_name and n.column_name == column_name
+                ),
+                None,
+            )
+            if match is not None:
+                current = FactDetail(
+                    fact_kind="schema_note",
+                    id=match.id,
+                    subject=f"{match.table_name}.{match.column_name}"
+                    if match.column_name
+                    else match.table_name,
+                    value=match.description,
+                    origin=match.origin,
+                    created_at=match.created_at,
+                    usage_count=await _usage_count(
+                        session, fact_kind="schema_note", fact_id=match.id
+                    ),
+                    active=True,
+                    current=None,
+                )
+        return FactDetail(
+            fact_kind="schema_note",
+            id=id_,
+            subject=subject,
+            value=description,
+            origin=origin,
+            created_at=created_at,
+            usage_count=await _usage_count(session, fact_kind="schema_note", fact_id=id_),
+            active=superseded_by is None,
+            current=current,
+        )
+    raise ValueError(fact_kind)
+
+
+async def _usage_count(session: AsyncSession, *, fact_kind: str, fact_id: uuid.UUID) -> int:
+    """How many answers cited this exact row — `fact_usage` is one row per
+    `(message_id, fact_kind, fact_id)`, so counting it directly is exact,
+    not an estimate (`docs/ux/memory.md` §3's "used in N answers" line)."""
+    result = await session.execute(
+        text("SELECT count(*) FROM fact_usage WHERE fact_kind = :fact_kind AND fact_id = :fact_id"),
+        {"fact_kind": fact_kind, "fact_id": fact_id},
+    )
+    return int(result.scalar_one())
+
+
+async def correct_fact(
+    session: AsyncSession, *, fact_kind: str, fact_id: uuid.UUID, value: str
+) -> CorrectionOutcome:
+    """Correct a fact from its chip, whichever kind and whichever origin it
+    currently carries.
+
+    An active user-origin row corrects in place via `correct_memory_fact`/
+    `correct_schema_note`. An active *inferred* row has nothing to correct
+    — `memory.py`'s own module docstring: "there is nothing to correct
+    about a guess nobody asserted" — so the chip's "Correct" there is really
+    "assert this instead", which is `write_memory_fact`/`write_schema_note`
+    with a user origin; that write already retires the inference the same
+    way any user-origin write does (`write_memory_fact`'s own "a user-origin
+    write retires any active fact for the same subject — inferred or
+    user-origin"). Falling back on `CannotCorrectInference` rather than
+    branching on origin up front means this stays correct even if a second
+    correction of the same fact races in between the read and the write.
+    """
+    if fact_kind == "memory":
+        try:
+            return await correct_memory_fact(session, fact_id=fact_id, fact=value)
+        except CannotCorrectInference:
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT subject, source_id FROM memory "
+                        "WHERE id = :id AND superseded_by IS NULL"
+                    ),
+                    {"id": fact_id},
+                )
+            ).first()
+            if row is None:
+                raise FactNotFound(str(fact_id)) from None
+            subject, source_id = row
+            new_id = await write_memory_fact(
+                session, subject=subject, fact=value, origin="correction", source_id=source_id
+            )
+            assert new_id is not None, "a user-origin write is never discarded"
+            reprocessing, job_id = await _reprocess_subject(
+                session, subject=subject, source_id=source_id, memory_id=new_id
+            )
+            return CorrectionOutcome(
+                fact_id=new_id, reprocessing=reprocessing, reapply_job_id=job_id
+            )
+    elif fact_kind == "schema_note":
+        try:
+            return await correct_schema_note(session, note_id=fact_id, description=value)
+        except CannotCorrectInference:
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT source_id, table_name, column_name FROM schema_notes "
+                        "WHERE id = :id AND superseded_by IS NULL"
+                    ),
+                    {"id": fact_id},
+                )
+            ).first()
+            if row is None:
+                raise FactNotFound(str(fact_id)) from None
+            source_id, table_name, column_name = row
+            new_id = await write_schema_note(
+                session,
+                source_id=source_id,
+                table_name=table_name,
+                column_name=column_name,
+                description=value,
+                origin="user",
+            )
+            assert new_id is not None, "a user-origin write is never discarded"
+            subject = column_name or table_name
+            reprocessing, job_id = await _reprocess_subject(
+                session, subject=subject, source_id=source_id, memory_id=None
+            )
+            return CorrectionOutcome(
+                fact_id=new_id, reprocessing=reprocessing, reapply_job_id=job_id
+            )
+    else:
+        raise ValueError(fact_kind)
+
+
+async def delete_fact(
+    session: AsyncSession, *, fact_kind: str, fact_id: uuid.UUID
+) -> DeletionOutcome:
+    """Delete a fact from its chip, whichever kind — `delete_memory_fact`/
+    `delete_schema_note` need no origin branching, unlike correction."""
+    if fact_kind == "memory":
+        return await delete_memory_fact(session, fact_id=fact_id)
+    if fact_kind == "schema_note":
+        return await delete_schema_note(session, note_id=fact_id)
+    raise ValueError(fact_kind)
+
+
 # --- retrieval for answer composition -------------------------------------
 
 # `plainto_tsquery` ANDs every term it parses, so a question with several
@@ -832,3 +1083,102 @@ async def retrieve_relevant_facts(
         for row in note_rows
     ]
     return RelevantMemory(facts=facts, notes=notes)
+
+
+# --- HTTP -------------------------------------------------------------
+
+
+def _fact_detail_json(detail: FactDetail) -> dict[str, Any]:
+    return {
+        "fact_kind": detail.fact_kind,
+        "id": str(detail.id),
+        "subject": detail.subject,
+        "value": detail.value,
+        "origin": detail.origin,
+        "created_at": detail.created_at.isoformat() if detail.created_at is not None else None,
+        "usage_count": detail.usage_count,
+        "active": detail.active,
+        "current": _fact_detail_json(detail.current) if detail.current is not None else None,
+    }
+
+
+def _reprocessing_json(reprocessing: Reprocessing) -> dict[str, Any]:
+    return {
+        "count": reprocessing.count,
+        "label": reprocessing.label,
+        "changed": reprocessing.changed,
+    }
+
+
+class CorrectFactRequest(BaseModel):
+    value: str = Field(min_length=1, max_length=4096)
+
+
+def register_memory(
+    app: FastAPI, settings: Settings, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """The memory chip's own surface (`M3-CORRECT-FE-081`) — read what a
+    popover needs, correct, delete. Register before the interface catch-all,
+    same as every other route module."""
+
+    @app.get("/memory/facts/{fact_kind}/{fact_id}")
+    async def fact_detail_route(fact_kind: str, fact_id: uuid.UUID) -> JSONResponse:
+        if fact_kind not in FACT_KINDS:
+            return JSONResponse({"error": "No such fact kind."}, status_code=404)
+        async with session_scope(factory) as db:
+            detail = await get_fact_detail(db, fact_kind=fact_kind, fact_id=fact_id)
+        if detail is None:
+            return JSONResponse({"error": "No such fact."}, status_code=404)
+        return JSONResponse(_fact_detail_json(detail))
+
+    @app.post("/memory/facts/{fact_kind}/{fact_id}/correct")
+    async def correct_fact_route(
+        fact_kind: str, fact_id: uuid.UUID, body: CorrectFactRequest
+    ) -> JSONResponse:
+        if fact_kind not in FACT_KINDS:
+            return JSONResponse({"error": "No such fact kind."}, status_code=404)
+        try:
+            async with session_scope(factory) as db:
+                outcome = await correct_fact(
+                    db, fact_kind=fact_kind, fact_id=fact_id, value=body.value
+                )
+        except FactNotFound:
+            return JSONResponse({"error": "No such fact."}, status_code=404)
+        if outcome.reapply_job_id is not None:
+            from askwell import reapply
+
+            # Best-effort wake-up over a durable queue, same shape as
+            # `askwell.review.answer_route` — the row is already committed,
+            # so a Redis hiccup costs a delay, not the re-processing itself.
+            await reapply.dispatch(settings, [outcome.reapply_job_id])
+        return JSONResponse(
+            {
+                "fact_id": str(outcome.fact_id),
+                "reprocessing": _reprocessing_json(outcome.reprocessing),
+                "reapply_job_id": (
+                    str(outcome.reapply_job_id) if outcome.reapply_job_id is not None else None
+                ),
+            }
+        )
+
+    @app.post("/memory/facts/{fact_kind}/{fact_id}/delete")
+    async def delete_fact_route(fact_kind: str, fact_id: uuid.UUID) -> JSONResponse:
+        if fact_kind not in FACT_KINDS:
+            return JSONResponse({"error": "No such fact kind."}, status_code=404)
+        try:
+            async with session_scope(factory) as db:
+                outcome = await delete_fact(db, fact_kind=fact_kind, fact_id=fact_id)
+        except FactNotFound:
+            return JSONResponse({"error": "No such fact."}, status_code=404)
+        if outcome.reapply_job_id is not None:
+            from askwell import reapply
+
+            await reapply.dispatch(settings, [outcome.reapply_job_id])
+        return JSONResponse(
+            {
+                "reprocessing": _reprocessing_json(outcome.reprocessing),
+                "reapply_job_id": (
+                    str(outcome.reapply_job_id) if outcome.reapply_job_id is not None else None
+                ),
+            }
+        )

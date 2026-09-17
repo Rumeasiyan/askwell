@@ -22,6 +22,7 @@ from askwell.health import ComponentState, check_components
 from askwell.ingest import register_ingest
 from askwell.interface import register_interface
 from askwell.logging import configure_logging, get_logger
+from askwell.memory import register_memory
 from askwell.middleware import register_session
 from askwell.network import read_activity
 from askwell.retrieve import register_search
@@ -109,6 +110,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_suggestions(app, app.state.sessions)
     register_documents(app, resolved, app.state.sessions)
     register_review(app, resolved, app.state.sessions)
+    register_memory(app, resolved, app.state.sessions)
     register_setup(app, resolved, app.state.sessions)
 
     @app.get("/health")
