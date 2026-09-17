@@ -209,6 +209,24 @@
     border-left: 2px solid var(--provenance);
   }
 
+  /* §7's confidence marker: a 6px square before any memory fact. Filled
+     `--provenance` if the user supplied it, hollow `--inferred` if Askwell
+     guessed — colour is never the only signal (§8), so filled-vs-hollow
+     carries the distinction on its own even without the colour. */
+  .ask-confidence-marker {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    flex: none;
+    border: 1px solid var(--inferred);
+    background: transparent;
+  }
+
+  .ask-confidence-marker[data-supplied="true"] {
+    background: var(--provenance);
+    border-color: var(--provenance);
+  }
+
   /* Hovering or focusing a claim raises its card and vice versa — plain
      `:hover` cannot reach across the two DOM subtrees a claim and its card
      live in, so this is a class toggled from the leader store's hovered key

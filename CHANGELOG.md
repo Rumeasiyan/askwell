@@ -4,7 +4,20 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
-## 0.3.6 - 2026-09-17
+## 0.3.7 - 2026-09-17
+
+`M3-REVIEW-FE-073`.
+
+### Added
+
+- **One clarification's full item anatomy** (`web/components/clarifications/clarifications-screen.tsx`, `docs/ux/clarifications.md` §3) — subject in mono, question in serif, evidence formatted per kind (value distribution with row count, a passage with its document and page, a contradiction's two passages, a poor scan's extracted pages) instead of raw JSON. A free-text answer field prefills with `current_inference` where Askwell has a guess; the current inference is echoed beside Save/Skip with the hollow `--inferred` confidence marker so the consequence of skipping is visible, and is absent (not a fake guess) when there is nothing to infer. Discrete choices (`options` present — a poor scan's re-scan/index-as-is, a document-identity or contradiction's file choice) render as equal-weight buttons instead of a text field. Evidence too sparse to show, or missing outright, renders "No evidence available" rather than an empty block.
+- Save and Skip render with equal visual weight, per §3's own rule — neither is wired to the API yet (`M3-REVIEW-FE-074`, Out of Scope here).
+- `.ask-confidence-marker` — the design system's §7 confidence marker (a 6px square, hollow `--inferred` or filled `--provenance`), its first real usage.
+
+### Known gaps
+
+- No link from a passage to its source: no evidence shape carries a `document_id`, only a filename — tracked as #280.
+
 
 `M3-RAISE-BE-071`.
 
