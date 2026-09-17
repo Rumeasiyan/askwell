@@ -1,0 +1,12 @@
+[Unit]
+Description=Askwell build watchdog — restart the queue, merge what is green
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/external/quantum-plus/askwell/scripts/watchdog.sh
+# The queue it starts is deliberately detached and outlives this unit. Without
+# this, systemd reaps the whole control group when the oneshot finishes and
+# kills the build it just started.
+KillMode=none
+TimeoutStartSec=5min

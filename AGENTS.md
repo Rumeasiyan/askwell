@@ -148,11 +148,18 @@ Everything runs through one entry point:
 | Bring up the stack | `podman compose up -d` | **Verified** |
 | One image only | `scripts/dev.sh build-api` / `build-web` | **Verified** |
 | Eval suite | `scripts/dev.sh eval --suite <name>` | **Verified** |
+| Keep the build alive unattended | `scripts/watchdog.sh` (a systemd **user** timer runs it) | **Verified** |
 
 Two things about `scripts/dev.sh` that are deliberate:
 
 - **Every command runs with `--network=none` unless it demonstrably needs a network**, and the exceptions are named rather than assumed. C1 is cheapest to enforce where the toolchain runs, and a linter has no business reaching an index. Four commands opt back in explicitly: `lock` and `web-install` resolve from a package registry, and `db`, `psql` and `test-db` join the stack's own network to reach Postgres — which is the local machine talking to itself, not egress.
 - **The lockfile is the pin, `pyproject.toml` holds only bounds.** The image installs with `uv sync --locked`, not `--frozen`: `--frozen` never reads `pyproject.toml`, so adding a dependency and forgetting to relock produces a build that succeeds while missing it, surfacing much later as an `ImportError` with no obvious cause. Widening a bound changes no build until you run `lock` deliberately and review the diff.
+
+**The build does not stay running on its own, and that is the largest cost in this project so far.** It has stopped silently at least five times — a fortnight in August, three times in one day on 13 September, four days after that. Every stop had a different cause (a quota limit, a session ending, containers killed, podman storage wedging) and the same shape: it died, nobody noticed, and nothing moved until a person thought to ask. Each fix took minutes; the noticing took days.
+
+`scripts/watchdog.sh` is what notices. A systemd user timer runs it every fifteen minutes: it restarts a dead queue, brings the stack up when `db-tests` would otherwise fail and park healthy tickets, and merges pull requests that are already green and unattended. It refuses to act on a tree it does not own — a queue already running, a branch that is not `main`, or uncommitted work — because every one of those has caused a real failure here.
+
+Install it with `systemctl --user enable --now askwell-watchdog.timer`. A *user* timer deliberately: a system unit cannot exec files under `$HOME` on Fedora with SELinux enforcing, which is exactly how the GitHub runner's own service install failed.
 
 Do not add a command to this table until it has been run and its output read.
 
