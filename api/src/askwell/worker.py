@@ -80,6 +80,18 @@ async def ingest_document(
     )
 
 
+async def reapply_job(ctx: dict[str, Any], job_id: str) -> None:
+    """Re-process what one answered clarification affects. `M3-APPLY-ING-080`.
+
+    Thin, the same reason `ingest_document` is: everything about what
+    re-processing *is* lives in `askwell.reapply`, so it can be tested
+    without a Redis, a worker process and a job serialiser in the way.
+    """
+    from askwell import reapply
+
+    await reapply.run_job(ctx["sessions"], ctx["settings"], uuid.UUID(job_id))
+
+
 async def reconcile_queue(ctx: dict[str, Any]) -> int:
     """Re-dispatch queued work Redis has forgotten about.
 
@@ -103,7 +115,7 @@ async def check_missing(ctx: dict[str, Any]) -> int:
 
 
 async def startup(ctx: dict[str, Any]) -> None:
-    from askwell import embed, ingest
+    from askwell import embed, ingest, reapply
 
     settings: Settings = ctx["settings"]
     engine = build_engine(settings)
@@ -125,6 +137,7 @@ async def startup(ctx: dict[str, Any]) -> None:
         async with session_scope(ctx["sessions"]) as session:
             await embed.check_dimension(session, settings)
             resumed = await ingest.resume(session)
+            resumed_reapply = await reapply.resume(session)
         waiting = await ingest.reconcile(ctx["sessions"], settings)
     except embed.EmbeddingDimensionMismatch:
         # Fatal, deliberately, unlike everything below. The database is up
@@ -142,7 +155,15 @@ async def startup(ctx: dict[str, Any]) -> None:
         log.warning("worker_resume_deferred", error=f"{type(error).__name__}: {error}")
         return
 
-    log.info("worker_resumed", interrupted=resumed, dispatched=waiting)
+    reapply_dispatched = await reapply.dispatch(settings, resumed_reapply)
+
+    log.info(
+        "worker_resumed",
+        interrupted=resumed,
+        dispatched=waiting,
+        reapply_interrupted=len(resumed_reapply),
+        reapply_dispatched=reapply_dispatched,
+    )
 
 
 async def shutdown(ctx: dict[str, Any]) -> None:
@@ -155,7 +176,7 @@ async def shutdown(ctx: dict[str, Any]) -> None:
 class WorkerSettings:
     """arq's entry point. Read by `arq askwell.worker.WorkerSettings`."""
 
-    functions: ClassVar[list[Callable[..., Any]]] = [ping, ingest_document]
+    functions: ClassVar[list[Callable[..., Any]]] = [ping, ingest_document, reapply_job]
 
     # The repair timer. Its interval is configuration, so it is applied in
     # `main()` where the settings exist — a class body cannot read them without

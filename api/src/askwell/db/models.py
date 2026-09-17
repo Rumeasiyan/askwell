@@ -71,6 +71,15 @@ CLARIFICATION_STATUSES = ("pending", "answered", "skipped", "dismissed")
 # it into either would make the library render a lie in one direction or the
 # other. See `askwell.ingest`.
 INGEST_STATES = ("queued", "running", "parked", "failed", "done")
+# `M3-APPLY-ING-080`: re-processing what an answered clarification affects.
+# `reapply_jobs.status` mirrors `ingest_jobs.state` minus `parked` — there is
+# no undeclared future stage here to park against.
+REAPPLY_JOB_STATES = ("queued", "running", "done", "failed")
+# Polymorphic, like `fact_usage.fact_kind` — a chunk, a schema note and a
+# clarification are unrelated tables, so `reapply_items.target_id` is not a
+# foreign key into any one of them.
+REAPPLY_ITEM_KINDS = ("chunk", "schema_note", "conflict")
+REAPPLY_ITEM_STATUSES = ("pending", "done", "failed")
 CONVERSATION_MODES = ("text", "voice")
 AI_BACKENDS = ("local", "online")
 MESSAGE_ROLES = ("user", "assistant", "system")
@@ -526,6 +535,95 @@ class Clarification(Base):
     )
     asked_at: Mapped[datetime] = created_at()
     answered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ReapplyJob(Base):
+    """What re-reads after one clarification is answered. `M3-APPLY-ING-080`.
+
+    Same reasoning as `IngestJob`: `arq` dispatches, this table records, and
+    `askwell.reapply.resume` returns a job a dead worker was holding back to
+    `queued` rather than losing it.
+    """
+
+    __tablename__ = "reapply_jobs"
+    __table_args__ = (
+        _one_of("status", REAPPLY_JOB_STATES, "status"),
+        Index("ix_reapply_jobs_source_id", "source_id"),
+        # `dispatch`'s and `resume`'s own query: unfinished jobs. Partial,
+        # matching `ix_ingest_jobs_pending` — finished rows accumulate and
+        # are never the answer.
+        Index(
+            "ix_reapply_jobs_pending",
+            "created_at",
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    subject: Mapped[str] = mapped_column(Text, nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("sources.id", ondelete="CASCADE"), nullable=False
+    )
+    clarification_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("clarifications.id", ondelete="SET NULL")
+    )
+    memory_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("memory.id", ondelete="SET NULL")
+    )
+
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default=text("'queued'"))
+    total_items: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    done_items: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    failed_items: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+
+    created_at_: Mapped[datetime] = mapped_column(
+        "created_at", DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ReapplyItem(Base):
+    """One chunk, schema note or stale conflict a `ReapplyJob` touches.
+
+    The partial unique index is the de-duplication rule: two jobs naming the
+    same `(kind, target_id)` while it is still `pending` collapse to one row
+    — `Index(unique=True)` rather than a plain `UniqueConstraint`, since a
+    constraint cannot carry `postgresql_where`.
+    """
+
+    __tablename__ = "reapply_items"
+    __table_args__ = (
+        _one_of("kind", REAPPLY_ITEM_KINDS, "kind"),
+        _one_of("status", REAPPLY_ITEM_STATUSES, "status"),
+        Index("ix_reapply_items_job_id", "job_id"),
+        Index(
+            "uq_reapply_items_pending",
+            "kind",
+            "target_id",
+            unique=True,
+            postgresql_where=text("status = 'pending'"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    job_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("reapply_jobs.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    target_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    label: Mapped[str | None] = mapped_column(Text)
+
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=text("'pending'")
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    error: Mapped[str | None] = mapped_column(Text)
+
+    created_at_: Mapped[datetime] = mapped_column(
+        "created_at", DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 # --- conversations ----------------------------------------------------------
