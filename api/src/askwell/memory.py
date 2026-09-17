@@ -151,6 +151,46 @@ class RelevantMemory:
 
 
 @dataclass(frozen=True, slots=True)
+class MemoryHistoryEntry:
+    """One superseded value for a subject/position — `docs/ux/memory.md`
+    §4's "History": every prior value with a date, never discarded."""
+
+    value: str
+    origin: str
+    created_at: Any
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryScreenRow:
+    """One row of `docs/ux/memory.md` §3 — the active value plus everything
+    the row needs to render without a second request: origin, source,
+    usage count and the struck-through history behind it."""
+
+    fact_kind: str
+    id: uuid.UUID
+    subject: str
+    value: str
+    origin: str
+    confidence: float | None
+    source_id: uuid.UUID | None
+    source_name: str | None
+    source_deleted: bool
+    created_at: Any
+    usage_count: int
+    history: list[MemoryHistoryEntry]
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryScreen:
+    """`GET /memory`'s whole payload — one already-sorted list, inferred
+    first (`docs/ux/memory.md` §2), plus the count the "pending review"
+    framing (§5) names."""
+
+    rows: list[MemoryScreenRow]
+    inferred_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class Reprocessing:
     """What a correction or deletion just queued, named specifically enough
     for the caller — chip or memory screen — to confirm it rather than show
@@ -742,6 +782,124 @@ async def get_active_schema_notes(
     ]
 
 
+# --- the memory screen -----------------------------------------------------
+
+
+async def get_memory_screen(session: AsyncSession) -> MemoryScreen:
+    """Everything `docs/ux/memory.md` needs for one list: both fact kinds,
+    origin, source, usage count and supersession history, in one read.
+    `M3-MEM-FE-083`.
+
+    History is fetched in two queries total (one per kind), not one per
+    subject — `docs/ux/memory.md`'s own "hundreds of facts" edge case rules
+    out an N+1 here even though nothing about the read itself is complex.
+    Sort is inferred-first (`origin != 'inferred'` ascending, so `False`/
+    inferred sorts first), newest-created-first within a tier — never
+    alphabetical, which `docs/ux/memory.md` §2 says explicitly would bury
+    what the screen exists to surface.
+    """
+    fact_rows = (
+        await session.execute(
+            text(
+                "SELECT m.id, m.subject, m.fact, m.origin, m.confidence, "
+                "m.source_id, s.name, (s.deleted_at IS NOT NULL) AS source_deleted, "
+                "m.created_at "
+                "FROM memory m LEFT JOIN sources s ON s.id = m.source_id "
+                "WHERE m.superseded_by IS NULL"
+            )
+        )
+    ).all()
+
+    fact_history_rows = (
+        await session.execute(
+            text(
+                "SELECT subject, fact, origin, created_at FROM memory "
+                "WHERE superseded_by IS NOT NULL ORDER BY created_at DESC"
+            )
+        )
+    ).all()
+    fact_history: dict[str, list[MemoryHistoryEntry]] = {}
+    for subject, fact, origin, created_at in fact_history_rows:
+        fact_history.setdefault(subject, []).append(
+            MemoryHistoryEntry(value=fact, origin=origin, created_at=created_at)
+        )
+
+    note_rows = (
+        await session.execute(
+            text(
+                "SELECT n.id, n.table_name, n.column_name, n.description, n.origin, "
+                "n.confidence, n.source_id, s.name, n.created_at "
+                "FROM schema_notes n JOIN sources s ON s.id = n.source_id "
+                "WHERE n.superseded_by IS NULL"
+            )
+        )
+    ).all()
+
+    note_history_rows = (
+        await session.execute(
+            text(
+                "SELECT source_id, table_name, column_name, description, origin, created_at "
+                "FROM schema_notes WHERE superseded_by IS NOT NULL ORDER BY created_at DESC"
+            )
+        )
+    ).all()
+    note_history: dict[tuple[uuid.UUID, str, str | None], list[MemoryHistoryEntry]] = {}
+    for source_id, table_name, column_name, description, origin, created_at in note_history_rows:
+        note_history.setdefault((source_id, table_name, column_name), []).append(
+            MemoryHistoryEntry(value=description, origin=origin, created_at=created_at)
+        )
+
+    rows: list[MemoryScreenRow] = []
+    for row_tuple in fact_rows:
+        id_, subject, fact, origin, confidence = row_tuple[:5]
+        source_id, source_name, source_deleted, created_at = row_tuple[5:]
+        rows.append(
+            MemoryScreenRow(
+                fact_kind="memory",
+                id=id_,
+                subject=subject,
+                value=fact,
+                origin=origin,
+                confidence=float(confidence) if confidence is not None else None,
+                source_id=source_id,
+                source_name=source_name,
+                source_deleted=bool(source_deleted),
+                created_at=created_at,
+                usage_count=await _usage_count(session, fact_kind="memory", fact_id=id_),
+                history=fact_history.get(subject, []),
+            )
+        )
+
+    for note_tuple in note_rows:
+        id_, table_name, column_name, description, origin = note_tuple[:5]
+        confidence, source_id, source_name, created_at = note_tuple[5:]
+        subject = f"{table_name}.{column_name}" if column_name else table_name
+        rows.append(
+            MemoryScreenRow(
+                fact_kind="schema_note",
+                id=id_,
+                subject=subject,
+                value=description,
+                origin=origin,
+                confidence=float(confidence) if confidence is not None else None,
+                source_id=source_id,
+                source_name=source_name,
+                # A source with any schema notes left is never soft-deleted:
+                # `askwell.sources.delete_source` deletes its schema_notes
+                # outright (`ON DELETE CASCADE`), so a note surviving to this
+                # read always has a live source.
+                source_deleted=False,
+                created_at=created_at,
+                usage_count=await _usage_count(session, fact_kind="schema_note", fact_id=id_),
+                history=note_history.get((source_id, table_name, column_name), []),
+            )
+        )
+
+    rows.sort(key=lambda row: (row.origin != "inferred", -row.created_at.timestamp()))
+    inferred_count = sum(1 for row in rows if row.origin == "inferred")
+    return MemoryScreen(rows=rows, inferred_count=inferred_count)
+
+
 # --- the chip: one entrypoint across both kinds ---------------------------
 #
 # `M3-CORRECT-FE-081`. `askwell.memory` had every write-side primitive this
@@ -1110,6 +1268,38 @@ def _reprocessing_json(reprocessing: Reprocessing) -> dict[str, Any]:
     }
 
 
+def _memory_history_json(entry: MemoryHistoryEntry) -> dict[str, Any]:
+    return {
+        "value": entry.value,
+        "origin": entry.origin,
+        "created_at": entry.created_at.isoformat() if entry.created_at is not None else None,
+    }
+
+
+def _memory_screen_row_json(row: MemoryScreenRow) -> dict[str, Any]:
+    return {
+        "fact_kind": row.fact_kind,
+        "id": str(row.id),
+        "subject": row.subject,
+        "value": row.value,
+        "origin": row.origin,
+        "confidence": row.confidence,
+        "source_id": str(row.source_id) if row.source_id is not None else None,
+        "source_name": row.source_name,
+        "source_deleted": row.source_deleted,
+        "created_at": row.created_at.isoformat() if row.created_at is not None else None,
+        "usage_count": row.usage_count,
+        "history": [_memory_history_json(entry) for entry in row.history],
+    }
+
+
+def _memory_screen_json(screen: MemoryScreen) -> dict[str, Any]:
+    return {
+        "rows": [_memory_screen_row_json(row) for row in screen.rows],
+        "inferred_count": screen.inferred_count,
+    }
+
+
 class CorrectFactRequest(BaseModel):
     value: str = Field(min_length=1, max_length=4096)
 
@@ -1117,9 +1307,15 @@ class CorrectFactRequest(BaseModel):
 def register_memory(
     app: FastAPI, settings: Settings, factory: async_sessionmaker[AsyncSession]
 ) -> None:
-    """The memory chip's own surface (`M3-CORRECT-FE-081`) — read what a
-    popover needs, correct, delete. Register before the interface catch-all,
-    same as every other route module."""
+    """The memory screen (`M3-MEM-FE-083`) and the chip's own surface
+    (`M3-CORRECT-FE-081`) — read what each needs, correct, delete. Register
+    before the interface catch-all, same as every other route module."""
+
+    @app.get("/memory")
+    async def memory_screen_route() -> JSONResponse:
+        async with session_scope(factory) as db:
+            screen = await get_memory_screen(db)
+        return JSONResponse(_memory_screen_json(screen))
 
     @app.get("/memory/facts/{fact_kind}/{fact_id}")
     async def fact_detail_route(fact_kind: str, fact_id: uuid.UUID) -> JSONResponse:

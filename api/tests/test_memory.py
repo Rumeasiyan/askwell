@@ -26,6 +26,7 @@ from askwell.memory import (
     get_active_memory_facts,
     get_active_schema_notes,
     get_fact_detail,
+    get_memory_screen,
     retrieve_relevant_facts,
     write_memory_fact,
     write_schema_note,
@@ -1137,3 +1138,120 @@ async def test_fact_detail_for_a_schema_note_reports_table_and_column_as_subject
 @pytest.mark.asyncio
 async def test_fact_detail_for_an_unknown_id_is_none(session: AsyncSession) -> None:
     assert await get_fact_detail(session, fact_kind="memory", fact_id=uuid.uuid4()) is None
+
+
+# --- the memory screen ----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_memory_screen_sorts_inferred_first(session: AsyncSession) -> None:
+    inferred_id = await write_memory_fact(
+        session, subject="rfq", fact="a guess", origin="inferred", confidence=0.3
+    )
+    user_id = await write_memory_fact(
+        session, subject="st_cd", fact="student status code", origin="manual"
+    )
+    assert inferred_id is not None
+    assert user_id is not None
+    # The user fact is newer, but inferred still sorts first by default —
+    # `docs/ux/memory.md` §2's own reason: alphabetical or recency would
+    # bury exactly what the screen exists to surface.
+    await _backdate(session, user_id, hours_ago=2)
+
+    screen = await get_memory_screen(session)
+
+    assert [row.id for row in screen.rows] == [inferred_id, user_id]
+    assert screen.inferred_count == 1
+
+
+@pytest.mark.asyncio
+async def test_memory_screen_reports_usage_count_per_row(session: AsyncSession) -> None:
+    fact_id = await write_memory_fact(
+        session, subject="st_cd", fact="student status code", origin="manual"
+    )
+    assert fact_id is not None
+    await _mark_used(session, fact_kind="memory", fact_id=fact_id)
+    await _mark_used(session, fact_kind="memory", fact_id=fact_id)
+
+    screen = await get_memory_screen(session)
+
+    assert screen.rows[0].usage_count == 2
+
+
+@pytest.mark.asyncio
+async def test_memory_screen_shows_an_unused_fact_rather_than_hiding_it(
+    session: AsyncSession,
+) -> None:
+    fact_id = await write_memory_fact(
+        session, subject="st_cd", fact="student status code", origin="manual"
+    )
+    assert fact_id is not None
+
+    screen = await get_memory_screen(session)
+
+    assert [row.id for row in screen.rows] == [fact_id]
+    assert screen.rows[0].usage_count == 0
+
+
+@pytest.mark.asyncio
+async def test_memory_screen_labels_a_general_fact_from_a_deleted_source(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session, name="tender-files")
+    fact_id = await write_memory_fact(
+        session,
+        subject="rfq",
+        fact="Request for Quotation",
+        origin="clarification",
+        source_id=source_id,
+    )
+    assert fact_id is not None
+    await session.execute(
+        text("UPDATE sources SET status = 'deleted', deleted_at = now() WHERE id = :id"),
+        {"id": source_id},
+    )
+
+    screen = await get_memory_screen(session)
+
+    assert screen.rows[0].source_name == "tender-files"
+    assert screen.rows[0].source_deleted is True
+
+
+@pytest.mark.asyncio
+async def test_memory_screen_carries_struck_through_history_on_a_conflict(
+    session: AsyncSession,
+) -> None:
+    fact_id = await write_memory_fact(
+        session, subject="st_cd", fact="student status code", origin="clarification"
+    )
+    assert fact_id is not None
+    outcome = await correct_memory_fact(session, fact_id=fact_id, fact="student code")
+
+    screen = await get_memory_screen(session)
+
+    assert screen.rows[0].id == outcome.fact_id
+    assert screen.rows[0].value == "student code"
+    assert [entry.value for entry in screen.rows[0].history] == ["student status code"]
+
+
+@pytest.mark.asyncio
+async def test_memory_screen_includes_schema_notes_with_a_dotted_subject(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session, name="sales-2024")
+    note_id = await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name="invoices",
+        column_name="st_cd",
+        description="invoice status",
+        origin="user",
+    )
+    assert note_id is not None
+
+    screen = await get_memory_screen(session)
+
+    assert screen.rows[0].fact_kind == "schema_note"
+    assert screen.rows[0].subject == "invoices.st_cd"
+    assert screen.rows[0].source_name == "sales-2024"
+    assert screen.rows[0].source_deleted is False

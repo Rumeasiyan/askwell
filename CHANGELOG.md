@@ -4,6 +4,30 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.3.19 - 2026-09-18
+
+`M3-MEM-FE-083` — the memory screen is real: one list, both fact kinds, the confidence marker, source and "used in N answers" per row, inferred facts sorted first. `docs/ux/memory.md` §2/§3/§5. Interactions (Edit/Confirm/Delete/History/Filter/Add) are `M3-MEM-FE-084`, out of scope here.
+
+### Added
+
+- `askwell.memory.get_memory_screen`/`MemoryScreen`/`MemoryScreenRow`/`MemoryHistoryEntry` — one read across `memory` and `schema_notes`, active rows only, each with its own supersession history nested in (the "later wins, earlier struck through" state) rather than a separate group header; "grouped by subject" turns out to mean one row per subject/position, since only one row per subject is ever active at a time. History is fetched in two queries total, not one per subject, so "hundreds of facts" (`docs/ux/memory.md`'s own edge case) does not become an N+1. Sort is inferred-first, newest-within-tier — the same precedence rule `get_active_memory_facts`/`get_active_schema_notes` already apply, made the default rather than left to the caller.
+- `GET /memory` (`askwell.memory.register_memory`) — the screen's whole payload: `rows` plus `inferred_count` for the "N guesses to review" line.
+- `web/lib/memory.ts` — the fetch, wire-to-camelCase mapping, and pure copy helpers (`originLabel`, `usageSentence`, `deletedSourceNote`, `inferredReviewSentence`).
+- `web/components/memory/memory-screen.tsx` — replaces the `/memory` placeholder. Empty state teaches what memory is and links to the clarification queue (`docs/ux/memory.md` §5's own acceptance criterion); a populated list renders each row's marker, subject, source tag, value, origin/date/usage sentence, a deleted-source note where it applies, and struck-through history where a row has any.
+
+### Tests
+
+- `api/tests/test_memory.py` — 6 new cases against a real Postgres: inferred-first sort with an explicit count, usage count per row, an unused fact is shown rather than hidden, a general fact from a deleted source is labelled, a corrected fact carries its old value in `history`, a schema note's subject renders as `table.column` and never carries a deleted-source label.
+- `api/tests/test_memory_api.py` — `GET /memory` requires a session, same shape as the existing chip routes.
+- `web/lib/memory.test.ts` — new file: the pure copy helpers.
+- Verified against the real stack: `scripts/dev.sh check` (lint, format, typecheck, 550 passed/1 skipped) and `scripts/dev.sh test-db` clean; `scripts/dev.sh web-check` clean (215 tests, build, contrast, offline check); rebuilt both images and hit the live stack with `curl` — an inferred fact and a user-supplied one from a named source sorted inferred-first with the source tag attached, matching the test above exactly.
+
+### Known gaps
+
+- `GET /memory` shares its exact path with the client-rendered `/memory` page, so a hard reload or a direct `curl` to that path gets the JSON payload, not the page shell — pre-existing in this codebase (`GET /clarifications` has the identical collision against `/clarifications`) and out of this ticket's scope to redesign; the rail's own links are client-side navigation, which never hits this path directly. Filed as issue #313, options and a recommendation included.
+- No editing, confirming, deleting, history view, filtering or manual entry — all `M3-MEM-FE-084`, named Out of Scope in the ticket itself.
+- No bulk confirm — an open product question per `docs/ux/memory.md` §7, not started.
+
 ## 0.3.18 - 2026-09-18
 
 `M3-CORRECT-FE-081` — the memory chip: a fact used in an answer is now clickable, and correcting or deleting it from there actually sticks. `askwell.memory` had every write-side primitive this needs since `M3-STORE-BE-076`/`M3-CORRECT-BE-082`, but no HTTP surface — `docs/BRAIN.md`'s own note on `-082` said plainly that whichever of the chip or the memory screen started next would need one; this is that.

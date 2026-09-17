@@ -150,6 +150,8 @@ There is no administrator. These are the user's own settings.
 | **Clarification answered** | Confirmation of what changed, and that affected material is being re-processed | The user must see that answering did something, or they stop answering |
 | **Memory inspection** | Every fact Askwell believes, with origin, date and an edit or delete control | A memory the user cannot inspect is a system that gets mysteriously worse and cannot be debugged |
 | **Memory fact superseded** | Old value visible in history, not erased | Corrections supersede; they never overwrite |
+| **Memory fact from a deleted source** | General facts survive and say "learned from a source you deleted"; structural facts (schema notes) go with the source | `M3-MEM-FE-083`. `askwell.sources.delete_source` deletes a source's `schema_notes` outright but only soft-deletes the source row, so a general `memory` fact's `source_id` still resolves and can be labelled |
+| **Memory fact unused** | Shown with "used in 0 answers", never auto-deleted | `M3-MEM-FE-083`. It may be waiting for the right question — deleting it silently would discard something the user supplied |
 | **Log export, large range** | Background job with progress and a download when ready | A year of interactions is not a synchronous operation |
 | **Log verification finds a broken hash chain** | Reported plainly, naming where the chain breaks | C6 is tamper-*evident*. This is that evidence, and it must be surfaced, not swallowed |
 | **Model swap in progress** | Assistant unavailable with expected duration. Retrieval still works | — |

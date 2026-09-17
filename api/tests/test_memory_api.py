@@ -38,6 +38,12 @@ def with_session(client: TestClient) -> None:
     client.get("/", headers={"accept": "text/html"})
 
 
+def test_reading_the_memory_screen_requires_a_session(client: TestClient) -> None:
+    with client:
+        response = client.get("/memory")
+    assert response.status_code == 401
+
+
 def test_reading_a_fact_requires_a_session(client: TestClient) -> None:
     with client:
         response = client.get(f"/memory/facts/memory/{_UUID}")
