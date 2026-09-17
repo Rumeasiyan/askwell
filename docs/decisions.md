@@ -22,6 +22,16 @@ Template:
 
 ---
 
+## 2026-09-17 — `M3-REVIEW-FE-074`: the confirmation's document count is honest-inflated, never a fabricated specific
+
+**Decision:** `answer_clarification` names the documents an abbreviation's passage, a contradiction's passages, or `document_identity`'s own `options` already point at, when evidence carries them. When it does not — an abbreviation whose evidence sampling (`EVIDENCE_MAX_SAMPLES = 2`) missed most of the documents it occurs in, or a `poor_scan`/`unavailable` shape that names none — the confirmation falls back to a fresh count of every live document in the source, worded "N documents in this source" rather than a specific list.
+
+**Why:** The ticket's Validation Rule is that the confirmation names the affected material *specifically*, but the evidence a `-071` candidate stored is deliberately bounded — it was captured to make the question answerable, not to be a complete index of every document the subject touches. Re-deriving a precise list at answer time (grepping every document's content for the subject) was rejected: it is the kind of query `docs/memory-and-clarification.md`'s own trigger-detection Assumption says must stay cheap, and doing it synchronously inside the answer transaction risks exactly the "computable quickly enough" Assumption this ticket names. A source-wide document count is always true, computed with one indexed count query, and never invents a document name nobody's evidence backed — the alternative, silently saying "some material" with no number, is the generic toast this ticket exists to replace.
+
+**Consequences:** The count can overstate what genuinely depends on an abbreviation answer (every document in the source, not just the ones using it) until `M3-APPLY-ING-080` does real dependency resolution and can report exactly what it touched. Fine for now — re-reading is a no-op regardless until that ticket lands, and the Known Gap this ticket names is explicit about the count describing what *would* be re-read, not a promise already kept.
+
+**Refs:** `docs/backlog/M3-it-learns-my-material.md` `M3-REVIEW-FE-074`; `api/src/askwell/review.py` `_reprocessing_summary`; `docs/ux/clarifications.md` §4.
+
 ## 2026-09-17 — `M3-STORE-OBS-077`: undo takes the fact's id from the caller, not by inference from the clarification row
 
 **Decision:** `askwell.review.undo_answer(session, clarification_id, memory_id)` requires the caller to pass back the `memory_id` that `answer_clarification` returned, rather than looking it up from `clarifications.subject` + `clarifications.answer` at undo time. It also refuses (`CannotUndo`) if that memory row is no longer the active one for its subject.

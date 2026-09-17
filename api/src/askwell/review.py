@@ -118,22 +118,86 @@ async def list_pending(session: AsyncSession) -> dict[str, Any]:
 
 
 @dataclass(frozen=True, slots=True)
+class Reprocessing:
+    """What `M3-REVIEW-FE-074`'s confirmation names: not a generic toast, the
+    actual material the answer just marked for re-reading. Re-reading itself
+    is `M3-APPLY-ING-080`'s own territory — this only counts and names it, so
+    the confirmation is honest even while that ticket's queue is a no-op.
+    """
+
+    count: int
+    label: str
+
+
+@dataclass(frozen=True, slots=True)
 class AnswerOutcome:
     clarification_id: uuid.UUID
     memory_id: uuid.UUID
+    reprocessing: Reprocessing
+
+
+def _documents_named_in_evidence(evidence: dict[str, Any] | None) -> list[str]:
+    """The document names a `-071` evidence blob already carries — a passage's
+    or a contradiction's samples were pulled from real documents at raise
+    time, so naming them back needs no new query. Sampling is bounded
+    (`EVIDENCE_MAX_SAMPLES` in `askwell.clarify`), so this can undercount a
+    subject that occurs in more documents than were sampled; `_reprocessing_summary`
+    falls back to a source-wide count rather than ever asserting a specific
+    list it cannot back up.
+    """
+    if not evidence:
+        return []
+    kind = evidence.get("kind")
+    if kind == "passage":
+        rows = evidence.get("samples", [])
+    elif kind == "contradiction":
+        rows = evidence.get("passages", [])
+    else:
+        return []
+    return [row["document"] for row in rows if isinstance(row, dict) and row.get("document")]
+
+
+async def _reprocessing_summary(
+    session: AsyncSession,
+    source_id: str,
+    evidence: dict[str, Any] | None,
+    options: list[str] | None,
+) -> Reprocessing:
+    """Specific where the evidence already names documents (a passage, a
+    contradiction, or `document_identity`'s own `options`); otherwise every
+    live document in the source — always true, even where it overstates,
+    which honestly-inflated beats a fabricated specific count.
+    """
+    named = sorted({*(options or []), *_documents_named_in_evidence(evidence)})
+    if named:
+        count = len(named)
+        return Reprocessing(count=count, label=f"{count} document{'' if count == 1 else 's'}")
+
+    result = await session.execute(
+        text(
+            "SELECT count(*) FROM documents WHERE source_id = CAST(:source_id AS uuid) "
+            "AND deleted_at IS NULL AND superseded_by IS NULL AND status = 'ready'"
+        ),
+        {"source_id": source_id},
+    )
+    count = int(result.scalar_one())
+    return Reprocessing(
+        count=count, label=f"{count} document{'' if count == 1 else 's'} in this source"
+    )
 
 
 async def _lock_clarification(
     session: AsyncSession, clarification_id: uuid.UUID
-) -> tuple[str, str, str | None] | None:
+) -> tuple[str, str, str | None, dict[str, Any] | None, list[str] | None] | None:
     found = await session.execute(
         text(
-            "SELECT status, subject, source_id::text FROM clarifications WHERE id = :id FOR UPDATE"
+            "SELECT status, subject, source_id::text, evidence, options "
+            "FROM clarifications WHERE id = :id FOR UPDATE"
         ),
         {"id": clarification_id},
     )
     row = found.first()
-    return None if row is None else (row[0], row[1], row[2])
+    return None if row is None else (row[0], row[1], row[2], row[3], row[4])
 
 
 async def answer_clarification(
@@ -149,9 +213,10 @@ async def answer_clarification(
     locked = await _lock_clarification(session, clarification_id)
     if locked is None:
         raise ClarificationNotFound(str(clarification_id))
-    status, subject, _source_id = locked
+    status, subject, source_id, evidence, options = locked
     if status == "answered":
         raise AlreadyAnswered(str(clarification_id))
+    assert source_id is not None, "clarifications.source_id is NOT NULL"
 
     await session.execute(
         text(
@@ -160,6 +225,8 @@ async def answer_clarification(
         ),
         {"id": clarification_id, "answer": answer},
     )
+
+    reprocessing = await _reprocessing_summary(session, source_id, evidence, options)
 
     memory_id = uuid.uuid4()
     await session.execute(
@@ -186,7 +253,9 @@ async def answer_clarification(
         },
     )
 
-    return AnswerOutcome(clarification_id=clarification_id, memory_id=memory_id)
+    return AnswerOutcome(
+        clarification_id=clarification_id, memory_id=memory_id, reprocessing=reprocessing
+    )
 
 
 async def skip_clarification(session: AsyncSession, clarification_id: uuid.UUID) -> None:
@@ -200,7 +269,7 @@ async def skip_clarification(session: AsyncSession, clarification_id: uuid.UUID)
     locked = await _lock_clarification(session, clarification_id)
     if locked is None:
         raise ClarificationNotFound(str(clarification_id))
-    status, subject, source_id = locked
+    status, subject, source_id, _evidence, _options = locked
     if status == "answered":
         raise AlreadyAnswered(str(clarification_id))
     if status == "skipped":
@@ -272,7 +341,7 @@ async def undo_answer(
     locked = await _lock_clarification(session, clarification_id)
     if locked is None:
         raise ClarificationNotFound(str(clarification_id))
-    status, subject, _source_id = locked
+    status, subject, _source_id, _evidence, _options = locked
     if status != "answered":
         raise CannotUndo(str(clarification_id))
 
@@ -337,6 +406,10 @@ def register_review(app: FastAPI, factory: async_sessionmaker[AsyncSession]) -> 
                 "id": str(outcome.clarification_id),
                 "status": "answered",
                 "memory_id": str(outcome.memory_id),
+                "reprocessing": {
+                    "count": outcome.reprocessing.count,
+                    "label": outcome.reprocessing.label,
+                },
             }
         )
 

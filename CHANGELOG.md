@@ -4,6 +4,22 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.3.11 - 2026-09-17
+
+`M3-REVIEW-FE-074` — save, skip, skip-all and undo wired into the clarifications screen, with the specific confirmation `docs/ux/clarifications.md` §4 requires.
+
+### Added
+
+- `ClarificationsScreen` now calls `answerClarification`/`skipClarification`/`dismissGroup`/`undoAnswer` (`web/lib/clarifications.ts`) against the existing `askwell.review` endpoints. Saving shows "Saved. Re-reading N documents." (never a generic toast), opens a 10s undo window, then the item leaves the list — all local state, no navigation. An empty answer is treated as a skip and says so. Skip-all removes a source's whole group at once.
+- `askwell.review.answer_clarification` now returns a `Reprocessing` summary (count + label) alongside the memory id: the documents a passage/contradiction's own evidence already names, or `document_identity`'s `options`, falling back to every live document in the source when evidence names none. This is the count the confirmation shows — re-reading is still `M3-APPLY-ING-080`'s own no-op until that ticket lands, per this ticket's own Known Gap.
+- Local, untransmitted counters for answered/skipped/dismissed (`getClarificationCounters`), same in-memory shape as `citations.ts`'s card-click counter (C1).
+- Fixes #272: the screen now subscribes to `subscribeIngest` and merges freshly-fetched clarifications into local state (`mergeIncoming`) rather than fetching once on mount — a question raised mid-ingestion now appears without disturbing an answer already in progress, since a merge only ever adds items it does not already know about.
+
+### Tests
+
+- `api/tests/test_review.py` — five new cases covering the reprocessing summary's four evidence shapes and its fallback.
+- `web/lib/clarifications.test.ts` — `savedConfirmation`, `isBlankAnswer`, and four `mergeIncoming` cases including the one issue #272 named (an item answered locally must not reappear just because a later fetch no longer lists it as pending).
+
 ## 0.3.10 - 2026-09-17
 
 `M3-STORE-OBS-077` — the last two decisions-record shapes, and the transactional guarantee they all now share.
