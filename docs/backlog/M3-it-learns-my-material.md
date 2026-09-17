@@ -225,6 +225,59 @@
 
 ---
 
+### M3-REVIEW-BE-072a — The clarifications API the review screens read and write
+
+**Type:** Story
+
+**User Story**
+- **Actor:** the clarifications screens, on behalf of somebody working through their queue.
+- **User Need:** the pending questions, and a way to record an answer.
+- **Business Value:** the clarification loop is the differentiator (`AGENTS.md` §1). Every screen in `M3-REVIEW-*` reads and writes through this surface, and none of them can exist without it.
+- *As the review screen, I need the pending questions grouped the way I render them and routes to answer or skip one, so that I show real state rather than an empty list.*
+
+**Context / Background**
+**Detailed Description:** `M3-RAISE-BE-068` through `-071` write rows into `clarifications`, and `M3-STORE-BE-076` gives `memory` its origin and supersession columns. Nothing exposes any of it over HTTP: `app.py` registers no clarifications route, and the only thing reaching the browser is the `open_clarifications` count on the ingest status payload.
+
+This ticket was missing from the backlog. `M3-REVIEW-FE-072` names `clarifications` as its only API touchpoint and has no endpoint to call; `-073` and `-074` need answer and skip routes that likewise do not exist. The build agent working `-072` found this, filed #268, and stopped rather than build a screen against an endpoint it would have had to invent — a stub would have passed the gate, passed CI, merged, and produced a screen that silently showed nothing.
+
+**Scope**
+- `GET /clarifications` — pending items grouped by source, each group carrying its source name and count, plus a total across groups. Each item carries its question, subject, options and the evidence payload `M3-RAISE-BE-071` captured, because `-073` renders that evidence and must not fetch it per item.
+- `POST /clarifications/{id}/answer` — record an answer. Writes `memory` with `origin = 'clarification'` and the decisions audit record in one transaction, per `M3-STORE-OBS-077`.
+- `POST /clarifications/{id}/skip` — mark it skipped without writing memory. A skip is not an answer and must not become a fact.
+- Ordering: newest source first, matching what `-072` renders.
+
+**Out of Scope**
+- The screens themselves (`M3-REVIEW-FE-072`, `-073`, `-074`).
+- Re-processing what depends on an answered clarification (`M3-APPLY-ING-080`).
+- Undo and skip-all — `M3-REVIEW-FE-074` owns that interaction; this exposes what it needs.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** `GET /clarifications` returns pending items grouped by source with per-group counts and a total. Answering one writes a `memory` row with `origin = 'clarification'` and a decisions record, in a single transaction. Skipping changes status and writes no memory. All three require a session, like every route that reads the user's own material.
+- **Edge Cases:** Answering an already-answered item is refused by name rather than writing a second fact. Answering a skipped one is allowed — skipping is not final. An item whose source was deleted does not appear. A source with no pending items does not appear as an empty group.
+- **Permissions / Roles:** Single user — no roles. Not applicable.
+- **UI States:** None; this is the surface `../ux/clarifications.md` §2 and §5 render from.
+- **Validation Rules:** An answer is recorded once. The memory write and its audit record share a transaction — a fact Askwell cannot say it was told is a fact nobody can later explain (C6).
+- **Audit / Logging Requirements:** Answering and skipping are decisions records. Viewing is not.
+- **Analytics Events:** Local counters only — nothing transmitted (C1).
+
+**Real-World Example Scenarios**
+- Four questions across two sources. The screen shows "2 in contracts, 2 in invoices, 4 in total", the user answers three and skips one, and the three become memory facts an answer can cite.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M3-RAISE-BE-071, M3-STORE-BE-076.
+- **API / Data Touchpoints:** `clarifications`, `memory`, `audit_decisions`, `sources`.
+- **Assumptions:** Grouping happens in SQL rather than in the browser — the screen renders counts before items, and counting client-side means fetching everything first.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** Add a source that raises questions. `curl` the list and confirm grouping and totals match the rows. Answer one; confirm the `memory` row and the decisions record; confirm it leaves the list.
+- **Other scenarios:** Answer the same item twice and confirm the second is refused. Skip an item, then answer it, and confirm that works. Delete a source with pending items and confirm they vanish.
+- **Known gaps:** No pagination — a queue is capped at five per source by `M3-RAISE-BE-069`, so the list is bounded by construction.
+
+**Effort & Granularity Check**
+- **Estimate:** 3-4 hours · **Priority:** High
+- **Labels / Component:** `phase:3`, backend
+- **Granularity:** One read route, two write routes, one transaction rule.
+
 ### M3-REVIEW-FE-072 — Clarifications screen as a single reviewable list
 
 **Type:** Story
@@ -262,7 +315,7 @@
 - After an import the user sees a badge showing four, opens it, and finishes in ninety seconds.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M3-RAISE-BE-069, M0-SHELL-FE-017.
+- **Dependencies:** M3-REVIEW-BE-072a, M3-RAISE-BE-069, M0-SHELL-FE-017.
 - **API / Data Touchpoints:** `clarifications`.
 - **Assumptions:** The badge alone is sufficient prompting; no modal and no repeated nagging.
 
