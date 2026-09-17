@@ -21,11 +21,27 @@
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 
-# Committed here rather than in `.build-runner/`, which is gitignored: the
-# supervisor it starts has only ever existed on one machine, and a thing that
-# keeps the build alive should not itself be unbacked-up local state.
+# Committed here rather than in `.build-runner/`, which is gitignored: a thing
+# that keeps the build alive should not itself be unbacked-up local state. It
+# is executed from the `.build-runner/` copy, which survives branch checkouts.
+
+# systemd hands a user unit PATH=/usr/local/bin:/usr/bin and nothing else, so
+# the agent CLI in ~/.local/bin is invisible to it. The first timer-fired run
+# died on "agent CLI 'claude' not on PATH" twenty-five times while a manual run
+# of this same script worked — because a manual run inherits a login shell's
+# PATH and a service does not. A watchdog that only works when a human starts
+# it is not a watchdog.
+export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin"
 
 REPO="$(pwd)"
+
+# Checked rather than assumed: if the agent cannot be found there is no point
+# starting a queue that will fail preflight on every restart the supervisor has.
+if ! command -v claude >/dev/null 2>&1; then
+  printf '%s  agent CLI not found on PATH (%s) — not starting\n' "$(date '+%Y-%m-%d %H:%M')" "$PATH" \
+    >> "$(dirname "${BASH_SOURCE[0]}")/watchdog.log"
+  exit 1
+fi
 LOG="$REPO/.build-runner/watchdog.log"
 QUEUE_LOG="/tmp/askwell-queue.log"
 MILESTONE="${ASKWELL_MILESTONE:-M3}"
