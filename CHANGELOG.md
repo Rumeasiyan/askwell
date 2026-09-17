@@ -4,6 +4,23 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.3.14 - 2026-09-17
+
+`M3-INLINE-FE-085` — a blocking ambiguity is asked inline, in the conversation, instead of waiting in the queue.
+
+### Added
+
+- `askwell.inline_clarify.find_blocking` — whether a still-`pending` contradiction or document-identity clarification is relevant to the question just asked, matched by subject-named-in-the-question or a document its evidence names being among the retrieved candidates. Only these two triggers can block; an abbreviation or a poor scan never withholds a single confident answer. Returns the highest-ranked match plus a count of any others relevant to the same turn, which are deferred to the queue rather than asked in sequence. `askwell.clarify.raise_candidates` now stores `evidence.trigger` on every raised row so this can tell the two apart without re-deriving it from the evidence shape.
+- `askwell.ask._run_generation` checks for a blocking clarification once retrieval clears the abstention threshold and before `compose_conflict` runs. A match emits a new `clarification` SSE event and pauses the turn (`_Turn.clarify_event`, an `asyncio.Event`) until `POST /ask/{message_id}/clarify/resolve` wakes it — the browser answers or skips through the ordinary `askwell.review` endpoints first, so there is exactly one path that writes a `memory` row, whether from the queue or inline. An answer is passed to `compose_conflict`'s existing (previously inert) `memory_fact` parameter, so the model resolves the conflict and writes "Resolved by memory: ..." instead of presenting both sides. A skip continues with a Python-computed default assumption (the newer-dated passage, or the newest document) appended to the answer as its own stated line, never silently assumed. `Stop` still works while paused. A browser that never answers leaves the clarification exactly where it already was — `pending` in the ordinary queue — and the turn paused indefinitely; nothing is lost.
+- `web/lib/ask.ts` gained the `clarification`/`clarification_resolved` SSE event types and `resolveInlineClarification`; `ask-state.tsx`'s `AskTurn` gained `blocking`. `ask-screen.tsx`'s new `InlineClarification` renders the same subject/question/evidence/options anatomy the queue screen uses (`EvidenceBlock`, exported from `clarifications-screen.tsx` rather than duplicated) and calls the same `answerClarification`/`skipClarification` before resolving. `AnsweredContent` now renders the `Resolved by memory:` line `parseAnswerAnnotations` already parsed but nothing rendered.
+
+### Tests
+
+- `api/tests/test_inline_clarify.py` — `find_blocking` against a real Postgres: a contradiction and a document-identity ambiguity relevant by subject or by document overlap, an unrelated pending one that does not match, a non-blocking trigger (abbreviation) that never blocks, an answered clarification that stops matching a later turn, two relevant ambiguities in one turn deferring the second, and `default_assumption` for both trigger kinds.
+- `api/tests/test_ask_api.py` — two new full-turn cases, driven the same way the existing stop test drives `_generate` directly: a relevant contradiction pauses the turn, answering through `askwell.review.answer_clarification` and resolving through the turn's own `clarify_event` completes the answer with `memory_fact` in the composed prompt and a `Resolved by memory` line in the stored content; skipping continues and states the assumption used.
+- `web/lib/ask.test.ts` — the two new SSE frame shapes parse.
+- Verified against the real stack: `scripts/dev.sh check` (lint, format, typecheck, 535 tests) and `scripts/dev.sh test-db` (393 tests) both pass; `scripts/dev.sh web-check` (typecheck, lint, 196 tests, build, version/token/contrast/offline guards) passes.
+
 ## 0.3.13 - 2026-09-17
 
 `M3-CORRECT-BE-082` — one correction path for both a chip in an answer and the memory screen, whichever gets built first.

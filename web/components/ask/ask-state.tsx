@@ -15,6 +15,7 @@ import {
   conversationOf,
   applyAskEvent,
   type AskEvent,
+  type BlockingClarification,
   liveTurnId,
   looksNonEnglish,
   nextToDispatch,
@@ -82,6 +83,13 @@ export interface AskTurn {
    * A collapsed turn with `null` here renders no count at all
    * (`conversation.md` §2, §5). */
   sourceCount: number | null;
+  /** `M3-INLINE-FE-085`: set from a `clarification` event while this turn is
+   * paused waiting for it to be answered or skipped, `null` the rest of the
+   * time — including once a `clarification_resolved` event clears it and
+   * composition continues. The only place a clarification interrupts is
+   * this field being non-`null` on the live turn (`ask-screen.tsx`'s
+   * `InlineClarification`); the queue itself is unaffected either way. */
+  blocking: BlockingClarification | null;
 }
 
 export interface AskApi {
@@ -137,6 +145,7 @@ function blankTurn(
     createdAt: Date.now(),
     summary,
     sourceCount: null,
+    blocking: null,
   };
 }
 
@@ -228,6 +237,23 @@ export function AskProvider({ children }: { children: ReactNode }) {
                 if (turn.id !== id) return turn;
                 if (event.event === "citation") {
                   return { ...turn, citations: applyCitation(turn.citations, event.data) };
+                }
+                if (event.event === "clarification") {
+                  return {
+                    ...turn,
+                    serverId: turn.serverId ?? event.data.message_id,
+                    blocking: {
+                      id: event.data.clarification_id,
+                      subject: event.data.subject,
+                      question: event.data.question,
+                      options: event.data.options,
+                      evidence: event.data.evidence,
+                      deferredCount: event.data.deferred_count,
+                    },
+                  };
+                }
+                if (event.event === "clarification_resolved") {
+                  return { ...turn, blocking: null };
                 }
                 return { ...turn, ...applyAskEvent(turn, event) };
               }),

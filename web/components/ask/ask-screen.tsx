@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { type AskTurn, useAsk } from "@/components/ask/ask-state";
 import { useClaimRef, useHoverHandlers, useScrollToClaim } from "@/components/ask/leader";
 import { InlineSourceCards, useRaised } from "@/components/ask/provenance-margin";
+import { EvidenceBlock } from "@/components/clarifications/clarifications-screen";
 import {
   isConflict,
   isPartial,
@@ -17,7 +18,16 @@ import type { CitationCard } from "@/lib/citations";
 import { CONVERSATION_PAGE_SIZE, conversationWindow, dividerLabel, liveTurnId,
   isAbstained,
   isFirstAnswer,
+  recordInlineClarificationShown,
+  resolveInlineClarification,
+  type BlockingClarification,
 } from "@/lib/ask";
+import {
+  answerClarification,
+  evidenceDisplay,
+  isBlankAnswer,
+  skipClarification,
+} from "@/lib/clarifications";
 import { documentHref, pageLabel } from "@/lib/citations";
 import { followUpSuggestions, recordFollowUpUsed } from "@/lib/follow-ups";
 import { fetchIngest } from "@/lib/ingest";
@@ -974,6 +984,10 @@ function LiveTurn({ turn }: { turn: AskTurn }) {
         </p>
       ) : null}
 
+      {turn.status === "running" && turn.blocking !== null ? (
+        <InlineClarification messageId={turn.serverId} blocking={turn.blocking} />
+      ) : null}
+
       {isAbstained(turn) ? <AbstentionState turn={turn} /> : null}
 
       {!isAbstained(turn) && turn.answer !== "" ? <AnsweredContent turn={turn} /> : null}
@@ -1019,6 +1033,177 @@ function LiveTurn({ turn }: { turn: AskTurn }) {
         </div>
       ) : null}
     </article>
+  );
+}
+
+/**
+ * The inline clarification (`docs/ux/ask.md` §5, `docs/ux/clarifications.md`
+ * §5's own "the one place a clarification interrupts"). `M3-INLINE-FE-085`.
+ *
+ * Renders the same subject/question/evidence/options anatomy
+ * `ClarificationItemRow` (`clarifications-screen.tsx`) uses for the queue —
+ * `EvidenceBlock` is imported from there rather than duplicated, so the two
+ * surfaces can never drift on how one evidence shape reads. Answering or
+ * skipping calls the exact same `answerClarification`/`skipClarification`
+ * (`lib/clarifications.ts`) the queue screen calls, then
+ * `resolveInlineClarification` wakes the paused turn — never a second way to
+ * write a `memory` row, and answering here is a decisions record like any
+ * other clarification answer.
+ *
+ * The user is never navigated away: everything happens in place, and the
+ * turn above this stays exactly where it is throughout.
+ */
+function InlineClarification({
+  messageId,
+  blocking,
+}: {
+  messageId: string | null;
+  blocking: BlockingClarification;
+}) {
+  const evidence = useMemo(() => evidenceDisplay(blocking.evidence), [blocking.evidence]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const isDiscrete = blocking.options !== null && blocking.options.length > 0;
+
+  useEffect(() => {
+    recordInlineClarificationShown();
+  }, []);
+
+  const resolve = useCallback(async (): Promise<void> => {
+    if (messageId === null) return;
+    await resolveInlineClarification(messageId, blocking.id);
+  }, [messageId, blocking.id]);
+
+  const submit = useCallback(
+    async (rawAnswer: string): Promise<void> => {
+      setBusy(true);
+      setError(null);
+      try {
+        if (isBlankAnswer(rawAnswer)) {
+          await skipClarification(blocking.id);
+        } else {
+          await answerClarification(blocking.id, rawAnswer.trim());
+        }
+        await resolve();
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : "Askwell could not continue.");
+        setBusy(false);
+      }
+    },
+    [blocking.id, resolve],
+  );
+
+  const skip = useCallback(async (): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      await skipClarification(blocking.id);
+      await resolve();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Askwell could not continue.");
+      setBusy(false);
+    }
+  }, [blocking.id, resolve]);
+
+  return (
+    <div
+      className="flex flex-col gap-2 px-4 py-3"
+      style={{ background: "var(--surface)", border: "1px solid var(--rule)", borderRadius: "var(--radius)" }}
+    >
+      <span className="ask-micro" style={{ fontFamily: "var(--font-mono)" }}>
+        {blocking.subject}
+      </span>
+      <p className="ask-prose">{blocking.question}</p>
+      <EvidenceBlock evidence={evidence} />
+
+      {isDiscrete ? (
+        <div className="flex flex-wrap gap-2" role="group" aria-label="Choose an answer">
+          {(blocking.options ?? []).map((option) => (
+            <button
+              key={option}
+              type="button"
+              disabled={busy}
+              onClick={() => void submit(option)}
+              className="ask-navigates px-3"
+              style={{
+                minHeight: "var(--control-height)",
+                background: "var(--paper)",
+                border: "1px solid var(--rule)",
+                borderRadius: "var(--radius)",
+                fontFamily: "var(--font-mono)",
+                fontSize: "var(--t-ui)",
+                color: "var(--ink)",
+              }}
+            >
+              {option}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <input
+          ref={inputRef}
+          type="text"
+          aria-label={`Your answer: ${blocking.question}`}
+          className="ask-input px-3"
+          disabled={busy}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") void submit(event.currentTarget.value);
+          }}
+          style={{ fontFamily: "var(--font-text)", fontSize: "var(--t-ui)" }}
+        />
+      )}
+
+      {error !== null ? (
+        <p className="ask-micro" style={{ color: "var(--alarm)" }}>
+          Askwell could not save that: {error}
+        </p>
+      ) : null}
+
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex gap-2">
+          {!isDiscrete ? (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void submit(inputRef.current?.value ?? "")}
+              className="ask-navigates px-4"
+              style={{
+                minHeight: "var(--control-height)",
+                background: "var(--ink)",
+                color: "var(--paper)",
+                border: "1px solid var(--ink)",
+                borderRadius: "var(--radius)",
+                fontSize: "var(--t-ui)",
+              }}
+            >
+              Save
+            </button>
+          ) : null}
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void skip()}
+            className="ask-navigates px-4"
+            style={{
+              minHeight: "var(--control-height)",
+              background: "var(--ink)",
+              color: "var(--paper)",
+              border: "1px solid var(--ink)",
+              borderRadius: "var(--radius)",
+              fontSize: "var(--t-ui)",
+            }}
+          >
+            Skip
+          </button>
+        </div>
+        {blocking.deferredCount > 0 ? (
+          <span className="ask-micro">
+            {blocking.deferredCount} more waiting in Clarifications
+          </span>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -1126,7 +1311,26 @@ function AnsweredContent({ turn }: { turn: AskTurn }) {
       ) : null}
       {partial ? <UncoveredBlock items={annotations.uncovered} /> : null}
       {conflict ? <ResolveOffer topic={annotations.conflictTopic!} citations={turn.citations} /> : null}
+      {annotations.resolvedByMemory !== null ? (
+        <ResolvedByMemoryNote fact={annotations.resolvedByMemory} />
+      ) : null}
     </div>
+  );
+}
+
+/**
+ * "Resolved by memory: ..." (`prompts/conflicting_sources.v1.md`) — the
+ * answer used a fact the user already supplied instead of presenting both
+ * sides of a conflict, most often just now via `InlineClarification`
+ * (`M3-INLINE-FE-085`) but equally from an earlier answer to the same
+ * clarification. `--muted`, matching `SourceCard`'s own treatment of
+ * apparatus rather than an assertion the model is making.
+ */
+function ResolvedByMemoryNote({ fact }: { fact: string }) {
+  return (
+    <p className="ask-micro" style={{ textTransform: "none", color: "var(--muted)" }}>
+      Resolved using what you told Askwell: {fact}
+    </p>
   );
 }
 
