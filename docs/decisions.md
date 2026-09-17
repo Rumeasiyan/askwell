@@ -22,6 +22,18 @@ Template:
 
 ---
 
+## 2026-09-17 — `M3-STORE-OBS-077`: undo takes the fact's id from the caller, not by inference from the clarification row
+
+**Decision:** `askwell.review.undo_answer(session, clarification_id, memory_id)` requires the caller to pass back the `memory_id` that `answer_clarification` returned, rather than looking it up from `clarifications.subject` + `clarifications.answer` at undo time. It also refuses (`CannotUndo`) if that memory row is no longer the active one for its subject.
+
+**Why:** matching by `subject`/`answer` text is exactly the kind of implicit link the audit chain exists to replace with something explicit — two clarifications could share a subject, or the fact text could be edited between answer and undo, and either would make a text match either miss or hit the wrong row. The ticket's own edge case ("undo of a save is recorded as its own decision, not by removing the original record") already implies the two events are linked by identity, not by re-derivation; `answer_clarification` already hands the id back in `AnswerOutcome`, so the frontend's undo window (`M3-REVIEW-FE-074`) has it for free and does not need a second lookup. Refusing when the fact has since been superseded was the harder call: the alternative (deleting whatever the *current* active fact for the subject is) would silently discard a correction the user made on purpose, in the name of undoing something older and less relevant than what replaced it.
+
+**Consequences:** `M3-REVIEW-FE-074`'s undo control must carry the `memory_id` from the answer response through its undo window rather than only the `clarification_id`. If a correction lands inside that window, undo surfaces as refused rather than silently doing nothing or doing the wrong thing — `docs/states-and-edge-cases.md` should get that state when `-074` builds the UI for it.
+
+**Refs:** `docs/backlog/M3-it-learns-my-material.md` `M3-STORE-OBS-077`, `api/src/askwell/review.py` (`undo_answer`, `CannotUndo`), `api/tests/test_review.py` (`test_undo_after_the_answer_was_corrected_is_refused`).
+
+---
+
 ## 2026-09-17 — `M3-STORE-BE-076`'s own acceptance criteria closed (#283, #284), not deferred as caller discipline
 
 **Decision:** `write_memory_fact`/`write_schema_note` (`api/src/askwell/memory.py`) now (1) default `confidence` to `FULL_CONFIDENCE` for any user-origin write left unset, and (2) supersede *any* existing active fact/note for the subject/position on a user-origin write, not only an inferred one — folding what was previously only `correct_memory_fact`/`correct_schema_note`'s behaviour into the plain write path too. Chose issue #283's and #284's own "Recommended" option (make the module safe by construction) over the alternative each issue also offered (require every caller to route a second user answer through `correct_*`, or enforce it with a database-level partial unique index).

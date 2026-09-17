@@ -4,6 +4,21 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.3.10 - 2026-09-17
+
+`M3-STORE-OBS-077` — the last two decisions-record shapes, and the transactional guarantee they all now share.
+
+### Added
+
+- `askwell.memory.delete_memory_fact`/`delete_schema_note` — the "deletion" record shape the ticket named as missing. Deletes the active row outright (there is no replacement to supersede-to) and writes `memory_deleted`/`schema_note_deleted` with a snapshot of what was deleted, in the same transaction.
+- `askwell.review.dismiss_group` — skip-all for one source's group (`POST /sources/{id}/clarifications/dismiss`). Only pending items move to `dismissed`; one `clarification_dismissed` decisions record per item, so the dismissal signal (`docs/memory-and-clarification.md` §8) stays countable rather than one record per batch.
+- `askwell.review.undo_answer` — reverses an answer within its window (`POST /clarifications/{id}/undo`, given the `memory_id` the original answer returned). Deletes the memory fact and reverts the clarification to `pending`; writes `clarification_answer_undone` as a new record rather than deleting or rewriting `clarification_answered`, per the ticket's own edge case. Refused (`CannotUndo`) if the fact has since been corrected or is otherwise no longer the active one — undoing then would silently discard whatever was built on it.
+- `answer`, `correction` and `skip` already had their record shapes from `M3-STORE-BE-076`/`M3-REVIEW-BE-072a`; this closes the remaining two named in the ticket's Scope, and adds a `test_review.py` case that runs the ticket's own manual walkthrough (answer three, correct one, `askwell.audit.verify` reports an intact four-record chain) plus a fail-closed test against the exact statement sequence `answer_clarification` runs.
+
+### Known gaps
+
+- #288 — deleting a fact that is itself a correction resurrects the value it superseded, via the existing `superseded_by` `ON DELETE SET NULL` foreign key from `M3-STORE-BE-076`. Not reachable by a user until `M3-MEM-FE-084` builds the memory screen's Delete control; deferred to that ticket rather than fixed here.
+
 ## 0.3.9 - 2026-09-17
 
 `M3-STORE-BE-076` (closing the ticket's own acceptance-criteria gaps found in review, #283, #284).
