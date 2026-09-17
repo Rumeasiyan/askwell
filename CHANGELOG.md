@@ -4,6 +4,17 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.3.5 - 2026-09-17
+
+`M3-REVIEW-FE-072`.
+
+### Added
+
+- **`/clarifications`** — the queue as a single reviewable list, `GET /clarifications` grouped by source with a count per group and a total at the top. Not a wizard: no navigation between items, no confirmation step. Empty queue shows the teaching copy from `docs/ux/clarifications.md` §5 rather than "no items".
+- **Left rail entry** — a `Clarifications` destination with a plain count badge (`useClarificationsTotal`, polled), never a red dot or a modal. Hidden entirely when the count is zero.
+- **Post-ingestion prompt** — a one-line, dismissible banner in the shell's status-banner slot when the ingest queue goes idle with pending questions, so the badge is not the only way to notice. Shown once per idle transition, not repeated.
+- Item answering (Save/Skip) and the full item anatomy are `M3-REVIEW-FE-073`/`-074`, Out of Scope here — items render subject, question and evidence, with no controls yet.
+
 ## 0.3.4 - 2026-09-17
 
 `M3-REVIEW-BE-072a`.

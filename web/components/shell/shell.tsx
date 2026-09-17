@@ -9,6 +9,7 @@ import { LeaderCanvas, LeaderProvider } from "@/components/ask/leader";
 import { ProvenanceMargin, useLiveLeaderPairs } from "@/components/ask/provenance-margin";
 import { DropTarget } from "@/components/add/drop-target";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
+import { ClarificationsPrompt } from "@/components/shell/clarifications-prompt";
 import { Rail } from "@/components/shell/rail";
 import { RailDrawer } from "@/components/shell/rail-drawer";
 import { StatusBanner } from "@/components/shell/status-banner";
@@ -158,6 +159,7 @@ function ShellFrame({
         <div className="flex min-w-0 flex-1 flex-col overflow-y-auto">
           <div className="mx-auto flex w-full max-w-5xl flex-col gap-4 p-6">
             <StatusBanner status={status} />
+            <ClarificationsPrompt />
             <main className="min-w-0">{children}</main>
           </div>
         </div>
