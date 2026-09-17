@@ -146,12 +146,17 @@ async def resolve_dependencies(
     subject: str,
     evidence: dict[str, Any] | None,
     options: list[str] | None,
-    clarification_id: uuid.UUID,
+    clarification_id: uuid.UUID | None,
 ) -> list[Dependency]:
     """Chunks, schema notes and stale conflicts one answer affects.
 
     Never raises on an empty result — a manual memory correction, or a
     subject that named no document, legitimately touches nothing here.
+    `clarification_id` is `None` for a correction that did not originate
+    from answering a clarification (`askwell.memory.correct_memory_fact`
+    and its siblings) — there is no clarification to exclude from the
+    conflict search, so every pending clarification on this subject is a
+    candidate.
     """
     dependencies: list[Dependency] = []
 
@@ -196,7 +201,9 @@ async def resolve_dependencies(
     conflict_rows = await session.execute(
         text(
             "SELECT id, source_id::text FROM clarifications "
-            "WHERE status = 'pending' AND id != :id AND lower(subject) = lower(:subject)"
+            "WHERE status = 'pending' "
+            "AND (CAST(:id AS uuid) IS NULL OR id != :id) "
+            "AND lower(subject) = lower(:subject)"
         ),
         {"id": clarification_id, "subject": subject},
     )
@@ -218,24 +225,34 @@ async def enqueue(
     source_id: uuid.UUID,
     evidence: dict[str, Any] | None,
     options: list[str] | None,
-    clarification_id: uuid.UUID,
-    memory_id: uuid.UUID,
+    clarification_id: uuid.UUID | None,
+    memory_id: uuid.UUID | None,
+    dependencies: list[Dependency] | None = None,
 ) -> uuid.UUID | None:
     """Resolve what this answer affects and record it as a job.
 
     Returns `None`, writing nothing, when there is nothing to re-process —
-    the caller (`askwell.review.answer_clarification`) then has no job to
-    dispatch, and the confirmation toast still reads correctly from its own
-    `reprocessing` summary.
+    the caller (`askwell.review.answer_clarification`, or
+    `askwell.memory`'s correction path) then has no job to dispatch, and its
+    own `reprocessing` summary still reads correctly. `clarification_id` and
+    `memory_id` are both `None` for a correction that did not originate from
+    answering a clarification.
+
+    `dependencies`, when given, is used as-is instead of calling
+    `resolve_dependencies` again — `askwell.memory`'s correction path
+    already resolved them once to build its own summary, and a `memory_id`
+    of `None` there means a `schema_note` dependency has no answer text to
+    promote with, so it is filtered out before it ever reaches here.
     """
-    dependencies = await resolve_dependencies(
-        session,
-        source_id=source_id,
-        subject=subject,
-        evidence=evidence,
-        options=options,
-        clarification_id=clarification_id,
-    )
+    if dependencies is None:
+        dependencies = await resolve_dependencies(
+            session,
+            source_id=source_id,
+            subject=subject,
+            evidence=evidence,
+            options=options,
+            clarification_id=clarification_id,
+        )
     if not dependencies:
         return None
 
