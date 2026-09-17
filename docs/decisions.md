@@ -22,6 +22,18 @@ Template:
 
 ---
 
+## 2026-09-18 — `M3-EVAL-TEST-086`: fixture memory facts are seeded through a hand-inserted `clarifications` row, not real detection
+
+**Decision:** the memory-application eval subset's five "apply" and three "supersede" tasks seed their fixture facts by inserting a `clarifications` row directly (`status='pending'`, a fixed subject/question) and then calling the real `askwell.review.answer_clarification` on it — not by running `askwell.clarify`'s own detectors against the fixture corpus and waiting for one to raise the exact question needed.
+
+**Why:** the ticket's own Assumption says "fixture facts can be seeded through the normal clarification path so the test exercises the real route" — the *write* path, not the *raising* path. `askwell.clarify`'s three tests (cannot determine, material, user plausibly knows) exist to catch genuine ambiguity in real content; there is no honest way to make them fire on demand for a specific, invented "which of these two years' figures is currently in force" fact without either fabricating a document that happens to trigger a real detector (fragile, and couples this suite's fixtures to detector internals it does not otherwise depend on) or adding a fifth detector whose only purpose is to be triggered by this eval — scope well beyond a fifteen-task subset. Inserting the row directly and answering it through `answer_clarification` exercises the actual write, the actual `memory_superseded`/`clarification_answered` decisions records, and the actual `fact_usage` wiring `M3-APPLY-BE-079` built — everything downstream of "a clarification was raised" is real; only the raising itself is skipped, and the ticket does not claim to test raising (that is `M3-RAISE-BE-068`–`071`'s own eval surface, which does not exist yet). The alternative rejected: writing straight to `memory` with a hand-built `INSERT`, which was rejected specifically because it bypasses `answer_clarification` and would not exercise the real route at all.
+
+**Consequences:** the eval fixture depends on `clarifications.source_id` being a valid FK, so `seed_memory_fixture` reads back whichever `sources` row `eval.grounded.seed_corpus` created rather than inventing one. If `askwell.clarify`'s raising path ever gets its own eval coverage, that suite should seed through real detection on purpose — this one should keep skipping it, since re-adding that dependency here would make this suite's own facts fragile to unrelated detector-tuning changes.
+
+**Refs:** `eval/memory_apply.py`, `eval/suites/memory_apply.v1.json`, `docs/build-plan.md` quality gate ("Memory application", 15, ≥ 0.85), `docs/backlog/M3-it-learns-my-material.md`'s `M3-EVAL-TEST-086` entry.
+
+---
+
 ## 2026-09-18 — `M3-MEM-FE-083`: "grouped by subject" is one row per subject with nested history, not a visible group header
 
 **Decision:** `askwell.memory.get_memory_screen` returns one flat, already-sorted list of rows — one row per active `memory` subject or `schema_notes` table/column position — with that row's own supersession history nested inside it (`MemoryScreenRow.history`), rather than a two-level structure of subject-group headers each containing the fact(s) under them.

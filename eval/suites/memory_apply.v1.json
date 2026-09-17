@@ -1,0 +1,133 @@
+{
+  "name": "memory_apply.v1",
+  "category": "memory-application",
+  "mode": "memory",
+  "pass_bar": 0.85,
+  "tasks": [
+    {
+      "id": "return-window-current",
+      "prompt": "What is Meridian Loom's current standard product return window?",
+      "scorer": "memory_apply",
+      "expected": {
+        "kind": "apply",
+        "contains": ["forty-five"],
+        "memory_subject": "return-window-policy"
+      }
+    },
+    {
+      "id": "shipping-fee-current",
+      "prompt": "What is Meridian Loom's current express shipping fee?",
+      "scorer": "memory_apply",
+      "expected": {
+        "kind": "apply",
+        "contains": ["eighteen"],
+        "memory_subject": "shipping-fee-policy"
+      }
+    },
+    {
+      "id": "loyalty-points-current",
+      "prompt": "How many dollars must a customer currently spend at Meridian Loom to earn one loyalty point?",
+      "scorer": "memory_apply",
+      "expected": {
+        "kind": "apply",
+        "contains": ["eight"],
+        "memory_subject": "loyalty-points-policy"
+      }
+    },
+    {
+      "id": "trade-in-credit-current",
+      "prompt": "What is the current maximum trade-in credit for a Loomwear Sensor at Meridian Loom?",
+      "scorer": "memory_apply",
+      "expected": {
+        "kind": "apply",
+        "contains": ["seventy-five"],
+        "memory_subject": "trade-in-credit-policy"
+      }
+    },
+    {
+      "id": "support-response-current",
+      "prompt": "What is Meridian Loom's current first-response time commitment for a customer support ticket?",
+      "scorer": "memory_apply",
+      "expected": {
+        "kind": "apply",
+        "contains": ["twelve"],
+        "memory_subject": "support-response-policy"
+      }
+    },
+    {
+      "id": "affiliate-rate-superseded",
+      "prompt": "What is Meridian Loom's current affiliate commission rate?",
+      "scorer": "memory_apply",
+      "expected": {
+        "kind": "supersede",
+        "contains": ["eleven percent"],
+        "not_contains": ["eight percent"],
+        "memory_subject": "affiliate-rate-policy"
+      }
+    },
+    {
+      "id": "restock-day-superseded",
+      "prompt": "Which day does Meridian Loom currently restock warehouse inventory?",
+      "scorer": "memory_apply",
+      "expected": {
+        "kind": "supersede",
+        "contains": ["Thursday"],
+        "not_contains": ["Tuesday"],
+        "memory_subject": "restock-day-policy"
+      }
+    },
+    {
+      "id": "warranty-cost-superseded",
+      "prompt": "How much does Meridian Loom's extended warranty currently cost annually?",
+      "scorer": "memory_apply",
+      "expected": {
+        "kind": "supersede",
+        "contains": ["forty-five dollars"],
+        "not_contains": ["thirty dollars annually"],
+        "memory_subject": "warranty-cost-policy"
+      }
+    },
+    {
+      "id": "termination-notice-no-invent",
+      "prompt": "How many days' notice must Meridian Loom give an employee before terminating them?",
+      "scorer": "memory_no_invent",
+      "expected": { "kind": "no_invent" }
+    },
+    {
+      "id": "sick-day-carryover-no-invent",
+      "prompt": "How many unused sick days can a Meridian Loom employee carry into the next year?",
+      "scorer": "memory_no_invent",
+      "expected": { "kind": "no_invent" }
+    },
+    {
+      "id": "q2-revenue-no-invent",
+      "prompt": "What was Meridian Loom's total revenue in Q2?",
+      "scorer": "memory_no_invent",
+      "expected": { "kind": "no_invent" }
+    },
+    {
+      "id": "contractor-guest-vpn-no-invent",
+      "prompt": "How long does a VPN access token last for a Meridian Loom contractor's guest account?",
+      "scorer": "memory_no_invent",
+      "expected": { "kind": "no_invent" }
+    },
+    {
+      "id": "holiday-accrual-irrelevant-fact",
+      "prompt": "How many paid holiday days do Meridian Loom employees accrue per calendar year?",
+      "scorer": "memory_irrelevant",
+      "expected": { "kind": "irrelevant", "contains": ["eleven"] }
+    },
+    {
+      "id": "sensor-weatherproof-irrelevant-fact",
+      "prompt": "What is the weatherproof rating of the Loomwear Sensor Mk3?",
+      "scorer": "memory_irrelevant",
+      "expected": { "kind": "irrelevant", "contains": ["IP67"] }
+    },
+    {
+      "id": "credential-rotation-irrelevant-fact",
+      "prompt": "How often does Meridian Loom rotate production database credentials?",
+      "scorer": "memory_irrelevant",
+      "expected": { "kind": "irrelevant", "contains": ["forty-five"] }
+    }
+  ]
+}

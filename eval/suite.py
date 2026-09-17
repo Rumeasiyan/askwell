@@ -72,7 +72,10 @@ class Suite:
     `"conflict"` runs `eval.conflict` — the same real path again, scored on
     whether a genuine conflict between two live documents is presented as
     both positions, cited, with neither silently preferred
-    (`M2-EVAL-TEST-066`)."""
+    (`M2-EVAL-TEST-066`). `"memory"` runs `eval.memory_apply` — the same
+    real path once more, over stored `memory` facts rather than documents,
+    scored on application, supersession, citation and the no-invention
+    boundary (`M3-EVAL-TEST-086`)."""
 
     @property
     def strict(self) -> bool:
@@ -112,9 +115,10 @@ def load_suite(path: Path) -> Suite:
         raise SuiteError(f"{path} pass_bar must be in [0, 1], got {pass_bar!r}")
 
     mode = str(raw.get("mode", "completion"))
-    if mode not in ("completion", "grounded", "abstain", "conflict"):
+    if mode not in ("completion", "grounded", "abstain", "conflict", "memory"):
         raise SuiteError(
-            f"{path}: unknown mode {mode!r}. Available: completion, grounded, abstain, conflict"
+            f"{path}: unknown mode {mode!r}. Available: completion, grounded, abstain, "
+            "conflict, memory"
         )
     if mode == "grounded":
         for task in tasks:
