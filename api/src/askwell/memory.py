@@ -46,9 +46,11 @@ log = get_logger(__name__)
 MEMORY_WRITTEN = "memory_written"
 MEMORY_DISCARDED = "memory_discarded"
 MEMORY_SUPERSEDED = "memory_superseded"
+MEMORY_DELETED = "memory_deleted"
 SCHEMA_NOTE_WRITTEN = "schema_note_written"
 SCHEMA_NOTE_DISCARDED = "schema_note_discarded"
 SCHEMA_NOTE_SUPERSEDED = "schema_note_superseded"
+SCHEMA_NOTE_DELETED = "schema_note_deleted"
 
 # Full confidence for anything the user actually said — asked-and-answered or
 # a direct correction. Only an inference is uncertain.
@@ -232,6 +234,38 @@ async def correct_memory_fact(
     )
     log.info("memory_superseded", old_fact_id=str(fact_id), new_fact_id=str(new_id))
     return new_id
+
+
+async def delete_memory_fact(session: AsyncSession, *, fact_id: uuid.UUID) -> None:
+    """Delete an active fact outright. `docs/ux/memory.md` §4: "Stops applying
+    immediately. Recorded in the decisions log."
+
+    Unlike a correction, there is no replacement row — the value itself is
+    gone from `memory`, and the decisions record is what lets the memory
+    screen's history still say what it was and when it went. The row is
+    locked first so a concurrent correction of the same fact cannot race the
+    delete.
+    """
+    current = await session.execute(
+        text(
+            "SELECT subject, fact, origin FROM memory "
+            "WHERE id = :id AND superseded_by IS NULL FOR UPDATE"
+        ),
+        {"id": fact_id},
+    )
+    row = current.first()
+    if row is None:
+        raise FactNotFound(str(fact_id))
+    subject, fact, origin = row
+
+    await session.execute(text("DELETE FROM memory WHERE id = :id"), {"id": fact_id})
+    await record(
+        session,
+        Store.DECISIONS,
+        MEMORY_DELETED,
+        {"fact_id": str(fact_id), "subject": subject, "fact": fact, "origin": origin},
+    )
+    log.info("memory_deleted", fact_id=str(fact_id), subject=subject)
 
 
 async def get_active_memory_facts(
@@ -436,6 +470,38 @@ async def correct_schema_note(
     )
     log.info("schema_note_superseded", old_note_id=str(note_id), new_note_id=str(new_id))
     return new_id
+
+
+async def delete_schema_note(session: AsyncSession, *, note_id: uuid.UUID) -> None:
+    """Delete an active note outright — the schema-notes counterpart of
+    `delete_memory_fact`, same shape, same reasoning."""
+    current = await session.execute(
+        text(
+            "SELECT source_id, table_name, column_name, description, origin FROM schema_notes "
+            "WHERE id = :id AND superseded_by IS NULL FOR UPDATE"
+        ),
+        {"id": note_id},
+    )
+    row = current.first()
+    if row is None:
+        raise FactNotFound(str(note_id))
+    source_id, table_name, column_name, description, origin = row
+
+    await session.execute(text("DELETE FROM schema_notes WHERE id = :id"), {"id": note_id})
+    await record(
+        session,
+        Store.DECISIONS,
+        SCHEMA_NOTE_DELETED,
+        {
+            "note_id": str(note_id),
+            "source_id": str(source_id),
+            "table_name": table_name,
+            "column_name": column_name,
+            "description": description,
+            "origin": origin,
+        },
+    )
+    log.info("schema_note_deleted", note_id=str(note_id), table_name=table_name)
 
 
 async def get_active_schema_notes(

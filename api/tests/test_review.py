@@ -11,14 +11,21 @@ from datetime import UTC, datetime, timedelta
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from askwell.audit import Store, verify
+from askwell.audit import record as audit_record
+from askwell.memory import correct_memory_fact
 from askwell.review import (
     AlreadyAnswered,
+    CannotUndo,
     ClarificationNotFound,
     answer_clarification,
+    dismiss_group,
     list_pending,
     skip_clarification,
+    undo_answer,
 )
 
 pytestmark = pytest.mark.requires_db
@@ -276,3 +283,199 @@ async def test_skipping_an_answered_item_is_refused(session: AsyncSession) -> No
 async def test_skipping_an_unknown_clarification_raises(session: AsyncSession) -> None:
     with pytest.raises(ClarificationNotFound):
         await skip_clarification(session, uuid.uuid4())
+
+
+# --- dismissing a group (skip-all) ------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dismissing_a_group_writes_one_record_per_item(session: AsyncSession) -> None:
+    source_id = await _source(session, "contracts")
+    first = await _clarification(session, source_id, subject="RFQ")
+    second = await _clarification(session, source_id, subject="PO", rank=2)
+
+    dismissed = await dismiss_group(session, source_id)
+
+    assert set(dismissed) == {first, second}
+    statuses = (
+        await session.execute(text("SELECT status FROM clarifications ORDER BY subject"))
+    ).all()
+    assert [row[0] for row in statuses] == ["dismissed", "dismissed"]
+
+    kinds = (
+        await session.execute(
+            text("SELECT kind FROM audit_decisions WHERE kind = 'clarification_dismissed'")
+        )
+    ).all()
+    assert len(kinds) == 2, "one record per item, so the dismissal signal is countable"
+
+
+@pytest.mark.asyncio
+async def test_dismissing_leaves_answered_and_skipped_items_untouched(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session, "contracts")
+    pending = await _clarification(session, source_id, subject="RFQ")
+    answered = await _clarification(session, source_id, subject="PO", status="answered", rank=2)
+    skipped = await _clarification(session, source_id, subject="GRN", status="skipped", rank=3)
+
+    dismissed = await dismiss_group(session, source_id)
+
+    assert dismissed == [pending]
+    by_id = dict((await session.execute(text("SELECT id, status FROM clarifications"))).all())
+    assert by_id[pending] == "dismissed"
+    assert by_id[answered] == "answered"
+    assert by_id[skipped] == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_dismissing_a_group_with_nothing_pending_is_a_no_op(session: AsyncSession) -> None:
+    source_id = await _source(session, "contracts")
+    await _clarification(session, source_id, status="answered")
+
+    dismissed = await dismiss_group(session, source_id)
+
+    assert dismissed == []
+    kinds = (await session.execute(text("SELECT id FROM audit_decisions"))).all()
+    assert kinds == []
+
+
+# --- undoing an answer -------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_undo_deletes_the_memory_fact_and_records_its_own_decision(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session, "contracts")
+    clarification_id = await _clarification(session, source_id, subject="RFQ")
+    outcome = await answer_clarification(session, clarification_id, "Request for quotation")
+
+    await undo_answer(session, clarification_id, outcome.memory_id)
+
+    memory_rows = (await session.execute(text("SELECT id FROM memory"))).all()
+    assert memory_rows == []
+
+    status_row = (
+        await session.execute(
+            text("SELECT status, answer FROM clarifications WHERE id = :id"),
+            {"id": clarification_id},
+        )
+    ).first()
+    assert status_row is not None
+    assert status_row[0] == "pending"
+    assert status_row[1] is None
+
+    kinds = (
+        await session.execute(text("SELECT kind FROM audit_decisions ORDER BY occurred_at"))
+    ).all()
+    # The original answered record is untouched — undo adds a second record,
+    # it does not remove or rewrite the first.
+    assert [row[0] for row in kinds] == ["clarification_answered", "clarification_answer_undone"]
+
+
+@pytest.mark.asyncio
+async def test_undo_on_a_pending_or_skipped_item_is_refused(session: AsyncSession) -> None:
+    source_id = await _source(session, "contracts")
+    clarification_id = await _clarification(session, source_id, status="skipped")
+
+    with pytest.raises(CannotUndo):
+        await undo_answer(session, clarification_id, uuid.uuid4())
+
+
+@pytest.mark.asyncio
+async def test_undo_after_the_answer_was_corrected_is_refused(session: AsyncSession) -> None:
+    source_id = await _source(session, "contracts")
+    clarification_id = await _clarification(session, source_id, subject="RFQ")
+    outcome = await answer_clarification(session, clarification_id, "Request for quotation")
+
+    # A correction made from the memory screen (or from inside a later
+    # answer) supersedes the fact undo would otherwise delete.
+    await correct_memory_fact(session, fact_id=outcome.memory_id, fact="Request for Quotation")
+
+    with pytest.raises(CannotUndo):
+        await undo_answer(session, clarification_id, outcome.memory_id)
+
+
+@pytest.mark.asyncio
+async def test_undo_of_an_unknown_clarification_raises(session: AsyncSession) -> None:
+    with pytest.raises(ClarificationNotFound):
+        await undo_answer(session, uuid.uuid4(), uuid.uuid4())
+
+
+# --- the chain across a run of memory operations -----------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_decisions_chain_covers_a_cold_start_walkthrough(
+    session: AsyncSession,
+) -> None:
+    """`M3-STORE-OBS-077`'s own manual walkthrough: answer three
+    clarifications and correct one, then verify the chain covers all four.
+    """
+    source_id = await _source(session, "contracts")
+    first = await _clarification(session, source_id, subject="RFQ")
+    second = await _clarification(session, source_id, subject="PO", rank=2)
+    third = await _clarification(session, source_id, subject="GRN", rank=3)
+
+    await answer_clarification(session, first, "Request for Quotation")
+    await answer_clarification(session, second, "Purchase Order")
+    outcome = await answer_clarification(session, third, "Goods Received Note")
+    await correct_memory_fact(session, fact_id=outcome.memory_id, fact="Goods Receipt Note")
+
+    result = await verify(session, Store.DECISIONS)
+    assert result.intact, str(result)
+    assert result.checked == 4
+
+    kinds = (
+        await session.execute(text("SELECT kind FROM audit_decisions ORDER BY occurred_at"))
+    ).all()
+    assert [row[0] for row in kinds] == [
+        "clarification_answered",
+        "clarification_answered",
+        "clarification_answered",
+        "memory_superseded",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_answering_fails_closed_when_the_decisions_record_cannot_be_written(
+    session: AsyncSession,
+) -> None:
+    """An induced audit failure must prevent the memory change.
+
+    Same shape as `test_audit_chain.py`'s own `test_a_failed_audit_write_fails_the_action`:
+    a `kind` too long for `audit_decisions.kind` (`varchar(64)`) stands in for
+    any audit write that fails for a reason the caller did not anticipate,
+    here inside the exact statement sequence `answer_clarification` runs.
+    """
+    source_id = await _source(session, "contracts")
+    clarification_id = await _clarification(session, source_id, subject="RFQ")
+    await session.commit()
+
+    await session.execute(
+        text("UPDATE clarifications SET status = 'answered', answer = 'x' WHERE id = :id"),
+        {"id": clarification_id},
+    )
+    await session.execute(
+        text(
+            "INSERT INTO memory (id, subject, fact, origin) "
+            "VALUES (:id, 'RFQ', 'x', 'clarification')"
+        ),
+        {"id": uuid.uuid4()},
+    )
+    with pytest.raises(DBAPIError):
+        await audit_record(session, Store.DECISIONS, "k" * 200, {"subject": "RFQ"})
+        await session.commit()
+
+    await session.rollback()
+
+    memory_rows = (await session.execute(text("SELECT id FROM memory"))).all()
+    assert memory_rows == [], "the memory write committed without its audit record"
+    status_row = (
+        await session.execute(
+            text("SELECT status FROM clarifications WHERE id = :id"), {"id": clarification_id}
+        )
+    ).first()
+    assert status_row is not None
+    assert status_row[0] == "pending", "the clarification write committed without its audit record"

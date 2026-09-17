@@ -40,6 +40,8 @@ log = get_logger(__name__)
 
 CLARIFICATION_ANSWERED = "clarification_answered"
 CLARIFICATION_SKIPPED = "clarification_skipped"
+CLARIFICATION_DISMISSED = "clarification_dismissed"
+CLARIFICATION_ANSWER_UNDONE = "clarification_answer_undone"
 
 # A user-given answer is not a guess — full confidence, unlike the
 # low-confidence inferences `askwell.clarify` writes for anything nobody was
@@ -54,6 +56,16 @@ class ClarificationNotFound(Exception):
 
 class AlreadyAnswered(Exception):
     """Refused by name, not a second fact: `-072a`'s own Edge Case."""
+
+
+class CannotUndo(Exception):
+    """The memory fact an answer wrote has since been built upon.
+
+    A correction (or another answer) may already supersede it by the time
+    the undo window fires; reversing the original write at that point would
+    silently discard whatever came after it, which is a second, unrelated
+    loss of information the user never asked for.
+    """
 
 
 async def list_pending(session: AsyncSession) -> dict[str, Any]:
@@ -206,8 +218,101 @@ async def skip_clarification(session: AsyncSession, clarification_id: uuid.UUID)
     )
 
 
+async def dismiss_group(session: AsyncSession, source_id: uuid.UUID) -> list[uuid.UUID]:
+    """Skip-all for one source's group: `-074`'s own Edge Case, "one record
+    each, so the dismissal signal is countable."
+
+    Only pending items move — an already-answered or already-skipped item in
+    the same group is left exactly as it is, since dismissal is a verdict on
+    the questions nobody has acted on yet, not a way to relabel one that has
+    already been decided. Idempotent: a group with nothing pending dismisses
+    nothing and returns an empty list.
+    """
+    rows = await session.execute(
+        text(
+            "SELECT id, subject FROM clarifications "
+            "WHERE source_id = :source_id AND status = 'pending' FOR UPDATE"
+        ),
+        {"source_id": source_id},
+    )
+    pending = rows.all()
+    if not pending:
+        return []
+
+    ids = [row[0] for row in pending]
+    await session.execute(
+        text("UPDATE clarifications SET status = 'dismissed' WHERE id = ANY(:ids)"),
+        {"ids": ids},
+    )
+    for clarification_id, subject in pending:
+        await record(
+            session,
+            Store.DECISIONS,
+            CLARIFICATION_DISMISSED,
+            {
+                "clarification_id": str(clarification_id),
+                "subject": subject,
+                "source_id": str(source_id),
+            },
+        )
+    return list(ids)
+
+
+async def undo_answer(
+    session: AsyncSession, clarification_id: uuid.UUID, memory_id: uuid.UUID
+) -> None:
+    """Reverse an answer within its undo window.
+
+    Recorded as its own decision rather than by deleting `CLARIFICATION_ANSWERED`
+    — the original record stays exactly as written; this adds a second record
+    that says the answer was later undone. The memory fact itself is deleted
+    (`askwell.memory.delete_memory_fact`'s own shape), and the clarification
+    goes back to `pending` so it can be answered again.
+    """
+    locked = await _lock_clarification(session, clarification_id)
+    if locked is None:
+        raise ClarificationNotFound(str(clarification_id))
+    status, subject, _source_id = locked
+    if status != "answered":
+        raise CannotUndo(str(clarification_id))
+
+    active = await session.execute(
+        text(
+            "SELECT origin FROM memory WHERE id = :id AND superseded_by IS NULL "
+            "AND subject = :subject FOR UPDATE"
+        ),
+        {"id": memory_id, "subject": subject},
+    )
+    row = active.first()
+    if row is None or row[0] != "clarification":
+        raise CannotUndo(str(clarification_id))
+
+    await session.execute(text("DELETE FROM memory WHERE id = :id"), {"id": memory_id})
+    await session.execute(
+        text(
+            "UPDATE clarifications SET status = 'pending', answer = NULL, answered_at = NULL "
+            "WHERE id = :id"
+        ),
+        {"id": clarification_id},
+    )
+    await record(
+        session,
+        Store.DECISIONS,
+        CLARIFICATION_ANSWER_UNDONE,
+        {
+            "clarification_id": str(clarification_id),
+            "memory_id": str(memory_id),
+            "subject": subject,
+        },
+    )
+
+
 class AnswerRequest(BaseModel):
     answer: str = Field(min_length=1, max_length=4096)
+
+
+class UndoRequest(BaseModel):
+    memory_id: uuid.UUID
 
 
 def register_review(app: FastAPI, factory: async_sessionmaker[AsyncSession]) -> None:
@@ -245,3 +350,20 @@ def register_review(app: FastAPI, factory: async_sessionmaker[AsyncSession]) -> 
         except AlreadyAnswered:
             return JSONResponse({"error": "This question was already answered."}, status_code=409)
         return JSONResponse({"id": str(clarification_id), "status": "skipped"})
+
+    @app.post("/sources/{source_id}/clarifications/dismiss")
+    async def dismiss_route(source_id: uuid.UUID) -> JSONResponse:
+        async with session_scope(factory) as db:
+            dismissed = await dismiss_group(db, source_id)
+        return JSONResponse({"dismissed": [str(item) for item in dismissed]})
+
+    @app.post("/clarifications/{clarification_id}/undo")
+    async def undo_route(clarification_id: uuid.UUID, body: UndoRequest) -> JSONResponse:
+        try:
+            async with session_scope(factory) as db:
+                await undo_answer(db, clarification_id, body.memory_id)
+        except ClarificationNotFound:
+            return JSONResponse({"error": "No such clarification."}, status_code=404)
+        except CannotUndo:
+            return JSONResponse({"error": "This answer can no longer be undone."}, status_code=409)
+        return JSONResponse({"id": str(clarification_id), "status": "pending"})

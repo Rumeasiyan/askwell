@@ -19,6 +19,8 @@ from askwell.memory import (
     FactNotFound,
     correct_memory_fact,
     correct_schema_note,
+    delete_memory_fact,
+    delete_schema_note,
     get_active_memory_facts,
     get_active_schema_notes,
     write_memory_fact,
@@ -186,6 +188,52 @@ async def test_correcting_an_already_superseded_fact_raises(session: AsyncSessio
 
     with pytest.raises(FactNotFound):
         await correct_memory_fact(session, fact_id=fact_id, fact="60 days")
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_fact_removes_it_and_records_a_decision(session: AsyncSession) -> None:
+    fact_id = await write_memory_fact(
+        session, subject="rfq", fact="Request for Quotation", origin="manual"
+    )
+    assert fact_id is not None
+
+    await delete_memory_fact(session, fact_id=fact_id)
+
+    assert await get_active_memory_facts(session, subject="rfq") == []
+    remaining = (await session.execute(text("SELECT id FROM memory"))).all()
+    assert remaining == []
+
+    rows = (
+        await session.execute(
+            text(
+                "SELECT kind, payload->>'fact_id', payload->>'subject', payload->>'fact' "
+                "FROM audit_decisions ORDER BY occurred_at"
+            )
+        )
+    ).all()
+    assert [row[0] for row in rows] == ["memory_written", "memory_deleted"]
+    _, deleted_fact_id, deleted_subject, deleted_fact = rows[1]
+    assert deleted_fact_id == str(fact_id)
+    assert deleted_subject == "rfq"
+    assert deleted_fact == "Request for Quotation"
+
+
+@pytest.mark.asyncio
+async def test_deleting_an_unknown_fact_raises(session: AsyncSession) -> None:
+    with pytest.raises(FactNotFound):
+        await delete_memory_fact(session, fact_id=uuid.uuid4())
+
+
+@pytest.mark.asyncio
+async def test_deleting_an_already_superseded_fact_raises(session: AsyncSession) -> None:
+    fact_id = await write_memory_fact(
+        session, subject="policy", fact="30 days", origin="clarification"
+    )
+    assert fact_id is not None
+    await correct_memory_fact(session, fact_id=fact_id, fact="45 days")
+
+    with pytest.raises(FactNotFound):
+        await delete_memory_fact(session, fact_id=fact_id)
 
 
 @pytest.mark.asyncio
@@ -432,6 +480,38 @@ async def test_correcting_an_inferred_schema_note_is_rejected(session: AsyncSess
 
     with pytest.raises(CannotCorrectInference):
         await correct_schema_note(session, note_id=note_id, description="a better guess")
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_schema_note_removes_it_and_records_a_decision(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session)
+    note_id = await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name="students",
+        column_name="st_cd",
+        description="student status code",
+        origin="user",
+    )
+    assert note_id is not None
+
+    await delete_schema_note(session, note_id=note_id)
+
+    active = await get_active_schema_notes(session, source_id=source_id)
+    assert active == []
+
+    kinds = (
+        await session.execute(text("SELECT kind FROM audit_decisions ORDER BY occurred_at"))
+    ).all()
+    assert [row[0] for row in kinds] == ["schema_note_written", "schema_note_deleted"]
+
+
+@pytest.mark.asyncio
+async def test_deleting_an_unknown_schema_note_raises(session: AsyncSession) -> None:
+    with pytest.raises(FactNotFound):
+        await delete_schema_note(session, note_id=uuid.uuid4())
 
 
 @pytest.mark.asyncio
