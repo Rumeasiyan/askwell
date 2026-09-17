@@ -73,9 +73,9 @@ async def test_answering_a_clarification_writes_a_full_confidence_user_fact(
     facts = await get_active_memory_facts(session, subject="st_cd")
     assert len(facts) == 1
     assert facts[0].origin == "clarification"
-    assert facts[0].confidence is None  # caller supplies confidence explicitly
+    assert facts[0].confidence == FULL_CONFIDENCE  # defaulted, not left None
 
-    # An explicit full-confidence write, as the answer-a-clarification path does.
+    # An explicit confidence still wins over the default.
     fact_id = await write_memory_fact(
         session,
         subject="rfq",
@@ -138,6 +138,36 @@ async def test_two_contradicting_user_answers_the_later_supersedes_both_visible(
     assert by_id[fact_id] == ("30 days", second_id)
     assert by_id[second_id] == ("45 days", third_id)
     assert by_id[third_id] == ("60 days", None)
+
+
+@pytest.mark.asyncio
+async def test_a_second_user_origin_write_supersedes_not_double_actives(
+    session: AsyncSession,
+) -> None:
+    first_id = await write_memory_fact(
+        session, subject="policy", fact="30 days", origin="clarification"
+    )
+    assert first_id is not None
+
+    # A second user-origin write for the same subject, via `write_memory_fact`
+    # itself rather than `correct_memory_fact` — must supersede, not sit
+    # active alongside the first.
+    second_id = await write_memory_fact(
+        session, subject="policy", fact="45 days", origin="clarification"
+    )
+    assert second_id is not None
+
+    active = await get_active_memory_facts(session, subject="policy")
+    assert len(active) == 1
+    assert active[0].id == second_id
+    assert active[0].fact == "45 days"
+
+    old = await session.execute(
+        text("SELECT fact, superseded_by FROM memory WHERE id = :id"), {"id": first_id}
+    )
+    old_fact, superseded_by = old.first()
+    assert old_fact == "30 days"
+    assert superseded_by == second_id
 
 
 @pytest.mark.asyncio
@@ -344,6 +374,46 @@ async def test_writing_and_correcting_a_schema_note(session: AsyncSession) -> No
     assert current[0].id == new_id
     assert current[0].description == "student cohort code"
     assert current[0].origin == "user"
+
+
+@pytest.mark.asyncio
+async def test_a_second_user_origin_note_supersedes_not_double_actives(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session)
+    first_id = await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name="students",
+        column_name="st_cd",
+        description="student status code",
+        origin="user",
+    )
+    assert first_id is not None
+
+    second_id = await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name="students",
+        column_name="st_cd",
+        description="student cohort code",
+        origin="user",
+    )
+    assert second_id is not None
+
+    active = await get_active_schema_notes(session, source_id=source_id)
+    current = [n for n in active if n.table_name == "students" and n.column_name == "st_cd"]
+    assert len(current) == 1
+    assert current[0].id == second_id
+    assert current[0].confidence == FULL_CONFIDENCE
+
+    retired = await session.execute(
+        text("SELECT description, superseded_by FROM schema_notes WHERE id = :id"),
+        {"id": first_id},
+    )
+    old_description, superseded_by = retired.first()
+    assert old_description == "student status code"
+    assert superseded_by == second_id
 
 
 @pytest.mark.asyncio

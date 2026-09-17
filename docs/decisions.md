@@ -22,6 +22,18 @@ Template:
 
 ---
 
+## 2026-09-17 — `M3-STORE-BE-076`'s own acceptance criteria closed (#283, #284), not deferred as caller discipline
+
+**Decision:** `write_memory_fact`/`write_schema_note` (`api/src/askwell/memory.py`) now (1) default `confidence` to `FULL_CONFIDENCE` for any user-origin write left unset, and (2) supersede *any* existing active fact/note for the subject/position on a user-origin write, not only an inferred one — folding what was previously only `correct_memory_fact`/`correct_schema_note`'s behaviour into the plain write path too. Chose issue #283's and #284's own "Recommended" option (make the module safe by construction) over the alternative each issue also offered (require every caller to route a second user answer through `correct_*`, or enforce it with a database-level partial unique index).
+
+**Why:** both gaps directly contradicted this ticket's own stated acceptance criteria — "Answering a clarification writes a fact with origin clarification and full confidence" (#283) and the "two contradicting user answers" edge case (#284) — not a separate concern found later. `#283`'s existing test (`test_answering_a_clarification_writes_a_full_confidence_user_fact`) asserted `confidence is None` with a comment excusing the gap, which is exactly the "invariant asserted in a docstring but not enforced in code" pattern `AGENTS.md` §4 already warns against. Rejected the database-unique-index option (#284's option 2) because it pushes conflict handling onto every future caller instead of the module itself, and rejected leaving it to caller discipline (#284's option 3, #283's option 2) for the same reason both issues did: `#282`'s rewiring of `clarify.py`/`review.py` is exactly the kind of new caller that would otherwise inherit the bug silently. Applied the same fix to `write_schema_note` for symmetry, even though #284 named only `memory` — the ticket's own granularity note calls this "two stores sharing one supersession rule," and leaving schema notes with the weaker guarantee would have been an inconsistency nobody asked for.
+
+**Consequences:** A second `write_memory_fact`/`write_schema_note` call with a user-origin for a subject/position that already has an active user-origin row now supersedes it, matching `correct_memory_fact`/`correct_schema_note`'s behaviour, so callers no longer need to know which of the two functions to use to avoid a double-active row. `#282` (rewiring `clarify.py`/`review.py` onto this module) is unaffected in scope — still its own ticket — but now inherits the corrected default rather than the gap. `#262`/`#263`/`#264` (dependents) needed no change; none of them call `write_memory_fact`/`write_schema_note` with an explicit `confidence` that this default would now override incorrectly.
+
+**Refs:** issues #283, #284, #282 (re-owned, unchanged); `api/src/askwell/memory.py`; `api/tests/test_memory.py`; `CHANGELOG.md` `0.3.9`.
+
+---
+
 ## 2026-09-17 — `M3-STORE-BE-076` rebuilt fresh against current `main`, not rebased from the parked attempt
 
 **Decision:** Reimplemented `M3-STORE-BE-076` (`api/src/askwell/memory.py`, `api/tests/test_memory.py`, migration `2ae457a0587a`) by porting the parked branch's (`origin/parked/m3-store-be-076-attempt-1`) `memory.py`, `test_memory.py` and `memory.source_id` migration verbatim onto current `main`, rather than rebasing the whole branch as issue #276 recommended.

@@ -111,10 +111,10 @@ async def write_memory_fact(
 
     Returns the new row's id, or `None` if an inference was discarded
     because an active user-supplied fact already covers this subject. A
-    user-origin write, conversely, retires any active inference for the
-    same subject — the guess was standing in for an answer nobody had given
-    yet, and now somebody has, so leaving it active would show two beliefs
-    about the same subject side by side.
+    user-origin write, conversely, retires any active fact for the same
+    subject — inferred or user-origin — the same way `correct_memory_fact`
+    would, so two user answers for one subject never sit active side by
+    side; only the later one does.
     """
     if origin == "inferred":
         existing = await session.execute(
@@ -133,6 +133,8 @@ async def write_memory_fact(
             )
             log.info("memory_discarded", subject=subject)
             return None
+    elif confidence is None:
+        confidence = FULL_CONFIDENCE
 
     fact_id = uuid.uuid4()
     await session.execute(
@@ -158,11 +160,14 @@ async def write_memory_fact(
     log.info("memory_written", fact_id=str(fact_id), subject=subject, origin=origin)
 
     if origin != "inferred":
+        # Retire whatever was active for this subject — inferred guess or a
+        # prior user answer alike — so a second user-origin write supersedes
+        # instead of leaving two active facts for one subject.
         superseded = await session.execute(
             text(
                 "UPDATE memory SET superseded_by = :fact_id "
                 "WHERE subject = :subject AND superseded_by IS NULL "
-                "AND origin = 'inferred' AND id != :fact_id RETURNING id"
+                "AND id != :fact_id RETURNING id"
             ),
             {"fact_id": fact_id, "subject": subject},
         )
@@ -279,7 +284,9 @@ async def write_schema_note(
     """Write a new, active note for one table/column position.
 
     Returns `None`, discarding the write, if an inference arrives for a
-    position an active `user`-origin note already covers.
+    position an active `user`-origin note already covers. A user-origin
+    write retires any active note for the same position — inferred or a
+    prior user note alike — mirroring `write_memory_fact`.
     """
     if origin == "inferred":
         existing = await session.execute(
@@ -310,6 +317,8 @@ async def write_schema_note(
                 column_name=column_name,
             )
             return None
+    elif confidence is None:
+        confidence = FULL_CONFIDENCE
 
     note_id = uuid.uuid4()
     await session.execute(
@@ -345,13 +354,14 @@ async def write_schema_note(
 
     if origin != "inferred":
         # As in `write_memory_fact`: a user-supplied note retires any active
-        # guess for the same position rather than leaving both active.
+        # note for the same position — guess or prior user note — rather
+        # than leaving two active.
         superseded = await session.execute(
             text(
                 "UPDATE schema_notes SET superseded_by = :note_id "
                 "WHERE source_id = :source_id AND table_name = :table_name "
                 "AND column_name IS NOT DISTINCT FROM :column_name "
-                "AND superseded_by IS NULL AND origin = 'inferred' AND id != :note_id "
+                "AND superseded_by IS NULL AND id != :note_id "
                 "RETURNING id"
             ),
             {
