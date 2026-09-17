@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from askwell import reapply
 from askwell.audit import Store, record
+from askwell.clarify import CANDIDATE_CAPPED, get_clarification_cap
 from askwell.config import Settings
 from askwell.db.engine import session_scope
 from askwell.logging import get_logger
@@ -70,14 +71,40 @@ class CannotUndo(Exception):
     """
 
 
+async def _capped_counts(session: AsyncSession) -> dict[str, tuple[int, str]]:
+    """Source id -> (capped count, source name), for every source that has
+    ever had a candidate capped, not just one with a pending queue right now.
+
+    Issue #297: `askwell.clarify._capped_counts`'s own source of truth is
+    `audit_decisions`, which never forgets a `clarification_capped` record
+    even once every *raised* clarification for that source has been answered
+    or skipped and the pending query above has no row left to attach a
+    capped banner to. Reading it here, independently of `list_pending`'s own
+    query, is what makes "review them in Memory" still true after the queue
+    empties.
+    """
+    rows = await session.execute(
+        text(
+            "SELECT (d.payload->>'source_id')::uuid, count(*), s.name "
+            "FROM audit_decisions d JOIN sources s ON s.id = (d.payload->>'source_id')::uuid "
+            "WHERE d.kind = :kind AND s.status <> 'deleted' "
+            "GROUP BY 1, s.name"
+        ),
+        {"kind": CANDIDATE_CAPPED},
+    )
+    return {str(source_id): (count, name) for source_id, count, name in rows}
+
+
 async def list_pending(session: AsyncSession) -> dict[str, Any]:
     """Pending clarifications, grouped by source, newest source first.
 
     A source with `status = 'deleted'` (`askwell.sources.delete_source`, a
     soft delete — the row and its clarifications both survive) is excluded:
     `-072a`'s own Edge Case, "an item whose source was deleted does not
-    appear". A source with nothing pending never produces an empty group,
-    because the query has no row for it to begin with.
+    appear". A source with nothing pending never produces an empty group from
+    this query alone — but one that was ever capped (`_capped_counts`) still
+    gets a group, with no items, so `../ux/clarifications.md` §5's capped
+    state survives its own pending queue emptying (issue #297).
     """
     rows = (
         await session.execute(
@@ -102,6 +129,7 @@ async def list_pending(session: AsyncSession) -> dict[str, Any]:
                 "source_name": source_name,
                 "count": 0,
                 "items": [],
+                "capped": 0,
             }
             by_source[source_id] = group
             groups.append(group)
@@ -116,7 +144,23 @@ async def list_pending(session: AsyncSession) -> dict[str, Any]:
             }
         )
 
-    return {"groups": groups, "total": len(rows)}
+    capped = await _capped_counts(session)
+    for group in groups:
+        entry = capped.pop(group["source_id"], None)
+        if entry is not None:
+            group["capped"] = entry[0]
+    for source_id, (count, name) in capped.items():
+        groups.append(
+            {
+                "source_id": source_id,
+                "source_name": name,
+                "count": 0,
+                "items": [],
+                "capped": count,
+            }
+        )
+
+    return {"groups": groups, "total": len(rows), "cap": await get_clarification_cap(session)}
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,10 +169,18 @@ class Reprocessing:
     actual material the answer just marked for re-reading. Re-reading itself
     is `M3-APPLY-ING-080`'s own territory — this only counts and names it, so
     the confirmation is honest even while that ticket's queue is a no-op.
+
+    `kind` (issue #300): "table" when the evidence is a column distribution,
+    "document" otherwise — every trigger built so far (`askwell.clarify`) is
+    document-shaped, so this reads "document" today, but the field exists so
+    a session-level tally can break "5 answered" into "2 tables and 14
+    documents re-read" the moment a column trigger (M4) exists to produce
+    the other value, without a second migration of this shape later.
     """
 
     count: int
     label: str
+    kind: str = "document"
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,10 +233,16 @@ async def _reprocessing_summary(
     live document in the source — always true, even where it overstates,
     which honestly-inflated beats a fabricated specific count.
     """
+    is_table = evidence is not None and evidence.get("kind") == "column_distribution"
+    kind = "table" if is_table else "document"
+    noun = kind
+
     named = sorted({*(options or []), *documents_named_in_evidence(evidence)})
     if named:
         count = len(named)
-        return Reprocessing(count=count, label=f"{count} document{'' if count == 1 else 's'}")
+        return Reprocessing(
+            count=count, label=f"{count} {noun}{'' if count == 1 else 's'}", kind=kind
+        )
 
     result = await session.execute(
         text(
@@ -195,7 +253,9 @@ async def _reprocessing_summary(
     )
     count = int(result.scalar_one())
     return Reprocessing(
-        count=count, label=f"{count} document{'' if count == 1 else 's'} in this source"
+        count=count,
+        label=f"{count} {noun}{'' if count == 1 else 's'} in this source",
+        kind=kind,
     )
 
 
@@ -447,7 +507,11 @@ def register_review(
                 "reprocessing": {
                     "count": outcome.reprocessing.count,
                     "label": outcome.reprocessing.label,
+                    "kind": outcome.reprocessing.kind,
                 },
+                "reapply_job_id": (
+                    str(outcome.reapply_job_id) if outcome.reapply_job_id is not None else None
+                ),
             }
         )
 

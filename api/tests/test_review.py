@@ -17,11 +17,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from askwell.audit import Store, verify
 from askwell.audit import record as audit_record
+from askwell.clarify import CANDIDATE_CAPPED
 from askwell.memory import correct_memory_fact
 from askwell.review import (
     AlreadyAnswered,
     CannotUndo,
     ClarificationNotFound,
+    Reprocessing,
+    _reprocessing_summary,
     answer_clarification,
     dismiss_group,
     list_pending,
@@ -189,6 +192,124 @@ async def test_a_clarification_whose_source_was_deleted_does_not_appear(
     assert result["groups"] == []
 
 
+@pytest.mark.asyncio
+async def test_list_pending_names_the_configured_cap(session: AsyncSession) -> None:
+    result = await list_pending(session)
+
+    assert result["cap"] == 5
+
+
+# --- the capped state, issue #297 -----------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_capped_source_with_nothing_pending_still_gets_a_group(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session, "sales")
+    await audit_record(
+        session,
+        Store.DECISIONS,
+        CANDIDATE_CAPPED,
+        {
+            "source_id": str(source_id),
+            "trigger": "abbreviation",
+            "subject": "GRN",
+            "rank": 6,
+            "cap": 5,
+        },
+    )
+    await session.commit()
+
+    result = await list_pending(session)
+
+    assert result["total"] == 0
+    assert len(result["groups"]) == 1
+    group = result["groups"][0]
+    assert group["source_name"] == "sales"
+    assert group["items"] == []
+    assert group["capped"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_capped_source_that_still_has_pending_items_carries_the_count_on_that_group(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session, "sales")
+    await _clarification(session, source_id, subject="RFQ")
+    await audit_record(
+        session,
+        Store.DECISIONS,
+        CANDIDATE_CAPPED,
+        {
+            "source_id": str(source_id),
+            "trigger": "abbreviation",
+            "subject": "GRN",
+            "rank": 6,
+            "cap": 5,
+        },
+    )
+    await session.commit()
+
+    result = await list_pending(session)
+
+    assert len(result["groups"]) == 1
+    group = result["groups"][0]
+    assert len(group["items"]) == 1
+    assert group["capped"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_capped_source_that_was_deleted_does_not_appear(session: AsyncSession) -> None:
+    source_id = await _source(session, "gone", status="deleted")
+    await audit_record(
+        session,
+        Store.DECISIONS,
+        CANDIDATE_CAPPED,
+        {
+            "source_id": str(source_id),
+            "trigger": "abbreviation",
+            "subject": "GRN",
+            "rank": 6,
+            "cap": 5,
+        },
+    )
+    await session.commit()
+
+    result = await list_pending(session)
+
+    assert result["groups"] == []
+
+
+# --- reprocessing's table/document breakdown, issue #300 -----------------------
+
+
+@pytest.mark.asyncio
+async def test_reprocessing_summary_names_documents_by_default(session: AsyncSession) -> None:
+    source_id = await _source(session, "contracts")
+
+    reprocessing = await _reprocessing_summary(session, str(source_id), None, None)
+
+    assert reprocessing.kind == "document"
+    expected = Reprocessing(count=0, label="0 documents in this source", kind="document")
+    assert reprocessing == expected
+
+
+@pytest.mark.asyncio
+async def test_reprocessing_summary_names_tables_for_column_evidence(session: AsyncSession) -> None:
+    source_id = await _source(session, "sales")
+    evidence = {
+        "kind": "column_distribution",
+        "row_count": 100,
+        "values": [],
+        "remainder_count": 100,
+    }
+
+    reprocessing = await _reprocessing_summary(session, str(source_id), evidence, ["students"])
+
+    assert reprocessing == Reprocessing(count=1, label="1 table", kind="table")
+
+
 # --- answering -----------------------------------------------------------------
 
 
@@ -292,6 +413,7 @@ async def test_answering_names_documents_sampled_in_passage_evidence(
 
     assert outcome.reprocessing.count == 2
     assert outcome.reprocessing.label == "2 documents"
+    assert outcome.reprocessing.kind == "document"
 
 
 @pytest.mark.asyncio

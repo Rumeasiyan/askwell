@@ -25,11 +25,20 @@ export interface ClarificationGroup {
   source_name: string;
   count: number;
   items: ClarificationItem[];
+  /** How many of this source's candidates were inferred rather than asked,
+   * ranked below the cap (`../ux/clarifications.md` §5's capped state). A
+   * group can carry this with `items` empty — a source whose whole raised
+   * queue has since been answered or skipped still owes this disclosure
+   * (issue 297). */
+  capped: number;
 }
 
 export interface ClarificationsState {
   groups: ClarificationGroup[];
   total: number;
+  /** The configured cap (`askwell.clarify.get_clarification_cap`) — the
+   * capped state names it: "Asking about the 5 that matter most." */
+  cap: number;
 }
 
 /** The pending queue, grouped by source, newest source first. */
@@ -64,6 +73,15 @@ export function groupSentence(count: number): string {
  */
 export const NONE_PENDING_COPY =
   "Nothing to clarify. Askwell asks when it finds something it can't work out — an unlabelled column, a date format, two documents that disagree.";
+
+/**
+ * `../ux/clarifications.md` §5, "Capped" — honest about what was not asked,
+ * and routes to where it can be corrected. Shown per source, whether or not
+ * that source still has anything pending (issue 297).
+ */
+export function cappedSentence(cap: number): string {
+  return `Asking about the ${cap} that matter most. Askwell inferred the rest — you can review them in Memory.`;
+}
 
 /**
  * `current_inference` — what `askwell.clarify.raise_candidates` merges onto
@@ -198,16 +216,22 @@ export function rowCountLabel(rowCount: number): string {
 // carries the calls and the shapes their responses come back in.
 
 /** What `askwell.review.answer_clarification` names as affected material —
- * never a generic toast (`../ux/clarifications.md` §4, "After saving"). */
+ * never a generic toast (`../ux/clarifications.md` §4, "After saving").
+ * `kind` (issue 300) is "table" or "document" — every trigger built so far
+ * is document-shaped, so this reads "document" today. */
 export interface Reprocessing {
   count: number;
   label: string;
+  kind: "table" | "document";
 }
 
 export interface AnswerResult {
   id: string;
   memoryId: string;
   reprocessing: Reprocessing;
+  /** `null` when nothing needed re-processing. Feeds `ReapplyProgress`
+   * (`../ux/clarifications.md` §5, "Answered, re-processing"). */
+  reapplyJobId: string | null;
 }
 
 async function postJson<T>(path: string, body?: unknown): Promise<T> {
@@ -234,11 +258,17 @@ async function postJson<T>(path: string, body?: unknown): Promise<T> {
  * caller's decision (`skipClarification`), not this function's: it always
  * writes what it is given. */
 export async function answerClarification(id: string, answer: string): Promise<AnswerResult> {
-  const raw = await postJson<{ memory_id: string; reprocessing: Reprocessing }>(
-    `/clarifications/${id}/answer`,
-    { answer },
-  );
-  return { id, memoryId: raw.memory_id, reprocessing: raw.reprocessing };
+  const raw = await postJson<{
+    memory_id: string;
+    reprocessing: Reprocessing;
+    reapply_job_id: string | null;
+  }>(`/clarifications/${id}/answer`, { answer });
+  return {
+    id,
+    memoryId: raw.memory_id,
+    reprocessing: raw.reprocessing,
+    reapplyJobId: raw.reapply_job_id,
+  };
 }
 
 /** Keeps the inference as low-confidence; never raised again for this source. */
@@ -279,6 +309,113 @@ export const SKIPPED_FOR_EMPTY_ANSWER_COPY = "No answer given — skipped.";
 /** How many seconds an undo stays available after a save (`../ux/clarifications.md`
  * §4: "Available for 10s after saving"). */
 export const UNDO_WINDOW_SECONDS = 10;
+
+// --- re-processing progress ("Answered, re-processing", `../ux/clarifications.md` §5) --
+
+export interface ReapplyItem {
+  kind: string;
+  target_id: string;
+  label: string;
+  status: string;
+  error: string | null;
+}
+
+export interface ReapplyJob {
+  id: string;
+  subject: string;
+  status: string;
+  total_items: number;
+  done_items: number;
+  failed_items: number;
+  items: ReapplyItem[];
+}
+
+/** Per-item progress for one answer's re-processing. Polled, not pushed —
+ * `askwell.reapply` has no SSE stream of its own, unlike ingestion. */
+export async function fetchReapplyJob(jobId: string): Promise<ReapplyJob> {
+  const response = await fetch(`/reapply-jobs/${jobId}`, {
+    headers: { accept: "application/json" },
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    throw new Error(`Askwell answered ${response.status} about that re-processing job.`);
+  }
+  return (await response.json()) as ReapplyJob;
+}
+
+/** The edge case a stuck progress indicator must not be: a failure surfaced
+ * with its reason and a retry (issue 299). */
+export async function retryReapplyJob(jobId: string): Promise<number> {
+  const result = await postJson<{ requeued: number }>(`/reapply-jobs/${jobId}/retry`);
+  return result.requeued;
+}
+
+/** The first failed item's own reason — issue 299: a generic "stopped, not
+ * stuck" line with no reason is exactly the stuck-indicator failure the
+ * ticket's Edge Case rules out. */
+export function reapplyFailureReason(job: ReapplyJob): string | null {
+  return job.items.find((item) => item.status === "failed")?.error ?? null;
+}
+
+// --- the completion state ("5 answered. 2 tables and 14 documents re-read.") --
+// `../ux/clarifications.md` §5. Session-local — this is a summary of what
+// just happened in this browser tab, not a persisted record; the persisted
+// facts are already in `memory` and `audit_decisions`.
+
+export interface SessionTally {
+  answered: number;
+  skipped: number;
+  tablesReRead: number;
+  documentsReRead: number;
+}
+
+export function emptySessionTally(): SessionTally {
+  return { answered: 0, skipped: 0, tablesReRead: 0, documentsReRead: 0 };
+}
+
+export function tallyAnswer(tally: SessionTally, reprocessing: Reprocessing): SessionTally {
+  return {
+    ...tally,
+    answered: tally.answered + 1,
+    tablesReRead: tally.tablesReRead + (reprocessing.kind === "table" ? reprocessing.count : 0),
+    documentsReRead:
+      tally.documentsReRead + (reprocessing.kind === "document" ? reprocessing.count : 0),
+  };
+}
+
+export function tallySkip(tally: SessionTally, count = 1): SessionTally {
+  return { ...tally, skipped: tally.skipped + count };
+}
+
+export function hasSessionActivity(tally: SessionTally): boolean {
+  return tally.answered > 0 || tally.skipped > 0;
+}
+
+/**
+ * `../ux/clarifications.md` §5's own worked example: "5 answered. 2 tables
+ * and 14 documents re-read." Honest, not congratulatory, when nothing was
+ * actually answered (the Edge Case: "all questions skipped rather than
+ * answered").
+ */
+export function completionSentence(tally: SessionTally): string {
+  if (tally.answered === 0) {
+    const total = tally.skipped;
+    return `${total} skipped. Nothing re-read.`;
+  }
+
+  const parts: string[] = [];
+  if (tally.tablesReRead > 0) {
+    parts.push(`${tally.tablesReRead} table${tally.tablesReRead === 1 ? "" : "s"}`);
+  }
+  if (tally.documentsReRead > 0) {
+    parts.push(`${tally.documentsReRead} document${tally.documentsReRead === 1 ? "" : "s"}`);
+  }
+  // Always starts with a digit (a count), so no capitalisation step is needed.
+  const material = parts.length > 0 ? `${parts.join(" and ")} re-read.` : "Nothing re-read.";
+  const skippedNote = tally.skipped > 0 ? `, ${tally.skipped} skipped` : "";
+
+  return `${tally.answered} answered${skippedNote}. ${material}`;
+}
 
 // A local counter of answered/skipped/dismissed (this ticket's own Analytics
 // Events line) — in-memory only, never persisted or transmitted (C1). Module
@@ -341,5 +478,5 @@ export function mergeIncoming(
   added += newGroups.reduce((sum, group) => sum + group.items.length, 0);
 
   if (added === 0) return current;
-  return { groups: [...newGroups, ...groups], total: current.total + added };
+  return { groups: [...newGroups, ...groups], total: current.total + added, cap: incoming.cap };
 }

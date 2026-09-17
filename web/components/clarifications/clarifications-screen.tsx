@@ -6,12 +6,17 @@ import {
   type ClarificationGroup,
   type ClarificationsState,
   type EvidenceDisplay,
+  type Reprocessing,
+  type SessionTally,
   NONE_PENDING_COPY,
   SKIPPED_FOR_EMPTY_ANSWER_COPY,
   UNDO_WINDOW_SECONDS,
   answerClarification,
+  cappedSentence,
+  completionSentence,
   currentInference,
   dismissGroup,
+  emptySessionTally,
   evidenceDisplay,
   fetchClarifications,
   groupSentence,
@@ -23,10 +28,17 @@ import {
   rowCountLabel,
   savedConfirmation,
   skipClarification,
+  tallyAnswer,
+  tallySkip,
   totalSentence,
   undoAnswer,
 } from "@/lib/clarifications";
-import { subscribeIngest } from "@/lib/ingest";
+import { subscribeIngest, type IngestState } from "@/lib/ingest";
+import { ReapplyProgress } from "./reapply-progress";
+
+/** How long the completion state (`../ux/clarifications.md` §5) stays up
+ * before handing back to the plain empty state, on its own. */
+const COMPLETION_VISIBLE_MS = 6000;
 
 /**
  * The clarifications screen. `docs/ux/clarifications.md`, `M3-REVIEW-FE-072`
@@ -41,6 +53,30 @@ import { subscribeIngest } from "@/lib/ingest";
 export function ClarificationsScreen() {
   const [state, setState] = useState<ClarificationsState | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
+  const [sessionTally, setSessionTally] = useState<SessionTally>(emptySessionTally());
+  const [completionVisible, setCompletionVisible] = useState(false);
+  const [reapplyJobs, setReapplyJobs] = useState<{ id: string; subject: string }[]>([]);
+  const [ingestingSourceIds, setIngestingSourceIds] = useState<Set<string>>(new Set());
+
+  // Read inside `removeItem`/`removeGroup` so those plain event handlers can
+  // tell, synchronously, whether the item they just resolved was the last
+  // one pending — without making `state` itself a dependency (which would
+  // rebuild the callback, and the undo/removal timers that close over it,
+  // on every fetch). Kept current by a no-op-setState effect below, which
+  // `react-hooks/set-state-in-effect` has nothing to say about: it never
+  // calls a state setter, only assigns a ref.
+  const stateRef = useRef<ClarificationsState | null>(null);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  const completionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (completionTimer.current !== null) clearTimeout(completionTimer.current);
+    },
+    [],
+  );
 
   useEffect(() => {
     const controller = new AbortController();
@@ -58,8 +94,11 @@ export function ClarificationsScreen() {
     // questions on its own. Refetching and merging (never replacing) on
     // every ingest push means an in-progress answer or an undo countdown is
     // never disturbed by a question that landed a moment later.
-    const stop = subscribeIngest(() => {
+    const stop = subscribeIngest((ingest: IngestState) => {
       if (!live) return;
+      setIngestingSourceIds(
+        new Set(ingest.sources.filter((source) => source.outstanding > 0).map((source) => source.id)),
+      );
       fetchClarifications()
         .then((fresh) => {
           if (live) setState((current) => (current === null ? fresh : mergeIncoming(current, fresh)));
@@ -77,33 +116,73 @@ export function ClarificationsScreen() {
     };
   }, []);
 
-  const removeItem = useCallback((itemId: string) => {
-    setState((current) => {
-      if (current === null) return current;
+  // `../ux/clarifications.md` §5, "All answered": shown once, for a fixed
+  // window, the moment the item or group just resolved was the last thing
+  // pending. A plain call from an event handler, not a `useEffect` body — the
+  // lint rule against synchronous `setState` in an effect does not apply
+  // here, and it is what lets the completion state key off the exact action
+  // that emptied the queue rather than a derived `hasGroups` transition that
+  // cannot tell "just emptied" apart from "was already empty".
+  const maybeShowCompletion = useCallback((totalAfter: number) => {
+    if (totalAfter !== 0) return;
+    setCompletionVisible(true);
+    if (completionTimer.current !== null) clearTimeout(completionTimer.current);
+    completionTimer.current = setTimeout(() => {
+      setCompletionVisible(false);
+      setSessionTally(emptySessionTally());
+    }, COMPLETION_VISIBLE_MS);
+  }, []);
+
+  const removeItem = useCallback(
+    (itemId: string, outcome: { kind: "answered"; reprocessing: Reprocessing } | { kind: "skipped" }) => {
+      setSessionTally((tally) =>
+        outcome.kind === "answered" ? tallyAnswer(tally, outcome.reprocessing) : tallySkip(tally),
+      );
+      const current = stateRef.current;
+      if (current === null) return;
       const groups = current.groups
         .map((group) => {
           if (!group.items.some((item) => item.id === itemId)) return group;
           const items = group.items.filter((item) => item.id !== itemId);
           return { ...group, items, count: items.length };
         })
-        .filter((group) => group.items.length > 0);
+        .filter((group) => group.items.length > 0 || group.capped > 0);
       const total = groups.reduce((sum, group) => sum + group.items.length, 0);
-      return { groups, total };
-    });
+      setState({ ...current, groups, total });
+      maybeShowCompletion(total);
+    },
+    [maybeShowCompletion],
+  );
+
+  const removeGroup = useCallback(
+    (sourceId: string, removedIds: Set<string>) => {
+      setSessionTally((tally) => tallySkip(tally, removedIds.size));
+      const current = stateRef.current;
+      if (current === null) return;
+      const groups = current.groups
+        .map((group) => {
+          if (group.source_id !== sourceId) return group;
+          const items = group.items.filter((item) => !removedIds.has(item.id));
+          return { ...group, items, count: items.length };
+        })
+        .filter((group) => group.items.length > 0 || group.capped > 0);
+      const total = groups.reduce((sum, group) => sum + group.items.length, 0);
+      setState({ ...current, groups, total });
+      maybeShowCompletion(total);
+    },
+    [maybeShowCompletion],
+  );
+
+  const addReapplyJob = useCallback((jobId: string, subject: string) => {
+    setReapplyJobs((jobs) => (jobs.some((job) => job.id === jobId) ? jobs : [...jobs, { id: jobId, subject }]));
   }, []);
 
-  const removeGroup = useCallback((sourceId: string, removedIds: Set<string>) => {
-    setState((current) => {
-      if (current === null) return current;
-      const groups = current.groups.filter(
-        (group) => group.source_id !== sourceId || group.items.some((item) => !removedIds.has(item.id)),
-      );
-      const total = groups.reduce((sum, group) => sum + group.items.length, 0);
-      return { groups, total };
-    });
+  const removeReapplyJob = useCallback((jobId: string) => {
+    setReapplyJobs((jobs) => jobs.filter((job) => job.id !== jobId));
   }, []);
 
   const totalPending = state === null ? null : state.groups.reduce((sum, group) => sum + group.items.length, 0);
+  const hasGroups = state !== null && state.groups.length > 0;
 
   return (
     <section className="flex flex-col gap-4">
@@ -116,6 +195,19 @@ export function ClarificationsScreen() {
         ) : null}
       </div>
 
+      {reapplyJobs.length > 0 ? (
+        <div className="flex flex-col gap-2">
+          {reapplyJobs.map((job) => (
+            <ReapplyProgress
+              key={job.id}
+              jobId={job.id}
+              subject={job.subject}
+              onDone={() => removeReapplyJob(job.id)}
+            />
+          ))}
+        </div>
+      ) : null}
+
       {failure !== null ? (
         <p className="ask-prose" style={{ color: "var(--alarm)" }}>
           Askwell is not answering about clarifications.
@@ -124,16 +216,19 @@ export function ClarificationsScreen() {
         <p className="ask-prose" style={{ color: "var(--muted)" }}>
           Reading the queue…
         </p>
-      ) : totalPending === 0 ? (
-        <EmptyClarifications />
+      ) : !hasGroups ? (
+        completionVisible ? <CompletionBanner tally={sessionTally} /> : <EmptyClarifications />
       ) : (
         <div className="flex flex-col gap-5">
           {state.groups.map((group) => (
             <SourceGroup
               key={group.source_id}
               group={group}
+              cap={state.cap}
+              ingesting={ingestingSourceIds.has(group.source_id)}
               onItemRemoved={removeItem}
               onGroupDismissed={removeGroup}
+              onReapplyJob={addReapplyJob}
             />
           ))}
         </div>
@@ -153,14 +248,53 @@ function EmptyClarifications() {
   );
 }
 
+/** `../ux/clarifications.md` §5, "All answered" — names what improved,
+ * honestly, then `ClarificationsScreen`'s own timer hands back to
+ * `EmptyClarifications`. */
+function CompletionBanner({ tally }: { tally: SessionTally }) {
+  return (
+    <p
+      className="ask-prose px-4 py-3"
+      style={{ background: "var(--surface)", borderRadius: "var(--radius)" }}
+    >
+      {completionSentence(tally)}
+    </p>
+  );
+}
+
+/** `../ux/clarifications.md` §5, "Capped" — honest about what was not asked,
+ * and routes to where it can be corrected. Shown for a source whether or not
+ * it still has anything pending (issue 297). */
+function CappedBanner({ cap }: { cap: number }) {
+  return (
+    <div
+      className="flex flex-wrap items-center justify-between gap-3 px-4 py-3"
+      style={{ background: "var(--surface)", borderRadius: "var(--radius)" }}
+    >
+      <p className="ask-prose">{cappedSentence(cap)}</p>
+      <a className="ask-navigates ask-micro" href="/memory">
+        Review in Memory
+      </a>
+    </div>
+  );
+}
+
+type AnswerOutcome = { kind: "answered"; reprocessing: Reprocessing } | { kind: "skipped" };
+
 function SourceGroup({
   group,
+  cap,
+  ingesting,
   onItemRemoved,
   onGroupDismissed,
+  onReapplyJob,
 }: {
   group: ClarificationGroup;
-  onItemRemoved: (itemId: string) => void;
+  cap: number;
+  ingesting: boolean;
+  onItemRemoved: (itemId: string, outcome: AnswerOutcome) => void;
   onGroupDismissed: (sourceId: string, removedIds: Set<string>) => void;
+  onReapplyJob: (jobId: string, subject: string) => void;
 }) {
   const [dismissing, setDismissing] = useState(false);
   const [dismissFailure, setDismissFailure] = useState<string | null>(null);
@@ -176,6 +310,17 @@ function SourceGroup({
       .catch((error: unknown) => setDismissFailure(String(error)))
       .finally(() => setDismissing(false));
   }, [group.source_id, onGroupDismissed]);
+
+  // Issue 297: a source can be capped with nothing left pending — the
+  // disclosure still owes a group, just with no items and no "Skip all".
+  if (group.items.length === 0) {
+    return (
+      <div className="flex flex-col gap-2">
+        <h2 style={{ fontSize: "var(--t-ui)" }}>{group.source_name}</h2>
+        <CappedBanner cap={cap} />
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-2">
@@ -193,14 +338,25 @@ function SourceGroup({
           </button>
         </div>
       </div>
+      {ingesting ? (
+        <p className="ask-micro" style={{ color: "var(--muted)" }}>
+          Still indexing this source — already searchable.
+        </p>
+      ) : null}
       {dismissFailure !== null ? (
         <p className="ask-micro" style={{ color: "var(--alarm)" }}>
           Askwell could not dismiss these: {dismissFailure}
         </p>
       ) : null}
+      {group.capped > 0 ? <CappedBanner cap={cap} /> : null}
       <div className="flex flex-col gap-2">
         {group.items.map((item) => (
-          <ClarificationItemRow key={item.id} item={item} onRemoved={() => onItemRemoved(item.id)} />
+          <ClarificationItemRow
+            key={item.id}
+            item={item}
+            onRemoved={(outcome) => onItemRemoved(item.id, outcome)}
+            onReapplyJob={onReapplyJob}
+          />
         ))}
       </div>
     </div>
@@ -223,9 +379,11 @@ type ItemPhase =
 function ClarificationItemRow({
   item,
   onRemoved,
+  onReapplyJob,
 }: {
   item: ClarificationGroup["items"][number];
-  onRemoved: () => void;
+  onRemoved: (outcome: AnswerOutcome) => void;
+  onReapplyJob: (jobId: string, subject: string) => void;
 }) {
   const inference = currentInference(item.evidence);
   const evidence = evidenceDisplay(item.evidence);
@@ -253,7 +411,7 @@ function ClarificationItemRow({
           await skipClarification(item.id);
           recordSkipped();
           setPhase({ kind: "skipped", message: SKIPPED_FOR_EMPTY_ANSWER_COPY });
-          removalTimer.current = setTimeout(onRemoved, 1500);
+          removalTimer.current = setTimeout(() => onRemoved({ kind: "skipped" }), 1500);
         } catch (error: unknown) {
           setPhase({ kind: "error", message: String(error) });
         }
@@ -264,6 +422,9 @@ function ClarificationItemRow({
       try {
         const result = await answerClarification(item.id, rawAnswer.trim());
         recordAnswered();
+        if (result.reapplyJobId !== null) {
+          onReapplyJob(result.reapplyJobId, item.subject);
+        }
         let secondsLeft = UNDO_WINDOW_SECONDS;
         setPhase({
           kind: "saved",
@@ -281,12 +442,15 @@ function ClarificationItemRow({
             current.kind === "saved" ? { ...current, secondsLeft } : current,
           );
         }, 1000);
-        removalTimer.current = setTimeout(onRemoved, UNDO_WINDOW_SECONDS * 1000);
+        removalTimer.current = setTimeout(
+          () => onRemoved({ kind: "answered", reprocessing: result.reprocessing }),
+          UNDO_WINDOW_SECONDS * 1000,
+        );
       } catch (error: unknown) {
         setPhase({ kind: "error", message: String(error) });
       }
     },
-    [item.id, onRemoved, clearTimers],
+    [item.id, item.subject, onRemoved, onReapplyJob, clearTimers],
   );
 
   const handleSkip = useCallback(async () => {
@@ -295,7 +459,7 @@ function ClarificationItemRow({
       await skipClarification(item.id);
       recordSkipped();
       setPhase({ kind: "skipped", message: "Skipped." });
-      removalTimer.current = setTimeout(onRemoved, 1000);
+      removalTimer.current = setTimeout(() => onRemoved({ kind: "skipped" }), 1000);
     } catch (error: unknown) {
       setPhase({ kind: "error", message: String(error) });
     }
