@@ -211,8 +211,39 @@ See docs/manual-tests/$ticket.md for what to try by hand." || return 1
     return 1
   fi
 
-  gh pr merge --squash --delete-branch >/dev/null 2>&1 || return 1
+  gh pr merge --squash --delete-branch >/dev/null 2>&1 || {
+    rm -f "$STATE/done/$ticket"
+    say "  ${BOLD}The merge did not go through.${RESET} The done mark is removed —"
+    say "  a ticket that is not on $MAIN is not done, whatever the audit said."
+    return 1
+  }
   git checkout -q "$MAIN" && git pull -q --ff-only
+
+  # The marker means "this is on main", so check that it is rather than trust
+  # that the merge command returned zero. Twice in one evening a ticket was
+  # marked done with its work nowhere on main — M3-RAISE-BE-071 (the evidence
+  # keys the next ticket renders) and M3-STORE-BE-076 (a 459-line module that
+  # did not exist). Each time the queue skipped it as complete, everything
+  # behind it parked, and the watchdog restarted into the same dead end every
+  # fifteen minutes for hours. A build that looks alive and produces nothing is
+  # worse than one that has stopped.
+  #
+  # Asked of the pull request, not of git history. A squash merge makes a new
+  # commit, so the branch head is never an ancestor of main afterwards and an
+  # ancestry check would fail on every healthy merge — the first version of
+  # this check did exactly that. Grepping the log for the ticket id is no
+  # better: subjects here are sometimes the id and sometimes a slug of it,
+  # which reported a healthy ticket as suspect during the audit that found the
+  # second false marker.
+  git fetch -q origin "$MAIN" 2>/dev/null
+  if [ "$(gh pr view "$branch" --json state --jq .state 2>/dev/null)" != "MERGED" ]; then
+    rm -f "$STATE/done/$ticket"
+    say "  ${BOLD}$ticket reported merged but is not on $MAIN.${RESET}"
+    say "  The done mark is removed so the next run rebuilds it rather than"
+    say "  skipping it forever. Its branch and logs are where they were."
+    return 1
+  fi
+
   say "  merged."
   return 0
 }

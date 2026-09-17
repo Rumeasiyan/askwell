@@ -21,9 +21,8 @@
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 
-# Committed here rather than in `.build-runner/`, which is gitignored: a thing
-# that keeps the build alive should not itself be unbacked-up local state. It
-# is executed from the `.build-runner/` copy, which survives branch checkouts.
+# Committed here rather than in the gitignored `.build-runner/`, and executed
+# from that copy — it survives branch checkouts, and `scripts/` does not.
 
 # systemd hands a user unit PATH=/usr/local/bin:/usr/bin and nothing else, so
 # the agent CLI in ~/.local/bin is invisible to it. The first timer-fired run
@@ -77,6 +76,39 @@ if command -v gh >/dev/null 2>&1; then
   done < <(gh pr list --state open --json number --jq '.[].number' 2>/dev/null)
 fi
 
+# --- 2b. markers that claim work which is not on main --------------------------
+#
+# A done marker means "this is on main". Twice in one evening one did not:
+# M3-RAISE-BE-071 carried evidence keys the next ticket renders, and
+# M3-STORE-BE-076 a module that did not exist on main at all. Each time the
+# queue skipped the ticket as complete, everything behind it parked, and this
+# watchdog restarted into the same dead end every fifteen minutes for hours.
+#
+# So each marker is checked against the pull request that was supposed to carry
+# it. A ticket with no merged PR and no branch left to merge is one whose work
+# never landed, and its marker is removed so the next run rebuilds it.
+#
+# Deliberately conservative: a ticket whose PR is still open, or whose state
+# cannot be read, is left alone. Removing a marker for a ticket that is merely
+# mid-flight would make the queue rebuild finished work.
+if command -v gh >/dev/null 2>&1; then
+  git fetch -q origin main 2>/dev/null
+  for marker in "$REPO"/.build-runner/done/*; do
+    [ -f "$marker" ] || continue
+    ticket=$(basename "$marker")
+    branch=$(printf '%s' "$ticket" | tr 'A-Z' 'a-z')
+    branch="feat/$branch"
+    state=$(gh pr view "$branch" --json state --jq .state 2>/dev/null)
+    case "$state" in
+      MERGED|OPEN|"") continue ;;
+      CLOSED)
+        rm -f "$marker"
+        say "$ticket was marked done but its pull request was closed unmerged — marker removed"
+        ;;
+    esac
+  done
+fi
+
 # --- 3. the stack the gate needs ---------------------------------------------
 #
 # `db-tests` is a gate row, and with the stack down it fails — which parks
@@ -112,7 +144,7 @@ rm -f "$REPO/.build-runner/STOP"
 setsid nohup env SPEND_CEILING="$SPEND_CEILING" \
   BUILD_MODEL=sonnet AUDIT_MODEL=sonnet DOC_MODEL=sonnet \
   "$REPO/.build-runner/supervise.sh" --milestone "$MILESTONE" \
-  > "$QUEUE_LOG" 2>&1 < /dev/null &
+  >> "$QUEUE_LOG" 2>&1 < /dev/null &
 disown
 
 sleep 20
