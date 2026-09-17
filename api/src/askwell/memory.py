@@ -64,8 +64,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from askwell.audit import Store, record
 from askwell.logging import get_logger
+from askwell.retrieve import TEXT_SEARCH_CONFIG
 
 log = get_logger(__name__)
+
+# `M3-APPLY-RET-078`: how many active facts/notes ever reach one prompt,
+# regardless of how many match — "a large memory store — retrieval is
+# bounded, not everything injected" is the ticket's own edge case. Small on
+# purpose: this is background context for a document answer, not the answer
+# itself, and `docs/memory-and-clarification.md` §8's cap on inference
+# already accepts that not everything visible in the inspector need be
+# retrieved for a given question.
+RELEVANT_FACT_LIMIT = 5
+RELEVANT_NOTE_LIMIT = 5
 
 MEMORY_WRITTEN = "memory_written"
 MEMORY_DISCARDED = "memory_discarded"
@@ -119,6 +130,18 @@ class SchemaNote:
     origin: str
     confidence: float | None
     created_at: Any
+
+
+@dataclass(frozen=True, slots=True)
+class RelevantMemory:
+    """What `retrieve_relevant_facts` found for one question — bounded, and
+    kept as two separate lists rather than one merged one, since a caller
+    composing a prompt labels and delimits them differently
+    (`docs/memory-and-clarification.md` §3: "two stores, different shapes").
+    """
+
+    facts: list[MemoryFact]
+    notes: list[SchemaNote]
 
 
 @dataclass(frozen=True, slots=True)
@@ -690,3 +713,122 @@ async def get_active_schema_notes(
         )
         for row in rows
     ]
+
+
+# --- retrieval for answer composition -------------------------------------
+
+# `plainto_tsquery` ANDs every term it parses, so a question with several
+# content words would only match a fact containing all of them — wrong here,
+# where the "question" is really "does anything in memory bear on this at
+# all" and a fact is a few words long. Turning its `&`s into `|`s (the
+# standard Postgres trick — there is no `orto_tsquery`) matches on any term
+# instead, which is the right direction to err in for a small, personal
+# store: a false-positive candidate costs a few extra lines in a prompt, a
+# false negative is the exact "I told it this and it still didn't know"
+# failure the ticket exists to prevent. An empty or all-stopword question
+# parses to an empty tsquery, which matches nothing rather than raising.
+_OR_MATCH = (
+    "to_tsquery(:cfg, regexp_replace(plainto_tsquery(:cfg, :query)::text, ' & ', ' | ', 'g'))"
+)
+
+
+async def retrieve_relevant_facts(
+    session: AsyncSession,
+    *,
+    question: str,
+    source_id: uuid.UUID | None = None,
+    fact_limit: int = RELEVANT_FACT_LIMIT,
+    note_limit: int = RELEVANT_NOTE_LIMIT,
+) -> RelevantMemory:
+    """Active memory facts and schema notes whose text bears on `question`,
+    bounded and ranked by relevance — the retrieval half of `M3-APPLY-RET-078`.
+
+    Lexical full-text, not embedding similarity: `docs/memory-and-
+    clarification.md`'s own line on `schema_notes` describes embedding as
+    the eventual mechanism, but neither `memory` nor `schema_notes` has a
+    populated embedding to search against yet (issue #292 has the detail).
+    Full-text over the small, personal store this product assumes is a
+    reasonable interim, not a silent downgrade dressed up as the real thing
+    — this docstring and issue #292 both say so plainly.
+
+    `memory` facts are never filtered by `source_id`: `docs/memory-and-
+    clarification.md` §3 describes them as "not tied to a schema object" —
+    an abbreviation explained once applies to every later question,
+    regardless of which source that question is scoped to. `schema_notes`
+    *are* tied to a source, so a source-scoped question only sees that
+    source's notes; a whole-corpus question (`source_id is None`) sees all
+    of them, same as `get_active_schema_notes`.
+
+    Precedence within each bounded result follows `get_active_memory_facts`/
+    `get_active_schema_notes`: relevance first, then user-origin before
+    inferred, then newer before older — so a tie in relevance still prefers
+    the fact the user actually stated.
+    """
+    fact_rows = (
+        await session.execute(
+            text(
+                "SELECT m.id, m.subject, m.fact, m.origin, m.confidence, "
+                "m.source_id, s.name, (s.deleted_at IS NOT NULL) AS source_deleted, "
+                "m.created_at "
+                "FROM memory m LEFT JOIN sources s ON s.id = m.source_id "
+                "WHERE m.superseded_by IS NULL "
+                "AND to_tsvector(:cfg, m.subject || ' ' || m.fact) @@ " + _OR_MATCH + " "
+                "ORDER BY ts_rank(to_tsvector(:cfg, m.subject || ' ' || m.fact), "
+                + _OR_MATCH
+                + ") DESC, (m.origin != 'inferred') DESC, m.created_at DESC "
+                "LIMIT :limit"
+            ),
+            {"cfg": TEXT_SEARCH_CONFIG, "query": question, "limit": fact_limit},
+        )
+    ).all()
+    facts = [
+        MemoryFact(
+            id=row[0],
+            subject=row[1],
+            fact=row[2],
+            origin=row[3],
+            confidence=float(row[4]) if row[4] is not None else None,
+            source_id=row[5],
+            source_name=row[6],
+            source_deleted=bool(row[7]),
+            created_at=row[8],
+        )
+        for row in fact_rows
+    ]
+
+    note_rows = (
+        await session.execute(
+            text(
+                "SELECT id, source_id, table_name, column_name, description, origin, "
+                "confidence, created_at FROM schema_notes "
+                "WHERE superseded_by IS NULL "
+                "AND (CAST(:source_id AS uuid) IS NULL OR source_id = :source_id) "
+                "AND to_tsvector(:cfg, table_name || ' ' || coalesce(column_name, '') "
+                "|| ' ' || description) @@ " + _OR_MATCH + " "
+                "ORDER BY ts_rank(to_tsvector(:cfg, table_name || ' ' || coalesce(column_name, '') "
+                "|| ' ' || description), " + _OR_MATCH + ") DESC, "
+                "(origin != 'inferred') DESC, created_at DESC "
+                "LIMIT :limit"
+            ),
+            {
+                "cfg": TEXT_SEARCH_CONFIG,
+                "query": question,
+                "source_id": source_id,
+                "limit": note_limit,
+            },
+        )
+    ).all()
+    notes = [
+        SchemaNote(
+            id=row[0],
+            source_id=row[1],
+            table_name=row[2],
+            column_name=row[3],
+            description=row[4],
+            origin=row[5],
+            confidence=float(row[6]) if row[6] is not None else None,
+            created_at=row[7],
+        )
+        for row in note_rows
+    ]
+    return RelevantMemory(facts=facts, notes=notes)

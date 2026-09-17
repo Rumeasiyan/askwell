@@ -14,6 +14,7 @@ from askwell.agent.conflict import (
     compose_conflict,
     split_conflict_answer,
 )
+from askwell.memory import MemoryFact, SchemaNote
 from askwell.retrieve import Candidate
 
 
@@ -119,6 +120,105 @@ def test_memory_fact_hook_delimits_when_given() -> None:
     assert "<memory-fact>" in result.user_content
     assert "The current notice period is ninety days" in result.user_content
     assert "</memory-fact>" in result.user_content
+
+
+# --- retrieved_facts / retrieved_notes: M3-APPLY-RET-078 ------------------------
+
+
+def _memory_fact(
+    *,
+    subject: str = "rfq",
+    fact: str = "Request for Quotation",
+    origin: str = "clarification",
+    confidence: float | None = 1.0,
+) -> MemoryFact:
+    return MemoryFact(
+        id=uuid.uuid4(),
+        subject=subject,
+        fact=fact,
+        origin=origin,
+        confidence=confidence,
+        source_id=None,
+        source_name=None,
+        source_deleted=False,
+        created_at=None,
+    )
+
+
+def _schema_note(
+    *,
+    table_name: str = "orders",
+    column_name: str | None = "rfq",
+    description: str = "an internal request identifier",
+    origin: str = "user",
+    confidence: float | None = 1.0,
+) -> SchemaNote:
+    return SchemaNote(
+        id=uuid.uuid4(),
+        source_id=uuid.uuid4(),
+        table_name=table_name,
+        column_name=column_name,
+        description=description,
+        origin=origin,
+        confidence=confidence,
+        created_at=None,
+    )
+
+
+def test_no_memory_facts_or_schema_notes_blocks_by_default() -> None:
+    result = compose_conflict("Anything?", [_candidate("Ninety days.")])
+    assert "<memory-facts>" not in result.user_content
+    assert "<schema-notes>" not in result.user_content
+
+
+def test_retrieved_facts_are_delimited_and_labelled_user_confirmed() -> None:
+    result = compose_conflict(
+        "What does RFQ mean?",
+        [_candidate("Ninety days.")],
+        retrieved_facts=[_memory_fact()],
+    )
+    assert "<memory-facts>" in result.user_content
+    assert "[user-confirmed]" in result.user_content
+    assert "rfq: Request for Quotation" in result.user_content
+    assert "</memory-facts>" in result.user_content
+
+
+def test_an_inferred_fact_is_labelled_with_its_confidence() -> None:
+    result = compose_conflict(
+        "What does RFQ mean?",
+        [_candidate("Ninety days.")],
+        retrieved_facts=[_memory_fact(origin="inferred", confidence=0.4)],
+    )
+    assert "[inferred, confidence 40%]" in result.user_content
+
+
+def test_retrieved_schema_notes_are_delimited_with_table_and_column() -> None:
+    result = compose_conflict(
+        "What is rfq?",
+        [_candidate("Ninety days.")],
+        retrieved_notes=[_schema_note()],
+    )
+    assert "<schema-notes>" in result.user_content
+    assert "orders.rfq: an internal request identifier" in result.user_content
+    assert "</schema-notes>" in result.user_content
+
+
+def test_a_schema_note_with_no_column_names_only_the_table() -> None:
+    result = compose_conflict(
+        "What is orders?",
+        [_candidate("Ninety days.")],
+        retrieved_notes=[_schema_note(column_name=None, description="customer orders")],
+    )
+    assert "orders: customer orders" in result.user_content
+    assert "orders." not in result.user_content
+
+
+def test_empty_retrieved_lists_compose_no_blocks() -> None:
+    result = compose_conflict(
+        "Anything?", [_candidate("Ninety days.")], retrieved_facts=[], retrieved_notes=[]
+    )
+    assert "<memory-facts>" not in result.user_content
+    assert "<schema-notes>" not in result.user_content
 
 
 # --- split_conflict_answer ------------------------------------------------------

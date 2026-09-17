@@ -27,16 +27,32 @@ The memory-fact hook is inert until M3: `compose_conflict`'s `memory_fact`
 parameter, when given, is delimited into the prompt as a `<memory-fact>`
 block the prompt asks the model to treat as resolving; nothing in this
 milestone ever passes one.
+
+`M3-APPLY-RET-078` adds a second, unrelated memory input: `retrieved_facts`/
+`retrieved_notes`, whatever `askwell.memory.retrieve_relevant_facts` found
+relevant to the question, always passed (possibly empty) rather than only
+when a clarification was just answered. These are delimited into their own
+`<memory-facts>`/`<schema-notes>` blocks, each entry labelled
+`[user-confirmed]` or `[inferred, confidence N%]` so the model can tell a
+stated fact from a guess — `docs/memory-and-clarification.md` §3's
+"confidence ... must survive into the prompt". They are data, exactly like
+a `<retrieved-content>` block, never an instruction (C7) — `docs/decisions.md`
+has the reasoning for keeping this separate from `memory_fact` rather than
+folding one into the other: `memory_fact` is a single fact already known to
+settle a specific conflict, these are unranked background that may or may
+not bear on anything the answer says.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
 from askwell.agent.compose import ComposedPrompt, delimit_candidates, flag_injection
+from askwell.memory import MemoryFact, SchemaNote
 from askwell.retrieve import Candidate
 
 PROMPT_DIR = Path(__file__).parent / "prompts"
@@ -74,18 +90,59 @@ def _delimit_memory_fact(memory_fact: str | None) -> str:
     return f"\n\n<memory-fact>\n{memory_fact}\n</memory-fact>"
 
 
+def _confidence_label(origin: str, confidence: float | None) -> str:
+    """`docs/memory-and-clarification.md` §3: "User-supplied facts are
+    certain. Inferences are not, and the difference must survive into the
+    prompt." — this is that survival, in words a small local model reads
+    reliably rather than a bare number it might weight inconsistently.
+    """
+    if origin != "inferred":
+        return "user-confirmed"
+    return f"inferred, confidence {confidence:.0%}" if confidence is not None else "inferred"
+
+
+def _delimit_memory_facts(facts: Sequence[MemoryFact]) -> str:
+    # Omitted entirely when empty, never an empty tagged block — the
+    # ticket's own edge case: a labelled block with nothing in it reads as
+    # "memory has nothing to say," which is a claim, not the absence of one.
+    if not facts:
+        return ""
+    lines = "\n".join(
+        f"- [{_confidence_label(fact.origin, fact.confidence)}] {fact.subject}: {fact.fact}"
+        for fact in facts
+    )
+    return f"\n\n<memory-facts>\n{lines}\n</memory-facts>"
+
+
+def _delimit_schema_notes(notes: Sequence[SchemaNote]) -> str:
+    if not notes:
+        return ""
+    lines = "\n".join(
+        f"- [{_confidence_label(note.origin, note.confidence)}] "
+        f"{note.table_name}{f'.{note.column_name}' if note.column_name else ''}: "
+        f"{note.description}"
+        for note in notes
+    )
+    return f"\n\n<schema-notes>\n{lines}\n</schema-notes>"
+
+
 def compose_conflict(
     question: str,
     candidates: list[Candidate],
     memory_fact: str | None = None,
+    retrieved_facts: Sequence[MemoryFact] = (),
+    retrieved_notes: Sequence[SchemaNote] = (),
 ) -> ComposedPrompt:
     """Build the prompt for one turn where at least one candidate cleared the
     retrieval threshold. Pure — no I/O beyond reading the cached prompt file.
 
-    `memory_fact` is the M3 hook this ticket's scope asks for: a resolving
-    fact, when one exists, delimited into the prompt as its own
-    `<memory-fact>` block. `None` composes identically to before this
-    parameter existed.
+    `memory_fact` is the `M3-INLINE-FE-085` hook: a single fact that just
+    resolved *this* conflict, when one exists. `retrieved_facts`/
+    `retrieved_notes` are `M3-APPLY-RET-078`'s separate, always-possibly-
+    present addition — whatever `askwell.memory.retrieve_relevant_facts`
+    found relevant to the question, delimited into their own labelled
+    blocks. All three default to nothing, composing identically to before
+    any of them existed.
 
     Shares delimitation and injection-flagging with `askwell.agent.compose` —
     the C7 boundary is one rule, not one rule per prompt.
@@ -95,6 +152,7 @@ def compose_conflict(
         system_prompt=_load_system_prompt(),
         user_content=(
             f"{delimit_candidates(candidates)}{_delimit_memory_fact(memory_fact)}"
+            f"{_delimit_memory_facts(retrieved_facts)}{_delimit_schema_notes(retrieved_notes)}"
             f"\n\nQuestion: {question}"
         ),
         prompt_version=PROMPT_VERSION,

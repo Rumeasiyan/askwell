@@ -41,7 +41,9 @@ from .test_ingest_records import TABLES as INGEST_TABLES
 
 pytestmark = pytest.mark.requires_db
 
-TABLES = f"{INGEST_TABLES}, conversations, messages, citations, audit_interactions"
+TABLES = (
+    f"{INGEST_TABLES}, conversations, messages, citations, audit_interactions, memory, schema_notes"
+)
 DIMENSIONS = Settings.model_fields["embedding_dimensions"].default
 
 
@@ -1156,6 +1158,134 @@ def test_a_single_consistent_answer_is_not_marked_as_a_conflict(
         ).fetchone()[0]
         assert audit_payload["conflict_detected"] is False
         assert audit_payload["conflict_topic"] is None
+
+
+def _seed_memory_fact(
+    database_url: str, *, subject: str, fact: str, origin: str = "clarification"
+) -> uuid.UUID:
+    fact_id = uuid.uuid4()
+    with psycopg.connect(database_url, autocommit=True) as db:
+        db.execute(
+            "INSERT INTO memory (id, subject, fact, origin, confidence) "
+            "VALUES (%s, %s, %s, %s, 1.0)",
+            (fact_id, subject, fact, origin),
+        )
+    return fact_id
+
+
+def test_a_question_using_a_taught_term_retrieves_the_fact_and_records_it(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """`M3-APPLY-RET-078`'s own acceptance criterion, end to end: a question
+    whose terms match a stored fact retrieves it into the prompt, and both
+    `messages.trace` and `audit_interactions` record which fact was used —
+    closes #293's gap (no test previously exercised `_run_generation`'s
+    wiring of `retrieve_relevant_facts` into either)."""
+    _truncate(database_url)
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "The RFQ process starts on page 4.", vector)
+    fact_id = _seed_memory_fact(database_url, subject="RFQ", fact="Request for Quotation")
+
+    seen_prompts: list[str] = []
+
+    class _RecordingClient(_FakeInferenceClient):
+        async def stream_generate(
+            self,
+            prompt: str,
+            *,
+            max_tokens: int = 512,
+            temperature: float = 0.2,
+            timeout_seconds: float = 0.0,
+        ) -> AsyncIterator[StreamChunk]:
+            seen_prompts.append(prompt)
+            async for chunk in super().stream_generate(
+                prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                timeout_seconds=timeout_seconds,
+            ):
+                yield chunk
+
+    fake = _RecordingClient(
+        settings, tokens=["RFQ stands for Request for Quotation [1]."], vector=vector
+    )
+    _patch_client(monkeypatch, fake)
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "What does RFQ mean?"})
+        message_id = uuid.UUID(
+            next(data for kind, data in _events(response.text) if kind == "done")["message_id"]
+        )
+
+    assert any("<memory-facts>" in prompt for prompt in seen_prompts)
+    assert any("Request for Quotation" in prompt for prompt in seen_prompts)
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        content, trace = db.execute(
+            "SELECT content, trace FROM messages WHERE id = %s", (message_id,)
+        ).fetchone()
+        assert "Request for Quotation" in content
+        assert trace["memory_fact_ids"] == [str(fact_id)]
+        assert trace["schema_note_ids"] == []
+        assert trace["memory_used"] == 1
+
+        audit_payload = db.execute(
+            "SELECT payload FROM audit_interactions WHERE payload->>'message_id' = %s",
+            (str(message_id),),
+        ).fetchone()[0]
+        assert audit_payload["memory_fact_ids"] == [str(fact_id)]
+        assert audit_payload["schema_note_ids"] == []
+
+
+def test_a_question_with_no_relevant_memory_records_none_used(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """The edge case by name: no relevant memory means an empty, honest
+    record — never an empty labelled block, never a fabricated id."""
+    _truncate(database_url)
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "Notice is ninety days.", vector)
+    _seed_memory_fact(database_url, subject="RFQ", fact="Request for Quotation")
+    fake = _FakeInferenceClient(settings, tokens=["Notice is ninety days [1]."], vector=vector)
+    _patch_client(monkeypatch, fake)
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "How long is the notice period?"})
+        message_id = uuid.UUID(
+            next(data for kind, data in _events(response.text) if kind == "done")["message_id"]
+        )
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        trace = db.execute("SELECT trace FROM messages WHERE id = %s", (message_id,)).fetchone()[0]
+        assert trace["memory_fact_ids"] == []
+        assert trace["memory_used"] == 0
+
+
+def test_abstained_turn_never_retrieves_memory(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """C5: memory never bypasses grounding. A below-threshold retrieval
+    abstains before memory is ever looked up, matching by name."""
+    _truncate(database_url)
+    _seed_memory_fact(database_url, subject="office colour", fact="the office is blue")
+    fake = _FakeInferenceClient(
+        settings, tokens=["The files did not cover this."], vector=_vector(0.0)
+    )
+    _patch_client(monkeypatch, fake)
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "What colour is the office?"})
+        message_id = uuid.UUID(
+            next(data for kind, data in _events(response.text) if kind == "done")["message_id"]
+        )
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        trace = db.execute("SELECT trace FROM messages WHERE id = %s", (message_id,)).fetchone()[0]
+        assert trace["memory_fact_ids"] == []
+        assert trace["memory_used"] == 0
 
 
 def test_a_grounded_answer_stores_a_summary_and_a_source_count(
