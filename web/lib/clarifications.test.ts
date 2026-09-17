@@ -14,8 +14,12 @@ import {
   currentInference,
   evidenceDisplay,
   groupSentence,
+  isBlankAnswer,
+  mergeIncoming,
   rowCountLabel,
+  savedConfirmation,
   totalSentence,
+  type ClarificationsState,
 } from "./clarifications.ts";
 
 test("totalSentence singular", () => {
@@ -96,4 +100,79 @@ test("evidenceDisplay is null for a missing evidence column", () => {
 test("rowCountLabel is comma-grouped and pluralised", () => {
   assert.equal(rowCountLabel(40112), "40,112 rows");
   assert.equal(rowCountLabel(1), "1 row");
+});
+
+// --- savedConfirmation, isBlankAnswer ---------------------------------------
+
+test("savedConfirmation names the affected material, not a generic toast", () => {
+  assert.equal(
+    savedConfirmation({ count: 3, label: "3 documents" }),
+    "Saved. Re-reading 3 documents.",
+  );
+});
+
+test("isBlankAnswer treats whitespace-only input as blank", () => {
+  assert.equal(isBlankAnswer(""), true);
+  assert.equal(isBlankAnswer("   "), true);
+  assert.equal(isBlankAnswer("  status code  "), false);
+});
+
+// --- mergeIncoming (issue 272) -----------------------------------------------
+
+function group(sourceId: string, itemIds: string[]): ClarificationsState["groups"][number] {
+  return {
+    source_id: sourceId,
+    source_name: sourceId,
+    count: itemIds.length,
+    items: itemIds.map((id) => ({ id, subject: id, question: "?", options: null, evidence: null })),
+  };
+}
+
+test("mergeIncoming adds a brand-new group without touching existing ones", () => {
+  const current: ClarificationsState = { groups: [group("a", ["1"])], total: 1 };
+  const incoming: ClarificationsState = {
+    groups: [group("a", ["1"]), group("b", ["2"])],
+    total: 2,
+  };
+
+  const merged = mergeIncoming(current, incoming);
+
+  assert.equal(merged.total, 2);
+  assert.deepEqual(
+    merged.groups.map((g) => g.source_id),
+    ["b", "a"],
+  );
+  assert.strictEqual(merged.groups[1], current.groups[0], "the existing group is untouched, not rebuilt");
+});
+
+test("mergeIncoming appends only the new items in an existing group", () => {
+  const current: ClarificationsState = { groups: [group("a", ["1"])], total: 1 };
+  const incoming: ClarificationsState = { groups: [group("a", ["1", "2"])], total: 2 };
+
+  const merged = mergeIncoming(current, incoming);
+
+  assert.equal(merged.total, 2);
+  assert.deepEqual(
+    merged.groups.at(0)?.items.map((i) => i.id),
+    ["1", "2"],
+  );
+});
+
+test("mergeIncoming returns the same reference when nothing new arrived", () => {
+  const current: ClarificationsState = { groups: [group("a", ["1"])], total: 1 };
+  const incoming: ClarificationsState = { groups: [group("a", ["1"])], total: 1 };
+
+  assert.strictEqual(mergeIncoming(current, incoming), current);
+});
+
+test("mergeIncoming never drops an item already answered locally and gone from the fetch", () => {
+  const current: ClarificationsState = { groups: [group("a", ["1"])], total: 1 };
+  const incoming: ClarificationsState = { groups: [], total: 0 };
+
+  const merged = mergeIncoming(current, incoming);
+
+  assert.deepEqual(
+    merged.groups.at(0)?.items.map((i) => i.id),
+    ["1"],
+  );
 });

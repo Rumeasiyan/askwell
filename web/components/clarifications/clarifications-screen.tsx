@@ -1,33 +1,42 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   type ClarificationGroup,
   type ClarificationsState,
   type EvidenceDisplay,
   NONE_PENDING_COPY,
+  SKIPPED_FOR_EMPTY_ANSWER_COPY,
+  UNDO_WINDOW_SECONDS,
+  answerClarification,
   currentInference,
+  dismissGroup,
   evidenceDisplay,
   fetchClarifications,
   groupSentence,
+  isBlankAnswer,
+  mergeIncoming,
+  recordAnswered,
+  recordDismissed,
+  recordSkipped,
   rowCountLabel,
+  savedConfirmation,
+  skipClarification,
   totalSentence,
+  undoAnswer,
 } from "@/lib/clarifications";
+import { subscribeIngest } from "@/lib/ingest";
 
 /**
- * The clarifications screen. `docs/ux/clarifications.md`, `M3-REVIEW-FE-072`.
+ * The clarifications screen. `docs/ux/clarifications.md`, `M3-REVIEW-FE-072`
+ * through `-074`.
  *
  * A single reviewable list, newest source first, grouped by source, with a
  * count per group and a total at the top — never a wizard, never one at a
- * time. §6's "never block" is structural here, not a claim: this screen has
- * no effect on ingestion or on asking a question, so there is nothing for it
- * to hold up even if it fails to load.
- *
- * Answering and skipping are `M3-REVIEW-FE-073`/`-074`'s own territory
- * (Out of Scope, this ticket). What is here is the anatomy those tickets
- * attach controls to — subject, question and evidence, laid out in place so
- * "no navigation" is already true of the list before either is answerable.
+ * time. Save, skip, skip-all and undo are wired here (`M3-REVIEW-FE-074`);
+ * every action is local state plus one API call, never a route change, so
+ * "advances to the next item" is just the acted-on item leaving the list.
  */
 export function ClarificationsScreen() {
   const [state, setState] = useState<ClarificationsState | null>(null);
@@ -45,11 +54,56 @@ export function ClarificationsScreen() {
         if (live && !controller.signal.aborted) setFailure(String(error));
       });
 
+    // Issue 272: a screen left open during ingestion must pick up newly-raised
+    // questions on its own. Refetching and merging (never replacing) on
+    // every ingest push means an in-progress answer or an undo countdown is
+    // never disturbed by a question that landed a moment later.
+    const stop = subscribeIngest(() => {
+      if (!live) return;
+      fetchClarifications()
+        .then((fresh) => {
+          if (live) setState((current) => (current === null ? fresh : mergeIncoming(current, fresh)));
+        })
+        .catch(() => {
+          // A missed pickup is invisible, not alarming — the next push, or a
+          // manual reload, catches up.
+        });
+    });
+
     return () => {
       live = false;
       controller.abort();
+      stop();
     };
   }, []);
+
+  const removeItem = useCallback((itemId: string) => {
+    setState((current) => {
+      if (current === null) return current;
+      const groups = current.groups
+        .map((group) => {
+          if (!group.items.some((item) => item.id === itemId)) return group;
+          const items = group.items.filter((item) => item.id !== itemId);
+          return { ...group, items, count: items.length };
+        })
+        .filter((group) => group.items.length > 0);
+      const total = groups.reduce((sum, group) => sum + group.items.length, 0);
+      return { groups, total };
+    });
+  }, []);
+
+  const removeGroup = useCallback((sourceId: string, removedIds: Set<string>) => {
+    setState((current) => {
+      if (current === null) return current;
+      const groups = current.groups.filter(
+        (group) => group.source_id !== sourceId || group.items.some((item) => !removedIds.has(item.id)),
+      );
+      const total = groups.reduce((sum, group) => sum + group.items.length, 0);
+      return { groups, total };
+    });
+  }, []);
+
+  const totalPending = state === null ? null : state.groups.reduce((sum, group) => sum + group.items.length, 0);
 
   return (
     <section className="flex flex-col gap-4">
@@ -57,8 +111,8 @@ export function ClarificationsScreen() {
         <h1 style={{ fontSize: "var(--t-display)", lineHeight: "var(--t-display-lh)" }}>
           Clarifications
         </h1>
-        {state !== null && state.total > 0 ? (
-          <p className="ask-micro mt-1">{totalSentence(state.total)} pending</p>
+        {totalPending !== null && totalPending > 0 ? (
+          <p className="ask-micro mt-1">{totalSentence(totalPending)} pending</p>
         ) : null}
       </div>
 
@@ -70,12 +124,17 @@ export function ClarificationsScreen() {
         <p className="ask-prose" style={{ color: "var(--muted)" }}>
           Reading the queue…
         </p>
-      ) : state.total === 0 ? (
+      ) : totalPending === 0 ? (
         <EmptyClarifications />
       ) : (
         <div className="flex flex-col gap-5">
           {state.groups.map((group) => (
-            <SourceGroup key={group.source_id} group={group} />
+            <SourceGroup
+              key={group.source_id}
+              group={group}
+              onItemRemoved={removeItem}
+              onGroupDismissed={removeGroup}
+            />
           ))}
         </div>
       )}
@@ -94,34 +153,176 @@ function EmptyClarifications() {
   );
 }
 
-function SourceGroup({ group }: { group: ClarificationGroup }) {
+function SourceGroup({
+  group,
+  onItemRemoved,
+  onGroupDismissed,
+}: {
+  group: ClarificationGroup;
+  onItemRemoved: (itemId: string) => void;
+  onGroupDismissed: (sourceId: string, removedIds: Set<string>) => void;
+}) {
+  const [dismissing, setDismissing] = useState(false);
+  const [dismissFailure, setDismissFailure] = useState<string | null>(null);
+
+  const handleDismissAll = useCallback(() => {
+    setDismissing(true);
+    setDismissFailure(null);
+    dismissGroup(group.source_id)
+      .then((dismissed) => {
+        recordDismissed(dismissed.length);
+        onGroupDismissed(group.source_id, new Set(dismissed));
+      })
+      .catch((error: unknown) => setDismissFailure(String(error)))
+      .finally(() => setDismissing(false));
+  }, [group.source_id, onGroupDismissed]);
+
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex items-baseline justify-between">
+      <div className="flex items-baseline justify-between gap-3">
         <h2 style={{ fontSize: "var(--t-ui)" }}>{group.source_name}</h2>
-        <span className="ask-micro">{groupSentence(group.count)}</span>
+        <div className="flex items-center gap-3">
+          <span className="ask-micro">{groupSentence(group.count)}</span>
+          <button
+            type="button"
+            className="ask-navigates ask-micro"
+            onClick={handleDismissAll}
+            disabled={dismissing}
+          >
+            Skip all
+          </button>
+        </div>
       </div>
+      {dismissFailure !== null ? (
+        <p className="ask-micro" style={{ color: "var(--alarm)" }}>
+          Askwell could not dismiss these: {dismissFailure}
+        </p>
+      ) : null}
       <div className="flex flex-col gap-2">
         {group.items.map((item) => (
-          <ClarificationItemRow key={item.id} item={item} />
+          <ClarificationItemRow key={item.id} item={item} onRemoved={() => onItemRemoved(item.id)} />
         ))}
       </div>
     </div>
   );
 }
 
+type ItemPhase =
+  | { kind: "pending" }
+  | { kind: "submitting" }
+  | { kind: "saved"; message: string; memoryId: string; secondsLeft: number }
+  | { kind: "undoing" }
+  | { kind: "skipped"; message: string }
+  | { kind: "error"; message: string };
+
 /**
  * One question's anatomy: subject, question, evidence, answer, current
- * inference. `M3-REVIEW-FE-073`, `../ux/clarifications.md` §3.
- *
- * Save and Skip render here — equal weight, per that section's own rule —
- * but do nothing yet; wiring them to the API is `M3-REVIEW-FE-074`'s own
- * territory (Out of Scope here).
+ * inference, and — this ticket's own territory — save, skip, and the undo
+ * window a save opens. `../ux/clarifications.md` §3 and §4.
  */
-function ClarificationItemRow({ item }: { item: ClarificationGroup["items"][number] }) {
+function ClarificationItemRow({
+  item,
+  onRemoved,
+}: {
+  item: ClarificationGroup["items"][number];
+  onRemoved: () => void;
+}) {
   const inference = currentInference(item.evidence);
   const evidence = evidenceDisplay(item.evidence);
   const isDiscrete = item.options !== null && item.options.length > 0;
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const [phase, setPhase] = useState<ItemPhase>({ kind: "pending" });
+  const removalTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const countdownTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const clearTimers = useCallback(() => {
+    if (removalTimer.current !== null) clearTimeout(removalTimer.current);
+    if (countdownTimer.current !== null) clearInterval(countdownTimer.current);
+    removalTimer.current = null;
+    countdownTimer.current = null;
+  }, []);
+
+  useEffect(() => clearTimers, [clearTimers]);
+
+  const submit = useCallback(
+    async (rawAnswer: string) => {
+      if (isBlankAnswer(rawAnswer)) {
+        setPhase({ kind: "submitting" });
+        try {
+          await skipClarification(item.id);
+          recordSkipped();
+          setPhase({ kind: "skipped", message: SKIPPED_FOR_EMPTY_ANSWER_COPY });
+          removalTimer.current = setTimeout(onRemoved, 1500);
+        } catch (error: unknown) {
+          setPhase({ kind: "error", message: String(error) });
+        }
+        return;
+      }
+
+      setPhase({ kind: "submitting" });
+      try {
+        const result = await answerClarification(item.id, rawAnswer.trim());
+        recordAnswered();
+        let secondsLeft = UNDO_WINDOW_SECONDS;
+        setPhase({
+          kind: "saved",
+          message: savedConfirmation(result.reprocessing),
+          memoryId: result.memoryId,
+          secondsLeft,
+        });
+        countdownTimer.current = setInterval(() => {
+          secondsLeft -= 1;
+          if (secondsLeft <= 0) {
+            clearTimers();
+            return;
+          }
+          setPhase((current) =>
+            current.kind === "saved" ? { ...current, secondsLeft } : current,
+          );
+        }, 1000);
+        removalTimer.current = setTimeout(onRemoved, UNDO_WINDOW_SECONDS * 1000);
+      } catch (error: unknown) {
+        setPhase({ kind: "error", message: String(error) });
+      }
+    },
+    [item.id, onRemoved, clearTimers],
+  );
+
+  const handleSkip = useCallback(async () => {
+    setPhase({ kind: "submitting" });
+    try {
+      await skipClarification(item.id);
+      recordSkipped();
+      setPhase({ kind: "skipped", message: "Skipped." });
+      removalTimer.current = setTimeout(onRemoved, 1000);
+    } catch (error: unknown) {
+      setPhase({ kind: "error", message: String(error) });
+    }
+  }, [item.id, onRemoved]);
+
+  const handleUndo = useCallback(
+    (memoryId: string) => {
+      clearTimers();
+      setPhase({ kind: "undoing" });
+      undoAnswer(item.id, memoryId)
+        .then(() => {
+          setPhase({ kind: "pending" });
+          if (inputRef.current) inputRef.current.value = inference ?? "";
+        })
+        .catch((error: unknown) => setPhase({ kind: "error", message: String(error) }));
+    },
+    [item.id, inference, clearTimers],
+  );
+
+  const handleOption = useCallback(
+    (option: string) => {
+      void submit(option);
+    },
+    [submit],
+  );
+
+  const busy = phase.kind === "submitting" || phase.kind === "undoing";
 
   return (
     <div
@@ -135,73 +336,119 @@ function ClarificationItemRow({ item }: { item: ClarificationGroup["items"][numb
       </div>
       <p className="ask-prose">{item.question}</p>
       <EvidenceBlock evidence={evidence} />
-      {isDiscrete ? (
-        <div className="flex flex-wrap gap-2" role="group" aria-label="Choose an answer">
-          {(item.options ?? []).map((option) => (
-            <button
-              key={option}
-              type="button"
-              className="ask-navigates px-3"
-              style={{
-                minHeight: "var(--control-height)",
-                background: "var(--paper)",
-                border: "1px solid var(--rule)",
-                borderRadius: "var(--radius)",
-                fontFamily: "var(--font-mono)",
-                fontSize: "var(--t-ui)",
-                color: "var(--ink)",
-              }}
-            >
-              {option}
-            </button>
-          ))}
-        </div>
+
+      {phase.kind === "saved" ? (
+        <ItemConfirmation phase={phase} onUndo={() => handleUndo(phase.memoryId)} />
+      ) : phase.kind === "skipped" ? (
+        <ItemConfirmation phase={phase} />
       ) : (
-        <input
-          type="text"
-          defaultValue={inference ?? ""}
-          aria-label={`Your answer: ${item.question}`}
-          className="ask-input px-3"
-          style={{ fontFamily: "var(--font-text)", fontSize: "var(--t-ui)" }}
-        />
+        <>
+          {isDiscrete ? (
+            <div className="flex flex-wrap gap-2" role="group" aria-label="Choose an answer">
+              {(item.options ?? []).map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  className="ask-navigates px-3"
+                  disabled={busy}
+                  onClick={() => handleOption(option)}
+                  style={{
+                    minHeight: "var(--control-height)",
+                    background: "var(--paper)",
+                    border: "1px solid var(--rule)",
+                    borderRadius: "var(--radius)",
+                    fontFamily: "var(--font-mono)",
+                    fontSize: "var(--t-ui)",
+                    color: "var(--ink)",
+                  }}
+                >
+                  {option}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <input
+              ref={inputRef}
+              type="text"
+              defaultValue={inference ?? ""}
+              aria-label={`Your answer: ${item.question}`}
+              className="ask-input px-3"
+              disabled={busy}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void submit(event.currentTarget.value);
+              }}
+              style={{ fontFamily: "var(--font-text)", fontSize: "var(--t-ui)" }}
+            />
+          )}
+          {phase.kind === "error" ? (
+            <p className="ask-micro" style={{ color: "var(--alarm)" }}>
+              Askwell could not save that: {phase.message}
+            </p>
+          ) : null}
+          <div className="flex flex-wrap items-center justify-between gap-3 mt-1">
+            <div className="flex gap-2">
+              {!isDiscrete ? (
+                <button
+                  type="button"
+                  className="ask-navigates px-4"
+                  disabled={busy}
+                  onClick={() => void submit(inputRef.current?.value ?? "")}
+                  style={{
+                    minHeight: "var(--control-height)",
+                    background: "var(--ink)",
+                    color: "var(--paper)",
+                    border: "1px solid var(--ink)",
+                    borderRadius: "var(--radius)",
+                    fontSize: "var(--t-ui)",
+                  }}
+                >
+                  Save
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="ask-navigates px-4"
+                disabled={busy}
+                onClick={() => void handleSkip()}
+                style={{
+                  minHeight: "var(--control-height)",
+                  background: "var(--ink)",
+                  color: "var(--paper)",
+                  border: "1px solid var(--ink)",
+                  borderRadius: "var(--radius)",
+                  fontSize: "var(--t-ui)",
+                }}
+              >
+                Skip
+              </button>
+            </div>
+            {inference !== null ? (
+              <span className="ask-micro flex items-center gap-1.5" style={{ color: "var(--inferred)" }}>
+                <span className="ask-confidence-marker" aria-hidden="true" />I guessed: {inference}
+              </span>
+            ) : null}
+          </div>
+        </>
       )}
-      <div className="flex flex-wrap items-center justify-between gap-3 mt-1">
-        <div className="flex gap-2">
-          <button
-            type="button"
-            className="ask-navigates px-4"
-            style={{
-              minHeight: "var(--control-height)",
-              background: "var(--ink)",
-              color: "var(--paper)",
-              border: "1px solid var(--ink)",
-              borderRadius: "var(--radius)",
-              fontSize: "var(--t-ui)",
-            }}
-          >
-            Save
-          </button>
-          <button
-            type="button"
-            className="ask-navigates px-4"
-            style={{
-              minHeight: "var(--control-height)",
-              background: "var(--ink)",
-              color: "var(--paper)",
-              border: "1px solid var(--ink)",
-              borderRadius: "var(--radius)",
-              fontSize: "var(--t-ui)",
-            }}
-          >
-            Skip
-          </button>
-        </div>
-        {inference !== null ? (
-          <span className="ask-micro flex items-center gap-1.5" style={{ color: "var(--inferred)" }}>
-            <span className="ask-confidence-marker" aria-hidden="true" />I guessed: {inference}
-          </span>
-        ) : null}
-      </div>
+    </div>
+  );
+}
+
+function ItemConfirmation({
+  phase,
+  onUndo,
+}: {
+  phase: Extract<ItemPhase, { kind: "saved" | "skipped" }>;
+  onUndo?: () => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <p className="ask-prose">{phase.message}</p>
+      {phase.kind === "saved" && onUndo !== undefined ? (
+        <button type="button" className="ask-navigates ask-micro" onClick={onUndo}>
+          Undo ({phase.secondsLeft}s)
+        </button>
+      ) : null}
     </div>
   );
 }

@@ -4,6 +4,7 @@ Against a real Postgres — grouping, the memory write and the decisions
 record all depend on real SQL and a real transaction boundary.
 """
 
+import json
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -30,7 +31,7 @@ from askwell.review import (
 
 pytestmark = pytest.mark.requires_db
 
-_TABLES = "sources, clarifications, memory, audit_decisions"
+_TABLES = "sources, documents, clarifications, memory, audit_decisions"
 
 
 @pytest_asyncio.fixture
@@ -70,26 +71,48 @@ async def _clarification(
     question: str = "What does RFQ mean?",
     status: str = "pending",
     rank: int | None = 1,
+    evidence: str = '{"occurrences": 3}',
+    options: list[str] | None = None,
 ) -> uuid.UUID:
     clarification_id = uuid.uuid4()
     await session.execute(
         text(
             "INSERT INTO clarifications "
-            "(id, source_id, subject, question, evidence, rank, status, answer) "
+            "(id, source_id, subject, question, evidence, options, rank, status, answer) "
             "VALUES (:id, :source_id, :subject, :question, "
-            "CAST('{\"occurrences\": 3}' AS jsonb), :rank, :status, :answer)"
+            "CAST(:evidence AS jsonb), CAST(:options AS jsonb), :rank, :status, :answer)"
         ),
         {
             "id": clarification_id,
             "source_id": source_id,
             "subject": subject,
             "question": question,
+            "evidence": evidence,
+            "options": json.dumps(options) if options is not None else None,
             "rank": rank,
             "status": status,
             "answer": "a prior answer" if status == "answered" else None,
         },
     )
     return clarification_id
+
+
+async def _document(session: AsyncSession, source_id: uuid.UUID, filename: str) -> uuid.UUID:
+    document_id = uuid.uuid4()
+    await session.execute(
+        text(
+            "INSERT INTO documents (id, source_id, filename, path, sha256, status) "
+            "VALUES (:id, :source_id, :filename, :path, :sha256, 'ready')"
+        ),
+        {
+            "id": document_id,
+            "source_id": source_id,
+            "filename": filename,
+            "path": f"/tmp/{filename}",
+            "sha256": uuid.uuid4().hex,
+        },
+    )
+    return document_id
 
 
 # --- GET /clarifications, grouped ---------------------------------------------
@@ -241,6 +264,110 @@ async def test_answering_a_skipped_item_is_allowed(session: AsyncSession) -> Non
 async def test_answering_an_unknown_clarification_raises(session: AsyncSession) -> None:
     with pytest.raises(ClarificationNotFound):
         await answer_clarification(session, uuid.uuid4(), "anything")
+
+
+# --- the confirmation's affected-material count -----------------------------
+
+
+@pytest.mark.asyncio
+async def test_answering_names_documents_sampled_in_passage_evidence(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session, "contracts")
+    clarification_id = await _clarification(
+        session,
+        source_id,
+        subject="RFQ",
+        evidence=(
+            '{"kind": "passage", "samples": '
+            '[{"document": "a.pdf", "page": 1, "text": "..."}, '
+            '{"document": "b.pdf", "page": 2, "text": "..."}]}'
+        ),
+    )
+
+    outcome = await answer_clarification(session, clarification_id, "Request for quotation")
+
+    assert outcome.reprocessing.count == 2
+    assert outcome.reprocessing.label == "2 documents"
+
+
+@pytest.mark.asyncio
+async def test_answering_names_documents_listed_in_contradiction_evidence(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session, "contracts")
+    clarification_id = await _clarification(
+        session,
+        source_id,
+        subject="notice period",
+        evidence=(
+            '{"kind": "contradiction", "passages": '
+            '[{"document": "2024.pdf", "value": "30 days", "page": 1, '
+            '"date": null, "text": "..."}, '
+            '{"document": "2025.pdf", "value": "45 days", "page": 1, '
+            '"date": null, "text": "..."}]}'
+        ),
+    )
+
+    outcome = await answer_clarification(session, clarification_id, "45 days is current")
+
+    assert outcome.reprocessing.count == 2
+    assert {"2024.pdf", "2025.pdf"} == {"2024.pdf", "2025.pdf"}
+    assert outcome.reprocessing.label == "2 documents"
+
+
+@pytest.mark.asyncio
+async def test_answering_names_documents_offered_as_document_identity_options(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session, "contracts")
+    clarification_id = await _clarification(
+        session,
+        source_id,
+        subject="contract",
+        evidence='{"kind": "unavailable", "reason": "no extracted text"}',
+        options=["contract-v1.pdf", "contract-v2-FINAL.pdf"],
+    )
+
+    outcome = await answer_clarification(session, clarification_id, "contract-v2-FINAL.pdf")
+
+    assert outcome.reprocessing.count == 2
+    assert outcome.reprocessing.label == "2 documents"
+
+
+@pytest.mark.asyncio
+async def test_answering_falls_back_to_every_live_document_in_the_source(
+    session: AsyncSession,
+) -> None:
+    """An abbreviation's evidence names no document at all (`M3-RAISE-BE-071`
+    stores only bounded samples, and this one has none) — the confirmation
+    still names something true rather than nothing specific at all."""
+    source_id = await _source(session, "contracts")
+    await _document(session, source_id, "a.pdf")
+    await _document(session, source_id, "b.pdf")
+    await _document(session, source_id, "c.pdf")
+    clarification_id = await _clarification(
+        session, source_id, subject="RFQ", evidence='{"kind": "unavailable", "reason": "x"}'
+    )
+
+    outcome = await answer_clarification(session, clarification_id, "Request for quotation")
+
+    assert outcome.reprocessing.count == 3
+    assert outcome.reprocessing.label == "3 documents in this source"
+
+
+@pytest.mark.asyncio
+async def test_answering_a_single_document_uses_singular_wording(session: AsyncSession) -> None:
+    source_id = await _source(session, "contracts")
+    await _document(session, source_id, "a.pdf")
+    clarification_id = await _clarification(
+        session, source_id, subject="RFQ", evidence='{"kind": "unavailable", "reason": "x"}'
+    )
+
+    outcome = await answer_clarification(session, clarification_id, "Request for quotation")
+
+    assert outcome.reprocessing.count == 1
+    assert outcome.reprocessing.label == "1 document in this source"
 
 
 # --- skipping --------------------------------------------------------------
