@@ -4,6 +4,23 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.3.8 - 2026-09-17
+
+`M3-STORE-BE-076`.
+
+### Added
+
+- `askwell.memory` — the dedicated write-side module for `memory` and `schema_notes`: `write_memory_fact`/`write_schema_note` (an inference is discarded outright when an active user-origin fact already covers the subject/position, a user-origin write retires any active inference for the same one), `correct_memory_fact`/`correct_schema_note` (supersede an active user-origin fact with a new value — never in place, the old row stays readable), `get_active_memory_facts`/`get_active_schema_notes` (retrieval precedence: user-origin before inferred, newer before older within each). Every write, discard and supersession is an `audit_decisions` record (C6).
+- `memory.source_id`, nullable (migration `2ae457a0587a`) — a general fact can now say which source taught it, and keeps saying so labelled as "from a deleted source" after that source is soft-deleted (`sources.status = 'deleted'`; `askwell.sources.delete_source` never hard-deletes the row).
+
+### Fixed
+
+- #258 — `test_writing_and_correcting_a_schema_note` now reads `superseded_by` back directly on the retired inferred note, rather than only inferring the retirement happened from a discard check that would also pass if the retirement `UPDATE` silently no-op'd.
+
+### Known gaps
+
+- `clarify.py`/`review.py` still write `memory`/`schema_notes` rows through their own inline `INSERT`s rather than this module — unchanged from before this ticket, tracked as a follow-up rather than rewired speculatively here (`docs/decisions.md`, 2026-09-17).
+
 ## 0.3.7 - 2026-09-17
 
 `M3-REVIEW-FE-073`.

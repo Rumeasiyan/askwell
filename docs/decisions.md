@@ -22,6 +22,18 @@ Template:
 
 ---
 
+## 2026-09-17 — `M3-STORE-BE-076` rebuilt fresh against current `main`, not rebased from the parked attempt
+
+**Decision:** Reimplemented `M3-STORE-BE-076` (`api/src/askwell/memory.py`, `api/tests/test_memory.py`, migration `2ae457a0587a`) by porting the parked branch's (`origin/parked/m3-store-be-076-attempt-1`) `memory.py`, `test_memory.py` and `memory.source_id` migration verbatim onto current `main`, rather than rebasing the whole branch as issue #276 recommended.
+
+**Why:** the parked branch's own diff against `main` touches 39 files, most of it churn from having been branched before `M3-RAISE-BE-071`, `M3-REVIEW-BE-072a` and `M3-REVIEW-FE-072`/`073` — it deletes `review.py`, `web/app/clarifications/`, and most of `clarify.py`'s current shape, none of which this ticket's own scope (a write-side module for `memory`/`schema_notes`) touches. A full rebase would have required re-deriving three tickets' worth of conflict resolution to land one ticket's worth of new code — the module itself (`memory.py`) was untouched by any of the three tickets since it never merged, so it applies cleanly standalone. `docs/db/models.py`'s `MemoryFact`/`SchemaNote` columns (`origin`, `confidence`, `superseded_by`) already existed on `main` (`M3-RAISE-BE-070`'s 2026-08-30 finding, reconfirmed here); only `memory.source_id` needed a new migration, chained onto the current head (`a4d9e2f6c831`) rather than the parked branch's now-stale one. Issue #258's gap (no test reads `superseded_by` back directly on a retired inferred schema note) is fixed in the same change, folded into `test_writing_and_correcting_a_schema_note` as its own recommendation asked, rather than left for a follow-up ticket.
+
+**Consequences:** `write_memory_fact`/`write_schema_note`/`correct_memory_fact`/`correct_schema_note`/`get_active_memory_facts`/`get_active_schema_notes` exist as the dedicated write-side surface the ticket describes, but nothing in `clarify.py` or `review.py` was rewired to call them — both still use their own inline `INSERT`s (`M3-RAISE-BE-068`/`070`/`071`, `M3-REVIEW-BE-072a`), which is unchanged from before this ticket and was already the state the 2026-09-13/-17 decisions log entries for those tickets reasoned about. Whether those call sites should move onto this module is a separate, smaller change than reintroducing it — filed as follow-up rather than done speculatively here.
+
+**Refs:** `docs/backlog/M3-it-learns-my-material.md` `M3-STORE-BE-076`; issues #276, #258, #262, #263, #264; `api/src/askwell/memory.py`; `api/src/askwell/db/migrations/versions/20260917_2ae457a0587a_memory_source_id.py`.
+
+---
+
 ## 2026-09-17 — `M3-REVIEW-FE-073` renders evidence without a source link, since evidence has no document id
 
 **Decision:** Item anatomy (`clarifications-screen.tsx`) renders a passage's document name and page as plain mono text, with no click-through to the source viewer, rather than inventing a link or blocking the ticket on the gap.

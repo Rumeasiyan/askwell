@@ -461,7 +461,14 @@ class MemoryFact(Base):
     """
 
     __tablename__ = "memory"
-    __table_args__ = (_one_of("origin", MEMORY_ORIGINS, "origin"),)
+    __table_args__ = (
+        _one_of("origin", MEMORY_ORIGINS, "origin"),
+        Index(
+            "ix_memory_source_id",
+            "source_id",
+            postgresql_where=text("source_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = uuid_pk()
     subject: Mapped[str] = mapped_column(Text, nullable=False)
@@ -470,6 +477,15 @@ class MemoryFact(Base):
     confidence: Mapped[float | None] = mapped_column(Numeric(4, 3))
     superseded_by: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("memory.id", ondelete="SET NULL")
+    )
+    # Which source taught this, if any — `M3-STORE-BE-076`. Nullable because
+    # not every fact is source-scoped (a manual note may be about nothing in
+    # particular), and `ON DELETE SET NULL` for a hard delete that does not
+    # currently happen: `askwell.sources.delete_source` soft-deletes, so the
+    # row this points to survives and the fact keeps saying where it came
+    # from, labelled as deleted rather than orphaned.
+    source_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("sources.id", ondelete="SET NULL")
     )
     created_at_: Mapped[datetime] = mapped_column(
         "created_at", DateTime(timezone=True), nullable=False, server_default=func.now()
