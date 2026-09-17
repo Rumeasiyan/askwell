@@ -4,6 +4,16 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.0 - 2026-09-18
+
+`M3-EVAL-TEST-086` — the memory-application eval subset: fifteen tasks at the 0.85 bar (`docs/build-plan.md`'s quality gate), the differentiator's first measurement. This is M3's last ticket — *it learns my material* is complete, 20 of 20, taking the `MINOR` per `AGENTS.md` §7.
+
+### Added
+
+- `eval/memory_apply.py`, `eval/suites/memory_apply.v1.json` — a `mode: "memory"` suite. Five "apply" tasks (a stored fact resolves which of two genuinely conflicting fixture documents is currently in force), three "supersede" tasks (the same, after correcting the fact once through `askwell.memory.correct_memory_fact`), four "no_invent" tasks (a topically-related but insufficient fact must not license an answer where the documents abstain), three "irrelevant" tasks (an unrelated fact must not derail an otherwise-grounded answer). Every task scores whether the memory fact was cited (`fact_citation` events), and a superseded fact still being applied is reported as `superseded_fact_still_applied`, distinct from plain `no_application`.
+- Fixture facts seed through the real write paths: `askwell.review.answer_clarification` (a fixture `clarifications` row, answered) for "apply"/"supersede", then `askwell.memory.correct_memory_fact` for the supersession step; `askwell.memory.write_memory_fact(origin="manual")` for the free-standing "no_invent"/"irrelevant" facts. Idempotent per subject, same guard `eval.grounded.seed_corpus` uses for the fixture documents.
+- `eval/suite.py`: `mode: "memory"`. `eval/bench.py` dispatches it. `.github/workflows/eval.yml`'s gate now runs `memory_apply.v1` alongside the other three suites.
+
 ## 0.3.20 - 2026-09-18
 
 `M3-MEM-FE-084` — the memory screen's six interactions: Edit, Confirm, Delete, History, Filter, Add a fact. `docs/ux/memory.md` §4. Also closes issue #288, filed against `M3-STORE-OBS-077` and deferred to this ticket.
