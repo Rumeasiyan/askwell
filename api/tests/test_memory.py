@@ -23,6 +23,7 @@ from askwell.memory import (
     delete_schema_note,
     get_active_memory_facts,
     get_active_schema_notes,
+    retrieve_relevant_facts,
     write_memory_fact,
     write_schema_note,
 )
@@ -816,3 +817,115 @@ async def test_correcting_an_already_deleted_fact_is_refused_with_a_clear_reason
 
     with pytest.raises(FactNotFound):
         await correct_memory_fact(session, fact_id=fact_id, fact="something else")
+
+
+# --- retrieve_relevant_facts: M3-APPLY-RET-078 -------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_question_using_a_taught_abbreviation_retrieves_it(
+    session: AsyncSession,
+) -> None:
+    fact_id = await write_memory_fact(
+        session, subject="RFQ", fact="Request for Quotation", origin="clarification"
+    )
+    assert fact_id is not None
+    await write_memory_fact(
+        session, subject="unrelated", fact="nothing to do with this", origin="manual"
+    )
+
+    found = await retrieve_relevant_facts(session, question="what does RFQ mean?")
+    assert [f.id for f in found.facts] == [fact_id]
+    assert found.notes == []
+
+
+@pytest.mark.asyncio
+async def test_a_question_with_nothing_relevant_returns_nothing(session: AsyncSession) -> None:
+    await write_memory_fact(session, subject="RFQ", fact="Request for Quotation", origin="manual")
+
+    found = await retrieve_relevant_facts(session, question="what colour is the office?")
+    assert found.facts == []
+    assert found.notes == []
+
+
+@pytest.mark.asyncio
+async def test_a_superseded_fact_is_not_retrieved(session: AsyncSession) -> None:
+    fact_id = await write_memory_fact(session, subject="RFQ", fact="a first guess", origin="manual")
+    assert fact_id is not None
+    outcome = await correct_memory_fact(session, fact_id=fact_id, fact="Request for Quotation")
+
+    found = await retrieve_relevant_facts(session, question="what does RFQ mean?")
+    assert [f.id for f in found.facts] == [outcome.fact_id]
+
+
+@pytest.mark.asyncio
+async def test_retrieval_is_bounded_even_when_more_match(session: AsyncSession) -> None:
+    for index in range(8):
+        await write_memory_fact(
+            session, subject=f"term-{index}", fact="widget definition", origin="manual"
+        )
+
+    found = await retrieve_relevant_facts(session, question="widget", fact_limit=3)
+    assert len(found.facts) == 3
+
+
+@pytest.mark.asyncio
+async def test_schema_notes_are_scoped_to_the_asked_source_memory_is_not(
+    session: AsyncSession,
+) -> None:
+    source_a = await _source(session, name="source-a")
+    source_b = await _source(session, name="source-b")
+    note_a = await write_schema_note(
+        session,
+        source_id=source_a,
+        table_name="students",
+        column_name="st_cd",
+        description="student status code",
+        origin="user",
+    )
+    await write_schema_note(
+        session,
+        source_id=source_b,
+        table_name="students",
+        column_name="st_cd",
+        description="student status code",
+        origin="user",
+    )
+    fact_id = await write_memory_fact(
+        session, subject="st_cd", fact="student status code", origin="manual"
+    )
+    assert note_a is not None
+    assert fact_id is not None
+
+    found = await retrieve_relevant_facts(session, question="what is st_cd?", source_id=source_a)
+    assert [n.id for n in found.notes] == [note_a]
+    # General memory is never source-scoped — the same abbreviation applies
+    # to a question asked against any source.
+    assert [f.id for f in found.facts] == [fact_id]
+
+
+@pytest.mark.asyncio
+async def test_a_contradicting_fact_and_note_are_both_labelled_by_confidence(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session)
+    fact_id = await write_memory_fact(
+        session, subject="rfq", fact="Request for Quotation", origin="clarification"
+    )
+    note_id = await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name="orders",
+        column_name="rfq",
+        description="an internal request identifier",
+        origin="inferred",
+        confidence=0.4,
+    )
+    assert fact_id is not None
+    assert note_id is not None
+
+    found = await retrieve_relevant_facts(session, question="rfq", source_id=source_id)
+    assert found.facts[0].origin == "clarification"
+    assert found.facts[0].confidence == 1.0
+    assert found.notes[0].origin == "inferred"
+    assert found.notes[0].confidence == 0.4

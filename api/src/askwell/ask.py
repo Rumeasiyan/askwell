@@ -92,6 +92,7 @@ from askwell.inference.client import InferenceClient, InferenceFailed, Inference
 from askwell.ingest import coverage
 from askwell.inline_clarify import default_assumption, find_blocking
 from askwell.logging import get_logger
+from askwell.memory import retrieve_relevant_facts
 from askwell.retrieve import Candidate, candidate_score, retrieve
 from askwell.traces import TraceRing
 
@@ -553,6 +554,8 @@ async def _run_generation(
     uncovered_aspects: tuple[str, ...] = ()
     conflict_detected = False
     conflict_topic: str | None = None
+    memory_fact_ids: list[uuid.UUID] = []
+    schema_note_ids: list[uuid.UUID] = []
     # The model file's own name, not its full path — read from configuration
     # (never hardcoded, `AGENTS.md` §4) so this ticket's "backend and model
     # used" survives a deployment-profile change with no code edit.
@@ -619,6 +622,25 @@ async def _run_generation(
         else:
             document_count = len({candidate.document_id for candidate in candidates})
             turn.emit("step", {"label": _label_for_sources(document_count), "kind": "read"})
+
+            # `M3-APPLY-RET-078`: only reached once a document has already
+            # cleared the abstention threshold above — memory never bypasses
+            # grounding, it only adds labelled context to an answer that was
+            # already going to be grounded in the user's own material.
+            async with session_scope(factory) as db:
+                relevant_memory = await retrieve_relevant_facts(
+                    db, question=question, source_id=source_id
+                )
+            memory_fact_ids = [fact.id for fact in relevant_memory.facts]
+            schema_note_ids = [note.id for note in relevant_memory.notes]
+            if memory_fact_ids or schema_note_ids:
+                trace_steps.append(
+                    {
+                        "kind": "memory_retrieve",
+                        "memory_fact_ids": [str(i) for i in memory_fact_ids],
+                        "schema_note_ids": [str(i) for i in schema_note_ids],
+                    }
+                )
 
             # `M3-INLINE-FE-085`: determined before composition, per the
             # ticket's own Assumption — never discovered mid-answer. Only a
@@ -689,7 +711,13 @@ async def _run_generation(
             # resolved inline, is the same hook `M2-PARTIAL-BE-059` built and
             # left inert — the model settles the conflict with it and writes
             # "Resolved by memory: ..." rather than presenting both sides.
-            composed = compose_conflict(question, candidates, memory_fact=memory_fact)
+            composed = compose_conflict(
+                question,
+                candidates,
+                memory_fact=memory_fact,
+                retrieved_facts=relevant_memory.facts,
+                retrieved_notes=relevant_memory.notes,
+            )
             injection_flagged = composed.injection_flagged
             injection_patterns = composed.injection_patterns
 
@@ -784,6 +812,14 @@ async def _run_generation(
         # re-parsing the answer's own prose.
         "conflict_detected": conflict_detected,
         "conflict_topic": conflict_topic,
+        # `M3-APPLY-RET-078`: which memory facts and schema notes were
+        # retrieved for this turn — "facts retrieved for a turn are recorded
+        # on the interaction" is the ticket's own Audit/Logging Requirement.
+        # Retrieved, not merely cited: citation-level tracking is
+        # `M3-APPLY-BE-079`'s `fact_usage` write, a narrower and later thing.
+        "memory_fact_ids": [str(i) for i in memory_fact_ids],
+        "schema_note_ids": [str(i) for i in schema_note_ids],
+        "memory_used": len(memory_fact_ids) + len(schema_note_ids),
     }
 
     # `M1-CONV-BE-177`: the summary and source count a collapsed past turn
@@ -881,6 +917,8 @@ async def _run_generation(
                     "uncovered_aspects": list(uncovered_aspects),
                     "conflict_detected": conflict_detected,
                     "conflict_topic": conflict_topic,
+                    "memory_fact_ids": [str(i) for i in memory_fact_ids],
+                    "schema_note_ids": [str(i) for i in schema_note_ids],
                     "threshold": (
                         str(retrieval_threshold) if retrieval_threshold is not None else None
                     ),

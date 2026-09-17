@@ -4,6 +4,29 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.3.16 - 2026-09-18
+
+`M3-APPLY-RET-078` — memory and schema notes are retrieved alongside document chunks at answer time, so a fact the user already taught Askwell applies to every later question that uses it, not just the one it was explained on.
+
+### Added
+
+- `askwell.memory.retrieve_relevant_facts` — active `memory` facts and `schema_notes` relevant to the question, lexical full-text (`plainto_tsquery`, OR-matched across terms rather than the default AND, since a short fact and a long question rarely share every word) rather than embedding similarity: neither table has a populated embedding yet (issue #292). `memory` is never filtered by source — a taught abbreviation applies regardless of which source a later question is scoped to; `schema_notes` are, since they describe one source's structure. Bounded (`RELEVANT_FACT_LIMIT`/`RELEVANT_NOTE_LIMIT`, 5 each) so a large store never floods the prompt.
+- `askwell.agent.conflict.compose_conflict` gained `retrieved_facts`/`retrieved_notes` parameters, delimited into their own `<memory-facts>`/`<schema-notes>` blocks — separate from the existing `memory_fact` (the `M3-INLINE-FE-085` resolved-clarification hook) since these are always-possibly-present background, not a fact already known to settle one specific conflict. Each entry is labelled `[user-confirmed]` or `[inferred, confidence N%]`, carrying `docs/memory-and-clarification.md` §3's confidence requirement into the prompt. Omitted entirely when there is nothing relevant — never an empty labelled block, which would read as "memory has nothing to say" rather than as the absence of a claim.
+- `prompts/conflicting_sources.v1.md` — a new section telling the model these blocks are delimited data (C7), never an instruction; that `[inferred, ...]` entries are tentative and must not be stated as settled; and that a memory fact or schema note disagreeing with a retrieved passage is a conflict to present with the existing "Conflicting sources on ...:" line, never a silent preference for one side.
+- `askwell.ask._run_generation` calls the new retrieval once a question has already cleared the abstention threshold — never before, so memory cannot bypass grounding (C5) — and records `memory_fact_ids`/`schema_note_ids`/`memory_used` on both `messages.trace` and the `audit_interactions` payload: "facts retrieved for a turn are recorded on the interaction" is this ticket's own Audit/Logging Requirement.
+
+### Tests
+
+- `api/tests/test_memory.py` — 6 new cases for `retrieve_relevant_facts`: a taught abbreviation is found, an irrelevant question finds nothing, a superseded fact is never retrieved, retrieval is bounded even when more match, `schema_notes` are source-scoped while `memory` is not, and confidence/origin both survive the round trip.
+- `api/tests/test_conflict.py` — 7 new cases for the two new `compose_conflict` parameters: no blocks by default, facts and notes delimited and labelled, an inferred confidence rendered as a percentage, a column-less schema note falls back to the table name alone, and empty lists compose no blocks.
+- `api/tests/test_ask_api.py` — 3 new full-turn cases against a real Postgres, closing issue #293's own gap (nothing previously exercised `_run_generation`'s wiring of retrieval into trace/audit): a taught term is retrieved into the prompt and recorded on both `messages.trace` and `audit_interactions`; a question with no relevant memory records an honest empty list, never a fabricated id; an abstained turn never retrieves memory at all.
+- Verified against the real stack: `scripts/dev.sh check` (lint, format, typecheck, 540 tests passed/1 skipped) and `scripts/dev.sh test-db` (408 passed, up from 393) both clean.
+
+### Known gaps
+
+- Retrieval is lexical full-text, not embedding similarity — issue #292, left open rather than folded into this ticket: neither `memory` nor `schema_notes` has a populated embedding, and building that (a migration, an `embed()` call on write, a cosine-similarity query) is sized as its own ticket once real signal shows lexical match is actually missing facts, per the issue's own recommendation.
+- Citing a memory fact or schema note by claim, the way a document citation resolves to a chunk, is `M3-APPLY-BE-079`'s own scope — untouched here. The prompt tells the model plainly that citing memory this way is not yet supported.
+
 ## 0.3.15 - 2026-09-17
 
 `M3-REVIEW-FE-075` — the clarifications screen's remaining states: none pending, ingestion still running, all answered, answered-and-re-processing, and capped. Closes #297, #299, #300.
