@@ -11,15 +11,23 @@ import { test } from "node:test";
 
 import {
   NONE_PENDING_COPY,
+  cappedSentence,
+  completionSentence,
   currentInference,
+  emptySessionTally,
   evidenceDisplay,
   groupSentence,
+  hasSessionActivity,
   isBlankAnswer,
   mergeIncoming,
+  reapplyFailureReason,
   rowCountLabel,
   savedConfirmation,
+  tallyAnswer,
+  tallySkip,
   totalSentence,
   type ClarificationsState,
+  type ReapplyJob,
 } from "./clarifications.ts";
 
 test("totalSentence singular", () => {
@@ -106,7 +114,7 @@ test("rowCountLabel is comma-grouped and pluralised", () => {
 
 test("savedConfirmation names the affected material, not a generic toast", () => {
   assert.equal(
-    savedConfirmation({ count: 3, label: "3 documents" }),
+    savedConfirmation({ count: 3, label: "3 documents", kind: "document" }),
     "Saved. Re-reading 3 documents.",
   );
 });
@@ -125,14 +133,16 @@ function group(sourceId: string, itemIds: string[]): ClarificationsState["groups
     source_name: sourceId,
     count: itemIds.length,
     items: itemIds.map((id) => ({ id, subject: id, question: "?", options: null, evidence: null })),
+    capped: 0,
   };
 }
 
 test("mergeIncoming adds a brand-new group without touching existing ones", () => {
-  const current: ClarificationsState = { groups: [group("a", ["1"])], total: 1 };
+  const current: ClarificationsState = { groups: [group("a", ["1"])], total: 1, cap: 5 };
   const incoming: ClarificationsState = {
     groups: [group("a", ["1"]), group("b", ["2"])],
     total: 2,
+    cap: 5,
   };
 
   const merged = mergeIncoming(current, incoming);
@@ -146,8 +156,8 @@ test("mergeIncoming adds a brand-new group without touching existing ones", () =
 });
 
 test("mergeIncoming appends only the new items in an existing group", () => {
-  const current: ClarificationsState = { groups: [group("a", ["1"])], total: 1 };
-  const incoming: ClarificationsState = { groups: [group("a", ["1", "2"])], total: 2 };
+  const current: ClarificationsState = { groups: [group("a", ["1"])], total: 1, cap: 5 };
+  const incoming: ClarificationsState = { groups: [group("a", ["1", "2"])], total: 2, cap: 5 };
 
   const merged = mergeIncoming(current, incoming);
 
@@ -159,15 +169,15 @@ test("mergeIncoming appends only the new items in an existing group", () => {
 });
 
 test("mergeIncoming returns the same reference when nothing new arrived", () => {
-  const current: ClarificationsState = { groups: [group("a", ["1"])], total: 1 };
-  const incoming: ClarificationsState = { groups: [group("a", ["1"])], total: 1 };
+  const current: ClarificationsState = { groups: [group("a", ["1"])], total: 1, cap: 5 };
+  const incoming: ClarificationsState = { groups: [group("a", ["1"])], total: 1, cap: 5 };
 
   assert.strictEqual(mergeIncoming(current, incoming), current);
 });
 
 test("mergeIncoming never drops an item already answered locally and gone from the fetch", () => {
-  const current: ClarificationsState = { groups: [group("a", ["1"])], total: 1 };
-  const incoming: ClarificationsState = { groups: [], total: 0 };
+  const current: ClarificationsState = { groups: [group("a", ["1"])], total: 1, cap: 5 };
+  const incoming: ClarificationsState = { groups: [], total: 0, cap: 5 };
 
   const merged = mergeIncoming(current, incoming);
 
@@ -175,4 +185,87 @@ test("mergeIncoming never drops an item already answered locally and gone from t
     merged.groups.at(0)?.items.map((i) => i.id),
     ["1"],
   );
+});
+
+// --- cappedSentence (issue 297: still true once the pending queue empties) --
+
+test("cappedSentence names the actual configured cap, not a hardcoded number", () => {
+  assert.equal(
+    cappedSentence(5),
+    "Asking about the 5 that matter most. Askwell inferred the rest — you can review them in Memory.",
+  );
+  assert.equal(cappedSentence(3).startsWith("Asking about the 3 that matter most"), true);
+});
+
+// --- reapplyFailureReason (issue 299) ---------------------------------------
+
+function reapplyJob(overrides: Partial<ReapplyJob> = {}): ReapplyJob {
+  return {
+    id: "job-1",
+    subject: "st_cd",
+    status: "failed",
+    total_items: 2,
+    done_items: 1,
+    failed_items: 1,
+    items: [
+      { kind: "chunk", target_id: "c1", label: "sales.sql", status: "done", error: null },
+      {
+        kind: "chunk",
+        target_id: "c2",
+        label: "sales2.sql",
+        status: "failed",
+        error: "inference bridge unreachable",
+      },
+    ],
+    ...overrides,
+  };
+}
+
+test("reapplyFailureReason surfaces the first failed item's own reason, not a generic line", () => {
+  assert.equal(reapplyFailureReason(reapplyJob()), "inference bridge unreachable");
+});
+
+test("reapplyFailureReason is null when nothing failed", () => {
+  assert.equal(
+    reapplyFailureReason(
+      reapplyJob({
+        status: "done",
+        failed_items: 0,
+        items: [{ kind: "chunk", target_id: "c1", label: "sales.sql", status: "done", error: null }],
+      }),
+    ),
+    null,
+  );
+});
+
+// --- completion state (issue 300: tables vs documents survive the tally) ---
+
+test("completionSentence breaks tables and documents out separately", () => {
+  let tally = emptySessionTally();
+  tally = tallyAnswer(tally, { count: 2, label: "2 tables", kind: "table" });
+  tally = tallyAnswer(tally, { count: 14, label: "14 documents in this source", kind: "document" });
+  tally = tallyAnswer(tally, { count: 3, label: "3 more documents", kind: "document" });
+
+  assert.equal(completionSentence(tally), "3 answered. 2 tables and 17 documents re-read.");
+});
+
+test("completionSentence is honest, not congratulatory, when everything was skipped", () => {
+  let tally = emptySessionTally();
+  tally = tallySkip(tally);
+  tally = tallySkip(tally);
+
+  assert.equal(completionSentence(tally), "2 skipped. Nothing re-read.");
+});
+
+test("completionSentence notes skips alongside a real answer count", () => {
+  let tally = emptySessionTally();
+  tally = tallyAnswer(tally, { count: 1, label: "1 document", kind: "document" });
+  tally = tallySkip(tally);
+
+  assert.equal(completionSentence(tally), "1 answered, 1 skipped. 1 document re-read.");
+});
+
+test("hasSessionActivity is false only for a genuinely untouched tally", () => {
+  assert.equal(hasSessionActivity(emptySessionTally()), false);
+  assert.equal(hasSessionActivity(tallySkip(emptySessionTally())), true);
 });

@@ -4,6 +4,39 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.3.15 - 2026-09-17
+
+`M3-REVIEW-FE-075` — the clarifications screen's remaining states: none pending, ingestion still running, all answered, answered-and-re-processing, and capped. Closes #297, #299, #300.
+
+### Added
+
+- `web/components/clarifications/reapply-progress.tsx` — per-item re-processing progress, polled from `GET /reapply-jobs/{id}`. A failed job surfaces the first failed item's own `error` text and a `Retry` button (`POST /reapply-jobs/{id}/retry`) rather than the previous generic "stopped, not stuck" line with no reason (#299) — `askwell.reapply.get_job` already returned `items[].error`; nothing on the frontend read it until now. `ClarificationsScreen` tracks the active jobs an answer opens and keeps a card visible until the job reaches `done`, independent of the answered item's own 10-second undo window, so progress is not tied to a card that has already left the list.
+- The completion state (`../ux/clarifications.md` §5, "All answered"): a session-local tally (`web/lib/clarifications.ts` `SessionTally`) accumulates what was answered and skipped in this browser tab. `completionSentence` names it honestly — "N skipped. Nothing re-read." when nothing was actually answered, never a congratulatory line for an all-skipped batch — and shows a table/document breakdown per `Reprocessing.kind` (#300) rather than collapsing everything into "documents": `askwell.review.Reprocessing` and `_reprocessing_summary` gained `kind: "table" | "document"`, derived from the evidence shape (`column_distribution` → table, everything else → document). No trigger built so far produces a table clarification, so this reads "document" in practice today; the field exists so the very first table trigger (M4) does not need a second migration of this shape. The banner shows for a fixed window (`COMPLETION_VISIBLE_MS`, 6s) then hands back to the plain empty state on its own.
+- The capped state (`../ux/clarifications.md` §5): `askwell.review._capped_counts` reads `audit_decisions` for `clarification_capped` records directly, independent of `list_pending`'s own pending-only query, so a source whose entire raised queue has since been answered or skipped still gets a group — with no items, just the disclosure and a link to Memory (#297, the ticket's own named gap from when `-074` shipped). `GET /clarifications` now also returns the configured `cap`, so the banner names the real number ("Asking about the 5 that matter most") rather than a hardcoded one.
+- A pending group for a source still mid-ingestion (`SourceCoverage.outstanding > 0`, read from the existing `subscribeIngest` stream) now says so — "Still indexing this source — already searchable" — rather than looking identical to a source that has finished.
+- `POST /clarifications/{id}/answer` now returns `reapply_job_id` (`null` when nothing needed re-processing) alongside the existing `reprocessing` object, so the browser can open a progress card without a second round trip.
+
+### Tests
+
+- `api/tests/test_review.py` — 8 new cases: the configured cap is reported, a capped-only source gets a group with an empty item list, a capped source that still has pending items carries the count on the existing group, a deleted capped source stays hidden, and `_reprocessing_summary`'s `kind` for both the document default and a column-distribution table.
+- `web/lib/clarifications.test.ts` — 9 new cases: `cappedSentence` names the real configured cap, `reapplyFailureReason` surfaces the first failed item's reason and is `null` when nothing failed, `completionSentence` breaks tables and documents out separately, is honest rather than congratulatory when everything was skipped, and notes a mixed answered/skipped batch; `hasSessionActivity`.
+- Verified against the real stack: `scripts/dev.sh check` (lint, format, typecheck, 534 tests) and `scripts/dev.sh test-db` (399 tests, up from 393) both pass; `scripts/dev.sh web-check` (typecheck, lint, 203 tests, build, version/token/contrast/offline guards) passes. Live against a rebuilt `api`/`worker`: seeded a source with a `clarification_capped` decision record and no pending rows — `GET /clarifications` returned it as its own group (`"capped":1,"items":[]`), confirming #297. Answered a real clarification through `POST /clarifications/{id}/answer` — the response carried a real `reapply_job_id`; polling `GET /reapply-jobs/{id}` showed the queued chunk fail (no inference bridge running in this session) with `items[0].error = "The assistant is stopped."`, confirming the exact reason `ReapplyProgress` now surfaces (#299) rather than a generic line. Scratch rows removed afterward.
+
+### Known gaps
+
+- Undoing an answer does not roll back that answer's contribution to the session completion tally — a rare correction, and the tally is session-local scratch, not a persisted record.
+- No trigger in `askwell.clarify` produces `column_distribution` evidence yet (M4's own scope), so the "N tables" half of the completion sentence is exercised by tests only, not by a real walkthrough.
+
+### Human review — copy
+
+Exact wording introduced by this ticket, per `../ux/clarifications.md` §5 and `docs/build-plan.md`'s quality gate:
+
+- Capped: `"Asking about the {cap} that matter most. Askwell inferred the rest — you can review them in Memory."` (`cappedSentence`)
+- Completion, something answered: `"{N} answered[, {M} skipped]. {breakdown} re-read."`, e.g. `"3 answered. 2 tables and 17 documents re-read."`
+- Completion, all skipped: `"{N} skipped. Nothing re-read."`
+- Ingestion note on a still-indexing group: `"Still indexing this source — already searchable."`
+- Re-processing failure: `"Stopped, not stuck: {reason}."`
+
 ## 0.3.14 - 2026-09-17
 
 `M3-INLINE-FE-085` — a blocking ambiguity is asked inline, in the conversation, instead of waiting in the queue.
