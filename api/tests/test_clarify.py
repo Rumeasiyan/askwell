@@ -16,11 +16,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from askwell.clarify import (
     DEFAULT_CLARIFICATION_CAP,
+    EVIDENCE_MAX_COLUMN_VALUES,
+    EVIDENCE_PASSAGE_MAX_CHARS,
     Candidate,
     RaiseResult,
+    _bound_text,
     _evaluate,
     _normalize_filename,
     _rank_candidates,
+    column_distribution_evidence,
     get_clarification_cap,
     raise_candidates,
     set_clarification_cap,
@@ -783,3 +787,159 @@ async def test_running_the_same_import_twice_chooses_the_same_five(
     first = await _run()
     second = await _run()
     assert first == second
+
+
+# --- evidence: M3-RAISE-BE-071 -------------------------------------------------
+
+
+async def _evidence_for(session: AsyncSession, subject: str) -> dict:
+    return (
+        await session.execute(
+            text("SELECT evidence FROM clarifications WHERE subject = :subject"),
+            {"subject": subject},
+        )
+    ).scalar_one()
+
+
+@pytest.mark.asyncio
+async def test_abbreviation_evidence_carries_real_passages_and_no_inference(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session)
+    document_id = await _document(session, source_id, "tender.pdf")
+    await _chunk(session, document_id, "The RFQ closes Friday.")
+    await _chunk(session, document_id, "Submit the RFQ to procurement.")
+
+    await raise_candidates(session, source_id, _THRESHOLD)
+
+    evidence = await _evidence_for(session, "RFQ")
+    assert evidence["kind"] == "passage"
+    assert evidence["occurrences"] == 2
+    assert len(evidence["samples"]) == 2
+    assert evidence["samples"][0]["document"] == "tender.pdf"
+    assert "RFQ" in evidence["samples"][0]["text"]
+    # There is nothing safe to guess about what an abbreviation means, so the
+    # prefill is honestly empty rather than inventing one.
+    assert evidence["current_inference"] is None
+
+
+@pytest.mark.asyncio
+async def test_poor_scan_evidence_carries_extracted_text_and_names_the_missing_image(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session)
+    document_id = await _document(session, source_id, "scan.pdf", ocr_confidence=0.2)
+    for page in range(1, 21):
+        await _page(session, document_id, page, f"garbled text page {page}", ocr_confidence=0.2)
+
+    await raise_candidates(session, source_id, _THRESHOLD)
+
+    evidence = await _evidence_for(session, "scan.pdf")
+    assert evidence["kind"] == "poor_scan"
+    assert evidence["total_pages"] == 20
+    assert evidence["extracted_text"][0]["page"] == 1
+    assert "garbled text page 1" in evidence["extracted_text"][0]["text"]
+    # `docs/architecture.md` names no page-image capture in the pipeline yet
+    # (tracked separately) — stated honestly rather than omitted.
+    assert evidence["page_images"] == "not available"
+    assert evidence["current_inference"] is not None
+    assert "indexed as-is" in evidence["current_inference"]
+
+
+@pytest.mark.asyncio
+async def test_document_identity_evidence_carries_a_real_passage_from_the_newest_file(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session)
+    old = await _document(
+        session, source_id, "contract-v1.pdf", added_at=datetime(2025, 1, 1, tzinfo=UTC)
+    )
+    new = await _document(
+        session, source_id, "contract-v2-FINAL.pdf", added_at=datetime(2025, 6, 1, tzinfo=UTC)
+    )
+    await _page(session, old, 1, "Old terms apply here.")
+    await _page(session, new, 1, "New terms apply here, superseding the old.")
+
+    await raise_candidates(session, source_id, _THRESHOLD)
+
+    evidence = await _evidence_for(session, "contract")
+    assert evidence["kind"] == "passage"
+    assert evidence["samples"][0]["document"] == "contract-v2-FINAL.pdf"
+    assert "New terms" in evidence["samples"][0]["text"]
+    assert evidence["current_inference"] is None
+
+
+@pytest.mark.asyncio
+async def test_contradiction_evidence_carries_both_passages_with_their_dates(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session)
+    handbook = await _document(
+        session, source_id, "handbook-2024.pdf", added_at=datetime(2024, 1, 10, tzinfo=UTC)
+    )
+    policy = await _document(
+        session, source_id, "policy-2025.pdf", added_at=datetime(2025, 3, 20, tzinfo=UTC)
+    )
+    await _page(session, handbook, 3, "The notice period is 30 days for all staff.")
+    await _page(session, policy, 7, "The notice period is 45 days for all staff.")
+
+    await raise_candidates(session, source_id, _THRESHOLD)
+
+    evidence = await _evidence_for(session, "the notice period")
+    assert evidence["kind"] == "contradiction"
+    passages = {p["document"]: p for p in evidence["passages"]}
+    assert passages["handbook-2024.pdf"]["value"] == "30 days"
+    assert passages["handbook-2024.pdf"]["date"] == "2024-01-10"
+    assert passages["handbook-2024.pdf"]["page"] == 3
+    assert "30 days" in passages["handbook-2024.pdf"]["text"]
+    assert passages["policy-2025.pdf"]["value"] == "45 days"
+    assert passages["policy-2025.pdf"]["date"] == "2025-03-20"
+    assert evidence["current_inference"] is None
+
+
+@pytest.mark.asyncio
+async def test_evidence_that_cannot_be_captured_still_raises_the_question(
+    session: AsyncSession,
+) -> None:
+    """A poor scan with no extractable text on the flagged pages: the ticket's
+    own edge case — the question is still raised, with a statement that no
+    evidence is available rather than being dropped."""
+    source_id = await _source(session)
+    document_id = await _document(session, source_id, "blank-scan.pdf", ocr_confidence=0.1)
+    for page in range(1, 21):
+        await _page(session, document_id, page, "", ocr_confidence=0.1)
+
+    result = await raise_candidates(session, source_id, _THRESHOLD)
+
+    assert result.raised == 1
+    evidence = await _evidence_for(session, "blank-scan.pdf")
+    assert evidence["kind"] == "unavailable"
+    assert "no text extracted" in evidence["reason"]
+
+
+def test_a_long_passage_is_truncated_with_an_ellipsis() -> None:
+    long_text = "word " * 200
+    bounded = _bound_text(long_text)
+    assert len(bounded) <= EVIDENCE_PASSAGE_MAX_CHARS
+    assert bounded.endswith("…")
+
+
+def test_a_short_passage_is_untouched() -> None:
+    assert _bound_text("a short passage") == "a short passage"
+
+
+def test_column_distribution_evidence_keeps_only_the_top_values() -> None:
+    values = [(f"value-{i}", 1000 - i) for i in range(50)]
+    evidence = column_distribution_evidence(values, row_count=50_000)
+
+    assert evidence["kind"] == "column_distribution"
+    assert len(evidence["values"]) == EVIDENCE_MAX_COLUMN_VALUES
+    assert evidence["values"][0] == {"value": "value-0", "count": 1000}
+    kept = sum(item["count"] for item in evidence["values"])
+    assert evidence["remainder_count"] == 50_000 - kept
+    assert evidence["remainder_count"] > 0
+
+
+def test_column_distribution_evidence_remainder_never_goes_negative() -> None:
+    evidence = column_distribution_evidence([("only-value", 5)], row_count=1)
+    assert evidence["remainder_count"] == 0

@@ -4,6 +4,17 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.3.6 - 2026-09-17
+
+`M3-RAISE-BE-071`.
+
+### Added
+
+- **Evidence per raised clarification** — each of `askwell.clarify`'s four triggers now stores real, kind-tagged evidence with the question: `passage` (document, page, bounded excerpt) for an abbreviation or an ambiguous document identity, `contradiction` (both passages, their pages and dates) for disagreeing sources, `poor_scan` (extracted text per flagged page; `page_images` honestly named `"not available"`, tracked separately as #251) for a bad OCR pass. Every evidence dict carries `current_inference` — the same text that would have been written to `memory` had the candidate not been material enough to ask — so the answer field can prefill it (`docs/ux/clarifications.md` §3).
+- **`column_distribution_evidence`** — the shared shape M4's column-ambiguity trigger will fill in with a query; no trigger calls it yet, since no data source exposes a column before M4.
+- Evidence that cannot be captured (no locatable passage, no text on the flagged pages) never drops the question — it raises with `{"kind": "unavailable", "reason": ...}` instead, per the ticket's own edge case.
+- Passages are bounded to 500 characters with an ellipsis; column value lists are bounded to the top 10 plus a `remainder_count` — a clarification record stays small regardless of corpus size.
+
 ## 0.3.5 - 2026-09-17
 
 `M3-REVIEW-FE-072`.

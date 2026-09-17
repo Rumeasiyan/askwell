@@ -22,6 +22,18 @@ Template:
 
 ---
 
+## 2026-09-17 — `M3-RAISE-BE-071`'s evidence shape reuses the parked prior attempt, and drops the old key names
+
+**Decision:** Rebuilt `M3-RAISE-BE-071` from scratch against current `main` (`8870b0f9`) rather than resurrecting the local unmerged commit on `feat/m3-raise-be-071` (#275) or the closed PR's branch, but reused the evidence shape from `origin/parked/m3-raise-be-071-attempt-1` almost verbatim — it diffs cleanly against `M3-RAISE-BE-068`'s own commit and its reasoning (`kind`-tagged evidence, `_bound_text` at 500 chars, `EVIDENCE_MAX_SAMPLES`/`EVIDENCE_MAX_COLUMN_VALUES` bounds, an `unavailable` kind for the edge case) was already sound. This changes `clarifications.evidence`'s per-trigger keys: `{"occurrences": n}` becomes `{"kind": "passage", "occurrences": n, "samples": [...]}`, `{"filenames": [...]}` (document identity) becomes `{"kind": "passage", "samples": [...]}`, `{"low_confidence_pages": [...], "total_pages": n}` becomes `{"kind": "poor_scan", "pages": [...], "total_pages": n, "extracted_text": [...], "page_images": "not available"}`, and `{"values": [...]}` (contradiction) becomes `{"kind": "contradiction", "passages": [...]}` with each passage carrying its own page, date and bounded excerpt.
+
+**Why:** `docs/decisions.md`'s 2026-09-17 entry above already established that `072a`'s consumer only passes `evidence` through opaquely, so this rename has no caller to break on `main` today — confirmed by reading `askwell.review.list_pending`, which does `"evidence": evidence` with no key access. `_rank_candidates`' own weighting (`_rank_weight`) did read two of the renamed keys (`filenames`, `values`) directly; both were repointed at `candidate.options`/`evidence["passages"]` respectively rather than left silently broken, since `M3-RAISE-BE-069`/`070`'s ranking behaviour must not regress as a side effect of this ticket. The page-image gap for poor scans is stated honestly (`"page_images": "not available"`) rather than invented or silently dropped, per #251 which this ticket's own AC already tracks separately as pipeline scope, not clarify.py scope.
+
+**Consequences:** Any future reader of `clarifications.evidence` must match on `evidence["kind"]` rather than assuming a fixed key set — documented in `clarify.py`'s own module docstring. `M3-REVIEW-FE-073`, which renders this shape, was blocked (#275) specifically because this shape was not reachable from `main`; it can now proceed. Reversing this means going back to flat, untagged evidence dicts with no `current_inference` prefill and no truncation bound — not recommended, since both were named acceptance criteria.
+
+**Refs:** `api/src/askwell/clarify.py`, `api/tests/test_clarify.py`, issues #275, #256, #251, `origin/parked/m3-raise-be-071-attempt-1`.
+
+---
+
 ## 2026-09-17 — `M3-REVIEW-BE-072a` built despite its two named dependencies not being separately closed
 
 **Decision:** Built `GET /clarifications`, `POST /clarifications/{id}/answer` and `POST /clarifications/{id}/skip` (`api/src/askwell/review.py`) even though the ticket's own Dependencies — `M3-RAISE-BE-071` (evidence capture) and `M3-STORE-BE-076` (a dedicated memory write-side module) — are neither one built as their own ticket.
