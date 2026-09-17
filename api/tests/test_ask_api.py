@@ -1263,6 +1263,87 @@ def test_a_question_with_no_relevant_memory_records_none_used(
         assert trace["memory_used"] == 0
 
 
+def test_a_claim_citing_a_memory_fact_records_fact_usage_with_attribution(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """`M3-APPLY-BE-079`'s own acceptance criterion: a claim that cites a
+    memory fact by its index — continuing straight on from the retrieved
+    passages' own `1..N` (`conflict.py`'s `facts_start`) — writes a
+    `fact_usage` row, not a `citations` row, and the `fact_citation` event
+    attributes the fact to the user and the date it was supplied
+    (`memory.created_at`), the same way a document citation names its page.
+    """
+    _truncate(database_url)
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "The RFQ process starts on page 4.", vector)
+    fact_id = _seed_memory_fact(database_url, subject="RFQ", fact="Request for Quotation")
+
+    # One chunk candidate → index 1 is the document, index 2 is the first
+    # (only) retrieved memory fact.
+    fake = _FakeInferenceClient(
+        settings, tokens=["RFQ means Request for Quotation [2]."], vector=vector
+    )
+    _patch_client(monkeypatch, fake)
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "What does RFQ mean?"})
+        events = _events(response.text)
+        message_id = uuid.UUID(next(data for kind, data in events if kind == "done")["message_id"])
+        fact_citation_events = [data for kind, data in events if kind == "fact_citation"]
+
+    assert len(fact_citation_events) == 1
+    event = fact_citation_events[0]
+    assert event["fact_kind"] == "memory"
+    assert event["fact_id"] == str(fact_id)
+    assert event["subject"] == "RFQ"
+    assert event["fact"] == "Request for Quotation"
+    assert event["supplied_at"] is not None
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        usage_rows = db.execute(
+            "SELECT fact_kind, fact_id FROM fact_usage WHERE message_id = %s", (message_id,)
+        ).fetchall()
+        assert usage_rows == [("memory", fact_id)]
+
+        # The claim cited the fact, not the document — no `citations` row.
+        citation_rows = db.execute(
+            "SELECT 1 FROM citations WHERE message_id = %s", (message_id,)
+        ).fetchall()
+        assert citation_rows == []
+
+
+def test_a_fact_cited_by_two_claims_writes_one_usage_row(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """`fact_usage` answers "was this used in this answer", not "which
+    sentence" — the ticket's own scope ("a fact usage row per fact per
+    message"). Citing it twice in one answer still writes one row."""
+    _truncate(database_url)
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "The RFQ process starts on page 4.", vector)
+    fact_id = _seed_memory_fact(database_url, subject="RFQ", fact="Request for Quotation")
+    fake = _FakeInferenceClient(
+        settings,
+        tokens=["RFQ means Request for Quotation [2]. RFQ is spelled out this way [2]."],
+        vector=vector,
+    )
+    _patch_client(monkeypatch, fake)
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "What does RFQ mean?"})
+        message_id = uuid.UUID(
+            next(data for kind, data in _events(response.text) if kind == "done")["message_id"]
+        )
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        usage_rows = db.execute(
+            "SELECT fact_kind, fact_id FROM fact_usage WHERE message_id = %s", (message_id,)
+        ).fetchall()
+        assert usage_rows == [("memory", fact_id)]
+
+
 def test_abstained_turn_never_retrieves_memory(
     settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
 ) -> None:

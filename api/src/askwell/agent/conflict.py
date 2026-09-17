@@ -41,6 +41,14 @@ has the reasoning for keeping this separate from `memory_fact` rather than
 folding one into the other: `memory_fact` is a single fact already known to
 settle a specific conflict, these are unranked background that may or may
 not bear on anything the answer says.
+
+`M3-APPLY-BE-079` gives each entry in both blocks a citation index of its
+own, continuing straight on from the candidates' own `1..N` rather than
+starting a second numbering scheme — `_delimit_memory_facts`/
+`_delimit_schema_notes` take `start_index` for exactly this. `ask.py`'s
+`_cite_claim` resolves an index in that range to a `fact_usage` row instead
+of a `citations` row; C4 applies to a memory-derived claim the same way it
+applies to a document-derived one, just against a different table.
 """
 
 from __future__ import annotations
@@ -101,27 +109,28 @@ def _confidence_label(origin: str, confidence: float | None) -> str:
     return f"inferred, confidence {confidence:.0%}" if confidence is not None else "inferred"
 
 
-def _delimit_memory_facts(facts: Sequence[MemoryFact]) -> str:
+def _delimit_memory_facts(facts: Sequence[MemoryFact], start_index: int) -> str:
     # Omitted entirely when empty, never an empty tagged block — the
     # ticket's own edge case: a labelled block with nothing in it reads as
     # "memory has nothing to say," which is a claim, not the absence of one.
     if not facts:
         return ""
     lines = "\n".join(
-        f"- [{_confidence_label(fact.origin, fact.confidence)}] {fact.subject}: {fact.fact}"
-        for fact in facts
+        f"- [{index}] [{_confidence_label(fact.origin, fact.confidence)}] "
+        f"{fact.subject}: {fact.fact}"
+        for index, fact in enumerate(facts, start=start_index)
     )
     return f"\n\n<memory-facts>\n{lines}\n</memory-facts>"
 
 
-def _delimit_schema_notes(notes: Sequence[SchemaNote]) -> str:
+def _delimit_schema_notes(notes: Sequence[SchemaNote], start_index: int) -> str:
     if not notes:
         return ""
     lines = "\n".join(
-        f"- [{_confidence_label(note.origin, note.confidence)}] "
+        f"- [{index}] [{_confidence_label(note.origin, note.confidence)}] "
         f"{note.table_name}{f'.{note.column_name}' if note.column_name else ''}: "
         f"{note.description}"
-        for note in notes
+        for index, note in enumerate(notes, start=start_index)
     )
     return f"\n\n<schema-notes>\n{lines}\n</schema-notes>"
 
@@ -148,11 +157,19 @@ def compose_conflict(
     the C7 boundary is one rule, not one rule per prompt.
     """
     injection_flagged, injection_patterns = flag_injection(candidates)
+    # Facts and schema notes get indices continuing straight on from the
+    # candidates' own 1..N — one citation index space, so `[index]` in the
+    # model's answer resolves unambiguously to a document, a memory fact or
+    # a schema note without a second marker syntax to teach it
+    # (`M3-APPLY-BE-079`).
+    facts_start = len(candidates) + 1
+    notes_start = facts_start + len(retrieved_facts)
     return ComposedPrompt(
         system_prompt=_load_system_prompt(),
         user_content=(
             f"{delimit_candidates(candidates)}{_delimit_memory_fact(memory_fact)}"
-            f"{_delimit_memory_facts(retrieved_facts)}{_delimit_schema_notes(retrieved_notes)}"
+            f"{_delimit_memory_facts(retrieved_facts, facts_start)}"
+            f"{_delimit_schema_notes(retrieved_notes, notes_start)}"
             f"\n\nQuestion: {question}"
         ),
         prompt_version=PROMPT_VERSION,
