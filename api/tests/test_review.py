@@ -1,0 +1,278 @@
+"""The clarifications API's business logic. `M3-REVIEW-BE-072a`.
+
+Against a real Postgres — grouping, the memory write and the decisions
+record all depend on real SQL and a real transaction boundary.
+"""
+
+import uuid
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
+
+import pytest
+import pytest_asyncio
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from askwell.review import (
+    AlreadyAnswered,
+    ClarificationNotFound,
+    answer_clarification,
+    list_pending,
+    skip_clarification,
+)
+
+pytestmark = pytest.mark.requires_db
+
+_TABLES = "sources, clarifications, memory, audit_decisions"
+
+
+@pytest_asyncio.fixture
+async def session(database_url: str) -> AsyncIterator[AsyncSession]:
+    async_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    engine = create_async_engine(async_url)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as opened:
+        await opened.execute(text(f"TRUNCATE {_TABLES} CASCADE"))
+        await opened.commit()
+        yield opened
+        await opened.rollback()
+        await opened.execute(text(f"TRUNCATE {_TABLES} CASCADE"))
+        await opened.commit()
+    await engine.dispose()
+
+
+async def _source(
+    session: AsyncSession, name: str, *, status: str = "ready", added_at: datetime | None = None
+) -> uuid.UUID:
+    source_id = uuid.uuid4()
+    await session.execute(
+        text(
+            "INSERT INTO sources (id, kind, name, status, added_at) "
+            "VALUES (:id, 'file', :name, :status, COALESCE(:added_at, now()))"
+        ),
+        {"id": source_id, "name": name, "status": status, "added_at": added_at},
+    )
+    return source_id
+
+
+async def _clarification(
+    session: AsyncSession,
+    source_id: uuid.UUID,
+    *,
+    subject: str = "RFQ",
+    question: str = "What does RFQ mean?",
+    status: str = "pending",
+    rank: int | None = 1,
+) -> uuid.UUID:
+    clarification_id = uuid.uuid4()
+    await session.execute(
+        text(
+            "INSERT INTO clarifications "
+            "(id, source_id, subject, question, evidence, rank, status, answer) "
+            "VALUES (:id, :source_id, :subject, :question, "
+            "CAST('{\"occurrences\": 3}' AS jsonb), :rank, :status, :answer)"
+        ),
+        {
+            "id": clarification_id,
+            "source_id": source_id,
+            "subject": subject,
+            "question": question,
+            "rank": rank,
+            "status": status,
+            "answer": "a prior answer" if status == "answered" else None,
+        },
+    )
+    return clarification_id
+
+
+# --- GET /clarifications, grouped ---------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pending_items_are_grouped_by_source_with_counts_and_a_total(
+    session: AsyncSession,
+) -> None:
+    contracts = await _source(session, "contracts")
+    invoices = await _source(session, "invoices")
+    await _clarification(session, contracts, subject="RFQ")
+    await _clarification(session, contracts, subject="PO", rank=2)
+    await _clarification(session, invoices, subject="GRN")
+
+    result = await list_pending(session)
+
+    assert result["total"] == 3
+    by_name = {g["source_name"]: g for g in result["groups"]}
+    assert by_name["contracts"]["count"] == 2
+    assert by_name["invoices"]["count"] == 1
+    subjects = {item["subject"] for item in by_name["contracts"]["items"]}
+    assert subjects == {"RFQ", "PO"}
+
+
+@pytest.mark.asyncio
+async def test_items_carry_question_options_and_evidence(session: AsyncSession) -> None:
+    source_id = await _source(session, "contracts")
+    await _clarification(session, source_id)
+
+    result = await list_pending(session)
+
+    item = result["groups"][0]["items"][0]
+    assert item["question"] == "What does RFQ mean?"
+    assert item["evidence"] == {"occurrences": 3}
+
+
+@pytest.mark.asyncio
+async def test_newest_source_is_listed_first(session: AsyncSession) -> None:
+    now = datetime.now(UTC)
+    older = await _source(session, "older", added_at=now - timedelta(days=1))
+    newer = await _source(session, "newer", added_at=now)
+    await _clarification(session, older)
+    await _clarification(session, newer)
+
+    result = await list_pending(session)
+
+    assert [g["source_name"] for g in result["groups"]] == ["newer", "older"]
+
+
+@pytest.mark.asyncio
+async def test_a_source_with_no_pending_items_produces_no_group(session: AsyncSession) -> None:
+    source_id = await _source(session, "answered-already")
+    await _clarification(session, source_id, status="answered")
+
+    result = await list_pending(session)
+
+    assert result["groups"] == []
+    assert result["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_clarification_whose_source_was_deleted_does_not_appear(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session, "gone", status="deleted")
+    await _clarification(session, source_id)
+
+    result = await list_pending(session)
+
+    assert result["groups"] == []
+
+
+# --- answering -----------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_answering_writes_memory_and_a_decisions_record_in_one_transaction(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session, "contracts")
+    clarification_id = await _clarification(session, source_id, subject="RFQ")
+
+    outcome = await answer_clarification(session, clarification_id, "Request for quotation")
+    await session.commit()
+
+    memory_row = (
+        await session.execute(
+            text("SELECT subject, fact, origin, confidence FROM memory WHERE id = :id"),
+            {"id": outcome.memory_id},
+        )
+    ).first()
+    assert memory_row is not None
+    assert memory_row[0] == "RFQ"
+    assert memory_row[1] == "Request for quotation"
+    assert memory_row[2] == "clarification"
+    assert float(memory_row[3]) == 1.0
+
+    kinds = (
+        await session.execute(text("SELECT kind FROM audit_decisions ORDER BY occurred_at"))
+    ).all()
+    assert [row[0] for row in kinds] == ["clarification_answered"]
+
+    status_row = (
+        await session.execute(
+            text("SELECT status, answer FROM clarifications WHERE id = :id"),
+            {"id": clarification_id},
+        )
+    ).first()
+    assert status_row is not None
+    assert status_row[0] == "answered"
+    assert status_row[1] == "Request for quotation"
+
+
+@pytest.mark.asyncio
+async def test_answering_removes_the_item_from_the_pending_list(session: AsyncSession) -> None:
+    source_id = await _source(session, "contracts")
+    clarification_id = await _clarification(session, source_id)
+
+    await answer_clarification(session, clarification_id, "Request for quotation")
+
+    result = await list_pending(session)
+    assert result["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_answering_an_already_answered_item_is_refused(session: AsyncSession) -> None:
+    source_id = await _source(session, "contracts")
+    clarification_id = await _clarification(session, source_id, status="answered")
+
+    with pytest.raises(AlreadyAnswered):
+        await answer_clarification(session, clarification_id, "second answer")
+
+    memory_rows = (await session.execute(text("SELECT id FROM memory"))).all()
+    assert memory_rows == []
+
+
+@pytest.mark.asyncio
+async def test_answering_a_skipped_item_is_allowed(session: AsyncSession) -> None:
+    source_id = await _source(session, "contracts")
+    clarification_id = await _clarification(session, source_id, status="skipped")
+
+    outcome = await answer_clarification(session, clarification_id, "Request for quotation")
+
+    assert outcome.clarification_id == clarification_id
+
+
+@pytest.mark.asyncio
+async def test_answering_an_unknown_clarification_raises(session: AsyncSession) -> None:
+    with pytest.raises(ClarificationNotFound):
+        await answer_clarification(session, uuid.uuid4(), "anything")
+
+
+# --- skipping --------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_skipping_changes_status_and_writes_no_memory(session: AsyncSession) -> None:
+    source_id = await _source(session, "contracts")
+    clarification_id = await _clarification(session, source_id)
+
+    await skip_clarification(session, clarification_id)
+
+    status_row = (
+        await session.execute(
+            text("SELECT status FROM clarifications WHERE id = :id"), {"id": clarification_id}
+        )
+    ).first()
+    assert status_row is not None
+    assert status_row[0] == "skipped"
+
+    memory_rows = (await session.execute(text("SELECT id FROM memory"))).all()
+    assert memory_rows == []
+
+    kinds = (
+        await session.execute(text("SELECT kind FROM audit_decisions ORDER BY occurred_at"))
+    ).all()
+    assert [row[0] for row in kinds] == ["clarification_skipped"]
+
+
+@pytest.mark.asyncio
+async def test_skipping_an_answered_item_is_refused(session: AsyncSession) -> None:
+    source_id = await _source(session, "contracts")
+    clarification_id = await _clarification(session, source_id, status="answered")
+
+    with pytest.raises(AlreadyAnswered):
+        await skip_clarification(session, clarification_id)
+
+
+@pytest.mark.asyncio
+async def test_skipping_an_unknown_clarification_raises(session: AsyncSession) -> None:
+    with pytest.raises(ClarificationNotFound):
+        await skip_clarification(session, uuid.uuid4())
