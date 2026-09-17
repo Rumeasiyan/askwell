@@ -29,6 +29,30 @@ the ordering `get_active_memory_facts`/`get_active_schema_notes` apply, not
 a filter, since an inferred fact with no competing user fact is still worth
 retrieving (`docs/memory-and-clarification.md` §8: "everything below the cap
 ... left visible ... so the user can correct it if they ever care").
+
+**One correction path, whichever screen calls it.** `M3-CORRECT-BE-082`:
+`correct_memory_fact`/`correct_schema_note`/`delete_memory_fact`/
+`delete_schema_note` are that path — a chip in an answer and the memory
+screen both end up calling exactly these, so "correcting from a chip and
+from the memory screen produce identical results" is true by construction
+rather than by keeping two call sites in sync. Three things beyond plain
+supersession the ticket adds here:
+
+- **The active row is locked (`FOR UPDATE`) before anything else runs.**
+  Two corrections of the same fact arriving close together — a chip and the
+  memory screen, or a doubled click — must not interleave; the second
+  request's `SELECT ... FOR UPDATE` simply waits for the first transaction
+  to commit or roll back, then sees whatever it left behind.
+- **Correcting to the identical value is a no-op.** No new row, no
+  supersession, no `memory_superseded`/`schema_note_superseded` record, and
+  nothing queued to re-process — `Reprocessing(changed=False)` is what a
+  caller reads to show "nothing changed" instead of a false confirmation.
+- **A real change queues re-processing** through `askwell.reapply` — the
+  same dependency resolution `askwell.review.answer_clarification` uses,
+  run here with no clarification and no evidence (a correction from a chip
+  or the memory screen names neither). A fact with no `source_id` — manual,
+  free-standing knowledge with nothing to re-embed — resolves to nothing to
+  queue, honestly, rather than guessing at a source.
 """
 
 import uuid
@@ -95,6 +119,94 @@ class SchemaNote:
     origin: str
     confidence: float | None
     created_at: Any
+
+
+@dataclass(frozen=True, slots=True)
+class Reprocessing:
+    """What a correction or deletion just queued, named specifically enough
+    for the caller — chip or memory screen — to confirm it rather than show
+    a generic toast. `changed=False` is the "correcting to the same value"
+    edge case: nothing superseded, nothing queued, say so.
+    """
+
+    count: int
+    label: str
+    changed: bool
+
+
+NOTHING_CHANGED = Reprocessing(count=0, label="Nothing changed.", changed=False)
+_NOTHING_TO_REPROCESS = Reprocessing(count=0, label="Nothing to re-process.", changed=True)
+
+
+@dataclass(frozen=True, slots=True)
+class CorrectionOutcome:
+    fact_id: uuid.UUID
+    reprocessing: Reprocessing
+    reapply_job_id: uuid.UUID | None
+
+
+@dataclass(frozen=True, slots=True)
+class DeletionOutcome:
+    reprocessing: Reprocessing
+    reapply_job_id: uuid.UUID | None
+
+
+async def _reprocess_subject(
+    session: AsyncSession, *, subject: str, source_id: uuid.UUID | None, memory_id: uuid.UUID | None
+) -> tuple[Reprocessing, uuid.UUID | None]:
+    """Queue re-processing of whatever a corrected or deleted subject
+    affects, via `askwell.reapply`'s dependency resolution — the exact
+    machinery `askwell.review.answer_clarification` already uses, called
+    here with no clarification and no evidence, since a correction from a
+    chip or the memory screen names neither.
+
+    `memory_id` is the *new* fact's id when one exists (a correction, not a
+    deletion) — `askwell.reapply.run_job` reads it back to promote a
+    matching inferred schema note to the corrected value, the same way it
+    already does for a clarification's answer.
+    """
+    if source_id is None:
+        return _NOTHING_TO_REPROCESS, None
+
+    from askwell import reapply
+
+    dependencies = await reapply.resolve_dependencies(
+        session,
+        source_id=source_id,
+        subject=subject,
+        evidence=None,
+        options=None,
+        clarification_id=None,
+    )
+    if memory_id is None:
+        # A deletion, or a schema-note correction (which carries its answer
+        # via `description`, not `memory`): no `memory` row exists for
+        # `reapply.run_job` to read an answer from, so a `schema_note`
+        # dependency here has nothing to promote a matching inferred note
+        # to. Dropped rather than promoted with an empty string.
+        dependencies = [d for d in dependencies if d.kind != "schema_note"]
+    if not dependencies:
+        return _NOTHING_TO_REPROCESS, None
+
+    documents = {d.label for d in dependencies if d.kind == "chunk"}
+    if documents:
+        count = len(documents)
+        label = f"Re-reading {count} document{'' if count == 1 else 's'}."
+    else:
+        count = len(dependencies)
+        label = f"Re-checking {count} item{'' if count == 1 else 's'}."
+
+    job_id = await reapply.enqueue(
+        session,
+        subject=subject,
+        source_id=source_id,
+        evidence=None,
+        options=None,
+        clarification_id=None,
+        memory_id=memory_id,
+        dependencies=dependencies,
+    )
+    return Reprocessing(count=count, label=label, changed=True), job_id
 
 
 # --- memory -------------------------------------------------------------
@@ -189,24 +301,35 @@ async def correct_memory_fact(
     fact_id: uuid.UUID,
     fact: str,
     confidence: float = FULL_CONFIDENCE,
-) -> uuid.UUID:
-    """Supersede an active, user-origin fact with a new value.
+) -> CorrectionOutcome:
+    """Supersede an active, user-origin fact with a new value — the one
+    correction path `M3-CORRECT-BE-082` asks for, whether the caller is a
+    chip in an answer or the memory screen.
 
     The old row survives untouched except for `superseded_by`, so its value
-    stays readable in history exactly as it was recorded.
+    stays readable in history exactly as it was recorded. The row is locked
+    (`FOR UPDATE`) before anything is read, so a second correction of the
+    same fact arriving mid-transaction serialises behind this one rather
+    than interleaving with it. Correcting to the identical value writes
+    nothing and queues nothing — `CorrectionOutcome.reprocessing.changed` is
+    `False` — since there is no new value to supersede with.
     """
     current = await session.execute(
         text(
-            "SELECT subject, origin, source_id FROM memory WHERE id = :id AND superseded_by IS NULL"
+            "SELECT subject, fact, origin, source_id FROM memory "
+            "WHERE id = :id AND superseded_by IS NULL FOR UPDATE"
         ),
         {"id": fact_id},
     )
     row = current.first()
     if row is None:
         raise FactNotFound(str(fact_id))
-    subject, current_origin, source_id = row
+    subject, current_fact, current_origin, source_id = row
     if current_origin not in _USER_MEMORY_ORIGINS:
         raise CannotCorrectInference(str(fact_id))
+
+    if fact == current_fact:
+        return CorrectionOutcome(fact_id=fact_id, reprocessing=NOTHING_CHANGED, reapply_job_id=None)
 
     new_id = uuid.uuid4()
     await session.execute(
@@ -233,10 +356,14 @@ async def correct_memory_fact(
         {"old_fact_id": str(fact_id), "new_fact_id": str(new_id), "subject": subject},
     )
     log.info("memory_superseded", old_fact_id=str(fact_id), new_fact_id=str(new_id))
-    return new_id
+
+    reprocessing, job_id = await _reprocess_subject(
+        session, subject=subject, source_id=source_id, memory_id=new_id
+    )
+    return CorrectionOutcome(fact_id=new_id, reprocessing=reprocessing, reapply_job_id=job_id)
 
 
-async def delete_memory_fact(session: AsyncSession, *, fact_id: uuid.UUID) -> None:
+async def delete_memory_fact(session: AsyncSession, *, fact_id: uuid.UUID) -> DeletionOutcome:
     """Delete an active fact outright. `docs/ux/memory.md` §4: "Stops applying
     immediately. Recorded in the decisions log."
 
@@ -244,11 +371,14 @@ async def delete_memory_fact(session: AsyncSession, *, fact_id: uuid.UUID) -> No
     gone from `memory`, and the decisions record is what lets the memory
     screen's history still say what it was and when it went. The row is
     locked first so a concurrent correction of the same fact cannot race the
-    delete.
+    delete. Deletion queues re-processing the same shape a correction does
+    (`_reprocess_subject`, `memory_id=None` since there is no new value for
+    a promoted schema note to adopt) — `M3-CORRECT-BE-082`'s "deletion
+    follows the same shape, minus the new fact".
     """
     current = await session.execute(
         text(
-            "SELECT subject, fact, origin FROM memory "
+            "SELECT subject, fact, origin, source_id FROM memory "
             "WHERE id = :id AND superseded_by IS NULL FOR UPDATE"
         ),
         {"id": fact_id},
@@ -256,7 +386,7 @@ async def delete_memory_fact(session: AsyncSession, *, fact_id: uuid.UUID) -> No
     row = current.first()
     if row is None:
         raise FactNotFound(str(fact_id))
-    subject, fact, origin = row
+    subject, fact, origin, source_id = row
 
     await session.execute(text("DELETE FROM memory WHERE id = :id"), {"id": fact_id})
     await record(
@@ -266,6 +396,11 @@ async def delete_memory_fact(session: AsyncSession, *, fact_id: uuid.UUID) -> No
         {"fact_id": str(fact_id), "subject": subject, "fact": fact, "origin": origin},
     )
     log.info("memory_deleted", fact_id=str(fact_id), subject=subject)
+
+    reprocessing, job_id = await _reprocess_subject(
+        session, subject=subject, source_id=source_id, memory_id=None
+    )
+    return DeletionOutcome(reprocessing=reprocessing, reapply_job_id=job_id)
 
 
 async def get_active_memory_facts(
@@ -425,21 +560,31 @@ async def correct_schema_note(
     note_id: uuid.UUID,
     description: str,
     confidence: float = FULL_CONFIDENCE,
-) -> uuid.UUID:
-    """Supersede an active note with a user-supplied correction."""
+) -> CorrectionOutcome:
+    """Supersede an active note with a user-supplied correction — the schema-
+    note half of the one correction path `correct_memory_fact` documents:
+    row locked first, identical-value is a no-op, a real change queues
+    re-processing keyed on `column_name or table_name` as the subject (the
+    same name a clarification about this position would carry, so a stale
+    pending question about it is dismissed the same way an answered
+    clarification's would be).
+    """
     current = await session.execute(
         text(
-            "SELECT source_id, table_name, column_name, origin FROM schema_notes "
-            "WHERE id = :id AND superseded_by IS NULL"
+            "SELECT source_id, table_name, column_name, description, origin FROM schema_notes "
+            "WHERE id = :id AND superseded_by IS NULL FOR UPDATE"
         ),
         {"id": note_id},
     )
     row = current.first()
     if row is None:
         raise FactNotFound(str(note_id))
-    source_id, table_name, column_name, current_origin = row
+    source_id, table_name, column_name, current_description, current_origin = row
     if current_origin != "user":
         raise CannotCorrectInference(str(note_id))
+
+    if description == current_description:
+        return CorrectionOutcome(fact_id=note_id, reprocessing=NOTHING_CHANGED, reapply_job_id=None)
 
     new_id = uuid.uuid4()
     await session.execute(
@@ -469,12 +614,18 @@ async def correct_schema_note(
         {"old_note_id": str(note_id), "new_note_id": str(new_id), "table_name": table_name},
     )
     log.info("schema_note_superseded", old_note_id=str(note_id), new_note_id=str(new_id))
-    return new_id
+
+    subject = column_name or table_name
+    reprocessing, job_id = await _reprocess_subject(
+        session, subject=subject, source_id=source_id, memory_id=None
+    )
+    return CorrectionOutcome(fact_id=new_id, reprocessing=reprocessing, reapply_job_id=job_id)
 
 
-async def delete_schema_note(session: AsyncSession, *, note_id: uuid.UUID) -> None:
+async def delete_schema_note(session: AsyncSession, *, note_id: uuid.UUID) -> DeletionOutcome:
     """Delete an active note outright — the schema-notes counterpart of
-    `delete_memory_fact`, same shape, same reasoning."""
+    `delete_memory_fact`, same shape, same reasoning, including queuing
+    re-processing for whatever depended on it."""
     current = await session.execute(
         text(
             "SELECT source_id, table_name, column_name, description, origin FROM schema_notes "
@@ -502,6 +653,12 @@ async def delete_schema_note(session: AsyncSession, *, note_id: uuid.UUID) -> No
         },
     )
     log.info("schema_note_deleted", note_id=str(note_id), table_name=table_name)
+
+    subject = column_name or table_name
+    reprocessing, job_id = await _reprocess_subject(
+        session, subject=subject, source_id=source_id, memory_id=None
+    )
+    return DeletionOutcome(reprocessing=reprocessing, reapply_job_id=job_id)
 
 
 async def get_active_schema_notes(

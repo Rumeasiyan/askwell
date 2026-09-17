@@ -4,6 +4,20 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.3.13 - 2026-09-17
+
+`M3-CORRECT-BE-082` — one correction path for both a chip in an answer and the memory screen, whichever gets built first.
+
+### Changed
+
+- `askwell.memory.correct_memory_fact`/`correct_schema_note`/`delete_memory_fact`/`delete_schema_note` now lock the active row (`FOR UPDATE`) before reading it, so two corrections of the same fact arriving close together serialise instead of interleaving. Correcting to the identical value is a no-op — no new row, no supersession record, nothing queued — and returns `Reprocessing(changed=False)` so a caller can say "nothing changed" rather than confirm work that did not happen. A real change now queues re-processing through `askwell.reapply` (the exact dependency resolution `askwell.review.answer_clarification` already uses, run with no clarification and no evidence) and returns a `Reprocessing`/`DeletionOutcome` naming what is being re-read, the same shape `AnswerOutcome.reprocessing` already gives the clarification path. All four functions' return types changed accordingly (`CorrectionOutcome`/`DeletionOutcome` replace a bare `uuid.UUID`/`None`).
+- `askwell.reapply.resolve_dependencies`/`enqueue` accept `clarification_id=None` (fixed a latent bug: the conflict query's `id != :id` silently matched nothing when `clarification_id` was `NULL`, rather than every pending clarification) and `enqueue` accepts a pre-resolved `dependencies` list so a caller that already resolved them for its own summary — as `askwell.memory` now does — does not resolve them twice.
+
+### Tests
+
+- `api/tests/test_memory.py` — 9 new cases: same-value no-op for both a memory fact and a schema note, a sourceless fact resolving to nothing to re-process, a real correction queuing a `reapply_jobs` row naming the right subject/source/memory id, the ticket's own two-corrections-different-callers example (a clean three-value chain), deletion also queuing re-processing, a schema-note correction filtering out a `schema_note`-kind dependency it has no answer text to promote (an inferred note on a different table sharing the corrected column's name is left untouched), and correcting an already-deleted fact still raising `FactNotFound`.
+- Verified against the real stack: seeded a source/document/chunk and a memory fact via `scripts/dev.sh psql`, ran two sequential corrections through `askwell.memory.correct_memory_fact` inside the `api` container (one standing in for the chip, one for the memory screen), and confirmed a clean three-value chain in `memory`, a `reapply_jobs` row per correction, and the second job closing `done` with zero items of its own since the chunk was already queued under the first — the existing de-duplication rule, not a new one.
+
 ## 0.3.12 - 2026-09-17
 
 `M3-APPLY-ING-080` — answering a clarification now actually re-processes what it affects, closing #264. `M3-STORE-BE-076` (the dependency #264 was waiting on) merged to `main` earlier in the day; this ticket builds on it.
