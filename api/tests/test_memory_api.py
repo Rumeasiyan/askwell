@@ -88,3 +88,44 @@ def test_an_empty_correction_value_is_rejected(client: TestClient) -> None:
         with_session(client)
         response = client.post(f"/memory/facts/memory/{_UUID}/correct", json={"value": ""})
     assert response.status_code == 422
+
+
+def test_confirming_requires_a_session(client: TestClient) -> None:
+    with client:
+        response = client.post(f"/memory/facts/memory/{_UUID}/confirm")
+    assert response.status_code == 401
+
+
+def test_confirming_with_an_unknown_fact_kind_is_a_404(client: TestClient) -> None:
+    with client:
+        with_session(client)
+        response = client.post(f"/memory/facts/table/{_UUID}/confirm")
+    assert response.status_code == 404
+
+
+def test_adding_a_manual_fact_requires_a_session(client: TestClient) -> None:
+    with client:
+        response = client.post(
+            "/memory/facts", json={"subject": "rfq", "fact": "Request for Quotation"}
+        )
+    assert response.status_code == 401
+
+
+def test_an_empty_manual_subject_is_rejected(client: TestClient) -> None:
+    with client:
+        with_session(client)
+        response = client.post("/memory/facts", json={"subject": "", "fact": "x"})
+    assert response.status_code == 422
+
+
+def test_deleting_all_memory_requires_a_session(client: TestClient) -> None:
+    with client:
+        response = client.post("/memory/delete-all", json={"expected_count": 0})
+    assert response.status_code == 401
+
+
+def test_a_negative_expected_count_is_rejected(client: TestClient) -> None:
+    with client:
+        with_session(client)
+        response = client.post("/memory/delete-all", json={"expected_count": -1})
+    assert response.status_code == 422

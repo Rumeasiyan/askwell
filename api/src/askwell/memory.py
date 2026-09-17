@@ -88,10 +88,12 @@ MEMORY_WRITTEN = "memory_written"
 MEMORY_DISCARDED = "memory_discarded"
 MEMORY_SUPERSEDED = "memory_superseded"
 MEMORY_DELETED = "memory_deleted"
+MEMORY_CONFIRMED = "memory_confirmed"
 SCHEMA_NOTE_WRITTEN = "schema_note_written"
 SCHEMA_NOTE_DISCARDED = "schema_note_discarded"
 SCHEMA_NOTE_SUPERSEDED = "schema_note_superseded"
 SCHEMA_NOTE_DELETED = "schema_note_deleted"
+SCHEMA_NOTE_CONFIRMED = "schema_note_confirmed"
 
 # Full confidence for anything the user actually said — asked-and-answered or
 # a direct correction. Only an inference is uncertain.
@@ -218,6 +220,42 @@ class CorrectionOutcome:
 class DeletionOutcome:
     reprocessing: Reprocessing
     reapply_job_id: uuid.UUID | None
+
+
+@dataclass(frozen=True, slots=True)
+class ConfirmOutcome:
+    """What `confirm_fact` did — `docs/ux/memory.md` §4's "Confirm": promote
+    in place, no supersession, no re-processing, because the content did not
+    change. `already_confirmed` is `True` when the target was already
+    user-origin — a second click, or a race with an edit — so the caller can
+    say "already confirmed" instead of a false "done"."""
+
+    fact_id: uuid.UUID
+    already_confirmed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ManualAddOutcome:
+    """What `add_manual_fact` did. `duplicate_of` is set instead of writing
+    anything when `subject` already has an active fact — `docs/ux/memory.md`
+    §4's own edge case, "offered as a correction rather than creating a
+    competing fact": the caller shows the existing value and lets the user
+    correct it instead."""
+
+    fact_id: uuid.UUID | None
+    duplicate_of: MemoryFact | None
+
+
+@dataclass(frozen=True, slots=True)
+class DeleteAllOutcome:
+    deleted_count: int
+    reapply_job_ids: list[uuid.UUID]
+
+
+class StaleMemoryCount(ValueError):
+    """Delete-all-memory's own guard: the count the confirmation named no
+    longer matches what is active, so the request is refused rather than
+    silently deleting a different set than what was confirmed."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -478,6 +516,24 @@ async def delete_memory_fact(session: AsyncSession, *, fact_id: uuid.UUID) -> De
         raise FactNotFound(str(fact_id))
     subject, fact, origin, source_id = row
 
+    # #288: `memory.superseded_by` is `ON DELETE SET NULL`. If `fact_id` is
+    # itself a correction — an earlier row's `superseded_by` points at it —
+    # deleting it unguarded would have Postgres null that earlier row's
+    # `superseded_by`, making the value the user already corrected away
+    # active again. Re-point that earlier row at itself first: still
+    # `superseded_by IS NOT NULL` (never active, never resurrected), still
+    # readable in history (`get_memory_screen`'s history query only checks
+    # `IS NOT NULL`, never the target), and untouched by the FK once its
+    # `superseded_by` no longer names `fact_id`.
+    predecessors = await session.execute(
+        text("SELECT id FROM memory WHERE superseded_by = :id"), {"id": fact_id}
+    )
+    for (predecessor_id,) in predecessors.all():
+        await session.execute(
+            text("UPDATE memory SET superseded_by = :self WHERE id = :self"),
+            {"self": predecessor_id},
+        )
+
     await session.execute(text("DELETE FROM memory WHERE id = :id"), {"id": fact_id})
     await record(
         session,
@@ -491,6 +547,55 @@ async def delete_memory_fact(session: AsyncSession, *, fact_id: uuid.UUID) -> De
         session, subject=subject, source_id=source_id, memory_id=None
     )
     return DeletionOutcome(reprocessing=reprocessing, reapply_job_id=job_id)
+
+
+async def confirm_memory_fact(session: AsyncSession, *, fact_id: uuid.UUID) -> ConfirmOutcome:
+    """Promote an active inferred fact to user-supplied in place —
+    `docs/ux/memory.md` §4's "Confirm": "No re-processing; the content did
+    not change." Unlike a correction, this writes no new row: the value is
+    identical, only how much Askwell trusts it changes, so there is nothing
+    for `_reprocess_subject` to re-read. Confirming an already-user-origin
+    fact is a no-op reported as such rather than an error — a second click,
+    or a race with an edit that landed first, is not a failure.
+    """
+    current = await session.execute(
+        text("SELECT origin FROM memory WHERE id = :id AND superseded_by IS NULL FOR UPDATE"),
+        {"id": fact_id},
+    )
+    row = current.first()
+    if row is None:
+        raise FactNotFound(str(fact_id))
+    (origin,) = row
+    if origin != "inferred":
+        return ConfirmOutcome(fact_id=fact_id, already_confirmed=True)
+
+    await session.execute(
+        text("UPDATE memory SET origin = 'correction', confidence = :confidence WHERE id = :id"),
+        {"confidence": FULL_CONFIDENCE, "id": fact_id},
+    )
+    await record(session, Store.DECISIONS, MEMORY_CONFIRMED, {"fact_id": str(fact_id)})
+    log.info("memory_confirmed", fact_id=str(fact_id))
+    return ConfirmOutcome(fact_id=fact_id, already_confirmed=False)
+
+
+async def add_manual_fact(session: AsyncSession, *, subject: str, fact: str) -> ManualAddOutcome:
+    """Manual entry — `docs/ux/memory.md` §4: "for someone who wants to tell
+    Askwell something before being asked." Same fact shape as a
+    clarification answer, `origin='manual'` the only difference
+    (`docs/backlog/M3-it-learns-my-material.md`'s own Assumption for this
+    ticket).
+
+    A subject that already carries an active fact is not overwritten here —
+    the ticket's own edge case: "offered as a correction rather than
+    creating a competing fact." The existing fact is returned so the caller
+    can route the user to `correct_fact` instead of double-writing.
+    """
+    existing = await get_active_memory_facts(session, subject=subject)
+    if existing:
+        return ManualAddOutcome(fact_id=None, duplicate_of=existing[0])
+    fact_id = await write_memory_fact(session, subject=subject, fact=fact, origin="manual")
+    assert fact_id is not None, "a user-origin write is never discarded"
+    return ManualAddOutcome(fact_id=fact_id, duplicate_of=None)
 
 
 async def get_active_memory_facts(
@@ -712,6 +817,29 @@ async def correct_schema_note(
     return CorrectionOutcome(fact_id=new_id, reprocessing=reprocessing, reapply_job_id=job_id)
 
 
+async def confirm_schema_note(session: AsyncSession, *, note_id: uuid.UUID) -> ConfirmOutcome:
+    """`confirm_memory_fact`'s schema-note counterpart — same shape, promotes
+    `origin` to `'user'` in place, no new row, no re-processing."""
+    current = await session.execute(
+        text("SELECT origin FROM schema_notes WHERE id = :id AND superseded_by IS NULL FOR UPDATE"),
+        {"id": note_id},
+    )
+    row = current.first()
+    if row is None:
+        raise FactNotFound(str(note_id))
+    (origin,) = row
+    if origin != "inferred":
+        return ConfirmOutcome(fact_id=note_id, already_confirmed=True)
+
+    await session.execute(
+        text("UPDATE schema_notes SET origin = 'user', confidence = :confidence WHERE id = :id"),
+        {"confidence": FULL_CONFIDENCE, "id": note_id},
+    )
+    await record(session, Store.DECISIONS, SCHEMA_NOTE_CONFIRMED, {"note_id": str(note_id)})
+    log.info("schema_note_confirmed", note_id=str(note_id))
+    return ConfirmOutcome(fact_id=note_id, already_confirmed=False)
+
+
 async def delete_schema_note(session: AsyncSession, *, note_id: uuid.UUID) -> DeletionOutcome:
     """Delete an active note outright — the schema-notes counterpart of
     `delete_memory_fact`, same shape, same reasoning, including queuing
@@ -727,6 +855,18 @@ async def delete_schema_note(session: AsyncSession, *, note_id: uuid.UUID) -> De
     if row is None:
         raise FactNotFound(str(note_id))
     source_id, table_name, column_name, description, origin = row
+
+    # #288, same fix as `delete_memory_fact`: close the chain over the gap
+    # rather than let the FK's `SET NULL` reopen an earlier, corrected-away
+    # note.
+    predecessors = await session.execute(
+        text("SELECT id FROM schema_notes WHERE superseded_by = :id"), {"id": note_id}
+    )
+    for (predecessor_id,) in predecessors.all():
+        await session.execute(
+            text("UPDATE schema_notes SET superseded_by = :self WHERE id = :self"),
+            {"self": predecessor_id},
+        )
 
     await session.execute(text("DELETE FROM schema_notes WHERE id = :id"), {"id": note_id})
     await record(
@@ -1124,6 +1264,48 @@ async def delete_fact(
     raise ValueError(fact_kind)
 
 
+async def confirm_fact(
+    session: AsyncSession, *, fact_kind: str, fact_id: uuid.UUID
+) -> ConfirmOutcome:
+    """Confirm a fact from the memory screen, whichever kind —
+    `confirm_memory_fact`/`confirm_schema_note` need no origin branching."""
+    if fact_kind == "memory":
+        return await confirm_memory_fact(session, fact_id=fact_id)
+    if fact_kind == "schema_note":
+        return await confirm_schema_note(session, note_id=fact_id)
+    raise ValueError(fact_kind)
+
+
+async def delete_all_memory(session: AsyncSession, *, expected_count: int) -> DeleteAllOutcome:
+    """Delete every active row the memory screen shows — `docs/ux/memory.md`
+    §4's delete-all-memory, and this ticket's own Validation Rule: "Deleting
+    all memory requires a confirmation naming the count." The count is named
+    client-side, from the same `GET /memory` read the screen already holds;
+    `expected_count` is checked against what is active *now* so a confirmed
+    count that has gone stale (another tab, a concurrent answer landing a
+    new inference) is refused rather than silently deleting a different set
+    than the one the user confirmed.
+
+    Reuses `delete_memory_fact`/`delete_schema_note` per row rather than a
+    bulk `DELETE ... WHERE superseded_by IS NULL`, so the #288 fix, the
+    decisions record and the re-processing queue for each row all run
+    exactly as they would for one delete at a time.
+    """
+    screen = await get_memory_screen(session)
+    if len(screen.rows) != expected_count:
+        raise StaleMemoryCount(f"expected {expected_count}, found {len(screen.rows)}")
+
+    job_ids: list[uuid.UUID] = []
+    for row in screen.rows:
+        if row.fact_kind == "memory":
+            outcome = await delete_memory_fact(session, fact_id=row.id)
+        else:
+            outcome = await delete_schema_note(session, note_id=row.id)
+        if outcome.reapply_job_id is not None:
+            job_ids.append(outcome.reapply_job_id)
+    return DeleteAllOutcome(deleted_count=len(screen.rows), reapply_job_ids=job_ids)
+
+
 # --- retrieval for answer composition -------------------------------------
 
 # `plainto_tsquery` ANDs every term it parses, so a question with several
@@ -1304,6 +1486,30 @@ class CorrectFactRequest(BaseModel):
     value: str = Field(min_length=1, max_length=4096)
 
 
+class ManualFactRequest(BaseModel):
+    subject: str = Field(min_length=1, max_length=256)
+    fact: str = Field(min_length=1, max_length=4096)
+
+
+class DeleteAllRequest(BaseModel):
+    expected_count: int = Field(ge=0)
+
+
+def _manual_add_json(outcome: ManualAddOutcome) -> dict[str, Any]:
+    if outcome.duplicate_of is not None:
+        existing = outcome.duplicate_of
+        return {
+            "duplicate": True,
+            "existing": {
+                "fact_id": str(existing.id),
+                "subject": existing.subject,
+                "value": existing.fact,
+                "origin": existing.origin,
+            },
+        }
+    return {"duplicate": False, "fact_id": str(outcome.fact_id)}
+
+
 def register_memory(
     app: FastAPI, settings: Settings, factory: async_sessionmaker[AsyncSession]
 ) -> None:
@@ -1356,6 +1562,41 @@ def register_memory(
                 ),
             }
         )
+
+    @app.post("/memory/facts/{fact_kind}/{fact_id}/confirm")
+    async def confirm_fact_route(fact_kind: str, fact_id: uuid.UUID) -> JSONResponse:
+        if fact_kind not in FACT_KINDS:
+            return JSONResponse({"error": "No such fact kind."}, status_code=404)
+        try:
+            async with session_scope(factory) as db:
+                outcome = await confirm_fact(db, fact_kind=fact_kind, fact_id=fact_id)
+        except FactNotFound:
+            return JSONResponse({"error": "No such fact."}, status_code=404)
+        return JSONResponse(
+            {"fact_id": str(outcome.fact_id), "already_confirmed": outcome.already_confirmed}
+        )
+
+    @app.post("/memory/facts")
+    async def add_manual_fact_route(body: ManualFactRequest) -> JSONResponse:
+        async with session_scope(factory) as db:
+            outcome = await add_manual_fact(db, subject=body.subject, fact=body.fact)
+        return JSONResponse(_manual_add_json(outcome))
+
+    @app.post("/memory/delete-all")
+    async def delete_all_memory_route(body: DeleteAllRequest) -> JSONResponse:
+        try:
+            async with session_scope(factory) as db:
+                outcome = await delete_all_memory(db, expected_count=body.expected_count)
+        except StaleMemoryCount:
+            return JSONResponse(
+                {"error": "Memory changed since you confirmed. Review the list again."},
+                status_code=409,
+            )
+        if outcome.reapply_job_ids:
+            from askwell import reapply
+
+            await reapply.dispatch(settings, outcome.reapply_job_ids)
+        return JSONResponse({"deleted_count": outcome.deleted_count})
 
     @app.post("/memory/facts/{fact_kind}/{fact_id}/delete")
     async def delete_fact_route(fact_kind: str, fact_id: uuid.UUID) -> JSONResponse:

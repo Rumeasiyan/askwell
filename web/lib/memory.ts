@@ -100,6 +100,120 @@ export async function fetchMemoryScreen(signal?: AbortSignal): Promise<MemoryScr
   return fromWire((await response.json()) as MemoryScreenWire);
 }
 
+/**
+ * Confirm: promote an inferred row to user-supplied in one click, no
+ * re-processing (`askwell.memory.confirm_fact` — the content did not
+ * change, only how much Askwell trusts it). `M3-MEM-FE-084`.
+ */
+export async function confirmFact(
+  factKind: "memory" | "schema_note",
+  factId: string,
+): Promise<{ alreadyConfirmed: boolean }> {
+  const response = await fetch(`/memory/facts/${factKind}/${factId}/confirm`, { method: "POST" });
+  if (!response.ok) {
+    throw new Error(`Askwell answered ${response.status} confirming that fact.`);
+  }
+  const body = (await response.json()) as { already_confirmed: boolean };
+  return { alreadyConfirmed: body.already_confirmed };
+}
+
+/** What manual entry found — either the new fact's id, or the existing
+ * active fact for that subject, offered as a correction instead
+ * (`docs/ux/memory.md` §4's own edge case). */
+export interface ManualAddResult {
+  duplicate: boolean;
+  factId: string | null;
+  existing: { factId: string; subject: string; value: string } | null;
+}
+
+interface ManualAddWire {
+  duplicate: boolean;
+  fact_id?: string;
+  existing?: { fact_id: string; subject: string; value: string };
+}
+
+export async function addManualFact(subject: string, fact: string): Promise<ManualAddResult> {
+  const response = await fetch("/memory/facts", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ subject, fact }),
+  });
+  if (!response.ok) {
+    throw new Error(`Askwell answered ${response.status} adding that fact.`);
+  }
+  const wire = (await response.json()) as ManualAddWire;
+  return {
+    duplicate: wire.duplicate,
+    factId: wire.fact_id ?? null,
+    existing: wire.existing
+      ? { factId: wire.existing.fact_id, subject: wire.existing.subject, value: wire.existing.value }
+      : null,
+  };
+}
+
+/** Delete-all-memory. `expectedCount` is the count the confirmation named —
+ * checked server-side against what is active right now, so a stale
+ * confirmation (memory changed since the dialog opened) is refused rather
+ * than deleting a different set than the one the user confirmed. */
+export async function deleteAllMemory(expectedCount: number): Promise<{ deletedCount: number }> {
+  const response = await fetch("/memory/delete-all", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ expected_count: expectedCount }),
+  });
+  if (response.status === 409) {
+    throw new Error("Memory changed since you confirmed. Review the list again.");
+  }
+  if (!response.ok) {
+    throw new Error(`Askwell answered ${response.status} deleting memory.`);
+  }
+  const body = (await response.json()) as { deleted_count: number };
+  return { deletedCount: body.deleted_count };
+}
+
+/** `docs/ux/memory.md` §2's three filters, applied client-side over the
+ * already-fetched list — nothing here needs a round trip. */
+export interface MemoryFilters {
+  inferredOnly: boolean;
+  unusedOnly: boolean;
+  sourceId: string | null;
+}
+
+export const NO_FILTERS: MemoryFilters = {
+  inferredOnly: false,
+  unusedOnly: false,
+  sourceId: null,
+};
+
+export function applyMemoryFilters(rows: readonly MemoryRow[], filters: MemoryFilters): MemoryRow[] {
+  return rows.filter((row) => {
+    if (filters.inferredOnly && row.origin !== "inferred") return false;
+    if (filters.unusedOnly && row.usageCount !== 0) return false;
+    if (filters.sourceId !== null && row.sourceId !== filters.sourceId) return false;
+    return true;
+  });
+}
+
+/** The sources a filter dropdown can offer — only rows that carry one,
+ * de-duplicated, in first-seen order. */
+export function memorySources(rows: readonly MemoryRow[]): { id: string; name: string | null }[] {
+  const seen = new Set<string>();
+  const sources: { id: string; name: string | null }[] = [];
+  for (const row of rows) {
+    if (row.sourceId === null || seen.has(row.sourceId)) continue;
+    seen.add(row.sourceId);
+    sources.push({ id: row.sourceId, name: row.sourceName });
+  }
+  return sources;
+}
+
+/** Delete-all-memory's confirmation copy — names the count and that it
+ * cannot be undone, this ticket's own Validation Rule. */
+export function deleteAllConfirmationCopy(count: number): string {
+  const noun = count === 1 ? "fact" : "facts";
+  return `Delete all ${count} ${noun} Askwell has learned? This cannot be undone.`;
+}
+
 /** "You told me" for anything the user actually said — clarification
  * answer, manual entry or a correction — "I guessed" for an inference.
  * Same wording `ask-screen.tsx`'s chip popover already uses. */

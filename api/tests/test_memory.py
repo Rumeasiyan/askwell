@@ -17,9 +17,15 @@ from askwell.memory import (
     FULL_CONFIDENCE,
     CannotCorrectInference,
     FactNotFound,
+    StaleMemoryCount,
+    add_manual_fact,
+    confirm_fact,
+    confirm_memory_fact,
+    confirm_schema_note,
     correct_fact,
     correct_memory_fact,
     correct_schema_note,
+    delete_all_memory,
     delete_fact,
     delete_memory_fact,
     delete_schema_note,
@@ -1255,3 +1261,287 @@ async def test_memory_screen_includes_schema_notes_with_a_dotted_subject(
     assert screen.rows[0].subject == "invoices.st_cd"
     assert screen.rows[0].source_name == "sales-2024"
     assert screen.rows[0].source_deleted is False
+
+
+# --- confirm: M3-MEM-FE-084 ---------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_confirming_an_inferred_fact_promotes_in_place_with_no_new_row(
+    session: AsyncSession,
+) -> None:
+    fact_id = await write_memory_fact(
+        session, subject="st_cd", fact="a guess", origin="inferred", confidence=0.3
+    )
+    assert fact_id is not None
+
+    outcome = await confirm_memory_fact(session, fact_id=fact_id)
+
+    assert outcome.fact_id == fact_id
+    assert outcome.already_confirmed is False
+    rows = (await session.execute(text("SELECT id, origin, confidence FROM memory"))).all()
+    assert len(rows) == 1
+    row_id, origin, confidence = rows[0]
+    assert row_id == fact_id
+    assert origin == "correction"
+    assert float(confidence) == FULL_CONFIDENCE
+
+
+@pytest.mark.asyncio
+async def test_confirming_leaves_no_decision_shaped_like_reprocessing(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session)
+    document_id = await _document(session, source_id, "policy.pdf")
+    await _chunk(session, document_id)
+    fact_id = await write_memory_fact(
+        session,
+        subject="policy",
+        fact="a guess",
+        origin="inferred",
+        confidence=0.3,
+        source_id=source_id,
+    )
+    assert fact_id is not None
+
+    await confirm_memory_fact(session, fact_id=fact_id)
+
+    kinds = (await session.execute(text("SELECT kind FROM audit_decisions"))).all()
+    assert [k for (k,) in kinds] == ["memory_written", "memory_confirmed"]
+
+
+@pytest.mark.asyncio
+async def test_confirming_an_already_user_fact_is_a_no_op(session: AsyncSession) -> None:
+    fact_id = await write_memory_fact(
+        session, subject="rfq", fact="Request for Quotation", origin="manual"
+    )
+    assert fact_id is not None
+
+    outcome = await confirm_memory_fact(session, fact_id=fact_id)
+
+    assert outcome.already_confirmed is True
+
+
+@pytest.mark.asyncio
+async def test_confirming_an_unknown_fact_raises(session: AsyncSession) -> None:
+    with pytest.raises(FactNotFound):
+        await confirm_memory_fact(session, fact_id=uuid.uuid4())
+
+
+@pytest.mark.asyncio
+async def test_confirming_then_editing_leaves_two_records_in_order(session: AsyncSession) -> None:
+    """Edge case named by the ticket: confirm, then edit — two records,
+    correct order."""
+    fact_id = await write_memory_fact(
+        session, subject="st_cd", fact="status code", origin="inferred", confidence=0.3
+    )
+    assert fact_id is not None
+    await confirm_memory_fact(session, fact_id=fact_id)
+
+    outcome = await correct_memory_fact(session, fact_id=fact_id, fact="student status code")
+
+    history = (
+        await session.execute(
+            text("SELECT id, fact, superseded_by FROM memory ORDER BY created_at")
+        )
+    ).all()
+    by_id = {row[0]: (row[1], row[2]) for row in history}
+    assert by_id[fact_id] == ("status code", outcome.fact_id)
+    assert by_id[outcome.fact_id] == ("student status code", None)
+
+
+@pytest.mark.asyncio
+async def test_confirming_a_schema_note_promotes_to_user_origin(session: AsyncSession) -> None:
+    source_id = await _source(session)
+    note_id = await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name="invoices",
+        column_name="st_cd",
+        description="a guess",
+        origin="inferred",
+        confidence=0.3,
+    )
+    assert note_id is not None
+
+    outcome = await confirm_schema_note(session, note_id=note_id)
+
+    assert outcome.already_confirmed is False
+    row = (
+        await session.execute(
+            text("SELECT origin, confidence FROM schema_notes WHERE id = :id"), {"id": note_id}
+        )
+    ).first()
+    assert row is not None
+    assert row[0] == "user"
+    assert float(row[1]) == FULL_CONFIDENCE
+
+
+@pytest.mark.asyncio
+async def test_confirm_fact_dispatches_by_kind(session: AsyncSession) -> None:
+    fact_id = await write_memory_fact(
+        session, subject="rfq", fact="a guess", origin="inferred", confidence=0.3
+    )
+    assert fact_id is not None
+
+    outcome = await confirm_fact(session, fact_kind="memory", fact_id=fact_id)
+    assert outcome.already_confirmed is False
+
+    with pytest.raises(ValueError):
+        await confirm_fact(session, fact_kind="nonsense", fact_id=fact_id)
+
+
+# --- manual entry: M3-MEM-FE-084 -----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_manual_entry_creates_a_user_supplied_fact(session: AsyncSession) -> None:
+    outcome = await add_manual_fact(session, subject="rfq", fact="Request for Quotation")
+
+    assert outcome.duplicate_of is None
+    assert outcome.fact_id is not None
+    active = await get_active_memory_facts(session, subject="rfq")
+    assert len(active) == 1
+    assert active[0].origin == "manual"
+    assert active[0].confidence == FULL_CONFIDENCE
+
+
+@pytest.mark.asyncio
+async def test_manual_entry_duplicating_a_subject_is_offered_as_a_correction(
+    session: AsyncSession,
+) -> None:
+    fact_id = await write_memory_fact(
+        session, subject="rfq", fact="Request for Quotation", origin="manual"
+    )
+    assert fact_id is not None
+
+    outcome = await add_manual_fact(session, subject="rfq", fact="Request for Quote")
+
+    assert outcome.fact_id is None
+    assert outcome.duplicate_of is not None
+    assert outcome.duplicate_of.id == fact_id
+    assert outcome.duplicate_of.fact == "Request for Quotation"
+    # nothing new was written
+    active = await get_active_memory_facts(session, subject="rfq")
+    assert len(active) == 1
+    assert active[0].id == fact_id
+
+
+# --- delete-all-memory: M3-MEM-FE-084 ------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delete_all_memory_removes_everything_and_counts_it(session: AsyncSession) -> None:
+    source_id = await _source(session)
+    await write_memory_fact(session, subject="rfq", fact="Request for Quotation", origin="manual")
+    await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name="invoices",
+        column_name="st_cd",
+        description="invoice status",
+        origin="user",
+    )
+
+    outcome = await delete_all_memory(session, expected_count=2)
+
+    assert outcome.deleted_count == 2
+    screen = await get_memory_screen(session)
+    assert screen.rows == []
+
+
+@pytest.mark.asyncio
+async def test_delete_all_memory_refuses_a_stale_count(session: AsyncSession) -> None:
+    await write_memory_fact(session, subject="rfq", fact="Request for Quotation", origin="manual")
+
+    with pytest.raises(StaleMemoryCount):
+        await delete_all_memory(session, expected_count=0)
+
+    # nothing was deleted
+    screen = await get_memory_screen(session)
+    assert len(screen.rows) == 1
+
+
+# --- #288: deleting a correction must not resurrect the superseded value --
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_correction_does_not_resurrect_the_superseded_value(
+    session: AsyncSession,
+) -> None:
+    fact_id = await write_memory_fact(
+        session, subject="policy", fact="30 days", origin="clarification"
+    )
+    assert fact_id is not None
+    corrected = await correct_memory_fact(session, fact_id=fact_id, fact="45 days")
+
+    await delete_memory_fact(session, fact_id=corrected.fact_id)
+
+    active = await get_active_memory_facts(session, subject="policy")
+    assert active == []
+
+    # the superseded "30 days" row must still exist and stay inactive —
+    # never resurrected, never dropped, so history is not rewritten.
+    remaining = (
+        await session.execute(
+            text("SELECT fact, superseded_by FROM memory WHERE id = :id"), {"id": fact_id}
+        )
+    ).first()
+    assert remaining is not None
+    assert remaining[0] == "30 days"
+    assert remaining[1] is not None
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_correction_twice_removed_still_does_not_resurrect(
+    session: AsyncSession,
+) -> None:
+    """A three-value chain, deleting the newest active value: the middle
+    value must not come back either."""
+    fact_id = await write_memory_fact(
+        session, subject="policy", fact="30 days", origin="clarification"
+    )
+    assert fact_id is not None
+    corrected_once = await correct_memory_fact(session, fact_id=fact_id, fact="45 days")
+    corrected_twice = await correct_memory_fact(
+        session, fact_id=corrected_once.fact_id, fact="60 days"
+    )
+
+    await delete_memory_fact(session, fact_id=corrected_twice.fact_id)
+
+    assert await get_active_memory_facts(session, subject="policy") == []
+    rows = dict((await session.execute(text("SELECT id, superseded_by FROM memory"))).all())
+    assert rows[fact_id] is not None
+    assert rows[corrected_once.fact_id] is not None
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_schema_note_correction_does_not_resurrect(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session)
+    note_id = await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name="invoices",
+        column_name="st_cd",
+        description="O=open, P=paid",
+        origin="user",
+    )
+    assert note_id is not None
+    corrected = await correct_schema_note(
+        session, note_id=note_id, description="O=open, P=paid, W=written off"
+    )
+
+    await delete_schema_note(session, note_id=corrected.fact_id)
+
+    active = await get_active_schema_notes(session, source_id=source_id)
+    assert active == []
+    remaining = (
+        await session.execute(
+            text("SELECT description, superseded_by FROM schema_notes WHERE id = :id"),
+            {"id": note_id},
+        )
+    ).first()
+    assert remaining is not None
+    assert remaining[1] is not None
