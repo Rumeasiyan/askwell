@@ -4,6 +4,23 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.10 - 2026-09-18
+
+`M4-CONN-SEC-098` — encrypting stored connection credentials at rest. `sources.config_encrypted` is now genuinely encrypted, not plain JSON: a new `askwell.crypto` module derives a key with HKDF-SHA256 over a per-install secret (32 random bytes, generated on first use, written owner-only to `Settings.install_secret_path` — the host-backed mount the inference socket already shares between `api` and `worker`, outside `postgres-data`) and encrypts with Fernet (AES-128-CBC + HMAC). `create_connection_source` encrypts before insert; `run_introspection` decrypts before ever opening a socket, so a lost or changed install secret is caught and reported as `credentials_locked` — the source moves to `attention` with a message that explicitly says the database was never contacted, distinct from `host_unresolved` or any other reachability failure. Key derivation takes an optional passphrase and folds it into the same HKDF call, so M7's passphrase can extend the key without re-encrypting or re-prompting for credentials already stored — this ticket's own forward-compatibility requirement.
+
+Verified live against the running stack: a connection's `config_encrypted` is unreadable Fernet ciphertext (`gAAAAA…`, no plaintext password or host as a substring); the connection introspects and works normally on the original install; deleting `install.key` and re-running introspection reports `credentials_locked` with the re-entry message rather than a misleading network failure.
+
+### Added
+
+- `askwell.crypto`: `load_or_create_install_secret`, `derive_key`, `encrypt`, `decrypt`, and `CredentialsLocked`.
+- `Settings.install_secret_path` (`ASKWELL_INSTALL_SECRET_PATH`, default `/run/askwell/install.key`).
+- `ReasonCode` value `credentials_locked`.
+
+### Changed
+
+- `askwell.connections.create_connection_source` now takes `settings` and encrypts `config_encrypted` before insert.
+- `askwell.connections.run_introspection` decrypts before probing and reports a locked credential as `attention` rather than attempting a doomed connection.
+
 ## 0.4.9 - 2026-09-18
 
 `M4-CONN-SEC-097` — the write-permission probe, `docs/data-sources.md` §4 layer 1. `askwell.connections.probe_connection` now refuses a write-capable credential before either read check runs, on all three engines, by privilege introspection only — never by attempting a write. PostgreSQL: superuser (`pg_roles.rolsuper`), database-level `CREATE` (`has_database_privilege`), or a table-level `INSERT`/`UPDATE`/`DELETE`/`TRUNCATE` grant (`information_schema.table_privileges`). MySQL/MariaDB: `SHOW GRANTS FOR CURRENT_USER()`, parsed for a write privilege and the object it is scoped to. SQL Server: `IS_SRVROLEMEMBER('sysadmin')`, `db_owner`/`db_datawriter`/`db_ddladmin` role membership, or a write permission from `sys.fn_my_permissions`. Every refusal names the strongest permission found and its object (`These credentials have INSERT on \`orders\`. …`) and carries copyable, engine-specific SQL for a read-only user (`read_only_user_sql`) — Askwell never runs it. A new `probe_unreliable` reason code refuses the connection outright whenever the privilege-introspection query itself raises, on any engine, rather than assuming safe. A refusal is recorded as a `connection_write_refused` decisions row (engine, host, the permission named — never the credential) and increments a local, never-transmitted Redis counter, best-effort, the same tolerance `askwell.egress._record` has for a Redis hiccup.
