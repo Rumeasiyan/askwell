@@ -37,16 +37,41 @@ trusts a document's stored path once `askwell.sources.add` has already
 checked it against a nominated root, whatever adds a dump source is
 responsible for that check before calling `import_dump` — repeating it here
 would be a second, divergent copy of `askwell.roots`.
+
+**Size and time caps, `M4-DUMP-VAL-089`.** Both are enforced inside
+`_load_blocking` while the dump is still streaming, not checked once at the
+end — the whole point is that a 200 GB dump never finishes writing to disk in
+the first place. The size cap is measured against `pg_database_size` of the
+sandbox database itself, not `dump_path`'s size on disk: a dump that is small
+as a file but expands once loaded (generated rows, a wide `COPY`) is exactly
+the case a file-size check would miss. Measuring it means a real connection
+to the sandbox instance, so it is polled on a cadence (`CAP_POLL_SECONDS`)
+rather than after every chunk fed to `psql` — a database-size query per
+megabyte would make the cap itself the slow part of every import. The time
+cap has no such cost and is checked every chunk from a monotonic clock. When
+a poll finds both caps already exceeded, the size cap is reported: it can
+only ever be noticed at the polling cadence, so by the time it is seen it may
+already have been true for up to `CAP_POLL_SECONDS` — the time cap, checked
+continuously, is never stale by more than one chunk. `DumpCapExceeded` reuses
+`DumpImportFailed`'s whole existing path (drop the database, mark the source
+`attention`, record `IMPORT_FAILED`) rather than a parallel one, with `cap`
+threaded onto that same audit payload so "how many imports were aborted for
+a cap, not a bad dump" stays a query over `audit_decisions` — the same shape
+every other local counter in this codebase already takes (`ingest.py`'s
+`documents_flagged`, `roots.py`'s rejection count), not a maintained integer
+nothing else reads.
 """
 
 import asyncio
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
 
+import psycopg
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -55,6 +80,7 @@ from askwell.audit import Store
 from askwell.config import Settings
 from askwell.db.engine import session_scope
 from askwell.logging import get_logger
+from askwell.settings_store import get_setting, set_setting
 
 log = get_logger(__name__)
 
@@ -64,6 +90,24 @@ log = get_logger(__name__)
 IMPORT_STARTED = "dump_import_started"
 IMPORT_SUCCEEDED = "dump_import_succeeded"
 IMPORT_FAILED = "dump_import_failed"
+CAP_CHANGED = "dump_cap_changed"
+
+# `docs/data-sources.md` §3: "Sandbox caps: 5 GB and 10 minutes per import.
+# Beyond either, the import aborts and the sandbox database is dropped. Both
+# user-adjustable." Stored in the `settings` key/value table, the same
+# mechanism `askwell.clarify`'s cap already uses — not on `Settings`, which is
+# environment configuration fixed at process start, not something a user
+# changes from a settings screen between imports.
+DUMP_SIZE_CAP_KEY = "dump_size_cap_bytes"
+DUMP_TIME_CAP_KEY = "dump_time_cap_seconds"
+DEFAULT_DUMP_SIZE_CAP_BYTES = 5 * 1024**3
+DEFAULT_DUMP_TIME_CAP_SECONDS = 600.0
+
+# How often the sandbox database's own size is polled during a load. Not the
+# same figure as `PROGRESS_INTERVAL_SECONDS` below — that one paces a status
+# line for someone watching; this one bounds how stale the size cap check can
+# be, and is deliberately answered on its own.
+CAP_POLL_SECONDS = 2.0
 
 # Bytes fed to `psql` between progress checks. The same figure as
 # `sources.READ_CHUNK`, for the same reason: large enough that a multi-
@@ -85,7 +129,108 @@ class DumpImportFailed(RuntimeError):
     recorded as the sandbox database's drop reason."""
 
 
-def _load_blocking(dsn: str, dump_path: Path, report: Report | None) -> int:
+class DumpCapExceeded(DumpImportFailed):
+    """The import was aborted for crossing a configured cap, not for a bad
+    dump. `cap` is `"size"` or `"time"`; `limit` is the setting in force at
+    the moment of the abort, so a later cap change cannot make an old record
+    say something that was never actually checked."""
+
+    def __init__(self, cap: str, limit: float, message: str) -> None:
+        super().__init__(message)
+        self.cap = cap
+        self.limit = limit
+
+
+def _format_bytes(count: float) -> str:
+    value = float(count)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if value < 1024 or unit == "TB":
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} TB"
+
+
+def _format_seconds(count: float) -> str:
+    """`10 minutes`, matching `docs/data-sources.md` §3's own wording for the
+    default. Below a minute, one decimal place — otherwise an abort at 1.3s
+    against a 1s cap reads as the nonsensical "1s, over the time cap of 1s"."""
+    if count < 60:
+        return f"{count:.1f}s"
+    minutes, seconds = divmod(round(count), 60)
+    if minutes and seconds:
+        return f"{minutes} minute{'s' if minutes != 1 else ''} {seconds}s"
+    return f"{minutes} minute{'s' if minutes != 1 else ''}"
+
+
+async def get_dump_size_cap_bytes(session: AsyncSession) -> int:
+    value = await get_setting(session, DUMP_SIZE_CAP_KEY)
+    return DEFAULT_DUMP_SIZE_CAP_BYTES if value is None else int(value)
+
+
+async def set_dump_size_cap_bytes(session: AsyncSession, cap_bytes: int) -> None:
+    """The only way the size cap is changed — always a decision record
+    (`docs/data-sources.md` §3: both caps are "user-adjustable"), same shape
+    as `askwell.clarify.set_clarification_cap`."""
+    if cap_bytes < 1:
+        raise ValueError("dump size cap must be at least 1 byte")
+    previous = await get_dump_size_cap_bytes(session)
+    await set_setting(session, DUMP_SIZE_CAP_KEY, str(cap_bytes))
+    await audit.record(
+        session,
+        Store.DECISIONS,
+        CAP_CHANGED,
+        {"cap": "size", "previous": previous, "new": cap_bytes},
+    )
+
+
+async def get_dump_time_cap_seconds(session: AsyncSession) -> float:
+    value = await get_setting(session, DUMP_TIME_CAP_KEY)
+    return DEFAULT_DUMP_TIME_CAP_SECONDS if value is None else float(value)
+
+
+async def set_dump_time_cap_seconds(session: AsyncSession, cap_seconds: float) -> None:
+    """The only way the time cap is changed — see `set_dump_size_cap_bytes`.
+
+    `previous`/`new` go into the audit payload as strings, not the `float`
+    this function's own signature carries: `audit.compute_hash` refuses a
+    `float` outright (`docs/audit-log.md` — a float does not round-trip
+    identically through jsonb, so a later verification would report
+    tampering that never happened), the same reason `retrieval_score_threshold`
+    is never itself written into a payload elsewhere in this codebase.
+    """
+    if cap_seconds <= 0:
+        raise ValueError("dump time cap must be greater than zero")
+    previous = await get_dump_time_cap_seconds(session)
+    await set_setting(session, DUMP_TIME_CAP_KEY, str(cap_seconds))
+    await audit.record(
+        session,
+        Store.DECISIONS,
+        CAP_CHANGED,
+        {"cap": "time", "previous": str(previous), "new": str(cap_seconds)},
+    )
+
+
+def _database_size_blocking(admin_url: str, database: str) -> int:
+    """The sandbox database's own loaded size, in bytes — connected to
+    `admin_url`'s maintenance database, the same way `sandbox.known_databases`
+    is, so this needs no connection to the database being measured (which the
+    owner role loading it already holds exclusively enough as it is)."""
+    with psycopg.connect(admin_url, autocommit=True) as admin:
+        row = admin.execute("SELECT pg_database_size(%s)", (database,)).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def _load_blocking(
+    dsn: str,
+    dump_path: Path,
+    report: Report | None,
+    *,
+    admin_url: str,
+    database: str,
+    size_cap_bytes: int,
+    time_cap_seconds: float,
+) -> int:
     """Stream `dump_path` into `psql` and return the bytes fed.
 
     Streamed in `CHUNK_SIZE` pieces rather than handed to `psql -f` in one
@@ -94,8 +239,24 @@ def _load_blocking(dsn: str, dump_path: Path, report: Report | None) -> int:
     temp file rather than a pipe: a pipe fills and deadlocks against a
     process that is also waiting on us to keep feeding `stdin`, and a broken
     dump can produce enough `NOTICE`/`ERROR` output to hit that.
+
+    `M4-DUMP-VAL-089`: a watchdog thread, not a check between chunks, is what
+    enforces both caps. Most of a real dump's wall-clock time is spent
+    *inside* a single `proc.stdin.write` (blocked once the OS pipe buffer
+    fills, waiting for `psql` to drain it by running the next statement) or
+    inside the final `proc.wait()` once every byte has already been fed and
+    `psql` is still executing — a long `CREATE INDEX` or the edge case's own
+    `pg_sleep` is exactly this shape. A check placed only between reads of
+    `dump_path` would never run while blocked there, which is the one moment
+    "the statement is terminated rather than waited on" actually has to fire.
+    The watchdog polls independently of whatever the main thread is doing and
+    calls `proc.kill()` itself the instant a cap is crossed — SIGKILL ends the
+    *client*, which is enough to unblock a stuck `write()`/`wait()`; ending
+    the *statement* still running server-side is `import_dump`'s job, via
+    `sandbox.drop_database(..., WITH (FORCE))` once this raises.
     """
     total = dump_path.stat().st_size
+    start = time.monotonic()
     last_report = 0.0
 
     def maybe_report(done: int) -> None:
@@ -116,6 +277,58 @@ def _load_blocking(dsn: str, dump_path: Path, report: Report | None) -> int:
             stderr=stderr_file,
         )
         assert proc.stdin is not None
+
+        def check_once(measure_size: bool) -> DumpCapExceeded | None:
+            """One evaluation of both caps. `measure_size` gates the real
+            database-size query behind the poll cadence; the elapsed-time
+            check is free and always runs, so a call from the watchdog's own
+            loop and a call from the final backstop below share one place
+            that decides what "exceeded" means for each cap."""
+            if measure_size:
+                try:
+                    loaded = _database_size_blocking(admin_url, database)
+                except Exception:
+                    # The sandbox database may already be gone (a normal
+                    # finish racing this check); a cap check that crashes
+                    # here would surface as an unrelated, misleading
+                    # traceback instead of the real outcome.
+                    loaded = None
+                if loaded is not None and loaded > size_cap_bytes:
+                    return DumpCapExceeded(
+                        "size",
+                        size_cap_bytes,
+                        f"Import aborted: loaded data reached {_format_bytes(loaded)}, "
+                        f"over the size cap of {_format_bytes(size_cap_bytes)}.",
+                    )
+            elapsed = time.monotonic() - start
+            if elapsed > time_cap_seconds:
+                return DumpCapExceeded(
+                    "time",
+                    time_cap_seconds,
+                    f"Import aborted: running for {_format_seconds(elapsed)}, "
+                    f"over the time cap of {_format_seconds(time_cap_seconds)}.",
+                )
+            return None
+
+        cap_error: list[DumpCapExceeded] = []
+        stop_watchdog = threading.Event()
+
+        def watchdog() -> None:
+            last_size_poll = 0.0
+            while not stop_watchdog.wait(min(0.2, CAP_POLL_SECONDS)):
+                now = time.monotonic()
+                due = not last_size_poll or now - last_size_poll >= CAP_POLL_SECONDS
+                if due:
+                    last_size_poll = now
+                error = check_once(due)
+                if error is not None:
+                    cap_error.append(error)
+                    proc.kill()
+                    return
+
+        watchdog_thread = threading.Thread(target=watchdog, daemon=True)
+        watchdog_thread.start()
+
         done = 0
         try:
             with dump_path.open("rb") as handle:
@@ -127,8 +340,8 @@ def _load_blocking(dsn: str, dump_path: Path, report: Report | None) -> int:
                         proc.stdin.write(block)
                     except BrokenPipeError:
                         # psql has already exited (ON_ERROR_STOP=1 hit
-                        # something) — stop feeding it and let `wait()` below
-                        # report the real failure.
+                        # something, or the watchdog killed it) — stop
+                        # feeding it and let what follows report why.
                         break
                     done += len(block)
                     maybe_report(done)
@@ -139,6 +352,24 @@ def _load_blocking(dsn: str, dump_path: Path, report: Report | None) -> int:
                 pass
 
         returncode = proc.wait()
+        stop_watchdog.set()
+        watchdog_thread.join()
+
+        if not cap_error:
+            # The watchdog polls on an interval and may never have gotten a
+            # turn before a fast load already finished — an empty sandbox
+            # database's own catalog overhead can already be over a small
+            # size cap before a single byte of the dump is fed in, and that
+            # must still abort rather than pass because psql happened to
+            # exit first. One authoritative check, right when the load ends,
+            # closes that race without changing what "exceeded" means.
+            final_error = check_once(True)
+            if final_error is not None:
+                cap_error.append(final_error)
+
+        if cap_error:
+            raise cap_error[0]
+
         if returncode != 0:
             stderr_file.seek(0)
             reason = stderr_file.read().decode("utf-8", errors="replace").strip()
@@ -151,8 +382,6 @@ def _load_blocking(dsn: str, dump_path: Path, report: Report | None) -> int:
 def _introspect_blocking(dsn: str) -> list[str]:
     """The table inventory a fresh load produced. Names only — see the module
     docstring on why full introspection is `M4-SCHEMA-ING-100`, not here."""
-    import psycopg
-
     with psycopg.connect(dsn, autocommit=True) as conn:
         rows = conn.execute(
             "SELECT table_name FROM information_schema.tables "
@@ -215,6 +444,8 @@ async def import_dump(
     name = sandbox.generate_name()
 
     async with session_scope(factory) as session:
+        size_cap_bytes = await get_dump_size_cap_bytes(session)
+        time_cap_seconds = await get_dump_time_cap_seconds(session)
         await sandbox.create_database(session, admin_url, name)
         await session.execute(
             text("UPDATE sources SET sandbox_db = :db, status = 'indexing' WHERE id = :id"),
@@ -231,13 +462,33 @@ async def import_dump(
     dsn = sandbox.owner_url(admin_url, name, owner_password)
 
     try:
-        await asyncio.to_thread(_load_blocking, dsn, dump_path, report)
+        await asyncio.to_thread(
+            _load_blocking,
+            dsn,
+            dump_path,
+            report,
+            admin_url=admin_url,
+            database=name,
+            size_cap_bytes=size_cap_bytes,
+            time_cap_seconds=time_cap_seconds,
+        )
         tables = await asyncio.to_thread(_introspect_blocking, dsn)
     except Exception as error:
         if isinstance(error, DumpImportFailed):
             reason = str(error)
         else:
             reason = f"{type(error).__name__}: {error}"
+        payload: dict[str, object] = {
+            "source_id": str(source_id),
+            "database": name,
+            "reason": reason,
+        }
+        if isinstance(error, DumpCapExceeded):
+            # The "local counter of aborted imports" the ticket's own
+            # Analytics Events line asks for: a count over `audit_decisions`
+            # where `payload->>'cap'` is set, never a maintained integer —
+            # the same shape every other local counter in this codebase uses.
+            payload["cap"] = error.cap
         async with session_scope(factory) as session:
             await sandbox.drop_database(session, admin_url, name, reason=reason)
             await session.execute(
@@ -247,13 +498,16 @@ async def import_dump(
                 ),
                 {"error": reason, "id": source_id},
             )
-            await audit.record(
-                session,
-                Store.DECISIONS,
-                IMPORT_FAILED,
-                {"source_id": str(source_id), "database": name, "reason": reason},
-            )
-        log.warning("dump_import_failed", source_id=str(source_id), database=name, reason=reason)
+            await audit.record(session, Store.DECISIONS, IMPORT_FAILED, payload)
+        log.warning(
+            "dump_import_failed",
+            source_id=str(source_id),
+            database=name,
+            reason=reason,
+            cap=getattr(error, "cap", None),
+        )
+        if isinstance(error, DumpImportFailed):
+            raise
         raise DumpImportFailed(reason) from error
 
     async with session_scope(factory) as session:
