@@ -6,7 +6,7 @@ Four ways material gets in. Specified in `../data-sources.md`; this is what the 
 
 **Route:** `/sources/add`
 **Entry points:** library, first run, empty states, drag-and-drop anywhere in the app.
-**Phase:** 1 (files, CSV) · 3 (dumps, connections)
+**Phase:** 1 (files) · 4 (CSV, dumps, connections)
 
 ---
 
