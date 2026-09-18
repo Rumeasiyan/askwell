@@ -4,6 +4,24 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.9 - 2026-09-18
+
+`M4-CONN-SEC-097` — the write-permission probe, `docs/data-sources.md` §4 layer 1. `askwell.connections.probe_connection` now refuses a write-capable credential before either read check runs, on all three engines, by privilege introspection only — never by attempting a write. PostgreSQL: superuser (`pg_roles.rolsuper`), database-level `CREATE` (`has_database_privilege`), or a table-level `INSERT`/`UPDATE`/`DELETE`/`TRUNCATE` grant (`information_schema.table_privileges`). MySQL/MariaDB: `SHOW GRANTS FOR CURRENT_USER()`, parsed for a write privilege and the object it is scoped to. SQL Server: `IS_SRVROLEMEMBER('sysadmin')`, `db_owner`/`db_datawriter`/`db_ddladmin` role membership, or a write permission from `sys.fn_my_permissions`. Every refusal names the strongest permission found and its object (`These credentials have INSERT on \`orders\`. …`) and carries copyable, engine-specific SQL for a read-only user (`read_only_user_sql`) — Askwell never runs it. A new `probe_unreliable` reason code refuses the connection outright whenever the privilege-introspection query itself raises, on any engine, rather than assuming safe. A refusal is recorded as a `connection_write_refused` decisions row (engine, host, the permission named — never the credential) and increments a local, never-transmitted Redis counter, best-effort, the same tolerance `askwell.egress._record` has for a Redis hiccup.
+
+`web/components/add/add-screen.tsx`'s stale "the refusal for a write-capable credential is not wired up yet" copy is gone, replaced by a rendered `remediation` block (a read-only, selectable `<textarea>`) on a `write_capable` refusal. `web/components/settings/connections.tsx`'s "write permissions not yet checked" line is corrected to "write access refused if found".
+
+### Added
+
+- Write-permission probe in `askwell.connections.probe_connection` for PostgreSQL, MySQL/MariaDB and SQL Server.
+- `ReasonCode` values `write_capable` and `probe_unreliable`.
+- `askwell.connections.read_only_user_sql` — copyable, engine-specific statements for a read-only user.
+- `askwell.connections.record_write_probe_refusal` — the `connection_write_refused` decisions record and the local refusal counter.
+- `ConnectOutcome.remediation`, surfaced through `POST /sources/connection`'s response and rendered on the add-source screen.
+
+### Changed
+
+- SQL Server's write check fails closed on an unreadable credential; the pre-existing SELECT-only read check for that engine is unchanged and still assumes read access on the same failure, a known asymmetry — `docs/decisions.md`, this date.
+
 ## 0.4.8 - 2026-09-18
 
 `M4-CONN-FE-096` — the connection wizard for a live database, `docs/data-sources.md` §4, `docs/ux/add-source.md` §4. Adds `POST /sources/connection`: validates host/port/database/user before any socket opens, then attempts a real connection against PostgreSQL (`psycopg`), MySQL/MariaDB (`pymysql`) or SQL Server (`python-tds`), a minimal read check (a table listing plus a best-effort SELECT-grant check), and — on success — creates a `connection`-kind source and dispatches `introspect_connection_job` to record its table names as `schema_notes` and mark it `ready`. `askwell.connections.py` classifies every failure into one of five distinguishable reasons (`host_unresolved`, `connection_refused`, `network_blocked`, `timeout`, `auth_failed`, plus `permission_denied` for a connection that succeeds but cannot read), matched against each driver's own exception types and, for `psycopg`, its message text — never guessed from a support matrix. `web/components/add/add-screen.tsx` gained `ConnectionRoute` (engine/host/port/database/user/password, one submit, a heading per `reason_code`) and `ConnectionQueued` (the same "recorded, now runs in the background" shape `DumpQueued` already has, polling `/ingest`). Settings gained a "Connected databases" section (`web/components/settings/connections.tsx`) with its own count, deliberately not folded into the network-activity zero. The library lists a connection's read status honestly: "read access confirmed, write permissions not yet checked" — `M4-CONN-SEC-097` (the write probe) is not built, so nothing claims a check that did not run.

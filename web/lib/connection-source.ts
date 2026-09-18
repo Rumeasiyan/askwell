@@ -1,11 +1,12 @@
 /**
- * Connecting Askwell to a database the user already runs. `M4-CONN-FE-096`.
+ * Connecting Askwell to a database the user already runs. `M4-CONN-FE-096`,
+ * `M4-CONN-SEC-097`.
  *
  * `docs/data-sources.md` §4: host, port, database, user, password, then
  * connect, probe for write access, introspect the schema. The write probe
- * (`M4-CONN-SEC-097`) is not wired yet — a write-capable credential is
- * accepted by this wizard today, exactly as that ticket's own "Known gaps"
- * line says.
+ * refuses a write-capable credential outright — `reason_code: "write_capable"`
+ * — naming the permission and object in `message`, with copyable SQL for a
+ * read-only user in `remediation`. There is no override.
  */
 
 export const ENGINES = [
@@ -31,6 +32,11 @@ export interface ConnectionOutcome {
    * fixes, and this is how the wizard tells them apart. */
   reason_code: string | null;
   message: string;
+  /** Copyable SQL to create a read-only user for the engine attempted —
+   * present only on a `write_capable` refusal. `docs/ux/add-source.md` §4:
+   * "Telling someone to create a read-only user without showing how is
+   * where the flow dies for anyone who is not a DBA." */
+  remediation: string | null;
   source: ConnectionSource | null;
 }
 

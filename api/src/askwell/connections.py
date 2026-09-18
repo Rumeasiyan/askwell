@@ -4,11 +4,23 @@
 probe for write access, introspect the schema, raise clarifications for
 unguessable columns. This module builds the first two of those four steps —
 connect and a minimal read check — and the table-name inventory that lets a
-successful connection say something concrete about what it found. The write
-probe (`M4-CONN-SEC-097`) and credential encryption (`M4-CONN-SEC-098`) are
-this ticket's own named "Out of Scope"; full schema introspection — types,
-keys, relationships — is `M4-SCHEMA-ING-100`, the same split `dump_import.py`
-already draws for a loaded dump.
+successful connection say something concrete about what it found. Credential
+encryption (`M4-CONN-SEC-098`) is still out of scope; full schema
+introspection — types, keys, relationships — is `M4-SCHEMA-ING-100`, the same
+split `dump_import.py` already draws for a loaded dump.
+
+**The write-permission probe (`M4-CONN-SEC-097`) refuses before either read
+check runs.** `docs/data-sources.md` §4 layer 1: the database role itself
+must be read-only, independently of `sqlglot` validating generated SQL later
+— one credential that can write defeats that layer regardless of what the
+query layer does. Detection is privilege introspection, never a write
+attempt: `pg_roles.rolsuper` / `has_database_privilege(..., 'CREATE')` /
+`information_schema.table_privileges` for PostgreSQL, `SHOW GRANTS FOR
+CURRENT_USER()` for MySQL/MariaDB, `IS_SRVROLEMEMBER('sysadmin')` / database
+role membership / `sys.fn_my_permissions` for SQL Server. A query that cannot
+even be asked — the introspection call itself raising — is refused as
+`probe_unreliable` rather than treated as a pass; an unverifiable credential
+is not an accepted one. There is no override path anywhere in this module.
 
 **Four distinguishable failures, not three.** `docs/data-sources.md` §4's
 edge cases name a host that does not resolve, a host that refuses, wrong
@@ -48,6 +60,7 @@ bad route.
 """
 
 import asyncio
+import contextlib
 import errno
 import socket
 import uuid
@@ -84,6 +97,14 @@ ENGINE_LABELS: dict[str, str] = {
 # existing connection, only creates one.
 CONNECTION_ADDED = "connection_added"
 
+# `M4-CONN-SEC-097`'s own AC: "The refusal and the detected permission are
+# decisions records." Never the credential, same rule as `CONNECTION_ADDED`.
+CONNECTION_WRITE_REFUSED = "connection_write_refused"
+
+# Local-only (C1) — never transmitted. Read by nothing yet; this ticket's own
+# AC asks only for the counter to exist, not for a surface that displays it.
+WRITE_PROBE_REFUSED_COUNTER_KEY = "askwell:connections:write_probe_refused"
+
 ReasonCode = Literal[
     "unsupported_engine",
     "invalid_host",
@@ -96,6 +117,8 @@ ReasonCode = Literal[
     "timeout",
     "auth_failed",
     "permission_denied",
+    "write_capable",
+    "probe_unreliable",
     "unknown",
 ]
 
@@ -106,6 +129,119 @@ NETWORK_BLOCKED_MESSAGE = (
     "this build. This is not a wrong host or a wrong password; nothing you "
     "change here will fix it."
 )
+
+PROBE_UNRELIABLE_MESSAGE = (
+    "Askwell connected, but could not verify whether this user can write. An "
+    "unverifiable credential is not an acceptable one, so the connection is "
+    "refused rather than assumed read-only."
+)
+
+# Table-level SQL privileges that mean the role can change data or structure,
+# for the engines that expose them as discrete grant names.
+_MYSQL_WRITE_PRIVILEGES = (
+    "ALL PRIVILEGES",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "CREATE",
+    "DROP",
+    "ALTER",
+    "TRUNCATE",
+    "REFERENCES",
+    "INDEX",
+)
+_SQLSERVER_WRITE_PERMISSIONS = frozenset(
+    {"INSERT", "UPDATE", "DELETE", "ALTER", "CONTROL", "REFERENCES"}
+)
+_SQLSERVER_WRITE_ROLES = frozenset({"db_owner", "db_datawriter", "db_ddladmin"})
+
+
+def read_only_user_sql(engine: str, database: str) -> str:
+    """Copyable statements for the read-only user `docs/ux/add-source.md` §4
+    promises on every refusal: "Telling someone to create a read-only user
+    without showing how is where the flow dies for anyone who is not a DBA."
+    The password is a placeholder the user fills in themselves — Askwell
+    never creates this user or holds its credential (this ticket's own
+    "Out of Scope")."""
+    if engine == "postgresql":
+        return (
+            "CREATE ROLE askwell_reader LOGIN PASSWORD 'choose-a-password';\n"
+            f"GRANT CONNECT ON DATABASE {database} TO askwell_reader;\n"
+            "GRANT USAGE ON SCHEMA public TO askwell_reader;\n"
+            "GRANT SELECT ON ALL TABLES IN SCHEMA public TO askwell_reader;\n"
+            "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO askwell_reader;"
+        )
+    if engine in ("mysql", "mariadb"):
+        return (
+            "CREATE USER 'askwell_reader'@'%' IDENTIFIED BY 'choose-a-password';\n"
+            f"GRANT SELECT ON {database}.* TO 'askwell_reader'@'%';\n"
+            "FLUSH PRIVILEGES;"
+        )
+    if engine == "sqlserver":
+        return (
+            "CREATE LOGIN askwell_reader WITH PASSWORD = 'choose-a-password';\n"
+            "CREATE USER askwell_reader FOR LOGIN askwell_reader;\n"
+            "ALTER ROLE db_datareader ADD MEMBER askwell_reader;"
+        )
+    raise ValueError(f"No read-only user guidance for engine {engine!r}.")
+
+
+def _write_capable_outcome(
+    engine: str, database: str, permission: str, object_phrase: str
+) -> "ConnectOutcome":
+    message = (
+        f"These credentials have {permission} on {object_phrase}. Askwell only connects "
+        "with read-only access. Create a read-only user and try again — here is the SQL "
+        "for it."
+    )
+    return ConnectOutcome(
+        False, "write_capable", message, remediation=read_only_user_sql(engine, database)
+    )
+
+
+def _probe_unreliable_outcome() -> "ConnectOutcome":
+    return ConnectOutcome(False, "probe_unreliable", PROBE_UNRELIABLE_MESSAGE)
+
+
+def _find_sqlserver_write_permission(
+    database: str, *, is_sysadmin: bool, role_memberships: set[str], permissions: set[str]
+) -> tuple[str, str] | None:
+    """The strongest write-capable signal found, and the object it names —
+    `sysadmin` outranks a database role, which outranks a bare permission,
+    because a sysadmin refusal naming "the server" is a truer answer than one
+    naming "the database" even though both are found true."""
+    if is_sysadmin:
+        return "sysadmin", "the server"
+    write_roles = role_memberships & _SQLSERVER_WRITE_ROLES
+    if write_roles:
+        return sorted(write_roles)[0], f"the `{database}` database"
+    write_permissions = permissions & _SQLSERVER_WRITE_PERMISSIONS
+    if write_permissions:
+        return sorted(write_permissions)[0], f"the `{database}` database"
+    return None
+
+
+def _find_mysql_write_grant(grants: list[str]) -> tuple[str, str] | None:
+    """The first write-capable privilege in a `SHOW GRANTS FOR CURRENT_USER()`
+    result, and the object it is scoped to (`*.*`, `db.*`, or `db.table`).
+
+    A grant line looks like `GRANT SELECT, INSERT ON \\`orders\\`.* TO ...` or
+    `GRANT ALL PRIVILEGES ON *.* TO ...` — parsed rather than assumed, because
+    the object a privilege applies to is exactly what the refusal has to name.
+    """
+    import re
+
+    for grant in grants:
+        match = re.match(r"GRANT\s+(.+?)\s+ON\s+(\S+)\s+TO", grant, re.IGNORECASE)
+        if match is None:
+            continue
+        privileges_text, object_name = match.groups()
+        if "ALL PRIVILEGES" in privileges_text.upper():
+            return "ALL PRIVILEGES", object_name
+        for privilege in (item.strip().upper() for item in privileges_text.split(",")):
+            if privilege in _MYSQL_WRITE_PRIVILEGES:
+                return privilege, object_name
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +261,7 @@ class ConnectOutcome:
     reason_code: ReasonCode | None
     message: str
     tables: tuple[str, ...] = field(default_factory=tuple)
+    remediation: str | None = None
 
 
 def validate_fields(
@@ -239,6 +376,43 @@ def _probe_postgresql_blocking(
         ) as conn:
             conn.read_only = True
             with conn.cursor() as cur:
+                try:
+                    cur.execute("SELECT rolsuper FROM pg_roles WHERE rolname = current_user")
+                    superuser_row = cur.fetchone()
+                    is_superuser = bool(superuser_row[0]) if superuser_row else False
+                    cur.execute(
+                        "SELECT has_database_privilege(current_user, current_database(), 'CREATE')"
+                    )
+                    create_row = cur.fetchone()
+                    can_create = bool(create_row[0]) if create_row else False
+                    cur.execute(
+                        "SELECT table_schema, table_name, privilege_type FROM "
+                        "information_schema.table_privileges WHERE grantee = current_user "
+                        "AND privilege_type IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE') "
+                        "ORDER BY table_schema, table_name LIMIT 1"
+                    )
+                    write_row = cur.fetchone()
+                except psycopg.Error:
+                    return _probe_unreliable_outcome()
+
+                if is_superuser:
+                    return _write_capable_outcome(
+                        "postgresql", database, "superuser", f"the `{database}` database"
+                    )
+                if can_create:
+                    return _write_capable_outcome(
+                        "postgresql", database, "CREATE", f"the `{database}` database"
+                    )
+                if write_row is not None:
+                    schema = str(write_row[0])
+                    table_name = str(write_row[1])
+                    privilege = str(write_row[2])
+                    object_name = table_name if schema == "public" else f"{schema}.{table_name}"
+                    return _write_capable_outcome(
+                        "postgresql", database, privilege, f"`{object_name}`"
+                    )
+
+            with conn.cursor() as cur:
                 cur.execute(
                     "SELECT table_name FROM information_schema.tables "
                     "WHERE table_schema NOT IN ('pg_catalog', 'information_schema') "
@@ -308,19 +482,23 @@ def _probe_mysql_blocking(
 
     try:
         with conn.cursor() as cur:
+            try:
+                cur.execute("SHOW GRANTS FOR CURRENT_USER()")
+                grants = [str(row[0]) for row in cur.fetchall()]
+            except pymysql.err.MySQLError:
+                return _probe_unreliable_outcome()
+
+            write_found = _find_mysql_write_grant(grants)
+            if write_found is not None:
+                permission, object_name = write_found
+                return _write_capable_outcome(engine, database, permission, f"`{object_name}`")
+
             cur.execute(
                 "SELECT table_name FROM information_schema.tables WHERE table_schema = %s "
                 "ORDER BY table_name",
                 (database,),
             )
             tables = tuple(str(row[0]) for row in cur.fetchall())
-
-            grants: list[str] = []
-            try:
-                cur.execute("SHOW GRANTS FOR CURRENT_USER()")
-                grants = [str(row[0]) for row in cur.fetchall()]
-            except pymysql.err.MySQLError:
-                grants = []
         can_select = any(
             "ALL PRIVILEGES" in grant or "SELECT" in grant.split("ON", 1)[0] for grant in grants
         )
@@ -360,19 +538,41 @@ def _probe_sqlserver_blocking(
 
     try:
         with conn.cursor() as cur:
+            try:
+                cur.execute("SELECT IS_SRVROLEMEMBER('sysadmin')")
+                sysadmin_row = cur.fetchone()
+                is_sysadmin = bool(sysadmin_row[0]) if sysadmin_row else False
+                cur.execute(
+                    "SELECT DP1.name FROM sys.database_role_members DRM "
+                    "JOIN sys.database_principals DP1 "
+                    "ON DRM.role_principal_id = DP1.principal_id "
+                    "JOIN sys.database_principals DP2 "
+                    "ON DRM.member_principal_id = DP2.principal_id "
+                    "WHERE DP2.name = USER_NAME()"
+                )
+                role_memberships = {str(row[0]) for row in cur.fetchall()}
+                cur.execute("SELECT permission_name FROM sys.fn_my_permissions(NULL, 'DATABASE')")
+                permissions = {str(row[0]) for row in cur.fetchall()}
+            except pytds.Error:
+                return _probe_unreliable_outcome()
+
+            write_found = _find_sqlserver_write_permission(
+                database,
+                is_sysadmin=is_sysadmin,
+                role_memberships=role_memberships,
+                permissions=permissions,
+            )
+            if write_found is not None:
+                permission, object_phrase = write_found
+                return _write_capable_outcome("sqlserver", database, permission, object_phrase)
+
             cur.execute(
                 "SELECT table_name FROM information_schema.tables WHERE table_type = "
                 "'BASE TABLE' ORDER BY table_name"
             )
             tables = tuple(str(row[0]) for row in cur.fetchall())
 
-            can_select = True
-            try:
-                cur.execute("SELECT permission_name FROM sys.fn_my_permissions(NULL, 'DATABASE')")
-                permissions = {str(row[0]) for row in cur.fetchall()}
-                can_select = "SELECT" in permissions or not permissions
-            except pytds.Error:
-                pass
+            can_select = "SELECT" in permissions or not permissions
         if tables and not can_select:
             return ConnectOutcome(
                 False,
@@ -416,6 +616,45 @@ async def probe_connection(
             _probe_sqlserver_blocking, host, port, database, user, password, timeout_seconds
         )
     return ConnectOutcome(False, "unsupported_engine", f"Askwell does not support '{engine}'.")
+
+
+async def record_write_probe_refusal(
+    session: AsyncSession, settings: "Settings", *, engine: str, host: str, message: str
+) -> None:
+    """Record a write-capable refusal: a decisions row naming the detected
+    permission (`message` already names it — `_write_capable_outcome`'s own
+    text), and a local counter nothing ever transmits (C1).
+
+    The counter increment is best-effort, mirroring `egress._record`: a Redis
+    hiccup must not turn a refusal into an exception the wizard has to
+    recover from — the refusal itself already happened and already committed
+    as a decisions row before this is ever called.
+    """
+    await audit.record(
+        session,
+        Store.DECISIONS,
+        CONNECTION_WRITE_REFUSED,
+        {"engine": engine, "host": host, "message": message},
+    )
+    log.info("connection_write_refused", engine=engine, host=host)
+
+    import redis.asyncio as redis
+
+    client = redis.Redis(
+        host=settings.redis_host,
+        port=settings.redis_port,
+        socket_connect_timeout=1.0,
+        socket_timeout=1.0,
+    )
+    try:
+        await client.incr(WRITE_PROBE_REFUSED_COUNTER_KEY)
+    except Exception as error:
+        log.warning(
+            "connection_write_refused_count_failed", error=f"{type(error).__name__}: {error}"
+        )
+    finally:
+        with contextlib.suppress(Exception):
+            await client.aclose()
 
 
 async def create_connection_source(

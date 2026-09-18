@@ -558,8 +558,11 @@ const CONNECTION_IDLE: ConnectionFields = {
  * proxy blocks are different fixes, and the server is what actually knows
  * which one happened.
  *
- * The write probe (`M4-CONN-SEC-097`) is not wired up yet — this route says
- * so once, in prose, rather than implying a refusal that does not exist.
+ * `write_capable` (`M4-CONN-SEC-097`) is the one refusal with no override
+ * and no "try again with the same credentials" path: `outcome.remediation`
+ * carries the copyable SQL for a read-only user, rendered by
+ * `WriteCapableRemediation` below rather than folded into the generic
+ * `Note` every other reason code shares.
  */
 function ConnectionRoute() {
   const [fields, setFields] = useState<ConnectionFields>(CONNECTION_IDLE);
@@ -599,8 +602,8 @@ function ConnectionRoute() {
           Connect a database
         </h2>
         <p className="ask-micro mt-1">
-          PostgreSQL, MySQL, MariaDB or SQL Server. Connect with a read-only user — the refusal
-          for a write-capable credential is not wired up yet.
+          PostgreSQL, MySQL, MariaDB or SQL Server. Connect with a read-only user — a
+          write-capable credential is refused, naming the permission found.
         </p>
       </div>
 
@@ -729,9 +732,17 @@ function ConnectionRoute() {
           </div>
 
           {outcome !== null && !outcome.ok ? (
-            <Note tone="alarm" heading={CONNECTION_REASON_HEADINGS[outcome.reason_code ?? ""] ?? "Not connected"}>
-              {outcome.message}
-            </Note>
+            <>
+              <Note
+                tone="alarm"
+                heading={CONNECTION_REASON_HEADINGS[outcome.reason_code ?? ""] ?? "Not connected"}
+              >
+                {outcome.message}
+              </Note>
+              {outcome.remediation === null ? null : (
+                <ReadOnlyUserSql sql={outcome.remediation} />
+              )}
+            </>
           ) : null}
 
           {failure === null ? null : (
@@ -761,18 +772,44 @@ const CONNECTION_REASON_HEADINGS: Record<string, string> = {
   timeout: "No answer",
   auth_failed: "Credentials not accepted",
   permission_denied: "Connected, but cannot read",
+  write_capable: "These credentials can write",
+  probe_unreliable: "Could not verify write access",
 };
+
+/**
+ * Copyable statements for the read-only user `docs/ux/add-source.md` §4
+ * promises on a `write_capable` refusal: "Give them the SQL." A `<textarea>`
+ * rather than a `<pre>` so a click-and-drag selects cleanly and a screen
+ * reader's own copy affordance works without a custom button.
+ */
+function ReadOnlyUserSql({ sql }: { sql: string }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <label htmlFor="read-only-user-sql" className="ask-micro">
+        Create a read-only user, then try again:
+      </label>
+      <textarea
+        id="read-only-user-sql"
+        readOnly
+        value={sql}
+        rows={sql.split("\n").length}
+        onFocus={(event) => event.currentTarget.select()}
+        spellCheck={false}
+        className="ask-input px-3 py-2"
+        style={{ fontFamily: "var(--font-mono, monospace)", fontSize: "var(--t-ui)" }}
+      />
+    </div>
+  );
+}
 
 /**
  * What happens once a connection is created — the same shape `DumpQueued`
  * renders for a dump, because both are "recorded, now something runs in the
  * background": schema introspection here instead of a sandbox load.
  *
- * The read-only line is deliberately honest rather than reassuring:
- * `M4-CONN-SEC-097` (the write probe) has not been built, so nothing has
- * checked whether this credential can write, and saying "read-only" would be
- * a claim nothing verified — the same abstention-over-invention judgement
- * C5 makes about a document citation, applied to a status label.
+ * A connection reaching this component has already passed the write-permission
+ * probe (`M4-CONN-SEC-097`) — a write-capable credential never gets here, it
+ * is refused before `create_connection_source` is ever called.
  */
 function ConnectionQueued({
   source,
@@ -814,8 +851,7 @@ function ConnectionQueued({
         background — you can leave this page and it carries on.
       </Note>
       <p className="ask-micro">
-        Read access confirmed at connection time. Write permissions have not been checked —
-        that refusal is not wired up yet.
+        Read access confirmed and write access refused if found, both at connection time.
       </p>
 
       {status === "queued" || status === "indexing" ? (

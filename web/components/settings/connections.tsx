@@ -86,7 +86,7 @@ export function Connections() {
                   {source.name ?? "Untitled connection"}
                 </span>
                 <span className="ask-micro" style={{ color: "var(--muted)" }}>
-                  Read access confirmed · write permissions not yet checked
+                  Read access confirmed · write access refused if found
                 </span>
               </li>
             ))}

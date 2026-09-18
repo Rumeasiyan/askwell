@@ -1120,12 +1120,14 @@ class ConnectionOutcome:
     message: str
     source_id: uuid.UUID | None
     source_name: str | None
+    remediation: str | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
             "ok": self.ok,
             "reason_code": self.reason_code,
             "message": self.message,
+            "remediation": self.remediation,
             "source": (
                 None
                 if self.source_id is None
@@ -1161,7 +1163,13 @@ async def add_connection(
         settings.connection_probe_timeout_seconds,
     )
     if not outcome.ok:
-        return ConnectionOutcome(False, outcome.reason_code, outcome.message, None, None)
+        if outcome.reason_code == "write_capable":
+            await connections.record_write_probe_refusal(
+                session, settings, engine=body.engine, host=body.host, message=outcome.message
+            )
+        return ConnectionOutcome(
+            False, outcome.reason_code, outcome.message, None, None, outcome.remediation
+        )
 
     source_id = await connections.create_connection_source(
         session,

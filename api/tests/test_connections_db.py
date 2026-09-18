@@ -16,7 +16,12 @@ import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from askwell.connections import create_connection_source, record_introspection
+from askwell.config import Settings
+from askwell.connections import (
+    create_connection_source,
+    record_introspection,
+    record_write_probe_refusal,
+)
 
 pytestmark = pytest.mark.requires_db
 
@@ -182,3 +187,60 @@ async def test_introspection_with_no_tables_still_marks_the_source_ready(
         await session.execute(text("SELECT status FROM sources WHERE id = :id"), {"id": source_id})
     ).scalar_one()
     assert status == "ready"
+
+
+# --- write-probe refusal, recorded ------------------------------------------
+# `M4-CONN-SEC-097`'s own AC: "The refusal and the detected permission are
+# decisions records." A loopback address nothing listens on stands in for
+# Redis here — the point under test is that a Redis-side failure never stops
+# the decisions row from landing, the same guarantee `egress._record` makes.
+
+
+@pytest.fixture
+def unreachable_redis_settings() -> Settings:
+    return Settings(
+        database_url="postgresql://askwell:pw@127.0.0.1:1/askwell",  # type: ignore[arg-type]
+        sandbox_database_url="postgresql://askwell_sandbox:pw@127.0.0.1:1/postgres",  # type: ignore[arg-type]
+        sandbox_owner_password="pw",  # type: ignore[arg-type]
+        redis_host="127.0.0.1",
+        redis_port=1,
+    )
+
+
+async def test_a_write_capable_refusal_is_recorded_naming_engine_host_and_permission(
+    session: AsyncSession, unreachable_redis_settings: Settings
+) -> None:
+    await record_write_probe_refusal(
+        session,
+        unreachable_redis_settings,
+        engine="postgresql",
+        host="db.internal",
+        message="These credentials have INSERT on `orders`. Askwell only connects with "
+        "read-only access.",
+    )
+    await session.commit()
+
+    row = (
+        await session.execute(
+            text("SELECT payload FROM audit_decisions WHERE kind = 'connection_write_refused'")
+        )
+    ).one()
+    assert row.payload["engine"] == "postgresql"
+    assert row.payload["host"] == "db.internal"
+    assert "INSERT" in row.payload["message"]
+    assert "`orders`" in row.payload["message"]
+
+
+async def test_recording_a_refusal_never_raises_when_redis_is_unreachable(
+    session: AsyncSession, unreachable_redis_settings: Settings
+) -> None:
+    """The counter increment is best-effort — a Redis hiccup must not turn a
+    refusal the wizard already has to render into an exception."""
+    await record_write_probe_refusal(
+        session,
+        unreachable_redis_settings,
+        engine="mysql",
+        host="db.internal",
+        message="These credentials have ALL PRIVILEGES on `*.*`.",
+    )
+    await session.commit()

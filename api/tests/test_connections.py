@@ -211,3 +211,99 @@ async def test_a_probe_failure_propagates_its_reason_code(monkeypatch: pytest.Mo
     )
     assert outcome.ok is False
     assert outcome.reason_code == "auth_failed"
+
+
+# --- write-permission probe: refusal, naming the permission and object ------
+# `M4-CONN-SEC-097`. The database role is the C2 layer that does not depend on
+# `sqlglot` ever running: these tests are about what gets *named*, since the
+# refusal is only useful to a non-DBA if it says what to fix.
+
+
+def test_write_capable_outcome_names_the_permission_and_the_object() -> None:
+    outcome = connections._write_capable_outcome("postgresql", "orders", "INSERT", "`orders`")
+    assert outcome.ok is False
+    assert outcome.reason_code == "write_capable"
+    assert "INSERT" in outcome.message
+    assert "`orders`" in outcome.message
+    assert "read-only" in outcome.message
+    assert outcome.remediation is not None
+    assert "askwell_reader" in outcome.remediation
+
+
+def test_probe_unreliable_outcome_is_a_refusal_not_a_warning() -> None:
+    outcome = connections._probe_unreliable_outcome()
+    assert outcome.ok is False
+    assert outcome.reason_code == "probe_unreliable"
+
+
+@pytest.mark.parametrize("engine", ["postgresql", "mysql", "mariadb", "sqlserver"])
+def test_every_supported_engine_has_read_only_user_guidance(engine: str) -> None:
+    sql = connections.read_only_user_sql(engine, "orders")
+    assert sql.strip()
+    assert "orders" in sql or engine == "sqlserver"
+
+
+def test_an_unsupported_engine_has_no_read_only_guidance() -> None:
+    with pytest.raises(ValueError):
+        connections.read_only_user_sql("oracle", "orders")
+
+
+# --- MySQL/MariaDB grant parsing ---------------------------------------------
+
+
+def test_all_privileges_on_every_database_is_caught_as_write_capable() -> None:
+    found = connections._find_mysql_write_grant(["GRANT ALL PRIVILEGES ON *.* TO `admin`@`%`"])
+    assert found == ("ALL PRIVILEGES", "*.*")
+
+
+def test_insert_on_a_specific_table_is_caught() -> None:
+    found = connections._find_mysql_write_grant(
+        ["GRANT SELECT, INSERT ON `orders`.* TO `reader`@`%`"]
+    )
+    assert found == ("INSERT", "`orders`.*")
+
+
+def test_select_only_grant_is_not_write_capable() -> None:
+    found = connections._find_mysql_write_grant(
+        ["GRANT SELECT ON `orders`.* TO `reader`@`%`", "GRANT USAGE ON *.* TO `reader`@`%`"]
+    )
+    assert found is None
+
+
+def test_no_grants_is_not_write_capable() -> None:
+    assert connections._find_mysql_write_grant([]) is None
+
+
+def test_an_unparseable_grant_line_is_ignored_rather_than_crashing() -> None:
+    assert connections._find_mysql_write_grant(["not a grant line"]) is None
+
+
+# --- SQL Server permission/role classification -------------------------------
+
+
+def test_sysadmin_membership_names_the_server_not_the_database() -> None:
+    found = connections._find_sqlserver_write_permission(
+        "orders", is_sysadmin=True, role_memberships=set(), permissions=set()
+    )
+    assert found == ("sysadmin", "the server")
+
+
+def test_db_datawriter_membership_is_write_capable() -> None:
+    found = connections._find_sqlserver_write_permission(
+        "orders", is_sysadmin=False, role_memberships={"db_datawriter"}, permissions=set()
+    )
+    assert found == ("db_datawriter", "the `orders` database")
+
+
+def test_a_bare_insert_permission_is_write_capable() -> None:
+    found = connections._find_sqlserver_write_permission(
+        "orders", is_sysadmin=False, role_memberships=set(), permissions={"SELECT", "INSERT"}
+    )
+    assert found == ("INSERT", "the `orders` database")
+
+
+def test_db_datareader_alone_is_not_write_capable() -> None:
+    found = connections._find_sqlserver_write_permission(
+        "orders", is_sysadmin=False, role_memberships={"db_datareader"}, permissions={"SELECT"}
+    )
+    assert found is None
