@@ -20,12 +20,19 @@ resolve correctly without special-casing it: the owner role cannot do either,
 Postgres refuses the statement, `psql` exits non-zero, and the caller drops
 the whole database and reports why — a dump is never left half-loaded.
 
-**Introspection here is structural, not semantic.** `import_dump` returns the
-loaded database's table names so a successful import can say something
-concrete about what it produced. Types, keys, relationships, and indexing any
-of it for retrieval, is `M4-SCHEMA-ING-100` — this module hands off to that
-by leaving a `ready` source with a real database behind it, not by building
-the same thing twice under a different name.
+**Structural introspection stays here; semantic introspection is a separate
+pass.** `_introspect_blocking` still returns the loaded database's bare
+table names, as the owner role, before `seal_owner` — that is what the
+success/failure control flow and `IMPORT_SUCCEEDED`'s own payload need, and
+changing what it runs as would mean reconnecting mid-load for no reason.
+Types, keys, relationships, and indexing any of it for retrieval
+(`askwell.schema_introspect`, `M4-SCHEMA-ING-100`) run afterwards, once the
+owner is sealed, as `askwell_sandbox_readonly` — the same role the query
+path uses once a source is `ready`, never the owner that just loaded
+untrusted content. A failure in that second pass is logged and recorded but
+never turns a successful import back into a failed one: the dump loaded and
+the source is usable, a richer description failing to build is a worse
+answer, not a broken source.
 
 **The owner role is sealed, not regenerated, once a load succeeds** —
 `askwell.sandbox.seal_owner`, resolving issue #330. See that function's
@@ -391,6 +398,42 @@ def _introspect_blocking(dsn: str) -> list[str]:
     return [str(row[0]) for row in rows]
 
 
+async def _run_deep_introspection(
+    factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    source_id: uuid.UUID,
+    database: str,
+) -> None:
+    """Types, keys and relationships, on top of the table names
+    `_introspect_blocking` already produced. `M4-SCHEMA-ING-100`. See the
+    module docstring: always `askwell_sandbox_readonly`, never the owner that
+    just loaded this dump's content, and a failure here is logged and
+    recorded but never undoes the successful import.
+    """
+    from askwell import schema_introspect
+
+    admin_url = settings.sandbox_database_url.get_secret_value()
+    readonly_password = settings.sandbox_readonly_password.get_secret_value()
+    dsn = sandbox.readonly_url(admin_url, database, readonly_password)
+
+    try:
+        inventory = await asyncio.to_thread(schema_introspect._introspect_postgresql_blocking, dsn)
+    except Exception as error:
+        async with session_scope(factory) as session:
+            await audit.record(
+                session,
+                Store.DECISIONS,
+                "schema_introspection_failed",
+                {"source_id": str(source_id), "reason": f"{type(error).__name__}: {error}"},
+            )
+        log.warning("schema_introspection_failed", source_id=str(source_id), error=str(error))
+        return
+
+    async with session_scope(factory) as session:
+        await schema_introspect.write_schema_inventory(session, source_id, inventory)
+    await schema_introspect.record_introspection_run(settings)
+
+
 async def create_dump_source(session: AsyncSession, name: str, dump_path: str) -> uuid.UUID:
     """Register a dump source ahead of importing it.
 
@@ -524,6 +567,8 @@ async def import_dump(
             {"source_id": str(source_id), "database": name, "tables": tables},
         )
     log.info("dump_import_succeeded", source_id=str(source_id), database=name, tables=len(tables))
+
+    await _run_deep_introspection(factory, settings, source_id, name)
     return tables
 
 

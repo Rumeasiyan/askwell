@@ -51,6 +51,7 @@ def table_settings(sandbox_admin_url: str) -> Settings:
         database_url="postgresql://x:x@127.0.0.1:1/askwell",  # type: ignore[arg-type]
         sandbox_database_url=sandbox_admin_url,  # type: ignore[arg-type]
         sandbox_owner_password=os.environ["TEST_SANDBOX_OWNER_PASSWORD"],  # type: ignore[arg-type]
+        sandbox_readonly_password=os.environ["TEST_SANDBOX_READONLY_PASSWORD"],  # type: ignore[arg-type]
     )
 
 

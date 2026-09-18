@@ -351,6 +351,7 @@ def dump_settings(sandbox_admin_url: str) -> Settings:
         database_url="postgresql://x:x@127.0.0.1:1/askwell",  # type: ignore[arg-type]
         sandbox_database_url=sandbox_admin_url,  # type: ignore[arg-type]
         sandbox_owner_password=os.environ["TEST_SANDBOX_OWNER_PASSWORD"],  # type: ignore[arg-type]
+        sandbox_readonly_password=os.environ["TEST_SANDBOX_READONLY_PASSWORD"],  # type: ignore[arg-type]
     )
 
 
@@ -388,6 +389,25 @@ async def test_import_dump_loads_and_introspects_a_valid_dump(
         assert row[0] == "ready"
         assert row[1] is not None
         assert row[2] is None
+
+        # `M4-SCHEMA-ING-100`'s own second pass: `import_dump` now also
+        # deep-introspects `widgets` as `askwell_sandbox_readonly` once
+        # sealed, and writes what it found as schema notes.
+        notes = await session.execute(
+            text(
+                "SELECT table_name, column_name, description FROM schema_notes "
+                "WHERE source_id = :id ORDER BY table_name, column_name NULLS FIRST"
+            ),
+            {"id": source_id},
+        )
+        note_rows = notes.all()
+        assert ("widgets", None) in [(r[0], r[1]) for r in note_rows]
+        table_note = next(r for r in note_rows if r[1] is None)
+        assert "id" in table_note[2]
+        assert "name" in table_note[2]
+        assert "Primary key: id" in table_note[2]
+        id_column_note = next(r for r in note_rows if r[1] == "id")
+        assert "primary key" in id_column_note[2]
 
         started = await session.execute(
             text(

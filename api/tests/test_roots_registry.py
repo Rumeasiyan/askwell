@@ -58,6 +58,7 @@ def configured(window: Path | None) -> Settings:
         database_url="postgresql://askwell:pw@127.0.0.1:1/askwell",  # type: ignore[arg-type]
         sandbox_database_url="postgresql://x:x@127.0.0.1:1/postgres",  # type: ignore[arg-type]
         sandbox_owner_password="x",  # type: ignore[arg-type]
+        sandbox_readonly_password="x",  # type: ignore[arg-type]
         roots_mount=window,
     )
 

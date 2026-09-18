@@ -111,6 +111,24 @@ def owner_url(admin_url: str, name: str, password: str) -> str:
     return urlunsplit((parts.scheme, netloc, f"/{name}", "", ""))
 
 
+def readonly_url(admin_url: str, name: str, password: str) -> str:
+    """`askwell_sandbox_readonly`'s own DSN for one sandbox database.
+
+    `M4-SCHEMA-ING-100`: schema introspection against a loaded sandbox
+    database runs as this role, never the owner — the owner is what loaded
+    the content and, as owner, has every privilege on what it created, which
+    is not "read-only" under any reading of that word. Built the same way
+    `owner_url` is, from `admin_url`'s host and port only.
+    """
+    _validate(name)
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(admin_url)
+    port = f":{parts.port}" if parts.port else ""
+    netloc = f"{READONLY_ROLE}:{password}@{parts.hostname}{port}"
+    return urlunsplit((parts.scheme, netloc, f"/{name}", "", ""))
+
+
 def _create_database_blocking(admin_url: str, name: str) -> None:
     """The synchronous half of `create_database` — everything but the audit
     record, which needs an `AsyncSession` and has to run on the event loop.

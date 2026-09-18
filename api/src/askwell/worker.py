@@ -131,6 +131,47 @@ async def introspect_connection_job(ctx: dict[str, Any], source_id: str) -> list
     return list(tables)
 
 
+async def reintrospect_source_job(ctx: dict[str, Any], source_id: str) -> int:
+    """Re-run schema introspection for an existing source, on demand.
+    `M4-SCHEMA-ING-100`.
+
+    Thin, the same reason `import_dump_job` is. Which module actually runs
+    the re-introspection depends on the source's own kind: a live connection
+    reconnects with its stored configuration (`askwell.connections.
+    run_introspection`, which already does this whether the source was just
+    added or has been `ready` for months); a `dump` or `csv` source
+    reconnects to its existing sandbox database as the readonly role
+    (`askwell.schema_introspect.reintrospect_sandbox_source`) — there is
+    nothing to reconnect to for any other kind.
+    """
+    from sqlalchemy import text
+
+    from askwell import connections, schema_introspect
+    from askwell.db.engine import session_scope
+
+    async with session_scope(ctx["sessions"]) as session:
+        row = (
+            await session.execute(
+                text("SELECT kind FROM sources WHERE id = :id AND status != 'deleted'"),
+                {"id": uuid.UUID(source_id)},
+            )
+        ).first()
+    if row is None:
+        raise ValueError(f"No such source: {source_id}.")
+
+    kind = row[0]
+    if kind == "connection":
+        tables = await connections.run_introspection(
+            ctx["sessions"], ctx["settings"], uuid.UUID(source_id)
+        )
+        return len(tables)
+    if kind in ("dump", "csv"):
+        return await schema_introspect.reintrospect_sandbox_source(
+            ctx["sessions"], ctx["settings"], uuid.UUID(source_id)
+        )
+    raise ValueError(f"Source {source_id} (kind={kind!r}) has no schema to re-introspect.")
+
+
 async def reapply_job(ctx: dict[str, Any], job_id: str) -> None:
     """Re-process what one answered clarification affects. `M3-APPLY-ING-080`.
 
@@ -269,6 +310,7 @@ class WorkerSettings:
         import_dump_job,
         import_table_job,
         introspect_connection_job,
+        reintrospect_source_job,
     ]
 
     # The repair timer. Its interval is configuration, so it is applied in
