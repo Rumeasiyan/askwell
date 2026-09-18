@@ -4,6 +4,14 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.1 - 2026-09-18
+
+`M4-CSV-ING-092` — CSV and spreadsheet parsing with type and header inference, `docs/data-sources.md` §2. Nothing is applied silently: every column lands in `schema_notes` as `origin='inferred'` with its confidence, and anything the parser cannot resolve on its own — a missing or blank header, a column mixing a thousands separator with a plain decimal, a merged `.xlsx` header cell — becomes a real `clarifications` row, capped and ranked the same way `askwell.clarify` caps document-derived candidates. A row count that disagrees with the rest of the file is reported by row number as malformed, never silently padded. Loading the inferred table into the sandbox (`M4-CSV-ING-094`) and the DD/MM-vs-MM/DD date rule (`M4-CSV-ING-093`) are both out of this ticket's scope — this only parses, infers, detects and raises.
+
+### Added
+
+- `api/src/askwell/table_infer.py` — `infer_csv`/`infer_xlsx` (encoding and delimiter detection, header-presence voting from column typing, per-column type inference with confidence) and `raise_table_inference`, which persists inferred columns as low-confidence `schema_notes` and raises `Candidate`s (`askwell.clarify`) as real `clarifications` rows, idempotent per source. `MalformedTable` reports a ragged file by row number rather than padding it.
+
 ## 0.4.0 - 2026-09-18
 
 `M3-EVAL-TEST-086` — the memory-application eval subset: fifteen tasks at the 0.85 bar (`docs/build-plan.md`'s quality gate), the differentiator's first measurement. This is M3's last ticket — *it learns my material* is complete, 20 of 20, taking the `MINOR` per `AGENTS.md` §7.
