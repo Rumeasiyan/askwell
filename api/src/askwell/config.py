@@ -240,6 +240,14 @@ class Settings(BaseSettings):
     # `M1-VIEW-BE-049`.
     missing_check_seconds: int = Field(default=300, ge=30, le=3600)
 
+    # How often the worker probes every `ready`/`attention` live connection,
+    # `M4-CONN-BE-099`. A metadata-only probe (`askwell.connections.
+    # check_connection_health` reuses `probe_connection`'s own catalog
+    # queries) rather than a query against the user's data, which is what
+    # makes running it this often acceptable on somebody's laptop. Fixed, not
+    # per-source — the ticket's own known gap.
+    connection_health_check_seconds: int = Field(default=60, ge=10, le=3600)
+
     # Traces are the largest and fastest-growing of the three audit stores,
     # and the only one that fails open. 256 MB is a few thousand traces —
     # enough that "show me what happened" works for anything recent, and small

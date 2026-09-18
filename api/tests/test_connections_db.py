@@ -9,6 +9,7 @@ contain, not something a mock can assert.
 """
 
 import json
+import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -17,9 +18,11 @@ import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from askwell import crypto
+from askwell import connections, crypto
 from askwell.config import Settings
 from askwell.connections import (
+    ConnectOutcome,
+    check_connection_health,
     create_connection_source,
     record_introspection,
     record_write_probe_refusal,
@@ -405,3 +408,186 @@ async def test_recording_a_refusal_never_raises_when_redis_is_unreachable(
         message="These credentials have ALL PRIVILEGES on `*.*`.",
     )
     await session.commit()
+
+
+# --- periodic and on-demand health checks, `M4-CONN-BE-099` ------------------
+# `probe_connection` itself is monkeypatched — the classification it produces
+# is already proven in `test_connections.py` and `test_connections_write_probe_db.py`;
+# what is under test here is `check_connection_health`'s own transition logic,
+# and issue #360's own lesson: a decisions row only on a real transition,
+# never on a repeat of the same state.
+
+
+@pytest_asyncio.fixture
+async def factory(async_url: str) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    engine = create_async_engine(async_url)
+    yield async_sessionmaker(engine, expire_on_commit=False)
+    await engine.dispose()
+
+
+async def _connected_source(
+    session: AsyncSession, settings: Settings, *, status: str = "ready"
+) -> uuid.UUID:
+    source_id = await create_connection_source(
+        session,
+        settings,
+        engine="postgresql",
+        host="db.internal",
+        port=5432,
+        database="orders",
+        user="reader",
+        password="hunter2",
+    )
+    await session.execute(
+        text("UPDATE sources SET status = :status WHERE id = :id"),
+        {"status": status, "id": source_id},
+    )
+    await session.commit()
+    return source_id
+
+
+async def test_a_failed_probe_moves_a_ready_source_to_attention_and_records_it(
+    monkeypatch: pytest.MonkeyPatch,
+    session: AsyncSession,
+    settings: Settings,
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    source_id = await _connected_source(session, settings)
+    refusal = ConnectOutcome(False, "connection_refused", "The connection was refused.")
+    monkeypatch.setattr(connections, "probe_connection", lambda *a, **k: _coro(refusal))
+
+    outcome = await check_connection_health(factory, settings, source_id)
+    assert outcome.ok is False
+
+    async with factory() as check:
+        status, last_error = (
+            await check.execute(
+                text("SELECT status, last_error FROM sources WHERE id = :id"), {"id": source_id}
+            )
+        ).one()
+        assert status == "attention"
+        assert last_error == "The connection was refused."
+
+        kinds = (
+            await check.execute(
+                text("SELECT kind FROM audit_decisions WHERE kind LIKE 'connection_health_%'")
+            )
+        ).all()
+        assert [row.kind for row in kinds] == ["connection_health_lost"]
+
+
+async def test_repeated_failures_against_an_already_attention_source_write_no_second_decision(
+    monkeypatch: pytest.MonkeyPatch,
+    session: AsyncSession,
+    settings: Settings,
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The regression issue #360 exists to prevent: a health check that fires
+    every cycle must not write a decisions row every cycle."""
+    source_id = await _connected_source(session, settings, status="attention")
+    refusal = ConnectOutcome(False, "timeout", "The database did not answer in time.")
+    monkeypatch.setattr(connections, "probe_connection", lambda *a, **k: _coro(refusal))
+
+    for _ in range(3):
+        await check_connection_health(factory, settings, source_id)
+
+    async with factory() as check:
+        kinds = (
+            await check.execute(
+                text("SELECT kind FROM audit_decisions WHERE kind LIKE 'connection_health_%'")
+            )
+        ).all()
+        assert kinds == []
+
+
+async def test_a_successful_probe_recovers_an_attention_source_and_records_it(
+    monkeypatch: pytest.MonkeyPatch,
+    session: AsyncSession,
+    settings: Settings,
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    source_id = await _connected_source(session, settings, status="attention")
+    await session.execute(
+        text("UPDATE sources SET last_error = 'stale error' WHERE id = :id"), {"id": source_id}
+    )
+    await session.commit()
+
+    success = ConnectOutcome(True, None, "Connected.", ("orders",))
+    monkeypatch.setattr(connections, "probe_connection", lambda *a, **k: _coro(success))
+
+    outcome = await check_connection_health(factory, settings, source_id)
+    assert outcome.ok is True
+
+    async with factory() as check:
+        status, last_error, last_healthy_at = (
+            await check.execute(
+                text("SELECT status, last_error, last_healthy_at FROM sources WHERE id = :id"),
+                {"id": source_id},
+            )
+        ).one()
+        assert status == "ready"
+        assert last_error is None
+        assert last_healthy_at is not None
+
+        kinds = (
+            await check.execute(
+                text("SELECT kind FROM audit_decisions WHERE kind LIKE 'connection_health_%'")
+            )
+        ).all()
+        assert [row.kind for row in kinds] == ["connection_health_recovered"]
+
+
+async def test_a_successful_probe_against_an_already_ready_source_writes_no_decision(
+    monkeypatch: pytest.MonkeyPatch,
+    session: AsyncSession,
+    settings: Settings,
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The ordinary case, every cycle, for a healthy connection — no news is
+    not a decisions row, only `last_healthy_at` moving forward."""
+    source_id = await _connected_source(session, settings)
+    success = ConnectOutcome(True, None, "Connected.", ("orders",))
+    monkeypatch.setattr(connections, "probe_connection", lambda *a, **k: _coro(success))
+
+    for _ in range(3):
+        await check_connection_health(factory, settings, source_id)
+
+    async with factory() as check:
+        status = (
+            await check.execute(
+                text("SELECT status FROM sources WHERE id = :id"), {"id": source_id}
+            )
+        ).scalar_one()
+        assert status == "ready"
+
+        kinds = (
+            await check.execute(
+                text("SELECT kind FROM audit_decisions WHERE kind LIKE 'connection_health_%'")
+            )
+        ).all()
+        assert kinds == []
+
+
+async def test_a_locked_install_secret_is_reported_as_attention_without_probing(
+    session: AsyncSession, settings: Settings, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    source_id = await _connected_source(session, settings)
+    settings.install_secret_path.unlink()
+
+    outcome = await check_connection_health(factory, settings, source_id)
+    assert outcome.ok is False
+    assert outcome.reason_code == "credentials_locked"
+
+    async with factory() as check:
+        status, last_error = (
+            await check.execute(
+                text("SELECT status, last_error FROM sources WHERE id = :id"), {"id": source_id}
+            )
+        ).one()
+        assert status == "attention"
+        assert last_error is not None
+        assert "hunter2" not in last_error
+
+
+async def _coro(value: ConnectOutcome) -> ConnectOutcome:
+    return value

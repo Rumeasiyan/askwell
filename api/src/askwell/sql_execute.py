@@ -16,23 +16,89 @@ or format a result for display (`M4-SQL-RESULT-FE-109`/`110`) — those are
 later, dependent tickets. This module executes a query string it is handed,
 as a role that cannot write, and turns a Postgres/MySQL/MariaDB/SQL Server
 cancellation into one named, recorded failure rather than a driver traceback.
+
+**Three distinguishable query-time failures on a live connection,
+`M4-CONN-BE-099`.** A customer's database goes down independently of
+Askwell (`docs/states-and-edge-cases.md` §4), and a generic "something went
+wrong" sends the person to reinstall Askwell instead of restarting their
+database. `execute_connection_query` classifies every driver failure into
+one of `ConnectionUnreachable` (the database did not answer at all —
+distinct from a zero-row `QueryResult`, which means it answered),
+`CredentialsRejected` (it answered but the stored credential was refused —
+distinct from a query being rejected, since re-entering a password fixes
+this and nothing else) or `QueryRejected` (it accepted the connection but
+refused this query — a permissions problem, the ticket's own named edge
+case). Every one of these also runs `connections._record_health_transition`
+so the library's connection-dead state (`docs/ux/library.md` §5) updates
+immediately, without waiting for the next periodic health check.
 """
 
 import asyncio
 import contextlib
 import time
+import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NoReturn
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from askwell import audit
+from askwell import audit, connections
 from askwell.audit import Store
 from askwell.config import Settings
 from askwell.logging import get_logger
 from askwell.sandbox import readonly_url
 
 log = get_logger(__name__)
+
+UNREACHABLE_MESSAGE = (
+    "The database is unreachable. It may be down, or the network between here and it may "
+    "be down. This is not the same as a query returning no rows — Askwell could not reach "
+    "the database at all."
+)
+
+CREDENTIALS_REJECTED_MESSAGE = (
+    "The database refused these credentials. They may have been changed or revoked since "
+    "this connection was set up — re-enter them to reconnect."
+)
+
+
+def _query_rejected_message(detail: str) -> str:
+    return (
+        "The database accepted the connection but refused this query. This is a "
+        f"permissions problem, not a connectivity one: {detail.strip()}."
+    )
+
+
+class ConnectionUnreachable(RuntimeError):
+    """The database itself did not answer — a dead host, a refused socket, a
+    timeout, or the network being blocked. Distinct from `QueryResult` with
+    zero rows (the database answered) and from `QueryRejected` (it answered
+    but declined this specific query)."""
+
+    def __init__(self, reason_code: str | None):
+        self.reason_code = reason_code
+        super().__init__(UNREACHABLE_MESSAGE)
+
+
+class CredentialsRejected(RuntimeError):
+    """The database answered but rejected the stored credential. The fix is
+    re-entering the password, never "wait and retry" — the edge case this
+    ticket names directly: "a connection whose credentials were revoked"."""
+
+    def __init__(self) -> None:
+        super().__init__(CREDENTIALS_REJECTED_MESSAGE)
+
+
+class QueryRejected(RuntimeError):
+    """The connection is live — the credential was accepted — but this
+    specific query was refused, most often a revoked or never-granted
+    privilege on the object it reads. The ticket's own edge case: "a database
+    that accepts connections but refuses queries — reported as a permissions
+    problem"."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(_query_rejected_message(detail))
+
 
 # A local counter nothing ever transmits (C1) — the same shape as
 # `connections.WRITE_PROBE_REFUSED_COUNTER_KEY`, for the same reason: it is
@@ -186,6 +252,168 @@ def _execute_sqlserver_blocking(
     return QueryResult(columns, rows, time.monotonic() - started)
 
 
+def _raise_from_os_error(error: OSError) -> NoReturn:
+    """A raw socket failure during connect, for the same reasons
+    `connections._classify_network_error` names four of them — but this is a
+    query-time connection, not the wizard's, so the outcome collapses to the
+    one distinction the AC asks for: unreachable, not which flavour."""
+    from askwell.connections import _classify_network_error
+
+    outcome = _classify_network_error(error)
+    raise ConnectionUnreachable(outcome.reason_code) from None
+
+
+def _execute_connection_postgresql_blocking(
+    dsn: str, query: str, timeout_seconds: float
+) -> QueryResult:
+    import psycopg
+
+    from askwell.connections import _classify_postgresql_message
+
+    try:
+        conn = psycopg.connect(dsn, autocommit=True)
+    except psycopg.OperationalError as error:
+        outcome = _classify_postgresql_message(str(error))
+        if outcome.reason_code == "auth_failed":
+            raise CredentialsRejected() from None
+        raise ConnectionUnreachable(outcome.reason_code) from None
+    except OSError as error:
+        _raise_from_os_error(error)
+
+    with conn:
+        conn.read_only = True
+        with conn.cursor() as cur:
+            # A literal, not a bound parameter: `SET` does not accept one, and
+            # `timeout_seconds` is `Settings`, never user input.
+            cur.execute(f"SET statement_timeout = {int(timeout_seconds * 1000)}")
+            started = time.monotonic()
+            try:
+                cur.execute(query)
+            except psycopg.errors.QueryCanceled:
+                raise StatementTimedOut(
+                    query, timeout_seconds, time.monotonic() - started
+                ) from None
+            except psycopg.Error as error:
+                # `docs/states-and-edge-cases.md` §4's own edge case: "a
+                # database that accepts connections but refuses queries" —
+                # reached the database, but this query specifically was
+                # refused, most often `InsufficientPrivilege` on an object a
+                # since-revoked grant used to cover.
+                raise QueryRejected(str(error)) from None
+            rows = tuple(tuple(row) for row in cur.fetchall()) if cur.description else ()
+            columns = tuple(d.name for d in cur.description) if cur.description else ()
+    return QueryResult(columns, rows, time.monotonic() - started)
+
+
+def _execute_connection_mysql_blocking(
+    engine: str,
+    host: str,
+    port: int,
+    database: str,
+    user: str,
+    password: str,
+    query: str,
+    timeout_seconds: float,
+) -> QueryResult:
+    import pymysql
+    from pymysql.constants import CR, ER
+
+    try:
+        conn = pymysql.connect(
+            host=host,
+            port=port,
+            database=database,
+            user=user,
+            password=password,
+            connect_timeout=max(1, int(timeout_seconds)),
+        )
+    except OSError as error:
+        _raise_from_os_error(error)
+    except pymysql.err.OperationalError as error:
+        code = error.args[0] if error.args else None
+        if code in (ER.ACCESS_DENIED_ERROR, ER.DBACCESS_DENIED_ERROR):
+            raise CredentialsRejected() from None
+        if code == CR.CR_UNKNOWN_HOST:
+            raise ConnectionUnreachable("host_unresolved") from None
+        raise ConnectionUnreachable("connection_refused") from None
+
+    try:
+        with conn.cursor() as cur:
+            # MariaDB's session variable takes seconds (a float); MySQL's
+            # takes milliseconds and, unlike MariaDB's, only ever bounds a
+            # `SELECT` — the one statement shape a read-only role can run
+            # anyway (`sqlglot` validation, M4-SQL-VAL-104, guarantees that
+            # upstream of this module).
+            if engine == "mariadb":
+                cur.execute(f"SET SESSION max_statement_time = {timeout_seconds:g}")
+            else:
+                cur.execute(f"SET SESSION MAX_EXECUTION_TIME = {int(timeout_seconds * 1000)}")
+            started = time.monotonic()
+            try:
+                cur.execute(query)
+            except pymysql.err.OperationalError as error:
+                code = error.args[0] if error.args else None
+                if code in (ER.QUERY_TIMEOUT, ER.STATEMENT_TIMEOUT):
+                    raise StatementTimedOut(
+                        query, timeout_seconds, time.monotonic() - started
+                    ) from None
+                raise QueryRejected(str(error)) from None
+            except pymysql.err.ProgrammingError as error:
+                raise QueryRejected(str(error)) from None
+            rows = tuple(tuple(row) for row in cur.fetchall()) if cur.description else ()
+            columns = tuple(d[0] for d in cur.description) if cur.description else ()
+    finally:
+        conn.close()
+    return QueryResult(columns, rows, time.monotonic() - started)
+
+
+def _execute_connection_sqlserver_blocking(
+    host: str,
+    port: int,
+    database: str,
+    user: str,
+    password: str,
+    query: str,
+    timeout_seconds: float,
+) -> QueryResult:
+    import pytds
+    from pytds.tds_base import LoginError, OperationalError
+
+    try:
+        conn = pytds.connect(
+            server=host,
+            port=port,
+            database=database,
+            user=user,
+            password=password,
+            login_timeout=max(1, int(timeout_seconds)),
+            timeout=timeout_seconds,
+        )
+    except OSError as error:
+        _raise_from_os_error(error)
+    except LoginError:
+        raise CredentialsRejected() from None
+    except OperationalError:
+        raise ConnectionUnreachable(None) from None
+
+    try:
+        with conn.cursor() as cur:
+            started = time.monotonic()
+            try:
+                cur.execute(query)
+            except pytds.TimeoutError:
+                raise StatementTimedOut(
+                    query, timeout_seconds, time.monotonic() - started
+                ) from None
+            except pytds.Error as error:
+                raise QueryRejected(str(error)) from None
+            rows = tuple(tuple(row) for row in cur.fetchall()) if cur.description else ()
+            columns = tuple(d[0] for d in cur.description) if cur.description else ()
+    finally:
+        conn.close()
+    return QueryResult(columns, rows, time.monotonic() - started)
+
+
 def _postgresql_dsn(host: str, port: int, database: str, user: str, password: str) -> str:
     from urllib.parse import quote
 
@@ -273,6 +501,7 @@ async def execute_connection_query(
     session: AsyncSession,
     settings: Settings,
     *,
+    source_id: uuid.UUID,
     engine: str,
     host: str,
     port: int,
@@ -285,17 +514,25 @@ async def execute_connection_query(
     `M4-CONN-SEC-097`'s write-permission probe already verified is read-only
     — there is no second, more-privileged credential to reach for here — with
     the configured statement timeout applied for this session alone.
+
+    `source_id` names the `sources` row this connection is, and every
+    outcome — success or one of the three distinguishable failures below —
+    runs through `connections._record_health_transition`, `M4-CONN-BE-099`.
+    Query-time is a health signal too: without this, "the database is
+    unreachable" here and "needs attention" in the library could disagree
+    for up to `connection_health_check_seconds` after this call already knew
+    better.
     """
     timeout_seconds = float(settings.sql_statement_timeout_seconds)
     try:
         if engine == "postgresql":
             dsn = _postgresql_dsn(host, port, database, user, password)
             result = await asyncio.to_thread(
-                _execute_postgresql_blocking, dsn, query, timeout_seconds
+                _execute_connection_postgresql_blocking, dsn, query, timeout_seconds
             )
         elif engine in ("mysql", "mariadb"):
             result = await asyncio.to_thread(
-                _execute_mysql_blocking,
+                _execute_connection_mysql_blocking,
                 engine,
                 host,
                 port,
@@ -307,7 +544,7 @@ async def execute_connection_query(
             )
         elif engine == "sqlserver":
             result = await asyncio.to_thread(
-                _execute_sqlserver_blocking,
+                _execute_connection_sqlserver_blocking,
                 host,
                 port,
                 database,
@@ -321,4 +558,22 @@ async def execute_connection_query(
     except StatementTimedOut as failure:
         await _record_timeout(session, settings, source_kind=engine, query=query, failure=failure)
         raise
+    except ConnectionUnreachable as failure:
+        await connections._record_health_transition(
+            session, source_id, ok=False, message=str(failure), reason_code=failure.reason_code
+        )
+        raise
+    except CredentialsRejected as failure:
+        await connections._record_health_transition(
+            session, source_id, ok=False, message=str(failure), reason_code="auth_failed"
+        )
+        raise
+    except QueryRejected as failure:
+        await connections._record_health_transition(
+            session, source_id, ok=False, message=str(failure), reason_code="permission_denied"
+        )
+        raise
+    await connections._record_health_transition(
+        session, source_id, ok=True, message="Connected.", reason_code=None
+    )
     return result

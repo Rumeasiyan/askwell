@@ -4,6 +4,24 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.19 - 2026-09-19
+
+`M4-CONN-BE-099` — connection health and three distinguishable query-time failures. A live connection is now probed periodically (`ASKWELL_CONNECTION_HEALTH_CHECK_SECONDS`, default 60) and on demand, and a query against one now fails as `ConnectionUnreachable`, `CredentialsRejected` or `QueryRejected` rather than a raw driver exception — three different fixes, three different messages, none of them resembling a zero-row result. Every outcome runs through one transition rule (`connections._record_health_transition`) that writes a decisions record only on a real `ready`↔`attention` change, closing issue #360 by construction: the periodic check never calls `record_introspection` at all, so the unbounded-decisions-row failure mode it named cannot occur here.
+
+### Added
+
+- `askwell.connections.check_connection_health` — a metadata-only probe (reuses `probe_connection`) shared by the periodic cron and the library's on-demand reconnect action.
+- `askwell.connections._record_health_transition` — the one place a `connection_health_lost`/`connection_health_recovered` decision is written, gated on a real status transition; also updates `sources.last_healthy_at` on every successful probe regardless.
+- `askwell.worker.check_connections_health` — a cron job probing every `ready`/`attention` connection source.
+- `askwell.sql_execute.ConnectionUnreachable`/`CredentialsRejected`/`QueryRejected` — the three distinguishable query-time failures on a live connection, each also driving a health transition immediately rather than waiting for the next periodic check.
+- `POST /sources/{source_id}/reconnect` — synchronous on-demand health check for the library.
+- `sources.last_healthy_at` (migration `9d4e7a2c1b58`), surfaced in the ingestion coverage snapshot the library reads.
+- `ASKWELL_CONNECTION_HEALTH_CHECK_SECONDS` (default 60).
+
+### Changed
+
+- `askwell.sql_execute.execute_connection_query` takes a `source_id` and classifies every engine's connect/execute failure into one of the three types above instead of letting the driver's own exception through.
+
 ## 0.4.18 - 2026-09-18
 
 `M4-EVAL-TEST-112` — the text-to-SQL and SQL-safety eval suites. Forty execution-matched text-to-SQL tasks (`eval/suites/text_to_sql.v1.json`, `pass_bar: 0.80`) and ten SQL-safety tasks (`eval/suites/sql_safety.v1.json`, `pass_bar: 1.00`, no exceptions) run against a new fixture database (`eval/fixtures/sql/`) seeded through the real sandbox path (`eval/sql_fixture.py`). Text-to-SQL is scored by result-set equivalence, not query text (`eval/sql_eval.py::execution_match_score`); SQL safety is scored on `askwell.sql.validate.validate_query`'s own verdict alone, never on whether execution against the read-only sandbox role happened to survive an accepted write — the only way "a deliberately weakened validator fails the safety suite" stays true. `docs/decisions.md`, this date, has the full reasoning.

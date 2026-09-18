@@ -81,7 +81,7 @@ import functools
 import socket
 import uuid
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -116,6 +116,19 @@ CONNECTION_ADDED = "connection_added"
 # `M4-CONN-SEC-097`'s own AC: "The refusal and the detected permission are
 # decisions records." Never the credential, same rule as `CONNECTION_ADDED`.
 CONNECTION_WRITE_REFUSED = "connection_write_refused"
+
+# `M4-CONN-BE-099`. Written only on a `ready`↔`attention` transition, never on
+# a repeat of the same state — issue #360's own lesson, learned before this
+# function existed rather than after: a health check that fires every
+# `connection_health_check_seconds` forever must not turn into a decisions
+# row every single cycle, or the "forever, never pruned" store
+# (`docs/audit-log.md` §2) grows unbounded for no reason an auditor would
+# ever want. `_record_health_transition` is the one place either kind is
+# written, shared by the periodic cron and a query-time failure alike, so
+# there is exactly one rule to keep rather than two call sites to keep in
+# sync.
+CONNECTION_HEALTH_LOST = "connection_health_lost"
+CONNECTION_HEALTH_RECOVERED = "connection_health_recovered"
 
 # Local-only (C1) — never transmitted. Read by nothing yet; this ticket's own
 # AC asks only for the counter to exist, not for a surface that displays it.
@@ -790,6 +803,159 @@ async def record_introspection(
     log.info("connection_introspected", source_id=str(source_id), tables=len(tables))
 
 
+async def _load_connection_config(
+    factory: "async_sessionmaker[AsyncSession]", settings: "Settings", source_id: uuid.UUID
+) -> dict[str, Any]:
+    """The stored configuration for a live connection, decrypted.
+
+    Shared by `run_introspection` and `check_connection_health` — both
+    reconnect with the same stored credential, and duplicating the decrypt
+    step would duplicate its two failure modes (`ValueError` for no
+    configuration at all, `crypto.CredentialsLocked`/`OSError` for one that
+    cannot be read with today's key) instead of leaving exactly one.
+    """
+    import json
+
+    from askwell.db.engine import session_scope
+
+    async with session_scope(factory) as session:
+        row = (
+            await session.execute(
+                text("SELECT config_encrypted FROM sources WHERE id = :id"), {"id": source_id}
+            )
+        ).first()
+    if row is None or row[0] is None:
+        raise ValueError(f"No connection configuration for source {source_id}.")
+
+    install_secret = crypto.load_or_create_install_secret(settings.install_secret_path)
+    config: dict[str, Any] = json.loads(
+        crypto.decrypt(bytes(row[0]), crypto.derive_key(install_secret)).decode("utf-8")
+    )
+    return config
+
+
+async def _record_health_transition(
+    session: AsyncSession,
+    source_id: uuid.UUID,
+    *,
+    ok: bool,
+    message: str,
+    reason_code: str | None,
+) -> None:
+    """Apply one health probe's result to `sources`, and write a decisions
+    record only when the probe actually changed the source's status.
+
+    `last_healthy_at` and `last_error` are plain mutable columns, updated on
+    every call regardless of whether anything changed — that is what lets the
+    library show "the last successful check" (`docs/ux/library.md` §5)
+    without reading the audit log at all, and what keeps "the state reflects
+    the latest check rather than flapping" true for intermittent
+    connectivity (this ticket's own edge case) without a decisions row for
+    every flap. The decisions record — `CONNECTION_HEALTH_LOST` or
+    `CONNECTION_HEALTH_RECOVERED` — is the one write gated on a real
+    `ready`↔`attention` transition, never on a repeat of the same state
+    (issue #360).
+
+    Shared by the periodic health check and a query-time failure
+    (`askwell.sql_execute.execute_connection_query`) alike — both are "this
+    is what the connection just did", and the transition rule must be the
+    same regardless of what triggered the check.
+    """
+    row = (
+        await session.execute(
+            text("SELECT status FROM sources WHERE id = :id AND kind = 'connection'"),
+            {"id": source_id},
+        )
+    ).first()
+    if row is None:
+        return
+    current_status = row[0]
+
+    if ok:
+        await session.execute(
+            text("UPDATE sources SET last_healthy_at = now() WHERE id = :id"), {"id": source_id}
+        )
+        if current_status != "attention":
+            return
+        await session.execute(
+            text("UPDATE sources SET status = 'ready', last_error = NULL WHERE id = :id"),
+            {"id": source_id},
+        )
+        await audit.record(
+            session, Store.DECISIONS, CONNECTION_HEALTH_RECOVERED, {"source_id": str(source_id)}
+        )
+        log.info("connection_health_recovered", source_id=str(source_id))
+        return
+
+    await session.execute(
+        text("UPDATE sources SET last_error = :error WHERE id = :id"),
+        {"error": message, "id": source_id},
+    )
+    if current_status == "attention":
+        return
+    await session.execute(
+        text("UPDATE sources SET status = 'attention' WHERE id = :id"), {"id": source_id}
+    )
+    await audit.record(
+        session,
+        Store.DECISIONS,
+        CONNECTION_HEALTH_LOST,
+        {"source_id": str(source_id), "reason_code": reason_code or "unknown", "message": message},
+    )
+    log.warning("connection_health_lost", source_id=str(source_id), reason_code=reason_code)
+
+
+async def check_connection_health(
+    factory: "async_sessionmaker[AsyncSession]", settings: "Settings", source_id: uuid.UUID
+) -> ConnectOutcome:
+    """One probe against a live connection, and the state transition it causes.
+
+    Shared by the periodic cron (`askwell.worker.check_connections_health`)
+    and the library's on-demand reconnect action — both are "check this
+    connection now", differing only in what triggered it, so both go through
+    this one function rather than one reimplementing the other.
+
+    Metadata-only, the same probe the wizard itself runs (`probe_connection`):
+    a write-permission check and a table listing from system catalogs, never
+    a query over the user's own data — what makes running it every
+    `connection_health_check_seconds` acceptable on somebody's laptop (this
+    ticket's own Assumption).
+
+    A lost install secret and an ordinary connection failure both end up
+    `attention`, through the same transition path — `_record_health_transition`
+    does not need to know *why* a probe failed, only whether it did, and the
+    distinguishing message (`CREDENTIALS_LOCKED_MESSAGE` vs whatever
+    `probe_connection` classified) is what a person reads to tell them apart.
+    """
+    from askwell.db.engine import session_scope
+
+    try:
+        config = await _load_connection_config(factory, settings, source_id)
+    except (crypto.CredentialsLocked, OSError):
+        outcome = ConnectOutcome(False, "credentials_locked", CREDENTIALS_LOCKED_MESSAGE)
+    else:
+        outcome = await probe_connection(
+            config["engine"],
+            config["host"],
+            config["port"],
+            config["database"],
+            config["user"],
+            config["password"],
+            settings.connection_probe_timeout_seconds,
+        )
+
+    async with session_scope(factory) as session:
+        await _record_health_transition(
+            session,
+            source_id,
+            ok=outcome.ok,
+            message=outcome.message,
+            reason_code=outcome.reason_code,
+        )
+
+    return outcome
+
+
 async def dispatch_introspection(settings: "Settings", source_id: uuid.UUID) -> bool:
     """Ask a worker to introspect this connection now, mirroring
     `dump_import.dispatch_import`: one attempt, swallowed and logged rather
@@ -848,24 +1014,10 @@ async def run_introspection(
     source is exactly what "re-introspect" means for a live connection —
     there is no separate function to keep in sync with this one.
     """
-    import json
-
     from askwell.db.engine import session_scope
 
-    async with session_scope(factory) as session:
-        row = (
-            await session.execute(
-                text("SELECT config_encrypted FROM sources WHERE id = :id"), {"id": source_id}
-            )
-        ).first()
-    if row is None or row[0] is None:
-        raise ValueError(f"No connection configuration for source {source_id}.")
-
     try:
-        install_secret = crypto.load_or_create_install_secret(settings.install_secret_path)
-        config = json.loads(
-            crypto.decrypt(bytes(row[0]), crypto.derive_key(install_secret)).decode("utf-8")
-        )
+        config = await _load_connection_config(factory, settings, source_id)
     except (crypto.CredentialsLocked, OSError):
         async with session_scope(factory) as session:
             await session.execute(
