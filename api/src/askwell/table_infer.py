@@ -6,11 +6,11 @@ answers about numbers, which is the worst failure this product has." So
 nothing here is applied silently. `infer_table` decides delimiter, encoding,
 header and per-column type, always with a confidence, and hands back
 `Candidate`s (`askwell.clarify`) for anything it cannot resolve on its own —
-a missing or blank header, a column whose values do not agree on one type.
-Loading the inferred table into the sandbox as a queryable table
-(`M4-CSV-ING-094`) and the DD/MM-vs-MM/DD date rule (`M4-CSV-ING-093`) are
-both out of this ticket's scope; this module only parses, infers, detects and
-raises.
+a missing or blank header, a column whose values do not agree on one type,
+or (`M4-CSV-ING-093`) a date column whose values do not disambiguate
+DD/MM from MM/DD. Loading the inferred table into the sandbox as a queryable
+table (`M4-CSV-ING-094`) is out of this ticket's scope; this module only
+parses, infers, detects and raises.
 
 **`.csv`/`.tsv` and `.xlsx` both land here.** `docs/data-sources.md` §8 settled
 multi-sheet and merged-header handling as "one sheet becomes one table, and
@@ -68,13 +68,18 @@ MAX_MALFORMED_ROWS_NAMED = 10
 _TRUE_VALUES = frozenset({"true", "t", "yes", "y", "1"})
 _FALSE_VALUES = frozenset({"false", "f", "no", "n", "0"})
 
-# Deliberately not date-*format* aware — DD/MM vs MM/DD is `M4-CSV-ING-093`'s
-# own job. This only recognises that a value has the *shape* of a date, so a
-# date-shaped column is typed "date" rather than "string" and its format
-# ambiguity is a separate, later question.
+# Recognises that a value has the *shape* of a date, so a date-shaped column
+# is typed "date" rather than "string". Three shapes: ISO (`2026-01-01`,
+# unambiguous), a named month (`4 January 2026`, unambiguous), and a numeric
+# `d[/-]d[/-]y` triple, which is the one `docs/data-sources.md` §2 warns
+# about — `03/04/2025` is valid as either DD/MM or MM/DD and means a
+# different month either way. `detect_date_format` below is what decides
+# whether that numeric shape disambiguates itself; this pattern only says
+# "date-shaped", never which format.
 _DATE_PATTERN = re.compile(
     r"^\d{4}-\d{2}-\d{2}$|^\d{1,2}[/-]\d{1,2}[/-]\d{2,4}$|^\d{1,2}\s+[A-Za-z]{3,9}\s+\d{2,4}$"
 )
+_NUMERIC_DATE_PATTERN = re.compile(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$")
 _INTEGER_PATTERN = re.compile(r"^[+-]?\d+$")
 _PLAIN_DECIMAL_PATTERN = re.compile(r"^[+-]?\d+\.\d+$")
 _THOUSANDS_DECIMAL_PATTERN = re.compile(r"^[+-]?\d{1,3}(,\d{3})+(\.\d+)?$")
@@ -155,6 +160,70 @@ class HeaderDetection:
     reason: str
 
 
+class DateFormatVerdict(StrEnum):
+    """Whether a date-shaped column's numeric `d/d/y` values disambiguate
+    day-first from month-first. `NOT_APPLICABLE` covers a column with no
+    numeric-slash-or-dash values at all (ISO, named-month, or not a date
+    column) — nothing to disambiguate, so nothing is asked or recorded."""
+
+    DAY_FIRST = "day_first"
+    MONTH_FIRST = "month_first"
+    AMBIGUOUS = "ambiguous"
+    MIXED = "mixed"
+    NOT_APPLICABLE = "not_applicable"
+
+
+@dataclass(frozen=True, slots=True)
+class DateFormatDetection:
+    verdict: DateFormatVerdict
+    # The disambiguating value and why, present only for DAY_FIRST/MONTH_FIRST
+    # — the evidence `raise_table_inference` records the inference with.
+    evidence_value: str | None = None
+    evidence_reason: str | None = None
+
+
+def detect_date_format(values: list[str]) -> DateFormatDetection:
+    """Never guesses: a numeric date column only gets a verdict other than
+    `AMBIGUOUS` when a value's own shape rules one format out — one of the
+    two `d/d` positions holding something above 12, which cannot be a month.
+
+    Rows that decide the format in *opposite* directions (one value only
+    valid as day-first, another only valid as month-first) mean the column
+    itself is inconsistent — `MIXED`, the edge case
+    `docs/build-plan.md`'s M4-CSV-ING-093 calls out as "reported as malformed
+    rather than asked about as if it were consistent": offering a single
+    DD/MM-or-MM/DD choice would be wrong when no one answer fits every row.
+    """
+    day_first_evidence: tuple[str, str] | None = None
+    month_first_evidence: tuple[str, str] | None = None
+    saw_numeric_date = False
+
+    for raw_value in values:
+        match = _NUMERIC_DATE_PATTERN.match(raw_value.strip())
+        if not match:
+            continue
+        saw_numeric_date = True
+        first, second, _year = int(match.group(1)), int(match.group(2)), match.group(3)
+        if first > 12 and second > 12:
+            # Neither position can be a month — not a real date under either
+            # format. Noise, not evidence either way.
+            continue
+        if first > 12 and day_first_evidence is None:
+            day_first_evidence = (raw_value, f"the first value, {first}, cannot be a month")
+        elif second > 12 and month_first_evidence is None:
+            month_first_evidence = (raw_value, f"the second value, {second}, cannot be a month")
+
+    if not saw_numeric_date:
+        return DateFormatDetection(DateFormatVerdict.NOT_APPLICABLE)
+    if day_first_evidence and month_first_evidence:
+        return DateFormatDetection(DateFormatVerdict.MIXED)
+    if day_first_evidence:
+        return DateFormatDetection(DateFormatVerdict.DAY_FIRST, *day_first_evidence)
+    if month_first_evidence:
+        return DateFormatDetection(DateFormatVerdict.MONTH_FIRST, *month_first_evidence)
+    return DateFormatDetection(DateFormatVerdict.AMBIGUOUS)
+
+
 @dataclass(frozen=True, slots=True)
 class ColumnInference:
     name: str
@@ -163,6 +232,12 @@ class ColumnInference:
     sample_values: list[str]
     ambiguous: bool
     ambiguity_reason: str | None = None
+    # Set only for a `date`-typed column: `NOT_APPLICABLE` when nothing
+    # needed disambiguating, `AMBIGUOUS`/`MIXED` when `ambiguous` is also
+    # True for this column, `DAY_FIRST`/`MONTH_FIRST` when the format was
+    # inferred (`ambiguous` stays False — this is a recorded inference, not
+    # an open question).
+    date_format: DateFormatDetection | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -470,6 +545,42 @@ def infer_column_types(rows: list[list[str]], column_names: list[str]) -> list[C
             )
             continue
 
+        if best_type == "date":
+            date_format = detect_date_format(values)
+            if date_format.verdict is DateFormatVerdict.MIXED:
+                columns.append(
+                    ColumnInference(
+                        name,
+                        "string",
+                        confidence,
+                        samples,
+                        True,
+                        "mixes date formats inconsistently — some values are only valid "
+                        "day-first, others only valid month-first, so no single format fits "
+                        "every row; reported as malformed rather than asked about as one format",
+                        date_format,
+                    )
+                )
+                continue
+            if date_format.verdict is DateFormatVerdict.AMBIGUOUS:
+                columns.append(
+                    ColumnInference(
+                        name,
+                        best_type,
+                        confidence,
+                        samples,
+                        True,
+                        "is a date column whose values do not disambiguate between "
+                        "day-first (DD/MM) and month-first (MM/DD)",
+                        date_format,
+                    )
+                )
+                continue
+            columns.append(
+                ColumnInference(name, best_type, confidence, samples, False, None, date_format)
+            )
+            continue
+
         columns.append(ColumnInference(name, best_type, confidence, samples, False))
     return columns
 
@@ -550,6 +661,26 @@ def build_candidates(
 
     for column in columns:
         if not column.ambiguous or not column.name.strip():
+            continue
+        column_is_ambiguous_date = (
+            column.date_format is not None
+            and column.date_format.verdict is DateFormatVerdict.AMBIGUOUS
+        )
+        if column_is_ambiguous_date:
+            candidates.append(
+                Candidate(
+                    trigger="date_format",
+                    subject=f"{table_name}: {column.name}",
+                    question=(
+                        f"*{column.name}* looks like a date in DD/MM/YYYY or MM/DD/YYYY — "
+                        f"which is it? For example: {', '.join(column.sample_values[:3])}."
+                    ),
+                    passes=True,
+                    reason=column.ambiguity_reason or "date format could not be determined",
+                    options=["DD/MM/YYYY (day first)", "MM/DD/YYYY (month first)"],
+                    evidence=_column_evidence(column.sample_values, len(rows)),
+                )
+            )
             continue
         candidates.append(
             Candidate(
@@ -702,6 +833,16 @@ async def raise_table_inference(
         description = f"Inferred type: {column.inferred_type} ({column.confidence:.0%} confidence)."
         if column.ambiguous and column.ambiguity_reason:
             description += f" {column.ambiguity_reason}."
+        if column.date_format is not None and column.date_format.verdict in (
+            DateFormatVerdict.DAY_FIRST,
+            DateFormatVerdict.MONTH_FIRST,
+        ):
+            is_day_first = column.date_format.verdict is DateFormatVerdict.DAY_FIRST
+            label = "DD/MM/YYYY" if is_day_first else "MM/DD/YYYY"
+            description += (
+                f" Date format inferred: {label} — disambiguated by "
+                f"'{column.date_format.evidence_value}' ({column.date_format.evidence_reason})."
+            )
         await session.execute(
             text(
                 "INSERT INTO schema_notes "

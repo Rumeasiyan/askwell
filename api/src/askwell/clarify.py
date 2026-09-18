@@ -199,18 +199,23 @@ class RaiseResult:
 
 # Ranking order, `docs/memory-and-clarification.md` §8: contradictions first,
 # then date-format ambiguity, then unguessable columns, then abbreviations,
-# then low-confidence scans. Date-format and column triggers are M4's
-# (`docs/data-sources.md`, not built yet); `document_identity` is this
-# ticket's own trigger and is not named in that list at all. It is ranked
-# second, ahead of abbreviations — an unresolved "which file is current"
-# question has the same shape of consequence as a contradiction (the wrong
-# document's facts get treated as current) rather than the shape of a
-# vocabulary gap. `docs/decisions.md` has the reasoning.
+# then low-confidence scans. `date_format` is `M4-CSV-ING-093`'s own trigger
+# and now occupies its documented slot, second only to contradictions.
+# Column triggers (`table_column`) are M4's own too but not yet placed here —
+# `M4-CSV-ING-092` raised them without a priority entry, so they fall to the
+# default (below `unreadable_scan`) until that gap is closed.
+# `document_identity` is `M3-RAISE-BE-069`'s own trigger and is not named in
+# the canonical list at all — it is ranked just below date-format, ahead of
+# abbreviations: an unresolved "which file is current" question has the same
+# shape of consequence as a contradiction (the wrong document's facts get
+# treated as current) rather than the shape of a vocabulary gap.
+# `docs/decisions.md` has the reasoning.
 _TRIGGER_PRIORITY = {
     "contradiction": 0,
-    "document_identity": 1,
-    "abbreviation": 2,
-    "unreadable_scan": 3,
+    "date_format": 1,
+    "document_identity": 2,
+    "abbreviation": 3,
+    "unreadable_scan": 4,
 }
 
 
@@ -230,6 +235,8 @@ def _rank_weight(candidate: Candidate) -> float:
         return float(len(candidate.options or []))
     if candidate.trigger == "contradiction":
         return float(len(candidate.evidence.get("passages", [])))
+    if candidate.trigger == "date_format":
+        return float(candidate.evidence.get("row_count", 0))
     return 0.0
 
 

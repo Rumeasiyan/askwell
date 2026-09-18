@@ -22,6 +22,16 @@ Template:
 
 ---
 
+## 2026-09-18 — `M4-CSV-ING-093`: a column that disambiguates in both directions is reported through the existing generic ambiguous-column path, not a new "malformed" candidate shape
+
+**Decision:** a date column whose values disagree with each other about format (one row only valid day-first, another only valid month-first — `detect_date_format`'s `MIXED` verdict) is reported the same way `infer_column_types` already reports a column mixing a thousands separator with a plain decimal: `inferred_type="string"`, `ambiguous=True`, a `ambiguity_reason` naming the conflict, surfaced through `build_candidates`' existing generic `table_column` branch (a free-text "what is it?" question, no `options`). Only the genuinely-undecidable case — no row rules either format out — gets the new two-option `date_format` trigger with `options=["DD/MM/YYYY (day first)", "MM/DD/YYYY (month first)"]`.
+
+**Why:** the ticket's own edge case says a column mixing formats within itself should be "reported as malformed rather than asked about as if it were consistent." Offering the same two-button choice for both cases would be exactly that mistake — the two-option question presumes a single answer covers every row, which is true for the ambiguous-but-consistent case and false for the mixed case. A third candidate shape (a dedicated "malformed date column" trigger, or reusing `MalformedTable`, which today is reserved for ragged row widths at the file level, not a single column's internal inconsistency) was considered and rejected: `table_infer.py` already has a working precedent for exactly this shape of problem (mixed thousands/plain decimals) and reusing it keeps one code path for "a type was attempted, the data didn't cooperate, ask a free-text question" rather than growing a second one for dates specifically.
+
+**Consequences:** the mixed-date case never gets ranked at the `date_format` tier (second, ahead of `document_identity`) — it ranks wherever unplaced `table_column` candidates fall today (below `unreadable_scan`, per the gap `M4-CSV-ING-092` already left and this ticket did not close, filed as issue #327). If that ordering turns out to matter for mixed-date columns specifically, revisit once `table_column`'s own priority slot is decided.
+
+**Refs:** `api/src/askwell/table_infer.py` (`detect_date_format`, `build_candidates`), `api/src/askwell/clarify.py` (`_TRIGGER_PRIORITY`), `docs/data-sources.md` §2.
+
 ## 2026-09-18 — `M3-EVAL-TEST-086`: fixture memory facts are seeded through a hand-inserted `clarifications` row, not real detection
 
 **Decision:** the memory-application eval subset's five "apply" and three "supersede" tasks seed their fixture facts by inserting a `clarifications` row directly (`status='pending'`, a fixed subject/question) and then calling the real `askwell.review.answer_clarification` on it — not by running `askwell.clarify`'s own detectors against the fixture corpus and waiting for one to raise the exact question needed.
