@@ -251,6 +251,12 @@ class TableInference:
     row_count: int
     merged_header: bool = False
     candidates: list[Candidate] = field(default_factory=list)
+    # The data rows themselves (header already stripped, if one was detected).
+    # `M4-CSV-ING-094` (`askwell.table_load`) is what actually loads them into
+    # the sandbox — carried here rather than re-parsed a second time from the
+    # raw bytes, which would duplicate this module's own delimiter/encoding/
+    # header logic in a second place.
+    rows: list[list[str]] = field(default_factory=list)
 
 
 # --- encoding -----------------------------------------------------------
@@ -731,6 +737,7 @@ def infer_csv(table_name: str, raw: bytes) -> TableInference:
         columns=columns,
         row_count=len(data_rows),
         candidates=candidates,
+        rows=data_rows,
     )
 
 
@@ -796,6 +803,7 @@ def infer_xlsx(filename: str, raw: bytes) -> list[TableInference]:
                     row_count=len(data_rows),
                     merged_header=merged_header,
                     candidates=candidates,
+                    rows=data_rows,
                 )
             )
     finally:

@@ -403,7 +403,13 @@ async def _reembed_chunk(session: AsyncSession, settings: Settings, chunk_id: uu
     )
 
 
-async def _promote_schema_note(session: AsyncSession, note_id: uuid.UUID, answer: str) -> None:
+async def _promote_schema_note(
+    session: AsyncSession, note_id: uuid.UUID, answer: str
+) -> uuid.UUID | None:
+    """Returns the note's `source_id` on a real promotion, `None` when there
+    was nothing left to promote — the caller (`_process_item`) uses this to
+    decide whether a `date_format` answer has an actual table left to
+    `askwell.table_load.reload_source` against."""
     from askwell.memory import write_schema_note
 
     row = (
@@ -418,7 +424,8 @@ async def _promote_schema_note(session: AsyncSession, note_id: uuid.UUID, answer
     if row is None:
         # Already superseded (a second answer, or a manual edit) — nothing
         # left to promote.
-        return
+        return None
+    source_id: uuid.UUID
     source_id, table_name, column_name = row
     await write_schema_note(
         session,
@@ -429,6 +436,7 @@ async def _promote_schema_note(session: AsyncSession, note_id: uuid.UUID, answer
         origin="user",
         confidence=1.0,
     )
+    return source_id
 
 
 async def _dismiss_conflict(session: AsyncSession, clarification_id: uuid.UUID) -> None:
@@ -463,18 +471,33 @@ async def _process_item(
     kind: str,
     target_id: uuid.UUID,
     answer: str,
+    trigger: str | None,
 ) -> None:
+    reload_source_id: uuid.UUID | None = None
     async with session_scope(sessions) as session:
         if kind == "chunk":
             await _reembed_chunk(session, settings, target_id)
         elif kind == "schema_note":
-            await _promote_schema_note(session, target_id, answer)
+            promoted_source_id = await _promote_schema_note(session, target_id, answer)
+            if promoted_source_id is not None and trigger == "date_format":
+                reload_source_id = promoted_source_id
         elif kind == "conflict":
             await _dismiss_conflict(session, target_id)
         await session.execute(
             text("UPDATE reapply_items SET status = 'done', done_at = now() WHERE id = :id"),
             {"id": item_id},
         )
+
+    if reload_source_id is not None:
+        # Outside the item's own transaction, deliberately: `reload_source`
+        # (`askwell.table_load`, `M4-CSV-ING-094`) does its own DDL against
+        # the sandbox instance — a different Postgres instance from the one
+        # `session` above belongs to — and manages its own short
+        # transactions the same way `askwell.dump_import.import_dump` does,
+        # so it must not be nested inside a transaction of its own.
+        from askwell import table_load
+
+        await table_load.reload_source(sessions, settings, reload_source_id)
 
 
 async def run_job(
@@ -491,12 +514,13 @@ async def run_job(
     async with session_scope(sessions) as session:
         job = (
             await session.execute(
-                text("SELECT memory_id FROM reapply_jobs WHERE id = :id"), {"id": job_id}
+                text("SELECT memory_id, clarification_id FROM reapply_jobs WHERE id = :id"),
+                {"id": job_id},
             )
         ).first()
         if job is None:
             return
-        memory_id = job[0]
+        memory_id, clarification_id = job
         answer = ""
         if memory_id is not None:
             fact_row = (
@@ -505,6 +529,25 @@ async def run_job(
                 )
             ).first()
             answer = fact_row[0] if fact_row else ""
+
+        # The clarification's own `trigger` (folded into `evidence` at raise
+        # time — `askwell.table_infer.raise_table_inference` — rather than a
+        # column of its own): a `date_format` answer is the one case this
+        # job's items need to know about, since promoting its `schema_note`
+        # item is only half the effect — the sandbox column it describes
+        # also needs `askwell.table_load.reload_source` to actually change
+        # type. `clarification_id` is `None` for a correction that did not
+        # originate from a clarification, and there is no trigger to read.
+        trigger: str | None = None
+        if clarification_id is not None:
+            evidence_row = (
+                await session.execute(
+                    text("SELECT evidence FROM clarifications WHERE id = :id"),
+                    {"id": clarification_id},
+                )
+            ).first()
+            if evidence_row is not None and evidence_row[0] is not None:
+                trigger = evidence_row[0].get("trigger")
 
         await session.execute(
             text(
@@ -536,7 +579,7 @@ async def run_job(
         succeeded = False
         for attempt in range(attempts + 1, ITEM_MAX_ATTEMPTS + 1):
             try:
-                await _process_item(sessions, settings, item_id, kind, target_id, answer)
+                await _process_item(sessions, settings, item_id, kind, target_id, answer, trigger)
                 succeeded = True
                 break
             except Exception as error:
