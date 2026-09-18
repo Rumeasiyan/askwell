@@ -28,11 +28,12 @@ running it is the fastest way to establish that from the outside.
 """
 
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, ClassVar
 
 from arq import cron
 from arq.connections import RedisSettings
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from askwell import __version__
 from askwell.config import Environment, Settings, load_settings
@@ -139,6 +140,7 @@ async def startup(ctx: dict[str, Any]) -> None:
             resumed = await ingest.resume(session)
             resumed_reapply = await reapply.resume(session)
         waiting = await ingest.reconcile(ctx["sessions"], settings)
+        reclaimed = await _reclaim_sandbox_orphans(ctx["sessions"], settings)
     except embed.EmbeddingDimensionMismatch:
         # Fatal, deliberately, unlike everything below. The database is up
         # and answering — this is not "Postgres is not ready yet", it is
@@ -163,7 +165,30 @@ async def startup(ctx: dict[str, Any]) -> None:
         dispatched=waiting,
         reapply_interrupted=len(resumed_reapply),
         reapply_dispatched=reapply_dispatched,
+        sandbox_orphans_reclaimed=len(reclaimed),
     )
+
+
+async def _reclaim_sandbox_orphans(
+    sessions: async_sessionmaker[AsyncSession], settings: Settings
+) -> Sequence[str]:
+    """Drop sandbox databases no live source claims. C3.
+
+    Best-effort, like everything else in `startup`: the sandbox instance not
+    being up yet is the ordinary state on a laptop, and it must not stop the
+    rest of startup — `askwell.health` reports it separately, and there is
+    nothing here that document sources depend on.
+    """
+    from askwell import sandbox
+
+    try:
+        async with session_scope(sessions) as session:
+            return await sandbox.reclaim_orphans(
+                session, settings.sandbox_database_url.get_secret_value()
+            )
+    except Exception as error:  # the sandbox instance may not be up yet
+        log.warning("sandbox_reclaim_deferred", error=f"{type(error).__name__}: {error}")
+        return ()
 
 
 async def shutdown(ctx: dict[str, Any]) -> None:

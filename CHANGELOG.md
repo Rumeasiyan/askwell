@@ -4,6 +4,21 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.3 - 2026-09-18
+
+`M4-DUMP-DEPLOY-087` — the sandbox Postgres instance for untrusted dumps, `docs/data-sources.md` §3, C3. A separate `sandbox` container (`compose.yaml`), on its own network with no route to Askwell's own database or the egress proxy, joined only by `api` and `worker`. Two fixed roles — `askwell_sandbox_owner`, `askwell_sandbox_readonly` — created with no superuser, no `CREATEDB`, no `COPY ... TO PROGRAM`, and no large-object access (both the filesystem and client-side APIs). `askwell.sandbox.create_database`/`drop_database` create and drop one database per imported source, revoking `PUBLIC`'s default `CONNECT` on each explicitly since `CREATE DATABASE` does not inherit that from a template; both write `audit_decisions` rows. `reclaim_orphans` runs at worker startup and drops any sandbox database no live source claims — the exact state a crash mid-import leaves behind. Importing a dump (`M4-DUMP-ING-088`) and the size/time cap (`M4-DUMP-VAL-089`) are not in this ticket.
+
+### Added
+
+- `compose.yaml` — `sandbox` service, `sandbox-data` volume, `sandbox` network.
+- `deploy/sandbox/10-roles.sh` — the two fixed roles and the instance-wide lockdown of `template1`/`postgres` and both large-object APIs.
+- `api/src/askwell/sandbox.py` — `generate_name`/`InvalidSandboxName`, `create_database`, `drop_database`, `known_databases`, `reclaim_orphans`.
+- `Settings.sandbox_database_url`/`sandbox_host_port`; a `sandbox` component in `askwell.health`.
+
+### Security
+
+- C3 structurally enforced: a role boundary and a network boundary, verified against a real, running instance rather than asserted.
+
 ## 0.4.2 - 2026-09-18
 
 `M4-CSV-ING-093` — never infer silently between DD/MM and MM/DD, `docs/data-sources.md` §2. A date-shaped column whose numeric values do not disambiguate (no value's day/month slot exceeds 12) raises a discrete `date_format` clarification with two options, ranked second only to contradictions. Where a value's own shape rules one format out — a slot above 12 — the format is inferred silently and recorded in `schema_notes` with the disambiguating value as evidence. A column whose values disambiguate in *both* directions (some rows only valid day-first, others only valid month-first) is reported as malformed rather than asked about as if one format fit every row. ISO and named-month dates have nothing to disambiguate and raise no question, regardless of sample size.

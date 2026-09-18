@@ -24,7 +24,7 @@ def test_health_reports_each_component_separately(client: TestClient) -> None:
     with client:
         payload = client.get("/health").json()
     reported = {item["component"] for item in payload["components"]}
-    assert reported == {"database", "queue", "worker", "inference", "egress_proxy"}
+    assert reported == {"database", "queue", "worker", "inference", "egress_proxy", "sandbox"}
 
 
 def test_health_answers_200_while_everything_is_down(client: TestClient) -> None:

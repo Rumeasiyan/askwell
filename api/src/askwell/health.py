@@ -84,10 +84,16 @@ def _targets(settings: Settings) -> list[_Target]:
     host and the containers have no route there.
     """
     database_host, database_port = settings.database_host_port
+    sandbox_host, sandbox_port = settings.sandbox_host_port
     return [
         _Target("database", database_host, database_port),
         _Target("queue", settings.redis_host, settings.redis_port),
         _Target("egress_proxy", settings.egress_proxy_host, settings.egress_proxy_port),
+        # A TCP probe, same as the others — not a query. The sandbox failing to
+        # start must not read as "Askwell is broken": document sources keep
+        # working regardless, only database sources are affected
+        # (`docs/data-sources.md` §3).
+        _Target("sandbox", sandbox_host, sandbox_port),
     ]
 
 
@@ -346,5 +352,12 @@ async def check_components(settings: Settings) -> Sequence[ComponentHealth]:
         _probe_inference(settings, timeout),
     )
     # Ordered as the shell reads them: the two the user can act on first.
-    order = {"database": 0, "queue": 1, "worker": 2, "inference": 3, "egress_proxy": 4}
+    order = {
+        "database": 0,
+        "queue": 1,
+        "worker": 2,
+        "inference": 3,
+        "egress_proxy": 4,
+        "sandbox": 5,
+    }
     return sorted(results, key=lambda item: order[item.name])

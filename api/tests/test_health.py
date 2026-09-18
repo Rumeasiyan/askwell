@@ -15,7 +15,7 @@ import pytest
 from askwell.config import Settings
 from askwell.health import ComponentHealth, ComponentState, check_components
 
-EXPECTED = {"database", "queue", "worker", "inference", "egress_proxy"}
+EXPECTED = {"database", "queue", "worker", "inference", "egress_proxy", "sandbox"}
 
 # The worker is not probed by opening a socket — see test_the_worker_is_not_
 # probed_by_opening_a_socket. Tests that patch the connection exclude it.
@@ -85,7 +85,7 @@ async def test_answers_even_when_every_component_hangs(
 
     assert len(results) == len(EXPECTED)
     assert all(item.state is ComponentState.UNREACHABLE for item in results)
-    assert len(SOCKET_PROBED) == 3
+    assert len(SOCKET_PROBED) == 4
     # Serial would be ~2.0s. Concurrent is ~0.4s.
     assert elapsed < 1.0, f"probes appear to be serial: {elapsed:.2f}s for 5 components"
 

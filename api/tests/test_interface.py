@@ -192,4 +192,4 @@ def test_health_still_works_when_the_interface_is_missing(
     with TestClient(app) as client:
         response = client.get("/health")
     assert response.status_code == 200
-    assert len(response.json()["components"]) == 5
+    assert len(response.json()["components"]) == 6
