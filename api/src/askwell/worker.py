@@ -81,6 +81,22 @@ async def ingest_document(
     )
 
 
+async def import_dump_job(ctx: dict[str, Any], source_id: str, dump_path: str) -> list[str]:
+    """Load one PostgreSQL dump into its own sandbox database. `M4-DUMP-ING-088`.
+
+    Thin, the same reason `ingest_document` is: everything about what
+    importing a dump *is* lives in `askwell.dump_import`, so it can be tested
+    without a Redis, a worker process and a job serialiser in the way.
+    """
+    from pathlib import Path
+
+    from askwell import dump_import
+
+    return await dump_import.import_dump(
+        ctx["sessions"], ctx["settings"], uuid.UUID(source_id), Path(dump_path)
+    )
+
+
 async def reapply_job(ctx: dict[str, Any], job_id: str) -> None:
     """Re-process what one answered clarification affects. `M3-APPLY-ING-080`.
 
@@ -172,23 +188,34 @@ async def startup(ctx: dict[str, Any]) -> None:
 async def _reclaim_sandbox_orphans(
     sessions: async_sessionmaker[AsyncSession], settings: Settings
 ) -> Sequence[str]:
-    """Drop sandbox databases no live source claims. C3.
+    """Drop sandbox databases no live source claims, and drop a dump import
+    that was still loading when the last process stopped. C3.
+
+    Two different cases, both only detectable at startup and both handled
+    here together so `worker_resumed`'s log line reflects the sandbox's whole
+    state in one place. `askwell.sandbox.reclaim_orphans` finds a database no
+    `sources` row references at all; `askwell.dump_import.reclaim_interrupted`
+    finds one a `dump` source still claims with `status = 'indexing'` — a load
+    nothing is coming back to finish. See the latter's docstring for why they
+    are not the same case.
 
     Best-effort, like everything else in `startup`: the sandbox instance not
     being up yet is the ordinary state on a laptop, and it must not stop the
     rest of startup — `askwell.health` reports it separately, and there is
     nothing here that document sources depend on.
     """
-    from askwell import sandbox
+    from askwell import dump_import, sandbox
 
+    admin_url = settings.sandbox_database_url.get_secret_value()
     try:
         async with session_scope(sessions) as session:
-            return await sandbox.reclaim_orphans(
-                session, settings.sandbox_database_url.get_secret_value()
-            )
+            interrupted = await dump_import.reclaim_interrupted(session, admin_url)
+        async with session_scope(sessions) as session:
+            orphaned = await sandbox.reclaim_orphans(session, admin_url)
     except Exception as error:  # the sandbox instance may not be up yet
         log.warning("sandbox_reclaim_deferred", error=f"{type(error).__name__}: {error}")
         return ()
+    return [str(source_id) for source_id in interrupted] + list(orphaned)
 
 
 async def shutdown(ctx: dict[str, Any]) -> None:
@@ -201,7 +228,12 @@ async def shutdown(ctx: dict[str, Any]) -> None:
 class WorkerSettings:
     """arq's entry point. Read by `arq askwell.worker.WorkerSettings`."""
 
-    functions: ClassVar[list[Callable[..., Any]]] = [ping, ingest_document, reapply_job]
+    functions: ClassVar[list[Callable[..., Any]]] = [
+        ping,
+        ingest_document,
+        reapply_job,
+        import_dump_job,
+    ]
 
     # The repair timer. Its interval is configuration, so it is applied in
     # `main()` where the settings exist — a class body cannot read them without

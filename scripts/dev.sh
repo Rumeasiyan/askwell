@@ -283,6 +283,7 @@ case "$cmd" in
             -e TEST_SANDBOX_DATABASE_URL="postgresql://$(_sandbox_user):$(_sandbox_password)@$(_sandbox_host):$(_sandbox_port)/postgres" \
             -e TEST_SANDBOX_OWNER_PASSWORD="$(_sandbox_owner_password)" \
             -e TEST_SANDBOX_READONLY_PASSWORD="$(_sandbox_readonly_password)" \
+            -e ASKWELL_SANDBOX_OWNER_PASSWORD="$(_sandbox_owner_password)" \
             -v "$REPO_ROOT":/app:z \
             -w /app/api \
             "$IMAGE" pytest -m requires_db "$@"

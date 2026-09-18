@@ -131,6 +131,15 @@ class Settings(BaseSettings):
     # same reason.
     sandbox_database_url: SecretStr
 
+    # `askwell_sandbox_owner`'s own password — the role a dump's content
+    # actually runs as (C3). Distinct from `sandbox_database_url`, which
+    # carries the sandbox instance's superuser: importing a dump must never
+    # be able to reach for that, so it is a separate required secret rather
+    # than a role this module could derive from the admin URL. Provisioned by
+    # `deploy/sandbox/10-roles.sh` from the same `SANDBOX_OWNER_PASSWORD` this
+    # reads under its `ASKWELL_` name (M4-DUMP-ING-088).
+    sandbox_owner_password: SecretStr
+
     # The embedding model's output dimension, and therefore the width of
     # chunks.embedding. It is configuration rather than a literal in the
     # migration because changing the model is a configuration change plus a

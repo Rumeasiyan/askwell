@@ -124,12 +124,12 @@ def _migrate(url: str) -> None:
 
     `ASKWELL_DATABASE_URL` is set for the duration because a migration reads
     configuration — the embedding dimension comes from there — and the harness
-    is running in the same process. `ASKWELL_SANDBOX_DATABASE_URL` has to be
-    set alongside it purely because `load_settings()` refuses to construct
-    `Settings` at all without it (it is a required field, like
-    `database_url`) — no migration reads it. Both are restored afterwards so
-    that a test asserting configuration *failure* still sees a clean
-    environment.
+    is running in the same process. `ASKWELL_SANDBOX_DATABASE_URL` and
+    `ASKWELL_SANDBOX_OWNER_PASSWORD` have to be set alongside it purely
+    because `load_settings()` refuses to construct `Settings` at all without
+    them (both are required fields, like `database_url`) — no migration reads
+    either. All three are restored afterwards so that a test asserting
+    configuration *failure* still sees a clean environment.
     """
     root = Path(__file__).resolve().parents[1]
     config = Config(str(root / "alembic.ini"))
@@ -138,8 +138,10 @@ def _migrate(url: str) -> None:
 
     previous = os.environ.get("ASKWELL_DATABASE_URL")
     previous_sandbox = os.environ.get("ASKWELL_SANDBOX_DATABASE_URL")
+    previous_owner_password = os.environ.get("ASKWELL_SANDBOX_OWNER_PASSWORD")
     os.environ["ASKWELL_DATABASE_URL"] = url
     os.environ["ASKWELL_SANDBOX_DATABASE_URL"] = "postgresql://x:x@sandbox.invalid:5432/postgres"
+    os.environ["ASKWELL_SANDBOX_OWNER_PASSWORD"] = "x"
     try:
         command.upgrade(config, "head")
     finally:
@@ -151,6 +153,10 @@ def _migrate(url: str) -> None:
             os.environ.pop("ASKWELL_SANDBOX_DATABASE_URL", None)
         else:
             os.environ["ASKWELL_SANDBOX_DATABASE_URL"] = previous_sandbox
+        if previous_owner_password is None:
+            os.environ.pop("ASKWELL_SANDBOX_OWNER_PASSWORD", None)
+        else:
+            os.environ["ASKWELL_SANDBOX_OWNER_PASSWORD"] = previous_owner_password
 
 
 @pytest.fixture(scope="session")

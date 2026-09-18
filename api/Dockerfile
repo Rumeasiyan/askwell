@@ -53,6 +53,21 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
         tesseract-ocr-tam \
     && rm -rf /var/lib/apt/lists/*
 
+# `psql` itself, not a Python wheel: `askwell.dump_import` (M4-DUMP-ING-088)
+# shells out to it to load a PostgreSQL dump, because a `pg_dump` plain-format
+# file's `COPY ... FROM stdin` blocks are not statements a SQL parser can
+# split correctly — piping the whole file to one `psql` process is what every
+# operator does by hand, and psycopg has no equivalent. Package name and
+# version (15.19, bookworm's `postgresql-client`) verified against
+# packages.debian.org/bookworm before writing it here (`AGENTS.md` §4). The
+# sandbox instance itself runs pg18 (`compose.yaml`'s `sandbox` service); an
+# older client loading plain SQL against a newer server is an ordinary,
+# supported combination — nothing here depends on a server-version-specific
+# `psql` feature.
+RUN apt-get update && apt-get install --no-install-recommends -y \
+        postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Version first and on its own layer: it changes on nearly every commit, and

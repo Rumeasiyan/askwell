@@ -8,6 +8,7 @@ are `requires_db` and run only by `scripts/dev.sh test-db` against the real
 `sandbox` service.
 """
 
+import os
 import uuid
 from collections.abc import AsyncIterator
 
@@ -27,7 +28,9 @@ from askwell.sandbox import (
     drop_database,
     generate_name,
     known_databases,
+    owner_url,
     reclaim_orphans,
+    seal_owner,
 )
 from tests.conftest_sandbox import role_url
 
@@ -89,6 +92,7 @@ async def session(app_database_url: str, sandbox_admin_url: str) -> AsyncIterato
     settings = Settings(
         database_url=app_database_url,  # type: ignore[arg-type]
         sandbox_database_url=sandbox_admin_url,  # type: ignore[arg-type]
+        sandbox_owner_password="x",  # type: ignore[arg-type]
     )
     engine: AsyncEngine = build_engine(settings)
     try:
@@ -386,6 +390,80 @@ async def test_reclaim_orphans_drops_only_databases_no_live_source_claims(
     finally:
         await drop_database(session, sandbox_admin_url, claimed)
         await session.commit()
+
+
+@pytest.mark.requires_db
+async def test_owner_url_matches_the_owner_connection_role_url(sandbox_admin_url: str) -> None:
+    """`owner_url` is `M4-DUMP-ING-088`'s own way of building this DSN;
+    `role_url` is the test suite's. They must agree."""
+    name = generate_name()
+    password = os.environ["TEST_SANDBOX_OWNER_PASSWORD"]
+    expected = role_url(
+        sandbox_admin_url,
+        role=OWNER_ROLE,
+        password_env="TEST_SANDBOX_OWNER_PASSWORD",
+        database=name,
+    )
+    assert owner_url(sandbox_admin_url, name, password) == expected
+
+
+@pytest.mark.requires_db
+async def test_seal_owner_revokes_connect_but_not_readonly(
+    sandbox_admin_url: str, session: AsyncSession
+) -> None:
+    name = generate_name()
+    await create_database(session, sandbox_admin_url, name)
+    await session.commit()
+    try:
+        owner_dsn = role_url(
+            sandbox_admin_url,
+            role=OWNER_ROLE,
+            password_env="TEST_SANDBOX_OWNER_PASSWORD",
+            database=name,
+        )
+        with psycopg.connect(owner_dsn, autocommit=True) as conn:
+            assert conn.execute("SELECT 1").fetchone() == (1,)
+
+        await seal_owner(session, sandbox_admin_url, name)
+        await session.commit()
+
+        with pytest.raises(psycopg.OperationalError):
+            psycopg.connect(owner_dsn, autocommit=True)
+
+        readonly_url = role_url(
+            sandbox_admin_url,
+            role=READONLY_ROLE,
+            password_env="TEST_SANDBOX_READONLY_PASSWORD",
+            database=name,
+        )
+        with psycopg.connect(readonly_url, autocommit=True) as conn:
+            assert conn.execute("SELECT 1").fetchone() == (1,)
+    finally:
+        await drop_database(session, sandbox_admin_url, name)
+        await session.commit()
+
+
+@pytest.mark.requires_db
+async def test_seal_owner_writes_a_decisions_record(
+    sandbox_admin_url: str, session: AsyncSession
+) -> None:
+    name = generate_name()
+    await create_database(session, sandbox_admin_url, name)
+    await session.commit()
+    await seal_owner(session, sandbox_admin_url, name)
+    await session.commit()
+
+    result = await session.execute(
+        text(
+            "SELECT 1 FROM audit_decisions WHERE kind = 'sandbox_owner_sealed' "
+            "AND payload->>'database' = :name"
+        ),
+        {"name": name},
+    )
+    assert result.first() is not None
+
+    await drop_database(session, sandbox_admin_url, name)
+    await session.commit()
 
 
 @pytest.mark.requires_db
