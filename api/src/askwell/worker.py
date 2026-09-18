@@ -206,6 +206,47 @@ async def check_missing(ctx: dict[str, Any]) -> int:
         return await ingest.sweep_missing(session, ctx["settings"])
 
 
+async def check_connections_health(ctx: dict[str, Any]) -> int:
+    """Probe every `ready`/`attention` live connection. `M4-CONN-BE-099`.
+
+    A `queued` connection is not probed — it has never finished its initial
+    introspection, so "unreachable" would be the wrong word for a source that
+    has simply not been reached yet. A `deleted` one is excluded for the
+    obvious reason. One probe failing to run (a transient error inside
+    `connections.check_connection_health` itself, as opposed to the database
+    it is probing) is logged and skipped rather than aborting the rest of the
+    sweep — one customer's dead database must not stop this cycle's check of
+    everyone else's.
+    """
+    from sqlalchemy import text
+
+    from askwell import connections
+    from askwell.db.engine import session_scope
+
+    async with session_scope(ctx["sessions"]) as session:
+        rows = (
+            await session.execute(
+                text(
+                    "SELECT id FROM sources WHERE kind = 'connection' AND status IN "
+                    "('ready', 'attention')"
+                )
+            )
+        ).all()
+
+    checked = 0
+    for row in rows:
+        source_id = row[0]
+        try:
+            await connections.check_connection_health(ctx["sessions"], ctx["settings"], source_id)
+        except Exception as error:
+            log.warning(
+                "connection_health_check_failed", source_id=str(source_id), error=str(error)
+            )
+            continue
+        checked += 1
+    return checked
+
+
 async def startup(ctx: dict[str, Any]) -> None:
     from askwell import embed, ingest, reapply, sandbox
 
@@ -417,6 +458,25 @@ def main() -> None:
                 second=(
                     set(range(0, 60, settings.missing_check_seconds))
                     if settings.missing_check_seconds < 60
+                    else 0
+                ),
+                run_at_startup=False,
+                max_tries=1,
+            ),
+            cron(
+                check_connections_health,
+                # Same shape as `check_missing` above, for the same reason:
+                # the default (60s) sits right at the boundary where
+                # `second=range(...)` alone would silently fold back to
+                # "every minute" above 59.
+                minute=(
+                    None
+                    if settings.connection_health_check_seconds < 60
+                    else set(range(0, 60, max(1, settings.connection_health_check_seconds // 60)))
+                ),
+                second=(
+                    set(range(0, 60, settings.connection_health_check_seconds))
+                    if settings.connection_health_check_seconds < 60
                     else 0
                 ),
                 run_at_startup=False,

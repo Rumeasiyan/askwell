@@ -1282,6 +1282,45 @@ def register_sources(
         await schema_introspect.dispatch_reintrospection(settings, source_id)
         return JSONResponse({"source_id": str(source_id), "queued": True}, status_code=202)
 
+    @app.post("/sources/{source_id}/reconnect")
+    async def reconnect_source_route(source_id: uuid.UUID) -> JSONResponse:
+        """The library's own reconnect action for a live connection,
+        `M4-CONN-BE-099` (`docs/ux/library.md` §5: "Connection dead: Last
+        successful check, the error, reconnect").
+
+        Synchronous rather than dispatched to the worker — the same
+        metadata-only probe the wizard and the periodic health check both
+        run (`connections.check_connection_health`), cheap enough that the
+        person who clicked it can see the result immediately instead of
+        watching a queue. Nothing about the stored connection is recreated;
+        this is a fresh probe against the credential already on file.
+        """
+        async with session_scope(factory) as db:
+            row = (
+                await db.execute(
+                    text("SELECT kind FROM sources WHERE id = :id AND status != 'deleted'"),
+                    {"id": source_id},
+                )
+            ).first()
+        if row is None:
+            return JSONResponse({"error": "No such source."}, status_code=404)
+        if row[0] != "connection":
+            return JSONResponse(
+                {"error": f"A {row[0]!r} source has no connection to reconnect."},
+                status_code=400,
+            )
+
+        outcome = await connections.check_connection_health(factory, settings, source_id)
+        return JSONResponse(
+            {
+                "source_id": str(source_id),
+                "ok": outcome.ok,
+                "reason_code": outcome.reason_code,
+                "message": outcome.message,
+            },
+            status_code=200,
+        )
+
     @app.delete("/documents/{document_id}")
     async def delete_document_route(
         document_id: uuid.UUID, reason: str | None = None

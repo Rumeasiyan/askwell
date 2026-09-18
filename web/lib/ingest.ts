@@ -92,6 +92,11 @@ export interface SourceCoverage {
    * is the filterable fact; this is the date the library's own deleted row
    * shows beside it (`docs/ux/library.md` §5). */
   deleted_at: string | null;
+  /** `M4-CONN-BE-099`: when this last answered a health probe. `null` for a
+   * kind never health-checked, and for a `connection` never yet probed. Not
+   * cleared on failure — a connection dead for days still says when it last
+   * worked (`docs/ux/library.md` §5's "Connection dead" state). */
+  last_healthy_at: string | null;
   /** Always 0 until `M3` builds the clarification loop — a stub, not a lie. */
   open_clarifications: number;
   total: number;

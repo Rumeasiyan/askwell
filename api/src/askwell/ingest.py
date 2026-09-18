@@ -1110,6 +1110,7 @@ async def snapshot(session: AsyncSession, settings: Settings) -> dict[str, Any]:
     sources = await session.execute(
         text(
             "SELECT s.id, s.name, s.status, s.kind, s.added_at, s.last_error, s.deleted_at, "
+            "s.last_healthy_at, "
             "count(d.id) AS total, "
             "count(*) FILTER (WHERE d.status = 'ready') AS ready, "
             "count(*) FILTER (WHERE j.state = 'failed') AS failed, "
@@ -1124,7 +1125,8 @@ async def snapshot(session: AsyncSession, settings: Settings) -> dict[str, Any]:
             # — the row is what makes an old citation resolve at all, so the
             # library that lists everything Askwell has read must be able to
             # list this too, not just the sources still askable.
-            "GROUP BY s.id, s.name, s.status, s.kind, s.added_at, s.last_error, s.deleted_at "
+            "GROUP BY s.id, s.name, s.status, s.kind, s.added_at, s.last_error, s.deleted_at, "
+            "s.last_healthy_at "
             "ORDER BY s.added_at DESC"
         ),
         {"threshold": settings.ocr_confidence_threshold},
@@ -1201,17 +1203,23 @@ async def snapshot(session: AsyncSession, settings: Settings) -> dict[str, Any]:
                 "added_at": row[4].isoformat(),
                 "last_error": row[5],
                 "deleted_at": row[6].isoformat() if row[6] is not None else None,
+                # `M4-CONN-BE-099`: when this last answered a health probe,
+                # periodic or on-demand — never cleared, so a connection that
+                # has been `attention` for days still says when it last
+                # worked rather than going blank. `None` for a kind that is
+                # never health-checked (only `connection` sources are).
+                "last_healthy_at": row[7].isoformat() if row[7] is not None else None,
                 # Clarification counts are always zero until M3 builds the
                 # clarification loop — a stub, not a lie: the library never
                 # claims a count it has no table to back yet.
                 "open_clarifications": 0,
                 **Coverage(
-                    total=int(row[7]),
-                    ready=int(row[8]),
-                    failed=int(row[9]),
-                    running=int(row[10]),
-                    outstanding=int(row[11]),
-                    flagged=int(row[12]),
+                    total=int(row[8]),
+                    ready=int(row[9]),
+                    failed=int(row[10]),
+                    running=int(row[11]),
+                    outstanding=int(row[12]),
+                    flagged=int(row[13]),
                 ).as_dict(),
             }
             for row in sources.all()
