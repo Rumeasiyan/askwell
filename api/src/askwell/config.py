@@ -303,6 +303,14 @@ class Settings(BaseSettings):
     # constant for the same reason every other timeout here is.
     sql_validation_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
 
+    # The row cap `askwell.sql.limit.inject_limit` adds to a validated read
+    # that has no aggregate and no explicit limit of its own, `M4-SQL-VAL-105`.
+    # 1000 is a sensible default for a laptop; configuration rather than a
+    # constant because the ticket requires it adjustable — the fix for "I
+    # need more than a thousand rows at a time" is raising this, not
+    # widening a hardcoded number in code.
+    sql_row_limit: int = Field(default=1000, ge=1, le=1_000_000)
+
     # 32 random bytes that make a copied `postgres-data` volume alone
     # insufficient to read `sources.config_encrypted` (C8, `M4-CONN-SEC-098`).
     # Generated on first use if absent. Lives on the same bind mount the

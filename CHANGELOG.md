@@ -4,6 +4,20 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.20 - 2026-09-19
+
+`M4-SQL-VAL-105` — automatic row-limit injection, and the injected limit made visible in the disclosed SQL. `askwell.sql.limit.inject_limit` adds `Settings.sql_row_limit` (`ASKWELL_SQL_ROW_LIMIT`, default 1000, adjustable) to an already-validated read that has no top-level aggregate and no limit clause of its own, marking the added `LIMIT` with a discarded-on-reparse SQL comment (`/* Added by Askwell */`) so it reads visibly different from one the model wrote. An explicit limit — `LIMIT n` or the SQL:2008 `FETCH FIRST/NEXT ... ROWS ONLY` form — is left untouched regardless of size. `result_was_truncated(row_count, limit)` labels a result landing exactly on the limit the same as one that exceeded it. Fixes two defects found in an earlier, unmerged attempt at this ticket: the injected-limit audit record now goes to `audit_interactions` rather than `audit_decisions` (#372), and a `FETCH FIRST/NEXT` clause is now recognised as an existing limit rather than silently overwritten (#371). **Not wired into `POST /ask`** — `M4-SQL-VAL-106` (the `EXPLAIN` dry run) is the remaining safety layer before a generated, validated, limited query can reach a real turn.
+
+### Added
+
+- `askwell.sql.limit.inject_limit`/`_inject_limit_sync` — row-limit injection on the parsed tree, never the query text.
+- `askwell.sql.limit.result_was_truncated` — whether a result may be showing fewer rows than exist.
+- `Settings.sql_row_limit` (`ASKWELL_SQL_ROW_LIMIT`, default 1000).
+
+### Changed
+
+- `askwell.sql.validate._DIALECTS` renamed to the public `DIALECTS`, shared with `askwell.sql.limit`.
+
 ## 0.4.19 - 2026-09-19
 
 `M4-CONN-BE-099` — connection health and three distinguishable query-time failures. A live connection is now probed periodically (`ASKWELL_CONNECTION_HEALTH_CHECK_SECONDS`, default 60) and on demand, and a query against one now fails as `ConnectionUnreachable`, `CredentialsRejected` or `QueryRejected` rather than a raw driver exception — three different fixes, three different messages, none of them resembling a zero-row result. Every outcome runs through one transition rule (`connections._record_health_transition`) that writes a decisions record only on a real `ready`↔`attention` change, closing issue #360 by construction: the periodic check never calls `record_introspection` at all, so the unbounded-decisions-row failure mode it named cannot occur here.
