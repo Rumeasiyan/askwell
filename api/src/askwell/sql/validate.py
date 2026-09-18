@@ -83,7 +83,12 @@ SQL_QUERY = "sql_query"
 # reading MariaDB input with the `mysql` dialect, which is what
 # `askwell.sql_execute._execute_mysql_blocking` already treats the two as
 # for connection purposes.
-_DIALECTS: dict[Engine, str] = {
+#
+# Public (not `_`-prefixed): `askwell.sql.limit` re-parses the same
+# already-accepted query to inject a `LIMIT`, and needs the identical
+# engine-to-dialect mapping — a second copy would drift on a future engine
+# addition.
+DIALECTS: dict[Engine, str] = {
     "postgresql": "postgres",
     "mysql": "mysql",
     "mariadb": "mysql",
@@ -261,7 +266,7 @@ def _validate_sync(engine: Engine, query: str) -> ValidationResult:
     if not stripped:
         return _reject(RejectionReason.EMPTY, "The generated query was empty.")
 
-    dialect = _DIALECTS[engine]
+    dialect = DIALECTS[engine]
     try:
         statements = sqlglot.parse(stripped, read=dialect)
     except sqlglot.errors.SqlglotError as error:
