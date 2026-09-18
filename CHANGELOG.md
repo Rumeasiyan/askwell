@@ -4,6 +4,23 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.13 - 2026-09-18
+
+`M4-SCHEMA-ING-101` — schema notes from the clarification loop, for the unguessable half of what `M4-SCHEMA-ING-100` already introspects. New `askwell.schema_introspect.raise_unguessable_column_clarifications` scans a freshly-introspected inventory for columns whose name alone does not explain itself (`st_cd`, `rfq`, `dob` — any token three characters or fewer outside a small common-word allowlist) and raises a clarification for each, with a bounded value distribution and row count as evidence (`clarify.column_distribution_evidence`, built by `M3-RAISE-BE-071` and unused until now) — heaviest column first when the per-source cap trims the list. A primary key or foreign key column is never asked about; `describe_column` already states what it references. Answering one flows through the existing clarification-answer path unchanged and promotes the `schema_notes` row to `origin='user'`. Wired into all three points that already call `write_schema_inventory`: a live connection's initial introspection, a dump import, and on-demand re-introspection — PostgreSQL only for now, MySQL and SQL Server have no bounded value query wired up yet (issue #362).
+
+Also closes issue #355: a `user`-origin schema note whose table/column position a re-introspection no longer finds used to be left completely untouched — still active, nothing distinguishing it from a note still describing a real column. New `schema_notes.stale` (migration `1e6f3b9c4a72`) is set on exactly that note instead of leaving it silent, and cleared again if the position reappears. `SchemaNote` (ORM model and `askwell.memory`'s retrieval dataclass), `get_active_schema_notes` and `retrieve_relevant_facts` all carry the flag through, and `agent.conflict._delimit_schema_notes` renders it into the query-generation prompt as an explicit caveat so a stale note is never presented as current fact (C5).
+
+### Added
+
+- `askwell.schema_introspect.raise_unguessable_column_clarifications`, `_is_unguessable_column_name`, `_sample_postgresql_column_distribution`.
+- `schema_notes.stale` (migration `20260918_1e6f3b9c4a72_schema_note_stale.py`).
+
+### Changed
+
+- `write_schema_inventory` flags a `user`-origin note `stale` when its position disappears from a re-introspection, and clears the flag if the position reappears, instead of leaving it untouched either way.
+- `agent.conflict._delimit_schema_notes` carries a stale note's caveat into the composed prompt.
+- `ask.py`'s `fact_citation` event for a `schema_note` now includes `stale`.
+
 ## 0.4.12 - 2026-09-18
 
 `M4-SQL-DB-107` — the independent read-only role and statement timeout: every generated query, once `M4-SQL-BE-103`/`VAL-104`–`106` exist to produce one, will execute as a role the database itself refuses a write from, with a 30-second `statement_timeout` per session — two safety layers independent of whatever `sqlglot` validation (C2) does to the query text. New `askwell.sql_execute.execute_sandbox_query`/`execute_connection_query` run a query as `askwell_sandbox_readonly` (sandbox, never the owner, C3) or a live connection's own already-write-probe-verified credential, on all three supported engines, with the timeout applied per session (Postgres `SET statement_timeout`, MySQL `SET SESSION MAX_EXECUTION_TIME`, MariaDB `SET SESSION max_statement_time`, SQL Server's connect-time `timeout`). A cancellation raises `StatementTimedOut`, naming the query and the timeout and suggesting narrowing it, and is recorded as a decisions row plus a local, never-transmitted counter. New `Settings.sql_statement_timeout_seconds` (`ASKWELL_SQL_STATEMENT_TIMEOUT_SECONDS`, default 30, adjustable). New `askwell.sandbox.verify_readonly_role` checks the readonly role's own attributes (`rolsuper`/`rolcreatedb`/`rolcreaterole`/`rolbypassrls`) at worker startup and refuses to start on a misconfiguration rather than falling back to a writable role — verified live: misconfiguring the role crash-loops the worker with the exact privilege named; restoring it resumes normally.

@@ -40,7 +40,11 @@ filed as its own issue rather than guessed at here.
 """
 
 import asyncio
+import functools
+import json
+import re
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -49,6 +53,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from askwell import audit
 from askwell.audit import Store
+from askwell.clarify import (
+    EVIDENCE_MAX_COLUMN_VALUES,
+    Candidate,
+    RaiseResult,
+    column_distribution_evidence,
+    get_clarification_cap,
+)
 from askwell.logging import get_logger
 from askwell.memory import get_active_schema_notes, write_schema_note
 
@@ -62,6 +73,14 @@ TableKind = Literal["table", "view", "materialized_view"]
 # Decisions record (AGENTS.md §8, `docs/audit-log.md` §2): "introspection
 # runs are logged" is this ticket's own Audit / Logging Requirement.
 SCHEMA_INTROSPECTED = "schema_introspected"
+
+# `M4-SCHEMA-ING-101`, issue #355: a user-supplied note flagged stale when
+# its table/column position disappears from a re-introspection.
+SCHEMA_NOTE_MARKED_STALE = "schema_note_marked_stale"
+
+# `M4-SCHEMA-ING-101`: a column clarification raised from the value
+# distribution of an unguessable column name found by introspection.
+SCHEMA_COLUMN_CLARIFICATION_RAISED = "schema_column_clarification_raised"
 
 # Local-only (C1) — never transmitted. This ticket's own Analytics Events
 # line asks only for the counter to exist, mirroring
@@ -144,8 +163,8 @@ def describe_column(table_name: str, column: Column, foreign_keys: tuple[Foreign
     """The column-level `schema_notes.description` — `docs/data-sources.md`
     §5: "`st_cd` is unguessable; `st_cd — student status code...` is
     trivial." This is the unguessable half; a human explanation is what the
-    clarification loop adds later (`M4-SCHEMA-ING-101`, out of this
-    ticket's scope) when the type alone still leaves the meaning open.
+    clarification loop adds (`raise_unguessable_column_clarifications`,
+    `M4-SCHEMA-ING-101`) when the type alone still leaves the meaning open.
     """
     bits = [column.data_type]
     if column.primary_key:
@@ -540,6 +559,11 @@ async def write_schema_inventory(
     (if any) superseded by itself, which is how this module marks a note
     inactive without a replacement row. A user-supplied note for a position
     that disappeared is left alone: nothing here deletes what a person said.
+    It is flagged `stale` instead (`M4-SCHEMA-ING-101`, issue #355) — still
+    active, still retrieved, but no longer presented as describing a column
+    that exists. A position that reappears — the same column back after a
+    re-introspection found it briefly missing — has its stale flag cleared
+    again, on either kind of note.
     """
     target: dict[tuple[str, str | None], str] = {}
     for table in inventory.tables:
@@ -565,6 +589,13 @@ async def write_schema_inventory(
             )
             continue
         if existing.origin != "inferred":
+            if existing.stale:
+                # The position is back — clear a caveat that no longer
+                # applies rather than leave it wrongly flagged forever.
+                await session.execute(
+                    text("UPDATE schema_notes SET stale = false WHERE id = :id"),
+                    {"id": existing.id},
+                )
             continue  # user-supplied always outranks an inferred refresh.
         if existing.description == description:
             continue  # unchanged — nothing to update, nothing to churn.
@@ -587,9 +618,29 @@ async def write_schema_inventory(
         )
 
     for (table_name, column_name), note in active_by_position.items():
-        if note.origin != "inferred":
-            continue
         if (table_name, column_name) in target:
+            continue
+        if note.origin != "inferred":
+            # A user-supplied note is never deleted or superseded here —
+            # only flagged, so it keeps being retrieved with a caveat
+            # instead of silently describing a column that no longer
+            # exists (`M4-SCHEMA-ING-101`, issue #355).
+            if not note.stale:
+                await session.execute(
+                    text("UPDATE schema_notes SET stale = true WHERE id = :id"),
+                    {"id": note.id},
+                )
+                await audit.record(
+                    session,
+                    Store.DECISIONS,
+                    SCHEMA_NOTE_MARKED_STALE,
+                    {
+                        "note_id": str(note.id),
+                        "source_id": str(source_id),
+                        "table_name": table_name,
+                        "column_name": column_name,
+                    },
+                )
             continue
         await session.execute(
             text("UPDATE schema_notes SET superseded_by = id WHERE id = :id"),
@@ -614,6 +665,227 @@ async def write_schema_inventory(
         tables=len(inventory.tables),
         omitted_count=inventory.omitted_count,
     )
+
+
+# --- unguessable columns: M4-SCHEMA-ING-101 ---------------------------
+
+# Short tokens common enough in a schema that flagging every one of them
+# would ask about nearly every column — `created_at`'s `at`, `user_id`'s
+# `id`. A token no longer than three characters and outside this set is
+# exactly the `st_cd` shape `docs/data-sources.md` §5 names: an abbreviation
+# with nothing else in the name to explain it.
+_GUESSABLE_SHORT_TOKENS = frozenset(
+    {
+        "id",
+        "at",
+        "by",
+        "no",
+        "is",
+        "of",
+        "in",
+        "to",
+        "on",
+        "key",
+        "url",
+        "uri",
+        "ip",
+        "min",
+        "max",
+        "sum",
+        "avg",
+        "num",
+        "day",
+        "qty",
+        "tax",
+        "fee",
+        "zip",
+        "lat",
+        "lon",
+        "sku",
+        "vat",
+    }
+)
+
+
+def _is_unguessable_column_name(name: str) -> bool:
+    """The name-shape half of the `st_cd` test. `name` fails — is
+    unguessable — when any of its tokens (split on anything that is not a
+    letter, so `st_cd`, `stCd` and `st-cd` are treated alike) is three
+    characters or fewer and not a recognisably common short word. One long,
+    plain-English token anywhere in the name is not enough to save a name
+    that also carries a bare cryptic one (`cd_st` is still unguessable
+    alongside a hypothetical `cd_status`), since the short token is the
+    part a query would actually need explained.
+    """
+    tokens = [token for token in re.split(r"[^a-zA-Z]+", name) if token]
+    if not tokens:
+        return False
+    return any(len(token) <= 3 and token.lower() not in _GUESSABLE_SHORT_TOKENS for token in tokens)
+
+
+def _sample_postgresql_column_distribution(
+    dsn: str, table_name: str, column_name: str, limit: int = EVIDENCE_MAX_COLUMN_VALUES
+) -> tuple[list[tuple[str, int]], int]:
+    """Bounded value distribution and row count for one column — the
+    clarification evidence `clarify.column_distribution_evidence` shapes,
+    built for exactly this in `M3-RAISE-BE-071` and unused until this
+    ticket. Read-only, the same role introspection itself already runs as.
+
+    Identifiers are quoted with `psycopg.sql.Identifier`, never
+    string-interpolated: `table_name`/`column_name` come from catalog
+    introspection rather than a user form, but that is not a reason to
+    build SQL by concatenation.
+    """
+    import psycopg
+    from psycopg import sql
+
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        row = conn.execute(
+            sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(table_name))
+        ).fetchone()
+        row_count = int(row[0]) if row else 0
+        rows = conn.execute(
+            sql.SQL(
+                "SELECT {col}::text, count(*) FROM {tbl} WHERE {col} IS NOT NULL "
+                "GROUP BY {col} ORDER BY count(*) DESC LIMIT %s"
+            ).format(col=sql.Identifier(column_name), tbl=sql.Identifier(table_name)),
+            (limit,),
+        ).fetchall()
+    return [(str(value), int(count)) for value, count in rows], row_count
+
+
+ColumnDistributionSampler = Callable[[str, str], tuple[list[tuple[str, int]], int]]
+
+
+async def raise_unguessable_column_clarifications(
+    session: AsyncSession,
+    source_id: uuid.UUID,
+    inventory: SchemaInventory,
+    sample: ColumnDistributionSampler | None,
+) -> RaiseResult:
+    """Raise a clarification for every column whose name alone does not say
+    what it means, with its value distribution and row count as evidence —
+    `docs/data-sources.md` §5's `st_cd` case, the trigger
+    `M4-SCHEMA-ING-100`'s own `describe_column` docstring named as this
+    ticket's job. Answering one writes a `schema_notes` row the same way
+    every other clarification answer does (`askwell.reapply._promote_schema_note`)
+    — nothing here is a new answer path, only a new question.
+
+    `sample` maps `(table_name, column_name)` to a bounded value
+    distribution; `None` (MySQL, SQL Server — no bounded value query is
+    wired up for either engine yet) means nothing here is raised at all,
+    the same choice `SchemaInventory.omitted_count` makes for those two
+    engines elsewhere in this module: a real gap, filed as its own issue,
+    never guessed at with fabricated evidence.
+
+    Idempotent per source, the same guard `askwell.clarify.raise_candidates`
+    and `askwell.table_infer.raise_table_inference` use: a source that
+    already has a clarification row is not re-scanned.
+
+    A primary key or a foreign key column is skipped regardless of its
+    name — `describe_column` already states what it references, which is
+    exactly the explanation a clarification here would otherwise ask for.
+    """
+    if sample is None:
+        return RaiseResult(raised=0, inferred=0, dropped=0)
+
+    already = await session.execute(
+        text("SELECT 1 FROM clarifications WHERE source_id = :id LIMIT 1"),
+        {"id": source_id},
+    )
+    if already.first() is not None:
+        return RaiseResult(raised=0, inferred=0, dropped=0)
+
+    found: list[tuple[Candidate, int, str]] = []
+    for table in inventory.tables:
+        fk_columns = {fk.column for fk in table.foreign_keys}
+        for column in table.columns:
+            if column.primary_key or column.name in fk_columns:
+                continue
+            if not _is_unguessable_column_name(column.name):
+                continue
+            values, row_count = await asyncio.to_thread(sample, table.name, column.name)
+            evidence = column_distribution_evidence(values, row_count)
+            candidate = Candidate(
+                trigger="schema_column",
+                subject=column.name,
+                question=f"*{table.name}.{column.name}* — what does this column mean?",
+                passes=True,
+                reason="column name does not explain its meaning",
+                evidence=evidence,
+                # There is no safe guess at what a cryptic column name
+                # means — the same reasoning `_detect_abbreviations` uses.
+                inferred_fact=None,
+            )
+            found.append((candidate, row_count, table.name))
+
+    if not found:
+        return RaiseResult(raised=0, inferred=0, dropped=0)
+
+    # Heaviest column first — the ticket's own edge case: a column touching
+    # forty thousand rows must outrank one touching twelve when both are
+    # capped, and this is the ranking that makes that visible.
+    found.sort(key=lambda item: item[1], reverse=True)
+
+    cap = await get_clarification_cap(session)
+    to_raise, to_cap = found[:cap], found[cap:]
+
+    raised = 0
+    for rank, (candidate, row_count, table_name) in enumerate(to_raise, start=1):
+        await session.execute(
+            text(
+                "INSERT INTO clarifications "
+                "(id, source_id, subject, question, options, evidence, rank, status) "
+                "VALUES (:id, :source_id, :subject, :question, "
+                "NULL, CAST(:evidence AS jsonb), :rank, 'pending')"
+            ),
+            {
+                "id": uuid.uuid4(),
+                "source_id": source_id,
+                "subject": candidate.subject,
+                "question": candidate.question,
+                "evidence": json.dumps({**candidate.evidence, "trigger": candidate.trigger}),
+                "rank": rank,
+            },
+        )
+        await audit.record(
+            session,
+            Store.DECISIONS,
+            SCHEMA_COLUMN_CLARIFICATION_RAISED,
+            {
+                "source_id": str(source_id),
+                "table_name": table_name,
+                "column_name": candidate.subject,
+                "row_count": row_count,
+                "rank": rank,
+            },
+        )
+        raised += 1
+
+    capped = 0
+    for offset, (candidate, _row_count, table_name) in enumerate(to_cap, start=1):
+        capped += 1
+        await audit.record(
+            session,
+            Store.DECISIONS,
+            "clarification_capped",
+            {
+                "source_id": str(source_id),
+                "trigger": candidate.trigger,
+                "table_name": table_name,
+                "column_name": candidate.subject,
+                "rank": cap + offset,
+                "cap": cap,
+            },
+        )
+
+    log.info(
+        "schema_column_clarifications_raised",
+        source_id=str(source_id),
+        raised=raised,
+        capped=capped,
+    )
+    return RaiseResult(raised=raised, inferred=0, dropped=0, capped=capped)
 
 
 async def record_introspection_run(settings: "Settings") -> None:
@@ -728,4 +1000,13 @@ async def reintrospect_sandbox_source(
     async with session_scope(factory) as session:
         await write_schema_inventory(session, source_id, inventory)
     await record_introspection_run(settings)
+
+    # `M4-SCHEMA-ING-101`: unguessable columns raise clarifications, same as
+    # the initial import/connect path — idempotent, so a source that already
+    # asked (from this pass or from `table_infer`'s own type-ambiguity
+    # questions) is not asked again.
+    sample = functools.partial(_sample_postgresql_column_distribution, dsn)
+    async with session_scope(factory) as session:
+        await raise_unguessable_column_clarifications(session, source_id, inventory, sample)
+
     return len(inventory.tables)

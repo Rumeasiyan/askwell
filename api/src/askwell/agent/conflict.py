@@ -127,7 +127,8 @@ def _delimit_schema_notes(notes: Sequence[SchemaNote], start_index: int) -> str:
     if not notes:
         return ""
     lines = "\n".join(
-        f"- [{index}] [{_confidence_label(note.origin, note.confidence)}] "
+        f"- [{index}] [{_confidence_label(note.origin, note.confidence)}"
+        f"{', column no longer found in the current schema' if note.stale else ''}] "
         f"{note.table_name}{f'.{note.column_name}' if note.column_name else ''}: "
         f"{note.description}"
         for index, note in enumerate(notes, start=start_index)

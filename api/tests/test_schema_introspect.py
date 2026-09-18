@@ -22,7 +22,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from askwell import schema_introspect
-from askwell.memory import write_schema_note
+from askwell.clarify import set_clarification_cap
+from askwell.memory import get_active_schema_notes, write_schema_note
 from askwell.sandbox import create_database, drop_database, generate_name, owner_url, readonly_url
 from askwell.schema_introspect import (
     Column,
@@ -33,8 +34,10 @@ from askwell.schema_introspect import (
     _build_postgresql_inventory,
     _build_sqlserver_inventory,
     _introspect_postgresql_blocking,
+    _is_unguessable_column_name,
     describe_column,
     describe_table,
+    raise_unguessable_column_clarifications,
     write_schema_inventory,
 )
 
@@ -90,6 +93,25 @@ def test_describe_column_for_an_ordinary_nullable_column_names_only_the_type() -
 
 
 # --- postgresql row grouping -------------------------------------------------
+
+
+# --- unguessable column names: M4-SCHEMA-ING-101 ----------------------------
+
+
+@pytest.mark.parametrize(
+    "name", ["st_cd", "cd", "st_cd_2", "rfq", "dob"], ids=lambda n: f"unguessable:{n}"
+)
+def test_unguessable_column_names_are_flagged(name: str) -> None:
+    assert _is_unguessable_column_name(name) is True
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["student_status", "created_at", "email", "user_id", "quantity", "id"],
+    ids=lambda n: f"guessable:{n}",
+)
+def test_clearly_named_columns_are_not_flagged(name: str) -> None:
+    assert _is_unguessable_column_name(name) is False
 
 
 def test_postgresql_inventory_groups_columns_keys_and_foreign_keys_by_table() -> None:
@@ -392,6 +414,245 @@ async def test_a_user_supplied_note_is_never_overwritten_by_reintrospection(
     ).one()
     assert row[0] == "Orders placed by a customer. Written by a person."
     assert row[1] == "user"
+
+
+@pytest.mark.requires_db
+async def test_a_user_supplied_note_is_flagged_stale_when_its_position_disappears(
+    session: AsyncSession, source_id: uuid.UUID
+) -> None:
+    """Issue #355: a `user`-origin note used to be left completely
+    untouched when its column vanished — still active, no signal anything
+    changed. It must now be flagged `stale` rather than silently kept as
+    if the column still existed.
+    """
+    await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name="orders",
+        column_name="customer_id",
+        description="The customer who placed the order.",
+        origin="user",
+    )
+    await session.commit()
+
+    empty = SchemaInventory(tables=(), omitted_count=0)
+    await write_schema_inventory(session, source_id, empty)
+    await session.commit()
+
+    row = (
+        await session.execute(
+            text(
+                "SELECT origin, stale, superseded_by FROM schema_notes "
+                "WHERE source_id = :id AND table_name = 'orders' "
+                "AND column_name = 'customer_id'"
+            ),
+            {"id": source_id},
+        )
+    ).one()
+    assert row[0] == "user"
+    assert row[1] is True
+    assert row[2] is None  # still active — never superseded, never deleted.
+
+    notes = await get_active_schema_notes(session, source_id=source_id)
+    (note,) = [n for n in notes if n.column_name == "customer_id"]
+    assert note.stale is True
+
+
+@pytest.mark.requires_db
+async def test_a_stale_user_supplied_note_is_cleared_when_the_position_reappears(
+    session: AsyncSession, source_id: uuid.UUID
+) -> None:
+    await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name="orders",
+        column_name="customer_id",
+        description="The customer who placed the order.",
+        origin="user",
+    )
+    await session.commit()
+    await write_schema_inventory(session, source_id, SchemaInventory(tables=(), omitted_count=0))
+    await session.commit()
+
+    # The column is back — a reconnect, or a re-introspection that had
+    # briefly missed it.
+    await write_schema_inventory(session, source_id, _inventory())
+    await session.commit()
+
+    row = (
+        await session.execute(
+            text(
+                "SELECT stale FROM schema_notes WHERE source_id = :id "
+                "AND table_name = 'orders' AND column_name = 'customer_id'"
+            ),
+            {"id": source_id},
+        )
+    ).scalar_one()
+    assert row is False
+
+
+# --- unguessable-column clarifications: M4-SCHEMA-ING-101 --------------------
+
+
+def _cryptic_inventory() -> SchemaInventory:
+    return SchemaInventory(
+        tables=(
+            Table(
+                name="orders",
+                kind="table",
+                columns=(
+                    Column("id", "integer", nullable=False, primary_key=True),
+                    Column("customer_id", "integer", nullable=False, primary_key=False),
+                    Column("st_cd", "text", nullable=True, primary_key=False),
+                ),
+                foreign_keys=(ForeignKey("customer_id", "customers", "id"),),
+            ),
+        ),
+        omitted_count=0,
+    )
+
+
+@pytest.mark.requires_db
+async def test_raises_a_clarification_only_for_the_unguessable_column(
+    session: AsyncSession, source_id: uuid.UUID
+) -> None:
+    def sample(table_name: str, column_name: str) -> tuple[list[tuple[str, int]], int]:
+        assert (table_name, column_name) == ("orders", "st_cd")
+        return [("A", 30), ("T", 8), ("D", 2)], 40
+
+    result = await raise_unguessable_column_clarifications(
+        session, source_id, _cryptic_inventory(), sample
+    )
+    await session.commit()
+    assert result.raised == 1
+
+    rows = (
+        await session.execute(
+            text("SELECT subject, question, evidence FROM clarifications WHERE source_id = :id"),
+            {"id": source_id},
+        )
+    ).all()
+    assert len(rows) == 1
+    subject, question, evidence = rows[0]
+    assert subject == "st_cd"
+    assert "orders.st_cd" in question
+    assert evidence["kind"] == "column_distribution"
+    assert evidence["row_count"] == 40
+    assert evidence["values"][0] == {"value": "A", "count": 30}
+    assert evidence["trigger"] == "schema_column"
+
+
+@pytest.mark.requires_db
+async def test_a_primary_key_or_foreign_key_column_is_never_asked_about(
+    session: AsyncSession, source_id: uuid.UUID
+) -> None:
+    inventory = SchemaInventory(
+        tables=(
+            Table(
+                name="orders",
+                kind="table",
+                # `id` is a cryptic-shaped name but a primary key; `cd` is a
+                # cryptic-shaped foreign key. Neither should be asked about —
+                # `describe_column` already states what each is/references.
+                columns=(
+                    Column("id", "integer", nullable=False, primary_key=True),
+                    Column("cd", "integer", nullable=False, primary_key=False),
+                ),
+                foreign_keys=(ForeignKey("cd", "codes", "id"),),
+            ),
+        ),
+        omitted_count=0,
+    )
+
+    def sample(table_name: str, column_name: str) -> tuple[list[tuple[str, int]], int]:
+        raise AssertionError("no column here should ever be sampled")
+
+    result = await raise_unguessable_column_clarifications(session, source_id, inventory, sample)
+    await session.commit()
+    assert result.raised == 0
+
+
+@pytest.mark.requires_db
+async def test_no_sampler_means_nothing_is_raised(
+    session: AsyncSession, source_id: uuid.UUID
+) -> None:
+    """MySQL and SQL Server have no bounded value query wired up yet — a
+    real gap, not something to paper over with fabricated evidence."""
+    result = await raise_unguessable_column_clarifications(
+        session, source_id, _cryptic_inventory(), None
+    )
+    await session.commit()
+    assert result.raised == 0
+
+    rows = (
+        await session.execute(
+            text("SELECT 1 FROM clarifications WHERE source_id = :id"), {"id": source_id}
+        )
+    ).all()
+    assert rows == []
+
+
+@pytest.mark.requires_db
+async def test_a_source_already_carrying_a_clarification_is_not_rescanned(
+    session: AsyncSession, source_id: uuid.UUID
+) -> None:
+    await session.execute(
+        text(
+            "INSERT INTO clarifications (id, source_id, subject, question, rank, status) "
+            "VALUES (gen_random_uuid(), :source_id, 'unrelated', 'Unrelated?', 1, 'pending')"
+        ),
+        {"source_id": source_id},
+    )
+    await session.commit()
+
+    def sample(table_name: str, column_name: str) -> tuple[list[tuple[str, int]], int]:
+        raise AssertionError("an already-scanned source must not be sampled again")
+
+    result = await raise_unguessable_column_clarifications(
+        session, source_id, _cryptic_inventory(), sample
+    )
+    await session.commit()
+    assert result.raised == 0
+
+
+@pytest.mark.requires_db
+async def test_unguessable_columns_beyond_the_cap_are_not_raised_but_are_counted(
+    session: AsyncSession, source_id: uuid.UUID
+) -> None:
+    await set_clarification_cap(session, 1)
+    await session.commit()
+
+    inventory = SchemaInventory(
+        tables=(
+            Table(
+                name="orders",
+                kind="table",
+                columns=(
+                    Column("st_cd", "text", nullable=True, primary_key=False),
+                    Column("rfq", "text", nullable=True, primary_key=False),
+                ),
+                foreign_keys=(),
+            ),
+        ),
+        omitted_count=0,
+    )
+
+    def sample(table_name: str, column_name: str) -> tuple[list[tuple[str, int]], int]:
+        # `st_cd` is weighted heavier (more rows) so it wins the cap slot —
+        # the ticket's own edge case: forty thousand rows outranks twelve.
+        return ([("A", 1)], 40_000) if column_name == "st_cd" else ([("A", 1)], 12)
+
+    result = await raise_unguessable_column_clarifications(session, source_id, inventory, sample)
+    await session.commit()
+    assert result.raised == 1
+    assert result.capped == 1
+
+    subject = (
+        await session.execute(
+            text("SELECT subject FROM clarifications WHERE source_id = :id"), {"id": source_id}
+        )
+    ).scalar_one()
+    assert subject == "st_cd"
 
 
 # --- against a real, separate sandbox instance -------------------------------

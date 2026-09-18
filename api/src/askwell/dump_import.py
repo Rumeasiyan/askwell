@@ -70,6 +70,7 @@ nothing else reads.
 """
 
 import asyncio
+import functools
 import subprocess
 import tempfile
 import threading
@@ -432,6 +433,16 @@ async def _run_deep_introspection(
     async with session_scope(factory) as session:
         await schema_introspect.write_schema_inventory(session, source_id, inventory)
     await schema_introspect.record_introspection_run(settings)
+
+    # `M4-SCHEMA-ING-101`: unguessable columns raise clarifications, with a
+    # bounded value distribution as evidence. Always PostgreSQL here — a
+    # loaded dump only ever lands in the sandbox — so a sampler is always
+    # available, unlike the live-connection path.
+    sample = functools.partial(schema_introspect._sample_postgresql_column_distribution, dsn)
+    async with session_scope(factory) as session:
+        await schema_introspect.raise_unguessable_column_clarifications(
+            session, source_id, inventory, sample
+        )
 
 
 async def create_dump_source(session: AsyncSession, name: str, dump_path: str) -> uuid.UUID:

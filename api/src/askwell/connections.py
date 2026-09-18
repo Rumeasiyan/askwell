@@ -77,6 +77,7 @@ bad route.
 import asyncio
 import contextlib
 import errno
+import functools
 import socket
 import uuid
 from dataclasses import dataclass, field, replace
@@ -935,6 +936,7 @@ async def _run_deep_introspection(
     from askwell.db.engine import session_scope
 
     engine = str(config["engine"])
+    dsn: str | None = None
     try:
         if engine == "postgresql":
             dsn = _postgresql_dsn(
@@ -971,3 +973,17 @@ async def _run_deep_introspection(
     async with session_scope(factory) as session:
         await schema_introspect.write_schema_inventory(session, source_id, inventory)
     await schema_introspect.record_introspection_run(settings)
+
+    # `M4-SCHEMA-ING-101`: unguessable columns raise clarifications, with a
+    # bounded value distribution as evidence — only wired up for PostgreSQL
+    # today (`raise_unguessable_column_clarifications`'s own docstring has
+    # the MySQL/SQL Server gap and the issue it is filed under).
+    sample = (
+        functools.partial(schema_introspect._sample_postgresql_column_distribution, dsn)
+        if dsn is not None
+        else None
+    )
+    async with session_scope(factory) as session:
+        await schema_introspect.raise_unguessable_column_clarifications(
+            session, source_id, inventory, sample
+        )
