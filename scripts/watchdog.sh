@@ -21,9 +21,6 @@
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 
-# Committed here rather than in the gitignored `.build-runner/`, and executed
-# from that copy — it survives branch checkouts, and `scripts/` does not.
-
 # systemd hands a user unit PATH=/usr/local/bin:/usr/bin and nothing else, so
 # the agent CLI in ~/.local/bin is invisible to it. The first timer-fired run
 # died on "agent CLI 'claude' not on PATH" twenty-five times while a manual run
@@ -43,10 +40,41 @@ if ! command -v claude >/dev/null 2>&1; then
 fi
 LOG="$REPO/.build-runner/watchdog.log"
 QUEUE_LOG="/tmp/askwell-queue.log"
-MILESTONE="${ASKWELL_MILESTONE:-M3}"
+# The first milestone with unbuilt tickets, rather than a fixed one. A pinned
+# milestone means that finishing it stops the build dead: M3 completed at 02:49
+# and the queue then reported "nothing left that is ready" every fifteen
+# minutes until somebody noticed. Overriding with ASKWELL_MILESTONE still works
+# for a deliberate re-run.
+pick_milestone() {
+  local m f total done_n
+  for m in M0 M1 M2 M3 M4 M5 M6 M7 M8; do
+    f=$(ls docs/backlog/${m}-*.md 2>/dev/null | head -1)
+    [ -n "$f" ] || continue
+    # `grep -c` exits 1 when it counts zero, so a `|| echo 0` fallback
+    # appends a second line and the test below sees "0\n0". Count with wc
+    # instead, which always prints one number and always succeeds.
+    total=$(grep -E "^### ${m}-" "$f" 2>/dev/null | wc -l | tr -d " ")
+    done_n=$(ls .build-runner/done/ 2>/dev/null | grep "^${m}-" | wc -l | tr -d " ")
+    if [ "$done_n" -lt "$total" ]; then
+      printf '%s' "$m"
+      return 0
+    fi
+  done
+  return 1
+}
+
+MILESTONE="${ASKWELL_MILESTONE:-$(pick_milestone)}"
 SPEND_CEILING="${SPEND_CEILING:-900}"
 
 say() { printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M')" "$*" >> "$LOG"; }
+
+# Checked here rather than where MILESTONE is set: that happens before say()
+# exists, and the first version of this called it there and died on
+# "say: command not found" instead of reporting the thing it had found.
+if [ -z "$MILESTONE" ]; then
+  say "every milestone is complete — nothing left to build"
+  exit 0
+fi
 
 # --- 1. is a queue already working? ------------------------------------------
 #
