@@ -124,6 +124,15 @@ def _delimit_memory_facts(facts: Sequence[MemoryFact], start_index: int) -> str:
 
 
 def _delimit_schema_notes(notes: Sequence[SchemaNote], start_index: int) -> str:
+    """`M4-SCHEMA-BE-102`, issue #365: `retrieve_relevant_facts` — the one
+    caller `notes` ever arrives from — now excludes a stale note outright
+    (that ticket's own Validation Rule: "a stale note is never used in
+    generation"), so the `note.stale` caveat below is defence in depth
+    rather than the load-bearing mechanism `M4-SCHEMA-ING-101` built it as.
+    Left in rather than stripped: this function has no way to know whether
+    every future caller will filter the way `retrieve_relevant_facts` does,
+    and a caveat that never fires today costs nothing to keep correct.
+    """
     if not notes:
         return ""
     lines = "\n".join(

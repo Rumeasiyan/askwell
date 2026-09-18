@@ -972,6 +972,10 @@ async def _run_deep_introspection(
 
     async with session_scope(factory) as session:
         await schema_introspect.write_schema_inventory(session, source_id, inventory)
+        # `M4-SCHEMA-BE-102`: same session as the write above — no window
+        # where `schema_notes` and `sources.status` disagree about whether
+        # this source needs attention for schema drift.
+        await schema_introspect.refresh_schema_attention(session, source_id)
     await schema_introspect.record_introspection_run(settings)
 
     # `M4-SCHEMA-ING-101`: unguessable columns raise clarifications, with a

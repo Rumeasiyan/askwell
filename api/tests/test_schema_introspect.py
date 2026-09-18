@@ -38,6 +38,7 @@ from askwell.schema_introspect import (
     describe_column,
     describe_table,
     raise_unguessable_column_clarifications,
+    refresh_schema_attention,
     write_schema_inventory,
 )
 
@@ -161,7 +162,15 @@ def test_postgresql_inventory_labels_views_and_materialized_views() -> None:
     }
 
 
-def test_postgresql_inventory_counts_but_never_names_an_invisible_table() -> None:
+def test_postgresql_inventory_counts_and_names_an_invisible_table() -> None:
+    """`M4-SCHEMA-ING-100` deliberately discarded the name alongside the
+    count — nothing needed it yet. `M4-SCHEMA-BE-102`, issue #365 does:
+    the "possibly invisible, not gone" edge case needs to say *which*
+    table a permission change hid, not just how many, and `pg_class` is
+    public metadata regardless of row-level `SELECT` (`docs/decisions.md`'s
+    own entry on `has_table_privilege`), so nothing about the query
+    changes — only what this function keeps from it.
+    """
     inventory = _build_postgresql_inventory(
         class_rows=[
             ("public", "visible_table", "r", True),
@@ -173,6 +182,7 @@ def test_postgresql_inventory_counts_but_never_names_an_invisible_table() -> Non
     )
     assert inventory.omitted_count == 1
     assert [t.name for t in inventory.tables] == ["visible_table"]
+    assert inventory.omitted_tables == frozenset({"secret_table"})
 
 
 def test_postgresql_inventory_ignores_indexes_and_sequences() -> None:
@@ -200,6 +210,7 @@ def test_mysql_inventory_has_no_omitted_count() -> None:
         fk_rows=[],
     )
     assert inventory.omitted_count is None
+    assert inventory.omitted_tables is None
     kinds = {t.name: t.kind for t in inventory.tables}
     assert kinds == {"orders": "table", "active_orders": "view"}
     by_name = {t.name: t for t in inventory.tables}
@@ -489,6 +500,313 @@ async def test_a_stale_user_supplied_note_is_cleared_when_the_position_reappears
         )
     ).scalar_one()
     assert row is False
+
+
+# --- stale_reason and reattach_suggestion: M4-SCHEMA-BE-102, issue #365 -----
+
+
+@pytest.mark.requires_db
+async def test_a_dropped_column_is_flagged_stale_with_reason_dropped(
+    session: AsyncSession, source_id: uuid.UUID
+) -> None:
+    await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name="orders",
+        column_name="customer_id",
+        description="The customer who placed the order.",
+        origin="user",
+    )
+    await session.commit()
+
+    await write_schema_inventory(session, source_id, SchemaInventory(tables=(), omitted_count=0))
+    await session.commit()
+
+    row = (
+        await session.execute(
+            text(
+                "SELECT stale_reason, reattach_suggestion FROM schema_notes "
+                "WHERE source_id = :id AND column_name = 'customer_id'"
+            ),
+            {"id": source_id},
+        )
+    ).one()
+    assert row == ("dropped", None)
+
+
+@pytest.mark.requires_db
+async def test_a_table_hidden_by_a_permission_change_is_flagged_possibly_invisible(
+    session: AsyncSession, source_id: uuid.UUID
+) -> None:
+    await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name="orders",
+        column_name=None,
+        description="Orders placed by a customer.",
+        origin="user",
+    )
+    await session.commit()
+
+    # `orders` still exists — a role just lost `SELECT` on it, the same
+    # shape `_build_postgresql_inventory` reports via `omitted_tables`.
+    hidden = SchemaInventory(tables=(), omitted_count=1, omitted_tables=frozenset({"orders"}))
+    await write_schema_inventory(session, source_id, hidden)
+    await session.commit()
+
+    reason = (
+        await session.execute(
+            text(
+                "SELECT stale_reason FROM schema_notes "
+                "WHERE source_id = :id AND table_name = 'orders' AND column_name IS NULL"
+            ),
+            {"id": source_id},
+        )
+    ).scalar_one()
+    assert reason == "possibly_invisible"
+
+
+@pytest.mark.requires_db
+async def test_an_unambiguous_column_rename_gets_a_reattach_suggestion(
+    session: AsyncSession, source_id: uuid.UUID
+) -> None:
+    await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name="orders",
+        column_name="customer_id",
+        description="The customer who placed the order.",
+        origin="user",
+    )
+    await session.commit()
+
+    renamed = SchemaInventory(
+        tables=(
+            Table(
+                name="orders",
+                kind="table",
+                columns=(Column("customer_uuid", "uuid", nullable=False, primary_key=False),),
+                foreign_keys=(),
+            ),
+        ),
+        omitted_count=0,
+    )
+    await write_schema_inventory(session, source_id, renamed)
+    await session.commit()
+
+    suggestion = (
+        await session.execute(
+            text(
+                "SELECT reattach_suggestion FROM schema_notes "
+                "WHERE source_id = :id AND column_name = 'customer_id'"
+            ),
+            {"id": source_id},
+        )
+    ).scalar_one()
+    assert suggestion == "customer_uuid"
+
+
+@pytest.mark.requires_db
+async def test_an_ambiguous_rename_gets_no_reattach_suggestion(
+    session: AsyncSession, source_id: uuid.UUID
+) -> None:
+    await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name="orders",
+        column_name="customer_id",
+        description="The customer who placed the order.",
+        origin="user",
+    )
+    await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name="orders",
+        column_name="status",
+        description="Order status.",
+        origin="user",
+    )
+    await session.commit()
+
+    # Two columns vanished, two new ones appeared — no single unambiguous
+    # candidate, per the ticket's own Assumption: never guess at a match.
+    renamed = SchemaInventory(
+        tables=(
+            Table(
+                name="orders",
+                kind="table",
+                columns=(
+                    Column("customer_uuid", "uuid", nullable=False, primary_key=False),
+                    Column("order_status", "text", nullable=False, primary_key=False),
+                ),
+                foreign_keys=(),
+            ),
+        ),
+        omitted_count=0,
+    )
+    await write_schema_inventory(session, source_id, renamed)
+    await session.commit()
+
+    rows = (
+        await session.execute(
+            text(
+                "SELECT reattach_suggestion FROM schema_notes "
+                "WHERE source_id = :id AND column_name IN ('customer_id', 'status')"
+            ),
+            {"id": source_id},
+        )
+    ).all()
+    assert [r[0] for r in rows] == [None, None]
+
+
+@pytest.mark.requires_db
+async def test_reappearing_position_clears_stale_reason_and_reattach_suggestion(
+    session: AsyncSession, source_id: uuid.UUID
+) -> None:
+    await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name="orders",
+        column_name="customer_id",
+        description="The customer who placed the order.",
+        origin="user",
+    )
+    await session.commit()
+    await write_schema_inventory(session, source_id, SchemaInventory(tables=(), omitted_count=0))
+    await session.commit()
+
+    await write_schema_inventory(session, source_id, _inventory())
+    await session.commit()
+
+    row = (
+        await session.execute(
+            text(
+                "SELECT stale, stale_reason, reattach_suggestion FROM schema_notes "
+                "WHERE source_id = :id AND column_name = 'customer_id'"
+            ),
+            {"id": source_id},
+        )
+    ).one()
+    assert row == (False, None, None)
+
+
+# --- refresh_schema_attention: M4-SCHEMA-BE-102, issue #365 -----------------
+
+
+@pytest.mark.requires_db
+async def test_refresh_schema_attention_flags_the_source_with_a_summarised_count(
+    session: AsyncSession, source_id: uuid.UUID
+) -> None:
+    await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name="orders",
+        column_name="customer_id",
+        description="The customer who placed the order.",
+        origin="user",
+    )
+    await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name="orders",
+        column_name="status",
+        description="Order status.",
+        origin="user",
+    )
+    await session.commit()
+    await session.execute(
+        text("UPDATE sources SET status = 'ready' WHERE id = :id"), {"id": source_id}
+    )
+    await write_schema_inventory(session, source_id, SchemaInventory(tables=(), omitted_count=0))
+    await session.commit()
+
+    await refresh_schema_attention(session, source_id)
+    await session.commit()
+
+    row = (
+        await session.execute(
+            text("SELECT status, last_error FROM sources WHERE id = :id"), {"id": source_id}
+        )
+    ).one()
+    assert row[0] == "attention"
+    assert "2 schema notes" in row[1]
+
+
+@pytest.mark.requires_db
+async def test_refresh_schema_attention_reverts_to_ready_once_resolved(
+    session: AsyncSession, source_id: uuid.UUID
+) -> None:
+    note_id = await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name="orders",
+        column_name="customer_id",
+        description="The customer who placed the order.",
+        origin="user",
+    )
+    assert note_id is not None
+    await session.commit()
+    await write_schema_inventory(session, source_id, SchemaInventory(tables=(), omitted_count=0))
+    await refresh_schema_attention(session, source_id)
+    await session.commit()
+
+    before = (
+        await session.execute(text("SELECT status FROM sources WHERE id = :id"), {"id": source_id})
+    ).scalar_one()
+    assert before == "attention"
+
+    # The reattach fix path — moving the note off the stale position —
+    # clears the last stale note, so the source recovers on its own.
+    await session.execute(
+        text(
+            "UPDATE schema_notes SET stale = false, stale_reason = NULL, "
+            "reattach_suggestion = NULL WHERE id = :id"
+        ),
+        {"id": note_id},
+    )
+    await refresh_schema_attention(session, source_id)
+    await session.commit()
+
+    after = (
+        await session.execute(
+            text("SELECT status, last_error FROM sources WHERE id = :id"), {"id": source_id}
+        )
+    ).one()
+    assert after == ("ready", None)
+
+
+@pytest.mark.requires_db
+async def test_refresh_schema_attention_never_overrides_an_unrelated_attention_reason(
+    session: AsyncSession, source_id: uuid.UUID
+) -> None:
+    await session.execute(
+        text(
+            "UPDATE sources SET status = 'attention', last_error = 'The database is unreachable' "
+            "WHERE id = :id"
+        ),
+        {"id": source_id},
+    )
+    await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name="orders",
+        column_name="customer_id",
+        description="The customer who placed the order.",
+        origin="user",
+    )
+    await session.commit()
+    await write_schema_inventory(session, source_id, SchemaInventory(tables=(), omitted_count=0))
+    await session.commit()
+
+    await refresh_schema_attention(session, source_id)
+    await session.commit()
+
+    row = (
+        await session.execute(
+            text("SELECT status, last_error FROM sources WHERE id = :id"), {"id": source_id}
+        )
+    ).one()
+    assert row == ("attention", "The database is unreachable")
 
 
 # --- unguessable-column clarifications: M4-SCHEMA-ING-101 --------------------

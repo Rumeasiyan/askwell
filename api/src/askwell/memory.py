@@ -94,6 +94,10 @@ SCHEMA_NOTE_DISCARDED = "schema_note_discarded"
 SCHEMA_NOTE_SUPERSEDED = "schema_note_superseded"
 SCHEMA_NOTE_DELETED = "schema_note_deleted"
 SCHEMA_NOTE_CONFIRMED = "schema_note_confirmed"
+# A stale note moved to a different table/column position — the third fix-
+# path option alongside a correction (edit) and a deletion.
+# `M4-SCHEMA-BE-102`, issue #365.
+SCHEMA_NOTE_REATTACHED = "schema_note_reattached"
 
 # Full confidence for anything the user actually said — asked-and-answered or
 # a direct correction. Only an inference is uncertain.
@@ -142,6 +146,13 @@ class SchemaNote:
     # — still active and still retrieved, but carrying a caveat rather than
     # being presented as current (`M4-SCHEMA-ING-101`, issue #355).
     stale: bool = False
+    # Why, when `stale`: `'dropped'` or `'possibly_invisible'`. `NULL`
+    # otherwise, or on an engine with no privilege-independent catalog to
+    # tell the two apart. `M4-SCHEMA-BE-102`, issue #365.
+    stale_reason: str | None = None
+    # The single unambiguous rename candidate, when one exists — an offer
+    # the fix path surfaces, never applied automatically. `M4-SCHEMA-BE-102`.
+    reattach_suggestion: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,6 +195,11 @@ class MemoryScreenRow:
     created_at: Any
     usage_count: int
     history: list[MemoryHistoryEntry]
+    # Only ever set for `fact_kind == "schema_note"` — a `memory` fact has
+    # no table/column position to go stale. `M4-SCHEMA-BE-102`, issue #365.
+    stale: bool = False
+    stale_reason: str | None = None
+    reattach_suggestion: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +238,18 @@ class CorrectionOutcome:
 
 @dataclass(frozen=True, slots=True)
 class DeletionOutcome:
+    reprocessing: Reprocessing
+    reapply_job_id: uuid.UUID | None
+
+
+@dataclass(frozen=True, slots=True)
+class ReattachOutcome:
+    """What `reattach_schema_note` did — the fix path's third option.
+    `M4-SCHEMA-BE-102`, issue #365. Shaped like `CorrectionOutcome`: a
+    reattach is a write at a new position, so whatever depended on the old
+    one is re-processed the same way a correction's dependents are."""
+
+    fact_id: uuid.UUID
     reprocessing: Reprocessing
     reapply_job_id: uuid.UUID | None
 
@@ -821,6 +849,88 @@ async def correct_schema_note(
     return CorrectionOutcome(fact_id=new_id, reprocessing=reprocessing, reapply_job_id=job_id)
 
 
+async def reattach_schema_note(
+    session: AsyncSession, *, note_id: uuid.UUID, table_name: str, column_name: str | None
+) -> ReattachOutcome:
+    """Move an active, user-supplied note to a new table/column position —
+    the fix path's third option alongside `correct_schema_note` (edit) and
+    `delete_schema_note` (delete), for a stale note whose object was
+    renamed rather than removed. `M4-SCHEMA-BE-102`, issue #365. Never
+    automatic: this is the write a person makes after seeing (and, most
+    often, accepting) `SchemaNote.reattach_suggestion` — the caller decides
+    the target, this function never guesses one.
+
+    Reuses `write_schema_note`'s own invariant rather than a raw `UPDATE`:
+    a user-origin write at the new position already retires whatever is
+    active there — an inferred guess a re-introspection just wrote, most
+    commonly — the same way `write_schema_note` always does for a user
+    write, so a reattach can never leave two active notes at one position.
+    The note being moved is then superseded by that write, exactly as
+    `correct_schema_note` supersedes the row it replaces.
+    """
+    current = await session.execute(
+        text(
+            "SELECT source_id, description, origin, table_name, column_name "
+            "FROM schema_notes WHERE id = :id AND superseded_by IS NULL FOR UPDATE"
+        ),
+        {"id": note_id},
+    )
+    row = current.first()
+    if row is None:
+        raise FactNotFound(str(note_id))
+    source_id, description, origin, old_table, old_column = row
+    if origin != "user":
+        # Nothing here for a person to have said, the same reasoning
+        # `correct_schema_note` applies to an inferred row — there is no
+        # "reattach my guess", only a fresh user-origin note.
+        raise CannotCorrectInference(str(note_id))
+
+    if (table_name, column_name) == (old_table, old_column):
+        return ReattachOutcome(fact_id=note_id, reprocessing=NOTHING_CHANGED, reapply_job_id=None)
+
+    new_id = await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name=table_name,
+        column_name=column_name,
+        description=description,
+        origin="user",
+    )
+    assert new_id is not None, "a user-origin write is never discarded"
+
+    await session.execute(
+        text("UPDATE schema_notes SET superseded_by = :new_id WHERE id = :id"),
+        {"new_id": new_id, "id": note_id},
+    )
+    await record(
+        session,
+        Store.DECISIONS,
+        SCHEMA_NOTE_SUPERSEDED,
+        {"old_note_id": str(note_id), "new_note_id": str(new_id), "table_name": table_name},
+    )
+    await record(
+        session,
+        Store.DECISIONS,
+        SCHEMA_NOTE_REATTACHED,
+        {
+            "old_note_id": str(note_id),
+            "new_note_id": str(new_id),
+            "source_id": str(source_id),
+            "from_table_name": old_table,
+            "from_column_name": old_column,
+            "to_table_name": table_name,
+            "to_column_name": column_name,
+        },
+    )
+    log.info("schema_note_reattached", old_note_id=str(note_id), new_note_id=str(new_id))
+
+    subject = column_name or table_name
+    reprocessing, job_id = await _reprocess_subject(
+        session, subject=subject, source_id=source_id, memory_id=None
+    )
+    return ReattachOutcome(fact_id=new_id, reprocessing=reprocessing, reapply_job_id=job_id)
+
+
 async def confirm_schema_note(session: AsyncSession, *, note_id: uuid.UUID) -> ConfirmOutcome:
     """`confirm_memory_fact`'s schema-note counterpart — same shape, promotes
     `origin` to `'user'` in place, no new row, no re-processing."""
@@ -904,7 +1014,8 @@ async def get_active_schema_notes(
     rows = await session.execute(
         text(
             "SELECT id, source_id, table_name, column_name, description, origin, "
-            "confidence, created_at, stale FROM schema_notes "
+            "confidence, created_at, stale, stale_reason, reattach_suggestion "
+            "FROM schema_notes "
             "WHERE superseded_by IS NULL "
             "AND (CAST(:source_id AS uuid) IS NULL OR source_id = :source_id) "
             "ORDER BY (origin != 'inferred') DESC, created_at DESC"
@@ -922,6 +1033,8 @@ async def get_active_schema_notes(
             confidence=float(row[6]) if row[6] is not None else None,
             created_at=row[7],
             stale=bool(row[8]),
+            stale_reason=row[9],
+            reattach_suggestion=row[10],
         )
         for row in rows
     ]
@@ -973,7 +1086,8 @@ async def get_memory_screen(session: AsyncSession) -> MemoryScreen:
         await session.execute(
             text(
                 "SELECT n.id, n.table_name, n.column_name, n.description, n.origin, "
-                "n.confidence, n.source_id, s.name, n.created_at "
+                "n.confidence, n.source_id, s.name, n.created_at, "
+                "n.stale, n.stale_reason, n.reattach_suggestion "
                 "FROM schema_notes n JOIN sources s ON s.id = n.source_id "
                 "WHERE n.superseded_by IS NULL"
             )
@@ -1017,7 +1131,8 @@ async def get_memory_screen(session: AsyncSession) -> MemoryScreen:
 
     for note_tuple in note_rows:
         id_, table_name, column_name, description, origin = note_tuple[:5]
-        confidence, source_id, source_name, created_at = note_tuple[5:]
+        confidence, source_id, source_name, created_at = note_tuple[5:9]
+        stale, stale_reason, reattach_suggestion = note_tuple[9:]
         subject = f"{table_name}.{column_name}" if column_name else table_name
         rows.append(
             MemoryScreenRow(
@@ -1037,6 +1152,9 @@ async def get_memory_screen(session: AsyncSession) -> MemoryScreen:
                 created_at=created_at,
                 usage_count=await _usage_count(session, fact_kind="schema_note", fact_id=id_),
                 history=note_history.get((source_id, table_name, column_name), []),
+                stale=bool(stale),
+                stale_reason=stale_reason,
+                reattach_suggestion=reattach_suggestion,
             )
         )
 
@@ -1359,6 +1477,15 @@ async def retrieve_relevant_facts(
     `get_active_schema_notes`: relevance first, then user-origin before
     inferred, then newer before older — so a tie in relevance still prefers
     the fact the user actually stated.
+
+    **A stale schema note is excluded outright** (`M4-SCHEMA-BE-102`, issue
+    #365) — this is the one retrieval path composition draws on for both
+    document answers and database question-answering, so filtering here is
+    what the ticket's own validation rule ("a stale note is never used in
+    generation") means concretely. `get_active_schema_notes` still returns
+    it, unfiltered, for the library and memory screens: staleness is a
+    caveat to surface, not a reason to hide the note from a person who might
+    fix it.
     """
     fact_rows = (
         await session.execute(
@@ -1396,8 +1523,9 @@ async def retrieve_relevant_facts(
         await session.execute(
             text(
                 "SELECT id, source_id, table_name, column_name, description, origin, "
-                "confidence, created_at, stale FROM schema_notes "
-                "WHERE superseded_by IS NULL "
+                "confidence, created_at, stale, stale_reason, reattach_suggestion "
+                "FROM schema_notes "
+                "WHERE superseded_by IS NULL AND NOT stale "
                 "AND (CAST(:source_id AS uuid) IS NULL OR source_id = :source_id) "
                 "AND to_tsvector(:cfg, table_name || ' ' || coalesce(column_name, '') "
                 "|| ' ' || description) @@ " + _OR_MATCH + " "
@@ -1425,6 +1553,8 @@ async def retrieve_relevant_facts(
             confidence=float(row[6]) if row[6] is not None else None,
             created_at=row[7],
             stale=bool(row[8]),
+            stale_reason=row[9],
+            reattach_suggestion=row[10],
         )
         for row in note_rows
     ]
@@ -1478,6 +1608,9 @@ def _memory_screen_row_json(row: MemoryScreenRow) -> dict[str, Any]:
         "created_at": row.created_at.isoformat() if row.created_at is not None else None,
         "usage_count": row.usage_count,
         "history": [_memory_history_json(entry) for entry in row.history],
+        "stale": row.stale,
+        "stale_reason": row.stale_reason,
+        "reattach_suggestion": row.reattach_suggestion,
     }
 
 
@@ -1490,6 +1623,15 @@ def _memory_screen_json(screen: MemoryScreen) -> dict[str, Any]:
 
 class CorrectFactRequest(BaseModel):
     value: str = Field(min_length=1, max_length=4096)
+
+
+class ReattachFactRequest(BaseModel):
+    """A schema note's new position. `column_name` absent (`None`) reattaches
+    the note to the table itself — matching `schema_notes.column_name`'s own
+    nullability. `M4-SCHEMA-BE-102`, issue #365."""
+
+    table_name: str = Field(min_length=1, max_length=256)
+    column_name: str | None = Field(default=None, max_length=256)
 
 
 class ManualFactRequest(BaseModel):
@@ -1580,6 +1722,44 @@ def register_memory(
             return JSONResponse({"error": "No such fact."}, status_code=404)
         return JSONResponse(
             {"fact_id": str(outcome.fact_id), "already_confirmed": outcome.already_confirmed}
+        )
+
+    @app.post("/memory/facts/schema_note/{fact_id}/reattach")
+    async def reattach_schema_note_route(
+        fact_id: uuid.UUID, body: ReattachFactRequest
+    ) -> JSONResponse:
+        """The fix path's third option — `docs/ux/library.md` §5, this
+        ticket's own AC: "The fix path allows editing, deleting or
+        reattaching." Schema-note-only, unlike `correct`/`confirm`/`delete`
+        above: a `memory` fact has no table/column position to move.
+        `M4-SCHEMA-BE-102`, issue #365.
+        """
+        try:
+            async with session_scope(factory) as db:
+                outcome = await reattach_schema_note(
+                    db,
+                    note_id=fact_id,
+                    table_name=body.table_name,
+                    column_name=body.column_name,
+                )
+        except FactNotFound:
+            return JSONResponse({"error": "No such fact."}, status_code=404)
+        except CannotCorrectInference:
+            return JSONResponse(
+                {"error": "Only a user-supplied note can be reattached."}, status_code=400
+            )
+        if outcome.reapply_job_id is not None:
+            from askwell import reapply
+
+            await reapply.dispatch(settings, [outcome.reapply_job_id])
+        return JSONResponse(
+            {
+                "fact_id": str(outcome.fact_id),
+                "reprocessing": _reprocessing_json(outcome.reprocessing),
+                "reapply_job_id": (
+                    str(outcome.reapply_job_id) if outcome.reapply_job_id is not None else None
+                ),
+            }
         )
 
     @app.post("/memory/facts")

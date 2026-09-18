@@ -4,6 +4,28 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.14 - 2026-09-18
+
+`M4-SCHEMA-BE-102` — closes issue #365. A stale schema note (`M4-SCHEMA-ING-101`) is now excluded outright from generation: `askwell.memory.retrieve_relevant_facts` — the one retrieval path both document answers and database question-answering draw schema-notes context from — filters `AND NOT stale`, tightening `-101`'s in-prompt caveat, which stays in `agent.conflict._delimit_schema_notes` as defence in depth but is no longer reachable through the one production caller. `get_active_schema_notes` is unchanged, so the library and memory screens still see a stale note.
+
+A stale note now says *why*: new `schema_notes.stale_reason` (migration `20260918_3f7c1a9e5d20_schema_note_stale_reason.py`) is `'possibly_invisible'` when the vanished table is one a Postgres permission change hid rather than dropped (`SchemaInventory` gained `omitted_tables`, the names `_build_postgresql_inventory` already computed internally and previously discarded, keeping only the count) and `'dropped'` otherwise — including on every other engine, where the two still cannot be told apart. And a stale column note carries `reattach_suggestion` — the new column name, set only when its table lost exactly one column and gained exactly one in the same introspection run, the one case a rename is unambiguous without guessing (never automatic).
+
+`refresh_schema_attention` (`askwell.schema_introspect`) surfaces the count as the library's own needs-attention reason — "N schema notes refer to a table or column Askwell can no longer find" — moving a source to `attention` when any of its schema notes go stale and back to `ready` once none are, without overriding an unrelated `attention` reason (a dead connection, locked credentials). Wired into both places `write_schema_inventory` runs from a completed re-introspection: `connections._run_deep_introspection` (a live connection) and `schema_introspect.reintrospect_sandbox_source` (a dump or CSV source).
+
+The fix path's third option: new `POST /memory/facts/schema_note/{id}/reattach` moves an active, user-supplied note to a new table/column position — `askwell.memory.reattach_schema_note`, reusing `write_schema_note`'s own invariant (a user-origin write retires whatever is active at the new position) rather than a raw `UPDATE`, and superseding the note it moved from, the same shape `correct_schema_note` already uses.
+
+### Added
+
+- `SchemaInventory.omitted_tables`; `askwell.schema_introspect.refresh_schema_attention`, `_stale_attention_reason`.
+- `schema_notes.stale_reason`, `schema_notes.reattach_suggestion` (migration `20260918_3f7c1a9e5d20_schema_note_stale_reason.py`).
+- `askwell.memory.reattach_schema_note`, `ReattachOutcome`; `POST /memory/facts/schema_note/{id}/reattach`.
+
+### Changed
+
+- `retrieve_relevant_facts` excludes a stale schema note from what it returns.
+- `write_schema_inventory` sets `stale_reason`/`reattach_suggestion` alongside `stale`, and clears all three together when a position reappears.
+- `MemoryScreenRow`/`SchemaNote` carry `stale_reason`/`reattach_suggestion` through to `GET /memory` and `get_active_schema_notes`.
+
 ## 0.4.13 - 2026-09-18
 
 `M4-SCHEMA-ING-101` — schema notes from the clarification loop, for the unguessable half of what `M4-SCHEMA-ING-100` already introspects. New `askwell.schema_introspect.raise_unguessable_column_clarifications` scans a freshly-introspected inventory for columns whose name alone does not explain itself (`st_cd`, `rfq`, `dob` — any token three characters or fewer outside a small common-word allowlist) and raises a clarification for each, with a bounded value distribution and row count as evidence (`clarify.column_distribution_evidence`, built by `M3-RAISE-BE-071` and unused until now) — heaviest column first when the per-source cap trims the list. A primary key or foreign key column is never asked about; `describe_column` already states what it references. Answering one flows through the existing clarification-answer path unchanged and promotes the `schema_notes` row to `origin='user'`. Wired into all three points that already call `write_schema_inventory`: a live connection's initial introspection, a dump import, and on-demand re-introspection — PostgreSQL only for now, MySQL and SQL Server have no bounded value query wired up yet (issue #362).

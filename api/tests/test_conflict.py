@@ -152,6 +152,7 @@ def _schema_note(
     description: str = "an internal request identifier",
     origin: str = "user",
     confidence: float | None = 1.0,
+    stale: bool = False,
 ) -> SchemaNote:
     return SchemaNote(
         id=uuid.uuid4(),
@@ -162,6 +163,7 @@ def _schema_note(
         origin=origin,
         confidence=confidence,
         created_at=None,
+        stale=stale,
     )
 
 
@@ -211,6 +213,21 @@ def test_a_schema_note_with_no_column_names_only_the_table() -> None:
     )
     assert "orders: customer orders" in result.user_content
     assert "orders." not in result.user_content
+
+
+def test_a_stale_schema_note_carries_a_caveat_if_it_ever_reaches_this_prompt() -> None:
+    """Defence in depth, not the load-bearing check — `retrieve_relevant_facts`
+    excludes a stale note before `compose_conflict` ever sees one
+    (`M4-SCHEMA-BE-102`, issue #365). This exercises `_delimit_schema_notes`
+    directly so the caveat stays correct even though nothing in the
+    production path exercises it today.
+    """
+    result = compose_conflict(
+        "What is rfq?",
+        [_candidate("Ninety days.")],
+        retrieved_notes=[_schema_note(stale=True)],
+    )
+    assert "column no longer found in the current schema" in result.user_content
 
 
 def test_empty_retrieved_lists_compose_no_blocks() -> None:

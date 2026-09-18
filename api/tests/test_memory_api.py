@@ -118,6 +118,24 @@ def test_an_empty_manual_subject_is_rejected(client: TestClient) -> None:
     assert response.status_code == 422
 
 
+def test_reattaching_requires_a_session(client: TestClient) -> None:
+    with client:
+        response = client.post(
+            f"/memory/facts/schema_note/{_UUID}/reattach",
+            json={"table_name": "orders", "column_name": "customer_id"},
+        )
+    assert response.status_code == 401
+
+
+def test_an_empty_reattach_table_name_is_rejected(client: TestClient) -> None:
+    with client:
+        with_session(client)
+        response = client.post(
+            f"/memory/facts/schema_note/{_UUID}/reattach", json={"table_name": ""}
+        )
+    assert response.status_code == 422
+
+
 def test_deleting_all_memory_requires_a_session(client: TestClient) -> None:
     with client:
         response = client.post("/memory/delete-all", json={"expected_count": 0})
