@@ -53,8 +53,8 @@ Off. Everything below is inert until the user turns it on, and it stays off unti
 ## 4. Privacy and security
 
 - **Passphrase.** Off by default. On, it encrypts the library and stored credentials so a stolen laptop is not a data breach. Setting it explains that **losing it means losing the library** — there is no recovery, because a recovery path would defeat it.
-- **Network activity: none.** Not a toggle — a statement, with a live count of outbound requests made in local mode, which is zero. The number is the proof of C1 and it is worth showing.
-- Connected databases, with their read-only status.
+- **Network activity: none.** Not a toggle — a statement, with a live count of outbound requests made in local mode, which is zero. The number is the proof of C1 and it is worth showing. A connected database is counted separately (below), never folded into this figure — it is a real, local fact about what the user connected, not the thing this zero exists to prove, and the two must not be confusable. Until an egress permit mechanism exists for a live connection's own destination (issue #345), reaching one from outside the container network fails at this same zero, which is stated on the connection wizard itself rather than left for the count to explain.
+- **Connected databases**, with a count distinct from the network-activity figure above, and each one's read-only status — honestly "not yet checked" until `M4-CONN-SEC-097` (the write probe) exists, never asserted from a check that did not run.
 
 ---
 

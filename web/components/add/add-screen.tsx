@@ -13,6 +13,12 @@ import {
   plural,
   refusalLine,
 } from "@/lib/add-source";
+import {
+  type ConnectionFields,
+  type ConnectionOutcome,
+  ENGINES,
+  addConnectionSource,
+} from "@/lib/connection-source";
 import { type DumpAddResult, addDumpSource } from "@/lib/dump-source";
 import {
   type IngestState,
@@ -35,8 +41,8 @@ import { type Batch, type Item, laterIn, refusedIn, supportedIn, useAdd } from "
 /**
  * Add a source. `docs/ux/add-source.md` §1, §2 and §5.
  *
- * Four routes, one of which works today. The other three are **present and
- * dated** rather than hidden: someone whose material is a MySQL export needs to
+ * Four routes, three of which work today. The fourth is **present and
+ * dated** rather than hidden: someone whose material is a spreadsheet needs to
  * know it has a home here eventually, and a screen that shows only what is
  * finished tells them it does not.
  *
@@ -74,6 +80,7 @@ export function AddScreen() {
 
       <FilesRoute />
       <DumpRoute />
+      <ConnectionRoute />
 
       {batches.length > 0 ? (
         <div className="flex flex-col gap-3" aria-live="polite">
@@ -523,6 +530,321 @@ function DumpQueued({
               style={{ border: "1px solid var(--rule-strong)", fontSize: "var(--t-ui)" }}
             >
               Try another dump
+            </button>
+          </span>
+        </Note>
+      )}
+    </>
+  );
+}
+
+// --- the connection route ----------------------------------------------------
+
+const CONNECTION_IDLE: ConnectionFields = {
+  engine: "postgresql",
+  host: "",
+  port: ENGINES[0].defaultPort,
+  database: "",
+  user: "",
+  password: "",
+};
+
+/**
+ * Connect a database — host, port, database, user, password. `M4-CONN-FE-096`.
+ *
+ * `docs/data-sources.md` §4's four distinguishable failures are rendered
+ * from `outcome.reason_code` directly rather than re-derived here: a wrong
+ * host, a refused connection, wrong credentials and a network the egress
+ * proxy blocks are different fixes, and the server is what actually knows
+ * which one happened.
+ *
+ * The write probe (`M4-CONN-SEC-097`) is not wired up yet — this route says
+ * so once, in prose, rather than implying a refusal that does not exist.
+ */
+function ConnectionRoute() {
+  const [fields, setFields] = useState<ConnectionFields>(CONNECTION_IDLE);
+  const [busy, setBusy] = useState(false);
+  const [outcome, setOutcome] = useState<ConnectionOutcome | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+
+  async function onSubmit(event: React.FormEvent): Promise<void> {
+    event.preventDefault();
+    setBusy(true);
+    setFailure(null);
+    try {
+      setOutcome(await addConnectionSource(fields));
+    } catch (error) {
+      setFailure(error instanceof Error ? error.message : "Askwell could not reach the API.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function onEngineChange(value: string): void {
+    const engine = ENGINES.find((item) => item.value === value) ?? ENGINES[0];
+    setFields((was) => ({ ...was, engine: engine.value, port: engine.defaultPort }));
+  }
+
+  return (
+    <div
+      className="flex flex-col gap-3 px-5 py-4"
+      style={{
+        background: "var(--surface)",
+        border: "1px dashed var(--rule-strong)",
+        borderRadius: "var(--radius)",
+      }}
+    >
+      <div>
+        <h2 style={{ fontSize: "var(--t-title)", lineHeight: "var(--t-title-lh)" }}>
+          Connect a database
+        </h2>
+        <p className="ask-micro mt-1">
+          PostgreSQL, MySQL, MariaDB or SQL Server. Connect with a read-only user — the refusal
+          for a write-capable credential is not wired up yet.
+        </p>
+      </div>
+
+      {outcome?.ok && outcome.source ? (
+        <ConnectionQueued
+          source={outcome.source}
+          onAddAnother={() => {
+            setOutcome(null);
+            setFields(CONNECTION_IDLE);
+          }}
+        />
+      ) : (
+        <form onSubmit={(event) => void onSubmit(event)} className="flex flex-col gap-2">
+          <label htmlFor="connection-engine" style={{ fontSize: "var(--t-ui)" }}>
+            Engine
+          </label>
+          <select
+            id="connection-engine"
+            value={fields.engine}
+            onChange={(event) => onEngineChange(event.target.value)}
+            className="ask-input px-3"
+            style={{ fontFamily: "var(--font-app)", fontSize: "var(--t-ui)" }}
+          >
+            {ENGINES.map((engine) => (
+              <option key={engine.value} value={engine.value}>
+                {engine.label}
+              </option>
+            ))}
+          </select>
+
+          <div className="flex gap-2">
+            <div className="flex flex-1 flex-col gap-1">
+              <label htmlFor="connection-host" style={{ fontSize: "var(--t-ui)" }}>
+                Host
+              </label>
+              <input
+                id="connection-host"
+                value={fields.host}
+                onChange={(event) => setFields((was) => ({ ...was, host: event.target.value }))}
+                placeholder="db.internal"
+                spellCheck={false}
+                autoComplete="off"
+                className="ask-input px-3"
+                style={{ fontFamily: "var(--font-app)", fontSize: "var(--t-ui)" }}
+              />
+            </div>
+            <div className="flex w-24 flex-col gap-1">
+              <label htmlFor="connection-port" style={{ fontSize: "var(--t-ui)" }}>
+                Port
+              </label>
+              <input
+                id="connection-port"
+                type="number"
+                min={1}
+                max={65535}
+                value={fields.port}
+                onChange={(event) =>
+                  setFields((was) => ({ ...was, port: Number(event.target.value) }))
+                }
+                className="ask-input px-3"
+                style={{ fontFamily: "var(--font-app)", fontSize: "var(--t-ui)" }}
+              />
+            </div>
+          </div>
+
+          <label htmlFor="connection-database" style={{ fontSize: "var(--t-ui)" }}>
+            Database
+          </label>
+          <input
+            id="connection-database"
+            value={fields.database}
+            onChange={(event) => setFields((was) => ({ ...was, database: event.target.value }))}
+            spellCheck={false}
+            autoComplete="off"
+            className="ask-input px-3"
+            style={{ fontFamily: "var(--font-app)", fontSize: "var(--t-ui)" }}
+          />
+
+          <div className="flex gap-2">
+            <div className="flex flex-1 flex-col gap-1">
+              <label htmlFor="connection-user" style={{ fontSize: "var(--t-ui)" }}>
+                User
+              </label>
+              <input
+                id="connection-user"
+                value={fields.user}
+                onChange={(event) => setFields((was) => ({ ...was, user: event.target.value }))}
+                spellCheck={false}
+                autoComplete="off"
+                className="ask-input px-3"
+                style={{ fontFamily: "var(--font-app)", fontSize: "var(--t-ui)" }}
+              />
+            </div>
+            <div className="flex flex-1 flex-col gap-1">
+              <label htmlFor="connection-password" style={{ fontSize: "var(--t-ui)" }}>
+                Password
+              </label>
+              <input
+                id="connection-password"
+                type="password"
+                value={fields.password}
+                onChange={(event) =>
+                  setFields((was) => ({ ...was, password: event.target.value }))
+                }
+                autoComplete="off"
+                className="ask-input px-3"
+                style={{ fontFamily: "var(--font-app)", fontSize: "var(--t-ui)" }}
+              />
+            </div>
+          </div>
+
+          <div>
+            <button
+              type="submit"
+              disabled={
+                busy ||
+                fields.host.trim() === "" ||
+                fields.database.trim() === "" ||
+                fields.user.trim() === ""
+              }
+              className="ask-action-primary px-4"
+              style={{ fontSize: "var(--t-ui)" }}
+            >
+              {busy ? "Connecting…" : "Connect"}
+            </button>
+          </div>
+
+          {outcome !== null && !outcome.ok ? (
+            <Note tone="alarm" heading={CONNECTION_REASON_HEADINGS[outcome.reason_code ?? ""] ?? "Not connected"}>
+              {outcome.message}
+            </Note>
+          ) : null}
+
+          {failure === null ? null : (
+            <Note tone="alarm" heading="Askwell is not answering">
+              {failure}
+            </Note>
+          )}
+        </form>
+      )}
+    </div>
+  );
+}
+
+/** `docs/data-sources.md` §4's four distinguishable failures, plus the two
+ * this wizard adds of its own — a bad field, and connected-but-unreadable.
+ * Keyed by `reason_code` so the heading always matches what actually
+ * happened rather than a guess re-derived from the message text. */
+const CONNECTION_REASON_HEADINGS: Record<string, string> = {
+  invalid_host: "Not a valid host",
+  invalid_port: "Not a valid port",
+  invalid_database: "Database name required",
+  invalid_user: "User name required",
+  unsupported_engine: "Not a supported engine",
+  host_unresolved: "Host not found",
+  connection_refused: "Connection refused",
+  network_blocked: "Blocked by network policy",
+  timeout: "No answer",
+  auth_failed: "Credentials not accepted",
+  permission_denied: "Connected, but cannot read",
+};
+
+/**
+ * What happens once a connection is created — the same shape `DumpQueued`
+ * renders for a dump, because both are "recorded, now something runs in the
+ * background": schema introspection here instead of a sandbox load.
+ *
+ * The read-only line is deliberately honest rather than reassuring:
+ * `M4-CONN-SEC-097` (the write probe) has not been built, so nothing has
+ * checked whether this credential can write, and saying "read-only" would be
+ * a claim nothing verified — the same abstention-over-invention judgement
+ * C5 makes about a document citation, applied to a status label.
+ */
+function ConnectionQueued({
+  source,
+  onAddAnother,
+}: {
+  source: { id: string; name: string | null };
+  onAddAnother: () => void;
+}) {
+  const [state, setState] = useState<IngestState | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let live = true;
+
+    fetchIngest(controller.signal)
+      .then((first) => {
+        if (live) setState(first);
+      })
+      .catch(() => undefined);
+
+    const stop = subscribeIngest((next) => {
+      if (live) setState(next);
+    });
+
+    return () => {
+      live = false;
+      controller.abort();
+      stop();
+    };
+  }, []);
+
+  const row = state?.sources.find((item) => item.id === source.id) ?? null;
+  const status = row?.status ?? "queued";
+
+  return (
+    <>
+      <Note tone="provenance" heading="Connected">
+        {source.name ?? "This connection"} is recorded. Reading its tables runs in the
+        background — you can leave this page and it carries on.
+      </Note>
+      <p className="ask-micro">
+        Read access confirmed at connection time. Write permissions have not been checked —
+        that refusal is not wired up yet.
+      </p>
+
+      {status === "queued" || status === "indexing" ? (
+        <span className="ask-micro block">Reading {source.name ?? "the database"}&rsquo;s schema.</span>
+      ) : status === "ready" ? (
+        <Note tone="provenance" heading="Ready">
+          {source.name ?? "This connection"} is listed in the library.
+          <span className="mt-2 block">
+            <button
+              type="button"
+              onClick={onAddAnother}
+              className="ask-navigates px-3 py-1"
+              style={{ border: "1px solid var(--rule-strong)", fontSize: "var(--t-ui)" }}
+            >
+              Add another connection
+            </button>
+          </span>
+        </Note>
+      ) : (
+        <Note tone="alarm" heading="Reading the schema failed">
+          {row?.last_error ?? "Askwell could not read this database's tables after connecting."}
+          <span className="mt-2 block">
+            <button
+              type="button"
+              onClick={onAddAnother}
+              className="ask-navigates px-3 py-1"
+              style={{ border: "1px solid var(--rule-strong)", fontSize: "var(--t-ui)" }}
+            >
+              Try another connection
             </button>
           </span>
         </Note>
@@ -1047,11 +1369,11 @@ function LaterRoutes() {
   return (
     <div className="flex flex-col gap-2">
       <h2 style={{ fontSize: "var(--t-title)", lineHeight: "var(--t-title-lh)" }}>
-        The other three routes
+        The other route
       </h2>
       <p className="ask-prose" style={{ color: "var(--muted)" }}>
-        Shown rather than hidden, so you can see whether your material has a home here.
-        None of them does anything yet.
+        Shown rather than hidden, so you can see whether your material has a home here. It
+        does not do anything yet.
       </p>
       {ROUTES.filter((route) => route.arrives !== null).map((route) => (
         <article

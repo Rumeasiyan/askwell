@@ -292,6 +292,13 @@ function SourceRow({ source, state }: { source: SourceCoverage; state: IngestSta
                 : ` Indexing ${active.filename}${active.fraction === null ? "" : ` (${Math.round(active.fraction * 100)}%)`} now.`}
             </p>
 
+            {source.kind === "connection" ? (
+              <p className="ask-micro" style={{ color: "var(--muted)" }}>
+                Read access confirmed at connection time. Write permissions have not been
+                checked — that refusal is not wired up yet.
+              </p>
+            ) : null}
+
             {causes.length === 0 ? null : (
               <>
                 <button

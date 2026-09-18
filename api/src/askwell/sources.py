@@ -73,7 +73,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from askwell import dump_import, ingest, roots
+from askwell import connections, dump_import, ingest, roots
 from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
@@ -1093,6 +1093,90 @@ class AddDumpRequest(BaseModel):
     file: str = Field(min_length=1, max_length=4096)
 
 
+class ConnectionRequest(BaseModel):
+    """Host, port, database, user, password. `M4-CONN-FE-096`.
+
+    No `name` field: the wizard shows a "database on host" line built from
+    what was typed, the same as `dump_import.create_dump_source` names a
+    dump from its file name rather than asking for a second title.
+    """
+
+    engine: str = Field(min_length=1, max_length=32)
+    host: str = Field(min_length=1, max_length=255)
+    port: int = Field(ge=1, le=65535)
+    database: str = Field(min_length=1, max_length=255)
+    user: str = Field(min_length=1, max_length=255)
+    password: str = Field(max_length=1024)
+
+
+@dataclass(frozen=True, slots=True)
+class ConnectionOutcome:
+    """What came of one connection attempt. Mirrors `DumpAddResult`'s shape:
+    every outcome, refused or created, comes back as one of these rather
+    than an exception the route has to translate."""
+
+    ok: bool
+    reason_code: str | None
+    message: str
+    source_id: uuid.UUID | None
+    source_name: str | None
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "ok": self.ok,
+            "reason_code": self.reason_code,
+            "message": self.message,
+            "source": (
+                None
+                if self.source_id is None
+                else {"id": str(self.source_id), "name": self.source_name, "status": "queued"}
+            ),
+        }
+
+
+async def add_connection(
+    session: AsyncSession, settings: Settings, body: ConnectionRequest
+) -> ConnectionOutcome:
+    """Validate, connect, and — on success — register a live connection.
+
+    Validation happens before anything touches a socket (`docs/data-sources.md`
+    §4: "Port and host validated before attempting"). A successful connection
+    is registered immediately with `status = 'queued'`; the caller dispatches
+    introspection afterwards, the same split `add_dump` draws between
+    creating a row and importing what it points to.
+    """
+    field_error = connections.validate_fields(
+        body.engine, body.host, body.port, body.database, body.user
+    )
+    if field_error is not None:
+        return ConnectionOutcome(False, field_error.reason_code, field_error.message, None, None)
+
+    outcome = await connections.probe_connection(
+        body.engine,
+        body.host,
+        body.port,
+        body.database,
+        body.user,
+        body.password,
+        settings.connection_probe_timeout_seconds,
+    )
+    if not outcome.ok:
+        return ConnectionOutcome(False, outcome.reason_code, outcome.message, None, None)
+
+    source_id = await connections.create_connection_source(
+        session,
+        engine=body.engine,
+        host=body.host,
+        port=body.port,
+        database=body.database,
+        user=body.user,
+        password=body.password,
+    )
+    return ConnectionOutcome(
+        True, None, outcome.message, source_id, f"{body.database} on {body.host}"
+    )
+
+
 def register_sources(
     app: FastAPI, settings: Settings, factory: async_sessionmaker[AsyncSession]
 ) -> None:
@@ -1131,6 +1215,24 @@ def register_sources(
             # except there currently is no such opportunity beyond this one
             # nudge (issue #340, `dump_import.dispatch_import`'s own docstring).
             await dump_import.dispatch_import(settings, outcome.source_id, outcome.path)
+        return JSONResponse(outcome.as_dict(), status_code=201)
+
+    @app.post("/sources/connection")
+    async def add_connection_route(body: ConnectionRequest) -> JSONResponse:
+        async with session_scope(factory) as db:
+            outcome = await add_connection(db, settings, body)
+
+        if not outcome.ok or outcome.source_id is None:
+            # 400, not 422: every field passed Pydantic's own shape check —
+            # what is wrong is the host, the credentials, or the network, not
+            # the request's JSON. The same reasoning `add_source` uses for
+            # `AddRefused`.
+            return JSONResponse(outcome.as_dict(), status_code=400)
+
+        # After the commit, same reasoning as `add_dump_route`: the `sources`
+        # row is already durable at `status = 'queued'`, and this only saves
+        # a worker its next opportunity to notice.
+        await connections.dispatch_introspection(settings, outcome.source_id)
         return JSONResponse(outcome.as_dict(), status_code=201)
 
     @app.post("/sources/{source_id}/reindex")

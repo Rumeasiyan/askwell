@@ -19,10 +19,12 @@ dependencies = [
     "psycopg[binary,pool]>=3.2",
     "pydantic>=2.9",
     "pydantic-settings>=2.5",
+    "pymysql>=1.2",
     "pypdfium2>=5.0",
     "pytesseract>=0.3.13",
     "python-docx>=1.1",
     "python-pptx>=1.0",
+    "python-tds>=1.17",
     "sqlalchemy[asyncio]>=2.0",
     "structlog>=24.4",
     "uvicorn[standard]>=0.30",
@@ -45,6 +47,7 @@ dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.24",
     "ruff>=0.6",
+    "types-pymysql>=1.2",
 ]
 
 # The version is not declared here. It is read from the repository's VERSION
@@ -110,6 +113,11 @@ ignore_missing_imports = true
 # either, and is touched at exactly one module boundary, `extract_ocr.py`.
 [[tool.mypy.overrides]]
 module = "pytesseract"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# No py.typed marker and no stub package exists (checked 2026-09-18).
+module = ["pytds", "pytds.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

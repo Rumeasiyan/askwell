@@ -259,6 +259,12 @@ class Settings(BaseSettings):
     # not for the whole surface.
     health_probe_timeout_seconds: float = Field(default=1.0, gt=0, le=10)
 
+    # How long the connection wizard waits for a live database to answer,
+    # `M4-CONN-FE-096`. Short: the wizard is a synchronous request the user is
+    # watching, not a background import, and a host that has not answered in
+    # this long is indistinguishable from one that never will.
+    connection_probe_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
+
     @field_validator("roots_mount", mode="before")
     @classmethod
     def _optional_path(cls, value: object) -> object:
