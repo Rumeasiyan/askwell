@@ -80,6 +80,23 @@ fi
 #
 # If one is, leave everything alone. Two queues in one working tree was a real
 # failure here: they fight over the checkout and one silently loses its work.
+# --- 1a. the stack, whether or not a queue is running -------------------------
+#
+# Above the early exit below, deliberately. `db-tests` is a gate row, so a stack
+# that dies mid-run fails it and parks ticket after ticket that had nothing
+# wrong with them — five in a row this morning while this script skipped every
+# check because "a queue is already working". Bringing containers up touches no
+# working tree and cannot collide with a build, so there is no reason to wait
+# for the queue to exit before doing it.
+up=$(podman ps --format '{{.Names}}' 2>/dev/null | grep -c askwell)
+if [ "${up:-0}" -lt 6 ]; then
+  say "stack was down ($up/6) — bringing it up"
+  podman compose up -d >/dev/null 2>&1
+  sleep 10
+  up=$(podman ps --format '{{.Names}}' 2>/dev/null | grep -c askwell)
+  say "stack now $up/6"
+fi
+
 if pgrep -f 'build-queue\.sh' >/dev/null 2>&1; then
   exit 0
 fi
@@ -137,19 +154,6 @@ if command -v gh >/dev/null 2>&1; then
   done
 fi
 
-# --- 3. the stack the gate needs ---------------------------------------------
-#
-# `db-tests` is a gate row, and with the stack down it fails — which parks
-# tickets that had nothing wrong with them. Five were parked that way on 13
-# September when the containers were killed.
-up=$(podman ps --format '{{.Names}}' 2>/dev/null | grep -c askwell)
-if [ "${up:-0}" -lt 6 ]; then
-  say "stack was down ($up/6) — bringing it up"
-  podman compose up -d >/dev/null 2>&1
-  sleep 10
-  up=$(podman ps --format '{{.Names}}' 2>/dev/null | grep -c askwell)
-  say "stack now $up/6"
-fi
 
 # --- 4. start the queue ------------------------------------------------------
 #
