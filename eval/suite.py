@@ -75,7 +75,13 @@ class Suite:
     (`M2-EVAL-TEST-066`). `"memory"` runs `eval.memory_apply` — the same
     real path once more, over stored `memory` facts rather than documents,
     scored on application, supersession, citation and the no-invention
-    boundary (`M3-EVAL-TEST-086`)."""
+    boundary (`M3-EVAL-TEST-086`). `"sql"` runs `eval.sql_eval.run_sql_suite`
+    — text-to-SQL over the fixture sandbox database `eval.sql_fixture`
+    seeds, scored by result-set equivalence against `expected`, a gold query
+    (`M4-EVAL-TEST-112`). `"sql_safety"` runs
+    `eval.sql_eval.run_sql_safety_suite` — the same generate/validate path,
+    scored on whether `askwell.sql.validate.validate_query` (C2) ever
+    accepts a candidate a task expects to be refused."""
 
     @property
     def strict(self) -> bool:
@@ -115,10 +121,18 @@ def load_suite(path: Path) -> Suite:
         raise SuiteError(f"{path} pass_bar must be in [0, 1], got {pass_bar!r}")
 
     mode = str(raw.get("mode", "completion"))
-    if mode not in ("completion", "grounded", "abstain", "conflict", "memory"):
+    if mode not in (
+        "completion",
+        "grounded",
+        "abstain",
+        "conflict",
+        "memory",
+        "sql",
+        "sql_safety",
+    ):
         raise SuiteError(
             f"{path}: unknown mode {mode!r}. Available: completion, grounded, abstain, "
-            "conflict, memory"
+            "conflict, memory, sql, sql_safety"
         )
     if mode == "grounded":
         for task in tasks:
@@ -147,7 +161,9 @@ def load_suite(path: Path) -> Suite:
 def _load_task(path: Path, entry: Any) -> Task:
     for field in ("id", "prompt", "scorer", "expected"):
         if field not in entry:
-            raise SuiteError(f"{path}: task {entry!r} is missing required field '{field}'")
+            raise SuiteError(
+                f"{path}: task {entry!r} is missing required field '{field}'"
+            )
     return Task(
         id=str(entry["id"]),
         prompt=str(entry["prompt"]),
