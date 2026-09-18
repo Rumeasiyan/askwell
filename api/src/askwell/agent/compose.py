@@ -20,10 +20,12 @@ Flagging never changes what gets composed — it only records
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+from askwell.memory import MemoryFact, SchemaNote
 from askwell.retrieve import Candidate
 
 PROMPT_DIR = Path(__file__).parent / "prompts"
@@ -85,15 +87,72 @@ def delimit_candidates(candidates: list[Candidate]) -> str:
     return "\n\n".join(blocks)
 
 
+def flag_injection_text(texts: Sequence[str]) -> tuple[bool, tuple[str, ...]]:
+    """The same heuristic instruction-pattern flagging `flag_injection` applies
+    to a `Candidate`'s content, over plain strings instead — schema notes and
+    memory facts can originate from an imported dump's own column names
+    (C3: untrusted content) or a document's text, so the C7 boundary applies
+    to them exactly as it does to a retrieved passage.
+    """
+    matched: list[str] = []
+    for text_ in texts:
+        for pattern in _INSTRUCTION_PATTERNS:
+            if pattern.search(text_) and pattern.pattern not in matched:
+                matched.append(pattern.pattern)
+    return bool(matched), tuple(matched)
+
+
 def flag_injection(candidates: list[Candidate]) -> tuple[bool, tuple[str, ...]]:
     """Heuristic instruction-pattern flagging, shared with `askwell.agent.partial`
     for the same reason `delimit_candidates` is."""
-    matched: list[str] = []
-    for candidate in candidates:
-        for pattern in _INSTRUCTION_PATTERNS:
-            if pattern.search(candidate.content) and pattern.pattern not in matched:
-                matched.append(pattern.pattern)
-    return bool(matched), tuple(matched)
+    return flag_injection_text([candidate.content for candidate in candidates])
+
+
+def confidence_label(origin: str, confidence: float | None) -> str:
+    """`docs/memory-and-clarification.md` §3: "User-supplied facts are
+    certain. Inferences are not, and the difference must survive into the
+    prompt." — this is that survival, in words a small local model reads
+    reliably rather than a bare number it might weight inconsistently.
+    Shared between `askwell.agent.conflict` and `askwell.agent.sql_generate`,
+    which both delimit the same two memory shapes into a prompt.
+    """
+    if origin != "inferred":
+        return "user-confirmed"
+    return f"inferred, confidence {confidence:.0%}" if confidence is not None else "inferred"
+
+
+def delimit_memory_facts(facts: Sequence[MemoryFact], start_index: int) -> str:
+    # Omitted entirely when empty, never an empty tagged block — a labelled
+    # block with nothing in it reads as "memory has nothing to say," which
+    # is a claim, not the absence of one.
+    if not facts:
+        return ""
+    lines = "\n".join(
+        f"- [{index}] [{confidence_label(fact.origin, fact.confidence)}] "
+        f"{fact.subject}: {fact.fact}"
+        for index, fact in enumerate(facts, start=start_index)
+    )
+    return f"\n\n<memory-facts>\n{lines}\n</memory-facts>"
+
+
+def delimit_schema_notes(notes: Sequence[SchemaNote], start_index: int) -> str:
+    """A stale note's caveat is rendered here too, defence in depth —
+    `askwell.memory.retrieve_relevant_facts` (the caller both `conflict.py`
+    and `sql_generate.py` draw notes from) already excludes a stale note
+    outright (`M4-SCHEMA-BE-102`), so this branch is unreachable in
+    production, the same "keep a currently-inert caveat correct" reasoning
+    that ticket recorded.
+    """
+    if not notes:
+        return ""
+    lines = "\n".join(
+        f"- [{index}] [{confidence_label(note.origin, note.confidence)}"
+        f"{', column no longer found in the current schema' if note.stale else ''}] "
+        f"{note.table_name}{f'.{note.column_name}' if note.column_name else ''}: "
+        f"{note.description}"
+        for index, note in enumerate(notes, start=start_index)
+    )
+    return f"\n\n<schema-notes>\n{lines}\n</schema-notes>"
 
 
 def compose(question: str, candidates: list[Candidate]) -> ComposedPrompt:

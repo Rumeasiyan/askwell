@@ -4,6 +4,20 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.15 - 2026-09-18
+
+`M4-SQL-BE-103` — schema retrieval and SQL generation, the first ticket of the `SQL` epic and the whole database path's own start. New `askwell.agent.sql_generate`: `select_database_source` picks the one `ready` dump/CSV/connection source a question's SQL should be generated against — automatically when exactly one candidate's schema notes look relevant, asking rather than guessing when more than one does (also the honest answer for a question spanning two databases, which this module never attempts), and reporting "no databases" when none does or none exist at all. `generate_candidate_query` then retrieves the relevant schema subset — reusing `schema_notes` and `askwell.memory.retrieve_relevant_facts`'s existing lexical ranking rather than a second schema representation, bounded to 40 notes — and asks the model for one candidate query via a new versioned prompt, `agent/prompts/sql_generation.v1.md`, with the schema, notes and memory delimited as data, never instruction (C7), the same boundary `agent/compose.py`'s delimiting helpers (now shared with `agent/conflict.py` rather than duplicated) already enforce for a document answer. A question with no relevant schema at all is reported as such rather than forced into a query, so a caller can fall back to document retrieval. Every successful generation is recorded to `audit_decisions` with the query text, whichever source it targeted and what schema/memory it drew on — before any validation exists to look at it (`M4-SQL-VAL-104`, next). **Not wired into `POST /ask`** — the same reasoning `M4-SQL-DB-107` recorded about wiring itself in early: executing or showing a generated query before it can be validated would be exactly what C2 exists to prevent, so this module is exercised directly (27 new tests against a real Postgres) rather than reachable from a real conversation yet.
+
+### Added
+
+- `askwell.agent.sql_generate`: `DatabaseSource`, `SourceSelection`, `GeneratedQuery`, `GenerationResult`, `list_database_sources`, `select_database_source`, `compose_sql_generation`, `generate_candidate_query`.
+- `agent/prompts/sql_generation.v1.md`.
+- `agent.compose.flag_injection_text`, `confidence_label`, `delimit_memory_facts`, `delimit_schema_notes` — extracted from `agent.conflict` so `sql_generate` can reuse the same C7 delimiting rather than a second copy.
+
+### Changed
+
+- `agent.conflict` imports its memory/schema-note delimiting from `agent.compose` instead of defining its own; behaviour unchanged (`test_conflict.py` passes unmodified).
+
 ## 0.4.14 - 2026-09-18
 
 `M4-SCHEMA-BE-102` — closes issue #365. A stale schema note (`M4-SCHEMA-ING-101`) is now excluded outright from generation: `askwell.memory.retrieve_relevant_facts` — the one retrieval path both document answers and database question-answering draw schema-notes context from — filters `AND NOT stale`, tightening `-101`'s in-prompt caveat, which stays in `agent.conflict._delimit_schema_notes` as defence in depth but is no longer reachable through the one production caller. `get_active_schema_notes` is unchanged, so the library and memory screens still see a stale note.
