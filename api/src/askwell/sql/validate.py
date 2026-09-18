@@ -52,6 +52,7 @@ between a generated query and the database.
 from __future__ import annotations
 
 import asyncio
+import uuid
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -67,7 +68,14 @@ from askwell.logging import get_logger
 
 log = get_logger(__name__)
 
-SQL_REJECTED = "sql_rejected"
+# `M4-SQL-OBS-108`: every validated query — accepted or rejected — is one
+# `audit_interactions` record, per `docs/audit-log.md` §7 ("SQL generated and
+# whether it was accepted or rejected by validation, rows returned,
+# duration" is named there as an Interactions fact, not a Decisions one).
+# `M4-SQL-VAL-104` originally wrote a rejection to `audit_decisions`; this
+# corrects that (`docs/decisions.md`, this date) rather than leaving a second,
+# wrongly-homed audit trail for the same event.
+SQL_QUERY = "sql_query"
 
 # `sqlglot`'s dialect names, one per `Engine` this codebase supports
 # (`askwell.connections.ENGINES`). MariaDB has no dialect of its own in
@@ -157,7 +165,7 @@ _SIDE_EFFECT_FUNCTIONS: frozenset[str] = frozenset(
 
 class RejectionReason(StrEnum):
     """Why a candidate query did not pass. One of these accompanies every
-    refusal recorded to the decisions store (the ticket's own Audit
+    refusal recorded to the interaction log (`M4-SQL-OBS-108`'s own Audit
     Requirement) — the signal that a prompt change has degraded generation
     is invisible unless the reason, not just the fact of rejection, is kept.
     """
@@ -271,8 +279,9 @@ async def validate_query(
     *,
     engine: Engine,
     query: str,
+    source_id: uuid.UUID | None = None,
 ) -> ValidationResult:
-    """Validate one candidate query and record every rejection.
+    """Validate one candidate query and record the outcome. `M4-SQL-OBS-108`.
 
     Parsing runs in a worker thread with a bounded wait
     (`Settings.sql_validation_timeout_seconds`) — `sqlglot` has no timeout of
@@ -285,10 +294,17 @@ async def validate_query(
     be the signal something is wrong with the input, not a routine
     occurrence this module needs to clean up after.
 
-    An accepted query is not recorded — only a rejection is, per the
-    ticket's own Audit Requirement. A successful generation is already
-    recorded by `askwell.agent.sql_generate.generate_candidate_query`; this
-    would otherwise double-record every query that passes.
+    Every outcome — accepted or rejected — is one `audit_interactions`
+    record (`docs/audit-log.md` §7), carrying the query text in full (never
+    truncated — truncating the thing a maintainer is trying to diagnose
+    defeats the purpose), the engine, the source, whether it validated, and
+    the rejection reason where there is one. `limit_injected`, `rows` and
+    `duration_ms` are always `None` here: limit injection (`M4-SQL-VAL-105`)
+    and execution (`askwell.sql_execute`) are not wired to a live turn yet
+    (`docs/BRAIN.md`), so this module honestly records what it knows at this
+    stage rather than inventing values for stages that have not run — the
+    same "recorded as far as it got" edge case the ticket names for a query
+    rejected before generation completed.
     """
     timeout_seconds = float(settings.sql_validation_timeout_seconds)
     try:
@@ -301,19 +317,24 @@ async def validate_query(
             "Parsing this statement took too long and was abandoned.",
         )
 
+    await audit.record(
+        session,
+        Store.INTERACTIONS,
+        SQL_QUERY,
+        {
+            "engine": engine,
+            "source_id": str(source_id) if source_id is not None else None,
+            "query": query,
+            "validated": result.accepted,
+            "rejection_reason": result.reason.value if result.reason is not None else None,
+            "detail": result.detail,
+            "limit_injected": None,
+            "rows": None,
+            "duration_ms": None,
+        },
+    )
     if not result.accepted:
         assert result.reason is not None
-        await audit.record(
-            session,
-            Store.DECISIONS,
-            SQL_REJECTED,
-            {
-                "engine": engine,
-                "query": query,
-                "reason": result.reason.value,
-                "detail": result.detail,
-            },
-        )
         log.warning("sql_rejected", engine=engine, reason=result.reason.value)
 
     return result
