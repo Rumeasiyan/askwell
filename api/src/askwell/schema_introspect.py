@@ -78,6 +78,19 @@ SCHEMA_INTROSPECTED = "schema_introspected"
 # its table/column position disappears from a re-introspection.
 SCHEMA_NOTE_MARKED_STALE = "schema_note_marked_stale"
 
+# `M4-SCHEMA-BE-102`, issue #365: a source's `attention` status changed
+# because its count of active stale schema notes crossed zero in either
+# direction. Logged separately from `SCHEMA_NOTE_MARKED_STALE` above — that
+# one fires per note, this one fires once per source whenever the library's
+# own needs-attention status actually flips.
+SCHEMA_SOURCE_ATTENTION_CHANGED = "schema_source_attention_changed"
+
+# The `sources.last_error` prefix a stale-notes attention reason always
+# carries, so `refresh_schema_attention` can tell "this source is in
+# `attention` because of stale notes" apart from any other reason (a dead
+# connection, locked credentials) without a second column to track it.
+_STALE_ATTENTION_PREFIX = "Schema drifted:"
+
 # `M4-SCHEMA-ING-101`: a column clarification raised from the value
 # distribution of an unguessable column name found by introspection.
 SCHEMA_COLUMN_CLARIFICATION_RAISED = "schema_column_clarification_raised"
@@ -120,10 +133,17 @@ class SchemaInventory:
     more — when it does. Never conflate the two: `docs/data-sources.md`'s
     own edge case is "omitted, with a note that some objects were not
     visible", which requires actually knowing the count.
+
+    `omitted_tables` names those same objects — `None` under the identical
+    condition `omitted_count` is `None` under, and a (possibly empty) set of
+    table/view names otherwise. `M4-SCHEMA-BE-102`, issue #365: a stale note
+    only reports "possibly invisible" rather than "gone" when it can name
+    the object a permission change hid, not merely count it.
     """
 
     tables: tuple[Table, ...]
     omitted_count: int | None
+    omitted_tables: frozenset[str] | None = None
 
 
 _KIND_LABEL: dict[TableKind, str] = {
@@ -207,6 +227,15 @@ def _build_postgresql_inventory(
         for _, _, relkind, selectable in class_rows
         if not selectable and relkind in relkind_to_kind
     )
+    # Names, not just the count — see `SchemaInventory.omitted_tables`. A
+    # `frozenset` of bare names, matching the rest of this module's own
+    # simplification of not carrying schema alongside table name any
+    # further than `visible` does.
+    omitted_tables = frozenset(
+        name
+        for _, name, relkind, selectable in class_rows
+        if not selectable and relkind in relkind_to_kind
+    )
 
     columns_by_table: dict[tuple[str, str], list[Column]] = {}
     primary_keys: dict[tuple[str, str], set[str]] = {}
@@ -248,7 +277,9 @@ def _build_postgresql_inventory(
         )
         for (schema, name), kind in sorted(visible.items())
     )
-    return SchemaInventory(tables=tables, omitted_count=omitted_count)
+    return SchemaInventory(
+        tables=tables, omitted_count=omitted_count, omitted_tables=omitted_tables
+    )
 
 
 def _introspect_postgresql_blocking(dsn: str) -> SchemaInventory:
@@ -564,6 +595,19 @@ async def write_schema_inventory(
     that exists. A position that reappears — the same column back after a
     re-introspection found it briefly missing — has its stale flag cleared
     again, on either kind of note.
+
+    **Since `M4-SCHEMA-BE-102` (issue #365)** a stale note also carries why:
+    `stale_reason` is `'possibly_invisible'` when the vanished table is one
+    `inventory.omitted_tables` names (a Postgres permission change, which
+    may be temporary) and `'dropped'` otherwise — including on every other
+    engine, where `omitted_tables` is `None` and there is no way to tell the
+    two apart (the same gap `omitted_count` already documents). And a stale
+    *column* note gets a `reattach_suggestion` — the new column name — when
+    its table still exists and this run finds it lost exactly one column
+    while gaining exactly one: the one case a rename is unambiguous without
+    guessing at a name match. Anything less clear-cut (zero, or more than
+    one, of either side) gets no suggestion, per the ticket's own
+    Assumption: a fuzzy match risks reattaching to the wrong column.
     """
     target: dict[tuple[str, str | None], str] = {}
     for table in inventory.tables:
@@ -575,6 +619,22 @@ async def write_schema_inventory(
 
     active = await get_active_schema_notes(session, source_id=source_id)
     active_by_position = {(note.table_name, note.column_name): note for note in active}
+
+    removed_columns: dict[str, set[str]] = {}
+    for table_name, column_name in active_by_position:
+        if column_name is not None and (table_name, column_name) not in target:
+            removed_columns.setdefault(table_name, set()).add(column_name)
+    added_columns: dict[str, set[str]] = {}
+    for table_name, column_name in target:
+        if column_name is not None and (table_name, column_name) not in active_by_position:
+            added_columns.setdefault(table_name, set()).add(column_name)
+
+    def _reattach_suggestion(table_name: str) -> str | None:
+        removed = removed_columns.get(table_name, set())
+        added = added_columns.get(table_name, set())
+        if len(removed) == 1 and len(added) == 1:
+            return next(iter(added))
+        return None
 
     for (table_name, column_name), description in target.items():
         existing = active_by_position.get((table_name, column_name))
@@ -593,7 +653,10 @@ async def write_schema_inventory(
                 # The position is back — clear a caveat that no longer
                 # applies rather than leave it wrongly flagged forever.
                 await session.execute(
-                    text("UPDATE schema_notes SET stale = false WHERE id = :id"),
+                    text(
+                        "UPDATE schema_notes SET stale = false, stale_reason = NULL, "
+                        "reattach_suggestion = NULL WHERE id = :id"
+                    ),
                     {"id": existing.id},
                 )
             continue  # user-supplied always outranks an inferred refresh.
@@ -626,9 +689,23 @@ async def write_schema_inventory(
             # instead of silently describing a column that no longer
             # exists (`M4-SCHEMA-ING-101`, issue #355).
             if not note.stale:
+                possibly_invisible = (
+                    inventory.omitted_tables is not None and table_name in inventory.omitted_tables
+                )
+                stale_reason = "possibly_invisible" if possibly_invisible else "dropped"
+                reattach_suggestion = (
+                    _reattach_suggestion(table_name) if column_name is not None else None
+                )
                 await session.execute(
-                    text("UPDATE schema_notes SET stale = true WHERE id = :id"),
-                    {"id": note.id},
+                    text(
+                        "UPDATE schema_notes SET stale = true, stale_reason = :stale_reason, "
+                        "reattach_suggestion = :reattach_suggestion WHERE id = :id"
+                    ),
+                    {
+                        "stale_reason": stale_reason,
+                        "reattach_suggestion": reattach_suggestion,
+                        "id": note.id,
+                    },
                 )
                 await audit.record(
                     session,
@@ -639,6 +716,8 @@ async def write_schema_inventory(
                         "source_id": str(source_id),
                         "table_name": table_name,
                         "column_name": column_name,
+                        "stale_reason": stale_reason,
+                        "reattach_suggestion": reattach_suggestion,
                     },
                 )
             continue
@@ -665,6 +744,96 @@ async def write_schema_inventory(
         tables=len(inventory.tables),
         omitted_count=inventory.omitted_count,
     )
+
+
+def _stale_attention_reason(stale_count: int) -> str | None:
+    """The `sources.last_error` sentence for the library's own needs-
+    attention reason (`docs/ux/library.md` §5, `docs/states-and-edge-
+    cases.md` §4) — `None` when nothing is stale. Always one sentence
+    naming the count, per the ticket's own edge case: many notes going
+    stale at once is summarised, not listed one row per note.
+    """
+    if not stale_count:
+        return None
+    noun = "note" if stale_count == 1 else "notes"
+    return (
+        f"{_STALE_ATTENTION_PREFIX} {stale_count} schema {noun} refer to a table or "
+        "column Askwell can no longer find."
+    )
+
+
+async def refresh_schema_attention(session: AsyncSession, source_id: uuid.UUID) -> None:
+    """Recompute a source's `attention` status from its own active stale
+    schema notes, after `write_schema_inventory` has just run.
+    `M4-SCHEMA-BE-102`, issue #365 — `docs/ux/library.md` §5's "needs
+    attention" status covers a stale annotation the same way it covers a
+    failed extraction or a dead connection, and this is that mechanism's
+    schema-drift half.
+
+    Deliberately narrow, the same way `askwell.ingest.refresh_source` is
+    narrow to document coverage: only ever escalates to `attention` for a
+    source not already in `attention` for some other, unrelated reason (a
+    dead connection, locked credentials — checked first, above, in
+    `run_introspection`/`reintrospect_sandbox_source`'s own callers, so this
+    function only ever runs once a re-introspection has actually succeeded),
+    and only ever reverts a status *this function itself* set — tracked by
+    the `_STALE_ATTENTION_PREFIX` `last_error` carries, since a second
+    column to remember "attention because of this" would duplicate what the
+    prefix already says plainly.
+    """
+    current = await session.execute(
+        text("SELECT status, last_error FROM sources WHERE id = :id AND status != 'deleted'"),
+        {"id": source_id},
+    )
+    row = current.first()
+    if row is None:
+        return
+    status, last_error = row
+
+    stale_count = (
+        await session.execute(
+            text(
+                "SELECT count(*) FROM schema_notes "
+                "WHERE source_id = :id AND stale AND superseded_by IS NULL"
+            ),
+            {"id": source_id},
+        )
+    ).scalar_one()
+    reason = _stale_attention_reason(stale_count)
+    set_by_this = (
+        status == "attention"
+        and last_error is not None
+        and last_error.startswith(_STALE_ATTENTION_PREFIX)
+    )
+
+    if reason is not None:
+        if status == "attention" and not set_by_this:
+            # A more specific reason already covers this source — never
+            # overwrite it with a less specific one.
+            return
+        if status == "attention" and last_error == reason:
+            return  # unchanged — nothing to record.
+        await session.execute(
+            text("UPDATE sources SET status = 'attention', last_error = :reason WHERE id = :id"),
+            {"reason": reason, "id": source_id},
+        )
+        await audit.record(
+            session,
+            Store.DECISIONS,
+            SCHEMA_SOURCE_ATTENTION_CHANGED,
+            {"source_id": str(source_id), "status": "attention", "stale_count": stale_count},
+        )
+    elif set_by_this:
+        await session.execute(
+            text("UPDATE sources SET status = 'ready', last_error = NULL WHERE id = :id"),
+            {"id": source_id},
+        )
+        await audit.record(
+            session,
+            Store.DECISIONS,
+            SCHEMA_SOURCE_ATTENTION_CHANGED,
+            {"source_id": str(source_id), "status": "ready", "stale_count": 0},
+        )
 
 
 # --- unguessable columns: M4-SCHEMA-ING-101 ---------------------------
@@ -999,6 +1168,10 @@ async def reintrospect_sandbox_source(
 
     async with session_scope(factory) as session:
         await write_schema_inventory(session, source_id, inventory)
+        # `M4-SCHEMA-BE-102`: reflect whatever this run just found stale in
+        # the library's own needs-attention status, same session — no
+        # window where `schema_notes` and `sources.status` disagree.
+        await refresh_schema_attention(session, source_id)
     await record_introspection_run(settings)
 
     # `M4-SCHEMA-ING-101`: unguessable columns raise clarifications, same as

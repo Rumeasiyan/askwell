@@ -460,6 +460,19 @@ class SchemaNote(Base):
     # those are superseded by themselves instead, which is retirement, not a
     # caveat on a still-active answer.
     stale: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    # Why a stale note is stale, when known: `'dropped'` (gone from the
+    # catalog) or `'possibly_invisible'` (a Postgres permission change —
+    # `pg_catalog` still lists the relation, just not as `SELECT`-able, so
+    # it may come back on its own). `NULL` alongside `stale = false`, and
+    # for the engines with no privilege-independent catalog to tell the two
+    # apart (`docs/data-sources.md` §4's own MySQL/SQL Server gap).
+    # `M4-SCHEMA-BE-102`, issue #365.
+    stale_reason: Mapped[str | None] = mapped_column(Text)
+    # The single unambiguous rename candidate for a stale column note —
+    # set only when exactly one column vanished from the table and exactly
+    # one new one appeared in the same introspection run. An offer, never
+    # an automatic reattachment (`M4-SCHEMA-BE-102`, issue #365).
+    reattach_suggestion: Mapped[str | None] = mapped_column(Text)
     embedding: Mapped[Any | None] = mapped_column(Vector())
     created_at_: Mapped[datetime] = mapped_column(
         "created_at", DateTime(timezone=True), nullable=False, server_default=func.now()

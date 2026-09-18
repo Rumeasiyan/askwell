@@ -33,6 +33,7 @@ from askwell.memory import (
     get_active_schema_notes,
     get_fact_detail,
     get_memory_screen,
+    reattach_schema_note,
     retrieve_relevant_facts,
     write_memory_fact,
     write_schema_note,
@@ -829,6 +830,139 @@ async def test_correcting_an_already_deleted_fact_is_refused_with_a_clear_reason
         await correct_memory_fact(session, fact_id=fact_id, fact="something else")
 
 
+# --- reattach_schema_note: the fix path's third option, M4-SCHEMA-BE-102 ----
+
+
+@pytest.mark.asyncio
+async def test_reattaching_a_stale_note_moves_it_and_clears_the_flag(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session)
+    note_id = await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name="students",
+        column_name="st_cd",
+        description="student status code",
+        origin="user",
+    )
+    assert note_id is not None
+    await session.execute(
+        text(
+            "UPDATE schema_notes SET stale = true, stale_reason = 'dropped', "
+            "reattach_suggestion = 'status_code' WHERE id = :id"
+        ),
+        {"id": note_id},
+    )
+
+    outcome = await reattach_schema_note(
+        session, note_id=note_id, table_name="students", column_name="status_code"
+    )
+
+    assert outcome.fact_id != note_id
+    old = (
+        await session.execute(
+            text("SELECT superseded_by FROM schema_notes WHERE id = :id"), {"id": note_id}
+        )
+    ).scalar_one()
+    assert old == outcome.fact_id
+
+    moved = (
+        await session.execute(
+            text(
+                "SELECT table_name, column_name, description, origin, stale, "
+                "stale_reason, reattach_suggestion FROM schema_notes WHERE id = :id"
+            ),
+            {"id": outcome.fact_id},
+        )
+    ).one()
+    assert moved == ("students", "status_code", "student status code", "user", False, None, None)
+
+
+@pytest.mark.asyncio
+async def test_reattaching_to_a_position_with_an_active_inferred_note_retires_it(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session)
+    note_id = await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name="students",
+        column_name="st_cd",
+        description="student status code",
+        origin="user",
+    )
+    guess_id = await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name="students",
+        column_name="status_code",
+        description="a guess",
+        origin="inferred",
+    )
+    assert note_id is not None
+    assert guess_id is not None
+
+    outcome = await reattach_schema_note(
+        session, note_id=note_id, table_name="students", column_name="status_code"
+    )
+
+    retired = (
+        await session.execute(
+            text("SELECT superseded_by FROM schema_notes WHERE id = :id"), {"id": guess_id}
+        )
+    ).scalar_one()
+    assert retired == outcome.fact_id
+
+
+@pytest.mark.asyncio
+async def test_reattaching_an_inferred_note_is_rejected(session: AsyncSession) -> None:
+    source_id = await _source(session)
+    note_id = await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name="students",
+        column_name="st_cd",
+        description="a guess",
+        origin="inferred",
+    )
+    assert note_id is not None
+
+    with pytest.raises(CannotCorrectInference):
+        await reattach_schema_note(
+            session, note_id=note_id, table_name="students", column_name="status_code"
+        )
+
+
+@pytest.mark.asyncio
+async def test_reattaching_an_unknown_note_raises(session: AsyncSession) -> None:
+    with pytest.raises(FactNotFound):
+        await reattach_schema_note(
+            session, note_id=uuid.uuid4(), table_name="students", column_name="status_code"
+        )
+
+
+@pytest.mark.asyncio
+async def test_reattaching_to_the_same_position_is_a_no_op(session: AsyncSession) -> None:
+    source_id = await _source(session)
+    note_id = await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name="students",
+        column_name="st_cd",
+        description="student status code",
+        origin="user",
+    )
+    assert note_id is not None
+
+    outcome = await reattach_schema_note(
+        session, note_id=note_id, table_name="students", column_name="st_cd"
+    )
+
+    assert outcome.fact_id == note_id
+    assert outcome.reprocessing.changed is False
+
+
 # --- retrieve_relevant_facts: M3-APPLY-RET-078 -------------------------------
 
 
@@ -912,6 +1046,40 @@ async def test_schema_notes_are_scoped_to_the_asked_source_memory_is_not(
     # General memory is never source-scoped — the same abbreviation applies
     # to a question asked against any source.
     assert [f.id for f in found.facts] == [fact_id]
+
+
+@pytest.mark.asyncio
+async def test_a_stale_schema_note_is_never_retrieved_for_generation(
+    session: AsyncSession,
+) -> None:
+    """`M4-SCHEMA-BE-102`'s own Validation Rule: "a stale note is never
+    used in generation" — `retrieve_relevant_facts` is the one retrieval
+    path composition draws on for both document answers and database
+    question-answering, so exclusion here is what that rule means.
+    `get_active_schema_notes` still returns it, for the library/memory
+    screens — this ticket never hides a stale note from a person, only
+    from the model.
+    """
+    source_id = await _source(session)
+    note_id = await write_schema_note(
+        session,
+        source_id=source_id,
+        table_name="students",
+        column_name="st_cd",
+        description="student status code",
+        origin="user",
+    )
+    assert note_id is not None
+    await session.execute(
+        text("UPDATE schema_notes SET stale = true WHERE id = :id"), {"id": note_id}
+    )
+
+    found = await retrieve_relevant_facts(session, question="what is st_cd?", source_id=source_id)
+    assert found.notes == []
+
+    still_visible = await get_active_schema_notes(session, source_id=source_id)
+    assert [n.id for n in still_visible] == [note_id]
+    assert still_visible[0].stale is True
 
 
 @pytest.mark.asyncio
