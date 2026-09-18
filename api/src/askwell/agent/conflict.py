@@ -59,7 +59,13 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-from askwell.agent.compose import ComposedPrompt, delimit_candidates, flag_injection
+from askwell.agent.compose import (
+    ComposedPrompt,
+    delimit_candidates,
+    delimit_memory_facts,
+    delimit_schema_notes,
+    flag_injection,
+)
 from askwell.memory import MemoryFact, SchemaNote
 from askwell.retrieve import Candidate
 
@@ -98,53 +104,6 @@ def _delimit_memory_fact(memory_fact: str | None) -> str:
     return f"\n\n<memory-fact>\n{memory_fact}\n</memory-fact>"
 
 
-def _confidence_label(origin: str, confidence: float | None) -> str:
-    """`docs/memory-and-clarification.md` §3: "User-supplied facts are
-    certain. Inferences are not, and the difference must survive into the
-    prompt." — this is that survival, in words a small local model reads
-    reliably rather than a bare number it might weight inconsistently.
-    """
-    if origin != "inferred":
-        return "user-confirmed"
-    return f"inferred, confidence {confidence:.0%}" if confidence is not None else "inferred"
-
-
-def _delimit_memory_facts(facts: Sequence[MemoryFact], start_index: int) -> str:
-    # Omitted entirely when empty, never an empty tagged block — the
-    # ticket's own edge case: a labelled block with nothing in it reads as
-    # "memory has nothing to say," which is a claim, not the absence of one.
-    if not facts:
-        return ""
-    lines = "\n".join(
-        f"- [{index}] [{_confidence_label(fact.origin, fact.confidence)}] "
-        f"{fact.subject}: {fact.fact}"
-        for index, fact in enumerate(facts, start=start_index)
-    )
-    return f"\n\n<memory-facts>\n{lines}\n</memory-facts>"
-
-
-def _delimit_schema_notes(notes: Sequence[SchemaNote], start_index: int) -> str:
-    """`M4-SCHEMA-BE-102`, issue #365: `retrieve_relevant_facts` — the one
-    caller `notes` ever arrives from — now excludes a stale note outright
-    (that ticket's own Validation Rule: "a stale note is never used in
-    generation"), so the `note.stale` caveat below is defence in depth
-    rather than the load-bearing mechanism `M4-SCHEMA-ING-101` built it as.
-    Left in rather than stripped: this function has no way to know whether
-    every future caller will filter the way `retrieve_relevant_facts` does,
-    and a caveat that never fires today costs nothing to keep correct.
-    """
-    if not notes:
-        return ""
-    lines = "\n".join(
-        f"- [{index}] [{_confidence_label(note.origin, note.confidence)}"
-        f"{', column no longer found in the current schema' if note.stale else ''}] "
-        f"{note.table_name}{f'.{note.column_name}' if note.column_name else ''}: "
-        f"{note.description}"
-        for index, note in enumerate(notes, start=start_index)
-    )
-    return f"\n\n<schema-notes>\n{lines}\n</schema-notes>"
-
-
 def compose_conflict(
     question: str,
     candidates: list[Candidate],
@@ -178,8 +137,8 @@ def compose_conflict(
         system_prompt=_load_system_prompt(),
         user_content=(
             f"{delimit_candidates(candidates)}{_delimit_memory_fact(memory_fact)}"
-            f"{_delimit_memory_facts(retrieved_facts, facts_start)}"
-            f"{_delimit_schema_notes(retrieved_notes, notes_start)}"
+            f"{delimit_memory_facts(retrieved_facts, facts_start)}"
+            f"{delimit_schema_notes(retrieved_notes, notes_start)}"
             f"\n\nQuestion: {question}"
         ),
         prompt_version=PROMPT_VERSION,
