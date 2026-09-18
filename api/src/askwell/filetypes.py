@@ -69,10 +69,15 @@ class Verdict(StrEnum):
 
 # When each route starts working. Written once, here, so that when M4 lands the
 # only change is a `None` and every CSV already detected becomes supported.
+# `DUMP` is `None` since `M4-DUMP-FE-090`: this module now names an engine and
+# refuses or routes a dump for real, so there is a route to reach it. `TABLE`
+# stays dated — the backend CSV pipeline landed (`M4-CSV-ING-094`) but no
+# screen reaches it yet (issue #339), so telling a user their CSV is indexed
+# today would be false.
 ARRIVES: dict[Route, str | None] = {
     Route.FILES: None,
     Route.TABLE: "M4",
-    Route.DUMP: "M4",
+    Route.DUMP: None,
     Route.CONNECTION: "M4",
 }
 
@@ -121,6 +126,50 @@ REFUSED_ARCHIVE = (
 REFUSED_EMPTY = "There is nothing in this file to index. Nothing was changed on disk."
 
 REFUSED_UNKNOWN = "Askwell could not tell what this file is from its contents."
+
+# `docs/data-sources.md` §7: "v1 imports PostgreSQL dumps only" — never a bare
+# rejection, always both routes out named. `{engine}` is filled with "MySQL"
+# or "SQL Server", never invented for a third engine nothing here recognises.
+_REFUSED_DUMP_ENGINE = (
+    "Askwell imports PostgreSQL dumps. For {engine}, either connect to the "
+    "database directly or export the tables as CSV; both work, and CSV "
+    "usually gives better answers because Askwell will ask about anything "
+    "ambiguous."
+)
+
+# The header did not commit to an engine. Phrased as a question rather than a
+# guess — `docs/ux/add-source.md` §3's own edge case: "asked rather than
+# guessed at" — and still names both routes out, the same as a confirmed
+# MySQL or SQL Server dump, for the reader whose dump the resave does not fix.
+REFUSED_DUMP_ENGINE_UNKNOWN = (
+    "Askwell could not tell which database produced this dump. If it came "
+    "from PostgreSQL, resaving it with pg_dump's own default output usually "
+    "fixes this. If it came from MySQL or SQL Server, connect to the "
+    "database directly, or export the tables as CSV — both work, and CSV "
+    "usually gives better answers because Askwell will ask about anything "
+    "ambiguous."
+)
+
+# `docs/ux/add-source.md` §5 "A compressed dump": accepted if recognised,
+# refused with the reason if not. v1 recognises none, so this is unconditional
+# for now — and it is a dump-specific refusal, not the generic archive one
+# (issue #342), because "unpack it and add what is inside" is nonsense advice
+# for a single-file database export.
+REFUSED_DUMP_COMPRESSED = (
+    "Askwell does not import compressed dumps yet. Decompress it first, or "
+    "connect to the database directly, or export the tables as CSV — both "
+    "work, and CSV usually gives better answers because Askwell will ask "
+    "about anything ambiguous."
+)
+
+# A file with a dump extension whose contents do not read as a dump at all —
+# issue #341. Never `REFUSED_DUMP_ENGINE_UNKNOWN`, which is for something that
+# *does* look like a dump but does not commit to an engine; this is for a
+# letter someone happened to name `.sql`.
+REFUSED_DUMP_UNSUPPORTED = (
+    "This does not look like a database dump. Askwell imports PostgreSQL "
+    ".sql, .dump and .backup files."
+)
 
 
 # --- signatures -------------------------------------------------------------
@@ -254,6 +303,41 @@ def _looks_like_a_dump(text: str) -> bool:
     return False
 
 
+# SQL Server dumps carry no reliable textual preamble the way `pg_dump` and
+# `mysqldump` do — a T-SQL script from SSMS or `sqlcmd` starts straight into
+# `USE` or `CREATE`. These pragmas are what every generated T-SQL script sets
+# near its top regardless of tool, and none of them is valid syntax for
+# PostgreSQL or MySQL, which is what makes them a safe positive rather than a
+# guess.
+_SQLSERVER_MARKERS = ("set ansi_nulls on", "set quoted_identifier on", "sp_addextendedproperty")
+
+
+def _dump_engine(text: str) -> str:
+    """Which database produced a dump, from its header — best-effort.
+
+    `docs/ux/add-source.md` §3's own Assumptions line: "Engine detection from
+    the dump's header is reliable enough to route the message." Judged on
+    markers unique enough to that engine's own export tooling that a false
+    positive would mean the dump is unusual in some other way too; anything
+    that matches none of them returns `"unknown"` rather than defaulting to
+    PostgreSQL, because a wrong guess here would try to load a MySQL dump into
+    the Postgres sandbox and fail with a `psql` syntax error instead of the
+    honest refusal `docs/data-sources.md` §7 asks for.
+    """
+    lowered = text.lower()
+    if "postgresql database dump" in lowered or "pg_dump" in lowered:
+        return "postgresql"
+    if "mysql dump" in lowered or "mysqldump" in lowered or "/*!40" in lowered:
+        return "mysql"
+    for line in text.splitlines():
+        stripped = line.strip().lower()
+        if stripped == "go" or stripped.startswith(_SQLSERVER_MARKERS):
+            return "sqlserver"
+        if stripped.startswith("-- host:") and "database:" in stripped:
+            return "mysql"
+    return "unknown"
+
+
 def _looks_delimited(text: str) -> bool:
     """Comma or tab separated, judged on the first line having repeated separators."""
     lines = text.splitlines()
@@ -380,6 +464,27 @@ def detect(name: str, head: bytes, size: int) -> Detection:
 
     content = _from_bytes(head)
 
+    if (
+        content is not None
+        and content.format == "a gzip archive"
+        and extension in ("gz", "gzip")
+        and extension_of(name[: -len(extension) - 1]) in ("sql", "dump", "backup")
+    ):
+        # issue #342: a compressed dump is not "unpack it and add what is
+        # inside" — that is the generic multi-document archive refusal, and
+        # it is nonsense advice for a single-file database export. Named by
+        # its stacked extension (`backup.sql.gz`) since the bytes are gzip's
+        # own signature and say nothing about what is inside them.
+        return Detection(
+            format="a compressed database dump",
+            route=Route.DUMP,
+            verdict=Verdict.REFUSED,
+            arrives=None,
+            mime=None,
+            mismatch=None,
+            refusal=REFUSED_DUMP_COMPRESSED,
+        )
+
     if content is not None and content.container == "ooxml":
         named = _OOXML.get(extension)
         if named is None:
@@ -433,8 +538,51 @@ def detect(name: str, head: bytes, size: int) -> Detection:
         # the extension claims nothing about.
         named_text = extension in _TEXT_FILE_EXTENSIONS
 
-        if not named_text and (extension in ("sql", "dump", "backup") or _looks_like_a_dump(text)):
-            return _on_route("a SQL dump", Route.DUMP, "application/sql", None)
+        is_dump_extension = extension in ("sql", "dump", "backup")
+
+        if not named_text and (is_dump_extension or _looks_like_a_dump(text)):
+            if not _looks_like_a_dump(text):
+                # issue #341: `.sql` claimed a dump and the contents do not
+                # back it up — a letter renamed `.sql` is refused as an
+                # unsupported format, not silently indexed as prose (which
+                # would contradict what the user named it) and not told it is
+                # an unidentified *dump* either, which is a claim about
+                # content that was never true.
+                return Detection(
+                    format="plain text",
+                    route=Route.FILES,
+                    verdict=Verdict.REFUSED,
+                    arrives=None,
+                    mime=None,
+                    mismatch=_disagreement(
+                        claimed[0] if claimed else None, "plain text", extension
+                    ),
+                    refusal=REFUSED_DUMP_UNSUPPORTED,
+                )
+
+            engine = _dump_engine(text)
+            if engine == "postgresql":
+                return _on_route("a PostgreSQL dump", Route.DUMP, "application/sql", None)
+            if engine in ("mysql", "sqlserver"):
+                engine_name = "MySQL" if engine == "mysql" else "SQL Server"
+                return Detection(
+                    format=f"a {engine_name} dump",
+                    route=Route.DUMP,
+                    verdict=Verdict.REFUSED,
+                    arrives=None,
+                    mime="application/sql",
+                    mismatch=None,
+                    refusal=_REFUSED_DUMP_ENGINE.format(engine=engine_name),
+                )
+            return Detection(
+                format="a SQL dump",
+                route=Route.DUMP,
+                verdict=Verdict.REFUSED,
+                arrives=None,
+                mime="application/sql",
+                mismatch=None,
+                refusal=REFUSED_DUMP_ENGINE_UNKNOWN,
+            )
 
         if not named_text and (extension in ("csv", "tsv") or _looks_delimited(text)):
             if extension == "tsv":

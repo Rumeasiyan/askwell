@@ -143,7 +143,84 @@ def test_a_real_dump_is_still_recognised_by_its_contents() -> None:
     body = b"-- PostgreSQL database dump\nSET statement_timeout = 0;\n"
     found = detect("backup-2026", body, len(body))
     assert found.route is Route.DUMP
-    assert found.verdict is Verdict.LATER
+    assert found.verdict is Verdict.SUPPORTED
+
+
+def test_a_postgresql_dump_is_supported() -> None:
+    body = (
+        b"--\n-- PostgreSQL database dump\n--\n"
+        b"SET statement_timeout = 0;\nCREATE TABLE orders (id int);\n"
+    )
+    found = detect("backup.sql", body, len(body))
+    assert found.route is Route.DUMP
+    assert found.verdict is Verdict.SUPPORTED
+    assert found.format == "a PostgreSQL dump"
+    assert found.refusal is None
+
+
+def test_a_mysql_dump_is_refused_with_both_routes_out() -> None:
+    body = (
+        b"-- MySQL dump 10.13  Distrib 8.0.34\n"
+        b"-- Host: localhost    Database: shop\n"
+        b"CREATE TABLE `orders` (id int);\n"
+    )
+    found = detect("shop.sql", body, len(body))
+    assert found.route is Route.DUMP
+    assert found.verdict is Verdict.REFUSED
+    assert found.refusal is not None
+    assert "connect to the database directly" in found.refusal
+    assert "export the tables as CSV" in found.refusal
+    assert "MySQL" in found.refusal
+
+
+def test_a_sql_server_dump_is_refused_with_both_routes_out() -> None:
+    body = (
+        b"SET ANSI_NULLS ON\nSET QUOTED_IDENTIFIER ON\nGO\n"
+        b"CREATE TABLE [dbo].[Orders] (Id int)\nGO\n"
+    )
+    found = detect("orders.sql", body, len(body))
+    assert found.route is Route.DUMP
+    assert found.verdict is Verdict.REFUSED
+    assert found.refusal is not None
+    assert "SQL Server" in found.refusal
+    assert "export the tables as CSV" in found.refusal
+
+
+def test_a_dump_with_no_recognisable_engine_is_asked_about_rather_than_guessed() -> None:
+    body = b"CREATE TABLE widgets (id int);\nINSERT INTO widgets VALUES (1);\n"
+    found = detect("widgets.sql", body, len(body))
+    assert found.route is Route.DUMP
+    assert found.verdict is Verdict.REFUSED
+    assert found.refusal is not None
+    assert "could not tell which database" in found.refusal
+
+
+def test_a_letter_renamed_sql_is_refused_as_unsupported_not_as_an_unidentified_dump() -> None:
+    body = b"Dear Anna, thank you for the contract. Regards, Tom.\n"
+    found = detect("letter.sql", body, len(body))
+    assert found.verdict is Verdict.REFUSED
+    assert found.refusal is not None
+    assert "does not look like a database dump" in found.refusal
+    assert "could not tell which database" not in found.refusal
+
+
+def test_a_compressed_dump_is_refused_with_a_dump_specific_reason() -> None:
+    body = b"\x1f\x8b\x08\x00\x00\x00\x00\x00" + bytes(range(50))
+    found = detect("backup.sql.gz", body, len(body))
+    assert found.route is Route.DUMP
+    assert found.verdict is Verdict.REFUSED
+    assert found.refusal is not None
+    assert "compressed dumps" in found.refusal
+    assert "unpack it" not in found.refusal
+
+
+def test_a_compressed_non_dump_archive_still_gets_the_generic_refusal() -> None:
+    body = b"\x1f\x8b\x08\x00\x00\x00\x00\x00" + bytes(range(50))
+    found = detect("photos.tar.gz", body, len(body))
+    assert found.route is Route.FILES
+    assert found.verdict is Verdict.REFUSED
+    assert found.refusal is not None
+    assert "Unpack it" in found.refusal
 
 
 def test_an_unrecognised_binary_is_refused_rather_than_guessed_at() -> None:
