@@ -285,6 +285,16 @@ class Settings(BaseSettings):
     # hardcoded number in code.
     sql_statement_timeout_seconds: int = Field(default=30, ge=1, le=600)
 
+    # How long `sqlglot` may spend parsing one generated query before
+    # `askwell.sql.validate` gives up and rejects it, `M4-SQL-VAL-104`'s own
+    # "very long generated statement" edge case. A pathological input hangs
+    # the parser, not the query it describes — this bounds that separately
+    # from `sql_statement_timeout_seconds` above, which bounds the database,
+    # not the parser. 2s is generous for real SQL (a query with thousands of
+    # columns parses in well under 100ms); configuration rather than a
+    # constant for the same reason every other timeout here is.
+    sql_validation_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
+
     # 32 random bytes that make a copied `postgres-data` volume alone
     # insufficient to read `sources.config_encrypted` (C8, `M4-CONN-SEC-098`).
     # Generated on first use if absent. Lives on the same bind mount the

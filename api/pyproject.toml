@@ -27,6 +27,7 @@ dependencies = [
     "python-pptx>=1.0",
     "python-tds>=1.17",
     "sqlalchemy[asyncio]>=2.0",
+    "sqlglot>=25.0",
     "structlog>=24.4",
     "uvicorn[standard]>=0.30",
 ]
