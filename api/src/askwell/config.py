@@ -274,6 +274,17 @@ class Settings(BaseSettings):
     # this long is indistinguishable from one that never will.
     connection_probe_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
 
+    # How long a generated query may run before Postgres cancels it,
+    # `M4-SQL-DB-107` layer 4 (`docs/data-sources.md` §4). Applied per session
+    # on every engine — a `SET`/connect-time equivalent, never a client-side
+    # wait — so a runaway cross join is stopped by the database itself rather
+    # than by the process that asked for it. 30s is the ticket's own starting
+    # figure for a laptop; configuration rather than a constant because a
+    # legitimate long aggregate over a large database is the ticket's own
+    # named edge case, and the fix for it is raising this, not widening a
+    # hardcoded number in code.
+    sql_statement_timeout_seconds: int = Field(default=30, ge=1, le=600)
+
     # 32 random bytes that make a copied `postgres-data` volume alone
     # insufficient to read `sources.config_encrypted` (C8, `M4-CONN-SEC-098`).
     # Generated on first use if absent. Lives on the same bind mount the
