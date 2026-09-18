@@ -107,6 +107,16 @@ def test_the_connection_endpoint_requires_a_session(client: TestClient) -> None:
     assert response.status_code == 401
 
 
+def test_the_reintrospect_endpoint_requires_a_session(client: TestClient) -> None:
+    """`M4-SCHEMA-ING-100`'s on-demand re-introspection route, same session
+    boundary as every other write against a source."""
+    import uuid
+
+    with client:
+        response = client.post(f"/sources/{uuid.uuid4()}/reintrospect")
+    assert response.status_code == 401
+
+
 def test_a_connection_with_a_blank_host_is_refused_before_any_socket_opens(
     client: TestClient,
 ) -> None:

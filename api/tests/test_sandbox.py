@@ -93,6 +93,7 @@ async def session(app_database_url: str, sandbox_admin_url: str) -> AsyncIterato
         database_url=app_database_url,  # type: ignore[arg-type]
         sandbox_database_url=sandbox_admin_url,  # type: ignore[arg-type]
         sandbox_owner_password="x",  # type: ignore[arg-type]
+        sandbox_readonly_password="x",  # type: ignore[arg-type]
     )
     engine: AsyncEngine = build_engine(settings)
     try:

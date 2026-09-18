@@ -140,6 +140,15 @@ class Settings(BaseSettings):
     # reads under its `ASKWELL_` name (M4-DUMP-ING-088).
     sandbox_owner_password: SecretStr
 
+    # `askwell_sandbox_readonly`'s own password (M4-SCHEMA-ING-100). Schema
+    # introspection against a sandbox database — a dump or a loaded CSV table
+    # — runs as this role, never the owner: the owner can create and alter
+    # what it just loaded, which is not "read-only" by any definition this
+    # ticket's own validation rule accepts. Provisioned by
+    # `deploy/sandbox/10-roles.sh` from the same `SANDBOX_READONLY_PASSWORD`
+    # this reads under its `ASKWELL_` name.
+    sandbox_readonly_password: SecretStr
+
     # The embedding model's output dimension, and therefore the width of
     # chunks.embedding. It is configuration rather than a literal in the
     # migration because changing the model is a configuration change plus a

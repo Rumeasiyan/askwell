@@ -4,6 +4,30 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.11 - 2026-09-18
+
+`M4-SCHEMA-ING-100` — full schema introspection: types, keys and relationships, for a live connection and a loaded sandbox database (dump or CSV) alike, on connect, on import, and now on demand. New `askwell.schema_introspect` reads every table and view's columns, primary keys and foreign keys in bulk (one query per shape per engine, not one per table) for PostgreSQL, MySQL/MariaDB and SQL Server, and writes plain-language table- and column-level `schema_notes` — `Table orders. Columns: id, customer_id, total. Primary key: id. Foreign keys: customer_id -> customers.id.` and `orders.customer_id — integer, references customers.id.` — which the existing lexical retrieval (`askwell.memory.retrieve_relevant_facts`, bounded to 5 notes per question) already ranks by relevance; no new retrieval path was needed. Views and materialized views are introspected and labelled distinctly. Re-introspection updates rather than duplicates: an inferred note with an unchanged description is left alone, one with a changed description is superseded by its replacement, and a table or column no longer present is superseded with nothing to replace it — a user-supplied note is never touched by any of this.
+
+Introspection always runs as a read-only role, never a more-privileged one: a live connection reuses the credential `M4-CONN-SEC-097`'s write-permission probe already verified is read-only; a sandbox database (dump or CSV) is read as the new `askwell_sandbox_readonly` role rather than the owner that loaded it, via a new `Settings.sandbox_readonly_password` (`ASKWELL_SANDBOX_READONLY_PASSWORD`) and `askwell.sandbox.readonly_url`. For PostgreSQL, a table the readonly role cannot see is detected (`pg_class` lists every table regardless of privilege; `has_table_privilege` on each says which are actually readable) and counted as `omitted_count` without being named — MySQL and SQL Server have no privilege-independent catalog to compare against, so `omitted_count` is honestly `None` for those two engines (issue #353).
+
+New `POST /sources/{id}/reintrospect` re-introspects a `connection`, `dump` or `csv` source on demand — a new `reintrospect_source_job` dispatches to `connections.run_introspection` (which already handles reconnecting, whether just-added or long-`ready`) or `schema_introspect.reintrospect_sandbox_source` depending on the source's own kind.
+
+Two real bugs, both caught only by testing against a real, restricted Postgres role rather than by review — `docs/decisions.md` has the full account. `information_schema.table_constraints`/`key_column_usage` silently named no primary key or foreign key at all for a role with plain `SELECT` and nothing more; fixed by reading `pg_catalog.pg_index`/`pg_constraint` directly, which carry no such extra gate. `askwell.connections.record_introspection`, unexercised more than once per source before this ticket's own on-demand re-introspection made that possible, wrote a second competing active table note on every repeat call instead of leaving an already-noted table alone; fixed.
+
+Verified live against the running stack: a real PostgreSQL dump import and a real live connection to a second Postgres database both produced correct column/type/key/foreign-key `schema_notes`; adding a table to the live connection's database and calling the new endpoint made it appear, twice in a row, with no duplicate notes; a table with `SELECT` revoked from the readonly role was counted as omitted and never named.
+
+### Added
+
+- `askwell.schema_introspect`: `SchemaInventory`/`Table`/`Column`/`ForeignKey`, `describe_table`/`describe_column`, per-engine introspection, `write_schema_inventory`, `reintrospect_sandbox_source`, `dispatch_reintrospection`.
+- `askwell.sandbox.readonly_url`.
+- `Settings.sandbox_readonly_password` (`ASKWELL_SANDBOX_READONLY_PASSWORD`), required like `sandbox_owner_password`.
+- `POST /sources/{id}/reintrospect`; worker job `reintrospect_source_job`.
+
+### Changed
+
+- `askwell.connections.run_introspection` and `askwell.dump_import.import_dump` each now run a deep-introspection pass after their existing shallow one; a failure in it is logged and recorded but never turns a working source back to `attention`.
+- `askwell.connections.record_introspection` is idempotent on repeat calls — a table already carrying any active note is left alone rather than gaining a second one.
+
 ## 0.4.10 - 2026-09-18
 
 `M4-CONN-SEC-098` — encrypting stored connection credentials at rest. `sources.config_encrypted` is now genuinely encrypted, not plain JSON: a new `askwell.crypto` module derives a key with HKDF-SHA256 over a per-install secret (32 random bytes, generated on first use, written owner-only to `Settings.install_secret_path` — the host-backed mount the inference socket already shares between `api` and `worker`, outside `postgres-data`) and encrypts with Fernet (AES-128-CBC + HMAC). `create_connection_source` encrypts before insert; `run_introspection` decrypts before ever opening a socket, so a lost or changed install secret is caught and reported as `credentials_locked` — the source moves to `attention` with a message that explicitly says the database was never contacted, distinct from `host_unresolved` or any other reachability failure. Key derivation takes an optional passphrase and folds it into the same HKDF call, so M7's passphrase can extend the key without re-encrypting or re-prompting for credentials already stored — this ticket's own forward-compatibility requirement.

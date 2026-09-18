@@ -215,6 +215,10 @@ services:
       # too, not just by the worker, since a future add-dump endpoint on the
       # API needs to build the same DSN to hand the worker a job.
       ASKWELL_SANDBOX_OWNER_PASSWORD: ${SANDBOX_OWNER_PASSWORD:?set SANDBOX_OWNER_PASSWORD in .env}
+      # `askwell_sandbox_readonly`'s own password (M4-SCHEMA-ING-100) — schema
+      # introspection against a sandbox database runs as this role, never the
+      # owner above.
+      ASKWELL_SANDBOX_READONLY_PASSWORD: ${SANDBOX_READONLY_PASSWORD:?set SANDBOX_READONLY_PASSWORD in .env}
       # Read here only to say how long a queue will take. The worker is what
       # honours it; both must agree or the estimate is arithmetic over a number
       # nothing is using.
@@ -303,6 +307,10 @@ services:
       # is what actually runs a dump's content, as this role, never the
       # superuser above.
       ASKWELL_SANDBOX_OWNER_PASSWORD: ${SANDBOX_OWNER_PASSWORD:?set SANDBOX_OWNER_PASSWORD in .env}
+      # `askwell_sandbox_readonly`'s own password (M4-SCHEMA-ING-100) — the
+      # worker is what actually introspects a sandbox database's schema, as
+      # this role, never the owner above.
+      ASKWELL_SANDBOX_READONLY_PASSWORD: ${SANDBOX_READONLY_PASSWORD:?set SANDBOX_READONLY_PASSWORD in .env}
       # The worker is what actually reads and indexes the files, so it needs
       # the same window as the API and on the same terms. See the api service.
       ASKWELL_ROOTS_MOUNT: ${ASKWELL_ROOTS_MOUNT:-}

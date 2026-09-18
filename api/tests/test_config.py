@@ -22,6 +22,7 @@ def test_loads_with_only_the_required_variables(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("ASKWELL_DATABASE_URL", "postgresql://u:p@postgres:5432/askwell")
     monkeypatch.setenv("ASKWELL_SANDBOX_DATABASE_URL", "postgresql://u:p@sandbox:5432/postgres")
     monkeypatch.setenv("ASKWELL_SANDBOX_OWNER_PASSWORD", "pw")
+    monkeypatch.setenv("ASKWELL_SANDBOX_READONLY_PASSWORD", "pw")
     loaded = load_settings()
     assert loaded.environment is Environment.DEVELOPMENT
     assert loaded.profile is Profile.BALANCED
@@ -33,6 +34,7 @@ def test_missing_required_variable_names_it(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.delenv("ASKWELL_DATABASE_URL", raising=False)
     monkeypatch.setenv("ASKWELL_SANDBOX_DATABASE_URL", "postgresql://u:p@sandbox:5432/postgres")
     monkeypatch.setenv("ASKWELL_SANDBOX_OWNER_PASSWORD", "pw")
+    monkeypatch.setenv("ASKWELL_SANDBOX_READONLY_PASSWORD", "pw")
     with pytest.raises(ConfigurationError) as raised:
         load_settings()
     message = str(raised.value)
@@ -46,6 +48,7 @@ def test_missing_sandbox_database_url_names_it(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setenv("ASKWELL_DATABASE_URL", "postgresql://u:p@postgres:5432/askwell")
     monkeypatch.delenv("ASKWELL_SANDBOX_DATABASE_URL", raising=False)
     monkeypatch.setenv("ASKWELL_SANDBOX_OWNER_PASSWORD", "pw")
+    monkeypatch.setenv("ASKWELL_SANDBOX_READONLY_PASSWORD", "pw")
     with pytest.raises(ConfigurationError) as raised:
         load_settings()
     message = str(raised.value)
@@ -58,10 +61,25 @@ def test_missing_sandbox_owner_password_names_it(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setenv("ASKWELL_DATABASE_URL", "postgresql://u:p@postgres:5432/askwell")
     monkeypatch.setenv("ASKWELL_SANDBOX_DATABASE_URL", "postgresql://u:p@sandbox:5432/postgres")
     monkeypatch.delenv("ASKWELL_SANDBOX_OWNER_PASSWORD", raising=False)
+    monkeypatch.setenv("ASKWELL_SANDBOX_READONLY_PASSWORD", "pw")
     with pytest.raises(ConfigurationError) as raised:
         load_settings()
     message = str(raised.value)
     assert "ASKWELL_SANDBOX_OWNER_PASSWORD" in message
+    assert "no default" in message
+
+
+def test_missing_sandbox_readonly_password_names_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Schema introspection against a sandbox database runs as this role,
+    never the owner (`M4-SCHEMA-ING-100`)."""
+    monkeypatch.setenv("ASKWELL_DATABASE_URL", "postgresql://u:p@postgres:5432/askwell")
+    monkeypatch.setenv("ASKWELL_SANDBOX_DATABASE_URL", "postgresql://u:p@sandbox:5432/postgres")
+    monkeypatch.setenv("ASKWELL_SANDBOX_OWNER_PASSWORD", "pw")
+    monkeypatch.delenv("ASKWELL_SANDBOX_READONLY_PASSWORD", raising=False)
+    with pytest.raises(ConfigurationError) as raised:
+        load_settings()
+    message = str(raised.value)
+    assert "ASKWELL_SANDBOX_READONLY_PASSWORD" in message
     assert "no default" in message
 
 
@@ -70,6 +88,7 @@ def test_unknown_variable_is_reported_not_ignored(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setenv("ASKWELL_DATABASE_URL", "postgresql://u:p@postgres:5432/askwell")
     monkeypatch.setenv("ASKWELL_SANDBOX_DATABASE_URL", "postgresql://u:p@sandbox:5432/postgres")
     monkeypatch.setenv("ASKWELL_SANDBOX_OWNER_PASSWORD", "pw")
+    monkeypatch.setenv("ASKWELL_SANDBOX_READONLY_PASSWORD", "pw")
     monkeypatch.setenv("ASKWELL_LOG_LEVE", "DEBUG")  # missing the L
     with pytest.raises(ConfigurationError) as raised:
         load_settings()
@@ -82,6 +101,7 @@ def test_invalid_value_names_the_variable_and_the_problem(
     monkeypatch.setenv("ASKWELL_DATABASE_URL", "postgresql://u:p@postgres:5432/askwell")
     monkeypatch.setenv("ASKWELL_SANDBOX_DATABASE_URL", "postgresql://u:p@sandbox:5432/postgres")
     monkeypatch.setenv("ASKWELL_SANDBOX_OWNER_PASSWORD", "pw")
+    monkeypatch.setenv("ASKWELL_SANDBOX_READONLY_PASSWORD", "pw")
     monkeypatch.setenv("ASKWELL_PORT", "70000")
     with pytest.raises(ConfigurationError) as raised:
         load_settings()
@@ -129,6 +149,13 @@ def test_sandbox_owner_password_is_secret(settings: Settings) -> None:
 
 def test_sandbox_host_port_parses_out_of_the_secret(settings: Settings) -> None:
     assert settings.sandbox_host_port == ("127.0.0.1", 1)
+
+
+def test_sandbox_readonly_password_is_secret(settings: Settings) -> None:
+    """C8 — the role schema introspection runs as, `M4-SCHEMA-ING-100`."""
+    assert isinstance(settings.sandbox_readonly_password, SecretStr)
+    assert "pw" not in repr(settings)
+    assert settings.sandbox_readonly_password.get_secret_value() == "pw"
 
 
 def test_settings_are_frozen(settings: Settings) -> None:

@@ -4,9 +4,18 @@
 probe for write access, introspect the schema, raise clarifications for
 unguessable columns. This module builds the first two of those four steps —
 connect and a minimal read check — and the table-name inventory that lets a
-successful connection say something concrete about what it found. Full schema
-introspection — types, keys, relationships — is `M4-SCHEMA-ING-100`, the same
-split `dump_import.py` already draws for a loaded dump.
+successful connection say something concrete about what it found.
+
+**Full schema introspection — types, keys, relationships — is
+`askwell.schema_introspect`, `M4-SCHEMA-ING-100`.** `run_introspection`
+below calls it right after the shallow table list marks a source `ready`,
+using the same credential the write-permission probe already verified is
+read-only — there is no second, more-privileged credential to reach for
+here the way `dump_import.py` has to reach for the sandbox readonly role
+instead of the owner. A deep-introspection failure is logged and recorded
+but never flips a `ready` source back to `attention`: the shallow pass
+already proved the connection works, and a richer description failing to
+build is a worse answer, not a broken source.
 
 **Credential encryption (`M4-CONN-SEC-098`).** `config_encrypted` is written
 and read through `askwell.crypto`, never as plain JSON. A lost or changed
@@ -736,12 +745,29 @@ async def record_introspection(
     """Record a connected source's table inventory and mark it ready.
 
     Names only, the same split `dump_import._introspect_blocking` draws:
-    types, keys and relationships are `M4-SCHEMA-ING-100`'s job, not
-    reimplemented here under a different name.
-    """
-    from askwell.memory import write_schema_note
+    types, keys and relationships are `askwell.schema_introspect`'s job
+    (`run_introspection` below calls it separately), not reimplemented here
+    under a different name.
 
+    **Idempotent on repeat calls.** `M4-SCHEMA-ING-100` made `run_introspection`
+    (and therefore this function) callable again against an already-`ready`
+    source — on-demand re-introspection. A table already carrying *any*
+    active note, at any origin, is left alone here: a user note must never be
+    touched (`write_schema_note` already refuses that), and an active
+    inferred note is the deep pass's own job to enrich or replace, not a
+    second, competing placeholder this function would otherwise insert
+    alongside it every single call.
+    """
+    from askwell.memory import get_active_schema_notes, write_schema_note
+
+    already_noted = {
+        note.table_name
+        for note in await get_active_schema_notes(session, source_id=source_id)
+        if note.column_name is None
+    }
     for table_name in tables:
+        if table_name in already_noted:
+            continue
         await write_schema_note(
             session,
             source_id=source_id,
@@ -813,6 +839,13 @@ async def run_introspection(
     stopped answering, or if the stored credentials can no longer be
     decrypted (`credentials_locked`, `M4-CONN-SEC-098`) — checked before any
     socket opens, since there is no credential to connect with at all.
+
+    Also **the re-introspection entrypoint on demand or on reconnect**
+    (`M4-SCHEMA-ING-100`): this function reconnects with the stored
+    configuration regardless of whether the source has just been added or
+    has been `ready` for months, so calling it again against an existing
+    source is exactly what "re-introspect" means for a live connection —
+    there is no separate function to keep in sync with this one.
     """
     import json
 
@@ -864,4 +897,77 @@ async def run_introspection(
             )
             return ()
         await record_introspection(session, source_id, outcome.tables)
+
+    await _run_deep_introspection(factory, settings, source_id, config)
     return outcome.tables
+
+
+def _postgresql_dsn(host: str, port: int, database: str, user: str, password: str) -> str:
+    """A libpq connection URL built from discrete fields, the same shape
+    `askwell.sandbox.readonly_url` builds for a sandbox database — the
+    deep-introspection query is a plain `psycopg.connect(dsn)`, so this is
+    the only difference between a live connection and a sandbox source.
+    """
+    from urllib.parse import quote
+
+    user_part = quote(user, safe="")
+    password_part = quote(password, safe="")
+    return f"postgresql://{user_part}:{password_part}@{host}:{port}/{database}"
+
+
+async def _run_deep_introspection(
+    factory: "async_sessionmaker[AsyncSession]",
+    settings: "Settings",
+    source_id: uuid.UUID,
+    config: dict[str, object],
+) -> None:
+    """Types, keys and relationships, on top of the table names
+    `record_introspection` already wrote. `M4-SCHEMA-ING-100`.
+
+    Runs with the same credential `probe_connection` already verified is
+    read-only — never a second, more-privileged one. Failure here is logged
+    and recorded but never moves a `ready` source back to `attention`: the
+    shallow pass already proved the connection itself works, so a richer
+    description failing to build is a worse answer, not a broken source
+    (this module's own docstring has the full reasoning).
+    """
+    from askwell import schema_introspect
+    from askwell.db.engine import session_scope
+
+    engine = str(config["engine"])
+    try:
+        if engine == "postgresql":
+            dsn = _postgresql_dsn(
+                str(config["host"]),
+                int(config["port"]),  # type: ignore[call-overload]
+                str(config["database"]),
+                str(config["user"]),
+                str(config["password"]),
+            )
+            inventory = await asyncio.to_thread(
+                schema_introspect._introspect_postgresql_blocking, dsn
+            )
+        else:
+            inventory = await asyncio.to_thread(
+                schema_introspect.introspect_blocking,
+                engine,
+                str(config["host"]),
+                port=config["port"],
+                database=config["database"],
+                user=config["user"],
+                password=config["password"],
+            )
+    except Exception as error:
+        async with session_scope(factory) as session:
+            await audit.record(
+                session,
+                Store.DECISIONS,
+                "schema_introspection_failed",
+                {"source_id": str(source_id), "reason": f"{type(error).__name__}: {error}"},
+            )
+        log.warning("schema_introspection_failed", source_id=str(source_id), error=str(error))
+        return
+
+    async with session_scope(factory) as session:
+        await schema_introspect.write_schema_inventory(session, source_id, inventory)
+    await schema_introspect.record_introspection_run(settings)

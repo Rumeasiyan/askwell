@@ -42,6 +42,7 @@ def settings(tmp_path: Path) -> Settings:
         database_url="postgresql://askwell:pw@127.0.0.1:1/askwell",  # type: ignore[arg-type]
         sandbox_database_url="postgresql://askwell_sandbox:pw@127.0.0.1:1/postgres",  # type: ignore[arg-type]
         sandbox_owner_password="pw",  # type: ignore[arg-type]
+        sandbox_readonly_password="pw",  # type: ignore[arg-type]
         install_secret_path=tmp_path / "install.key",
     )
 
@@ -246,6 +247,41 @@ async def test_introspection_writes_schema_notes_and_marks_the_source_ready(
     ]
 
 
+async def test_recording_introspection_twice_never_duplicates_the_table_note(
+    session: AsyncSession, settings: Settings
+) -> None:
+    """`M4-SCHEMA-ING-100` makes `run_introspection` (and therefore this
+    function) callable again against an already-`ready` source — on-demand
+    re-introspection. A second call must leave exactly one active note per
+    table, not a second competing placeholder alongside the first."""
+    source_id = await create_connection_source(
+        session,
+        settings,
+        engine="postgresql",
+        host="db.internal",
+        port=5432,
+        database="orders",
+        user="reader",
+        password="hunter2",
+    )
+    await session.commit()
+
+    await record_introspection(session, source_id, ("orders",))
+    await record_introspection(session, source_id, ("orders",))
+    await session.commit()
+
+    notes = (
+        await session.execute(
+            text(
+                "SELECT id FROM schema_notes WHERE source_id = :id "
+                "AND table_name = 'orders' AND column_name IS NULL AND superseded_by IS NULL"
+            ),
+            {"id": source_id},
+        )
+    ).all()
+    assert len(notes) == 1
+
+
 async def test_introspection_with_no_tables_still_marks_the_source_ready(
     session: AsyncSession, settings: Settings
 ) -> None:
@@ -326,6 +362,7 @@ def unreachable_redis_settings() -> Settings:
         database_url="postgresql://askwell:pw@127.0.0.1:1/askwell",  # type: ignore[arg-type]
         sandbox_database_url="postgresql://askwell_sandbox:pw@127.0.0.1:1/postgres",  # type: ignore[arg-type]
         sandbox_owner_password="pw",  # type: ignore[arg-type]
+        sandbox_readonly_password="pw",  # type: ignore[arg-type]
         redis_host="127.0.0.1",
         redis_port=1,
     )

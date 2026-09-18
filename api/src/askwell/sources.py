@@ -73,7 +73,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from askwell import connections, dump_import, ingest, roots
+from askwell import connections, dump_import, ingest, roots, schema_introspect
 from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
@@ -1256,6 +1256,31 @@ def register_sources(
         # reconcile wait.
         await ingest.dispatch(settings, outcome.document_ids)
         return JSONResponse({"documents": outcome.documents}, status_code=200)
+
+    @app.post("/sources/{source_id}/reintrospect")
+    async def reintrospect_source_route(source_id: uuid.UUID) -> JSONResponse:
+        """On-demand schema re-introspection for a `connection`, `dump` or
+        `csv` source — `M4-SCHEMA-ING-100`'s own AC: "re-introspection
+        updates the inventory". A document (`file`) source has no schema to
+        re-introspect and gets `/sources/{id}/reindex` instead.
+        """
+        async with session_scope(factory) as db:
+            row = (
+                await db.execute(
+                    text("SELECT kind FROM sources WHERE id = :id AND status != 'deleted'"),
+                    {"id": source_id},
+                )
+            ).first()
+        if row is None:
+            return JSONResponse({"error": "No such source."}, status_code=404)
+        if row[0] not in ("connection", "dump", "csv"):
+            return JSONResponse(
+                {"error": f"A {row[0]!r} source has no schema to re-introspect."},
+                status_code=400,
+            )
+
+        await schema_introspect.dispatch_reintrospection(settings, source_id)
+        return JSONResponse({"source_id": str(source_id), "queued": True}, status_code=202)
 
     @app.delete("/documents/{document_id}")
     async def delete_document_route(
