@@ -4,6 +4,23 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.4 - 2026-09-18
+
+`M4-DUMP-ING-088` — import a PostgreSQL dump into its own sandbox database, `docs/data-sources.md` §3, C3. `askwell.dump_import.import_dump` creates a fresh sandbox database, streams the dump into `psql` as `askwell_sandbox_owner` (`--set ON_ERROR_STOP=1`, so a statement the restricted role cannot run — creating a role, a tablespace — aborts the whole load rather than partially applying it), introspects the loaded table names, and on success seals the owner role off the database (`askwell.sandbox.seal_owner`, closing issue #330) before marking the source `ready`. Any failure drops the sandbox database outright and records the reason on the source; a load interrupted by a stack restart is reclaimed at worker startup (`dump_import.reclaim_interrupted`), alongside the existing orphan sweep. Full schema indexing (types, keys, relationships) is `M4-SCHEMA-ING-100`, not this ticket.
+
+### Added
+
+- `api/src/askwell/dump_import.py` — `create_dump_source`, `import_dump`, `reclaim_interrupted`.
+- `askwell.sandbox.owner_url`/`seal_owner` — the owner role's DSN for one database, and revoking its `CONNECT` once a load succeeds.
+- `worker.import_dump_job`, registered with `WorkerSettings`; worker startup now also reclaims a dump import a dead process left mid-load.
+- `Settings.sandbox_owner_password` (`ASKWELL_SANDBOX_OWNER_PASSWORD`), required — the credential the owner role authenticates with.
+- `postgresql-client` in the API image, for `psql`.
+
+### Security
+
+- Issue #330 closed: the shared owner role can no longer reach a database it loaded once that load finishes, so the role running the next dump's content cannot reach an earlier one.
+- The import path is enforced onto the sandbox instance by configuration (`settings.sandbox_database_url`), never Askwell's own database — C3.
+
 ## 0.4.3 - 2026-09-18
 
 `M4-DUMP-DEPLOY-087` — the sandbox Postgres instance for untrusted dumps, `docs/data-sources.md` §3, C3. A separate `sandbox` container (`compose.yaml`), on its own network with no route to Askwell's own database or the egress proxy, joined only by `api` and `worker`. Two fixed roles — `askwell_sandbox_owner`, `askwell_sandbox_readonly` — created with no superuser, no `CREATEDB`, no `COPY ... TO PROGRAM`, and no large-object access (both the filesystem and client-side APIs). `askwell.sandbox.create_database`/`drop_database` create and drop one database per imported source, revoking `PUBLIC`'s default `CONNECT` on each explicitly since `CREATE DATABASE` does not inherit that from a template; both write `audit_decisions` rows. `reclaim_orphans` runs at worker startup and drops any sandbox database no live source claims — the exact state a crash mid-import leaves behind. Importing a dump (`M4-DUMP-ING-088`) and the size/time cap (`M4-DUMP-VAL-089`) are not in this ticket.

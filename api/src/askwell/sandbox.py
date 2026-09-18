@@ -93,6 +93,24 @@ def _with_database(admin_url: str, database: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, f"/{database}", "", ""))
 
 
+def owner_url(admin_url: str, name: str, password: str) -> str:
+    """`askwell_sandbox_owner`'s own DSN for one sandbox database.
+
+    Built from `admin_url`'s host and port, never from anything a caller
+    supplies about where the sandbox lives — the owner role, which is what
+    runs a dump's own untrusted content (C3, `askwell.dump_import`), must
+    never even have the *option* of being pointed at a different instance
+    than `admin_url` addresses.
+    """
+    _validate(name)
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(admin_url)
+    port = f":{parts.port}" if parts.port else ""
+    netloc = f"{OWNER_ROLE}:{password}@{parts.hostname}{port}"
+    return urlunsplit((parts.scheme, netloc, f"/{name}", "", ""))
+
+
 def _create_database_blocking(admin_url: str, name: str) -> None:
     """The synchronous half of `create_database` — everything but the audit
     record, which needs an `AsyncSession` and has to run on the event loop.
@@ -203,6 +221,38 @@ async def drop_database(
         "sandbox_database_dropped",
         {"database": name, "reason": reason},
     )
+
+
+def _seal_owner_blocking(admin_url: str, name: str) -> None:
+    _validate(name)
+    with psycopg.connect(admin_url, autocommit=True) as admin:
+        admin.execute(
+            sql.SQL("REVOKE CONNECT ON DATABASE {} FROM {}").format(
+                sql.Identifier(name), sql.Identifier(OWNER_ROLE)
+            )
+        )
+    log.info("sandbox_owner_sealed", database=name)
+
+
+async def seal_owner(session: AsyncSession, admin_url: str, name: str) -> None:
+    """Revoke `askwell_sandbox_owner`'s own `CONNECT` on a database once its
+    load finishes, and record the decision.
+
+    Issue #330: `create_database` grants `CONNECT` to both fixed roles so the
+    owner can load the dump at all, and — because that grant is per-database
+    but the role is shared and never regenerated — it stays attached to every
+    database it has ever loaded until something revokes it specifically.
+    Left alone, the role that runs the *next* untrusted dump's content could
+    also reach every earlier import, which is exactly the cross-source
+    reach C3 exists to rule out. `askwell.dump_import.import_dump` calls this
+    the moment a load succeeds, before the source is marked `ready` — the
+    query path afterwards only ever needs `askwell_sandbox_readonly`
+    (`docs/data-sources.md` §3, "after loading"), so the owner has nothing
+    left to do there. A failed load never reaches here at all: its database
+    is dropped outright, not sealed, so there is nothing left to seal.
+    """
+    await asyncio.to_thread(_seal_owner_blocking, admin_url, name)
+    await audit.record(session, audit.Store.DECISIONS, "sandbox_owner_sealed", {"database": name})
 
 
 def known_databases(admin_url: str) -> list[str]:

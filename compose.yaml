@@ -211,6 +211,10 @@ services:
       # databases (C3) — never by anything that runs dump content. See
       # `deploy/sandbox/10-roles.sh`.
       ASKWELL_SANDBOX_DATABASE_URL: postgresql://${SANDBOX_POSTGRES_USER:-askwell_sandbox}:${SANDBOX_POSTGRES_PASSWORD:?set SANDBOX_POSTGRES_PASSWORD in .env}@sandbox:5432/postgres
+      # `askwell_sandbox_owner`'s own password (M4-DUMP-ING-088) — read here
+      # too, not just by the worker, since a future add-dump endpoint on the
+      # API needs to build the same DSN to hand the worker a job.
+      ASKWELL_SANDBOX_OWNER_PASSWORD: ${SANDBOX_OWNER_PASSWORD:?set SANDBOX_OWNER_PASSWORD in .env}
       # Read here only to say how long a queue will take. The worker is what
       # honours it; both must agree or the estimate is arithmetic over a number
       # nothing is using.
@@ -295,6 +299,10 @@ services:
       # See the api service — same control-plane connection, same reasoning.
       # The worker is what reclaims an orphaned sandbox database at startup.
       ASKWELL_SANDBOX_DATABASE_URL: postgresql://${SANDBOX_POSTGRES_USER:-askwell_sandbox}:${SANDBOX_POSTGRES_PASSWORD:?set SANDBOX_POSTGRES_PASSWORD in .env}@sandbox:5432/postgres
+      # `askwell_sandbox_owner`'s own password (M4-DUMP-ING-088) — the worker
+      # is what actually runs a dump's content, as this role, never the
+      # superuser above.
+      ASKWELL_SANDBOX_OWNER_PASSWORD: ${SANDBOX_OWNER_PASSWORD:?set SANDBOX_OWNER_PASSWORD in .env}
       # The worker is what actually reads and indexes the files, so it needs
       # the same window as the API and on the same terms. See the api service.
       ASKWELL_ROOTS_MOUNT: ${ASKWELL_ROOTS_MOUNT:-}

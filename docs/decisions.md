@@ -22,6 +22,28 @@ Template:
 
 ---
 
+## 2026-09-18 — `M4-DUMP-ING-088`: the owner role is sealed after a successful load, not replaced with per-database credentials — issue #330 closed by option 1
+
+**Decision:** `askwell.sandbox.seal_owner` revokes `askwell_sandbox_owner`'s own `CONNECT` on a sandbox database the moment `askwell.dump_import.import_dump` finishes loading it successfully, leaving only `askwell_sandbox_readonly` attached for the query path afterwards. This is option 1 from issue #330 — the fixed-role design `M4-DUMP-DEPLOY-087` shipped, kept, closed by revoking rather than by generating a credential pair per database (option 2).
+
+**Why:** the owner role is what runs a dump's own untrusted content, and it is the only role issue #330 named as a real exposure — the readonly role, which stays attached to every database it has ever loaded, is not the one anything untrusted ever authenticates as. Sealing the owner the instant a load succeeds means the role that will run the *next* dump's content can never simultaneously hold `CONNECT` on a database from a previous, unrelated import — the two are never live at once. This closes the gap for the case that matters (a hostile dump reaching an earlier one through the shared credential) without the cost option 2 would add: a generated pair per database means persisting and later decrypting sandbox-specific credentials, machinery `docs/data-sources.md` §4 already commits to building for live connections' credentials (`sources.config_encrypted`) but that does not exist yet, and pulling it forward into this ticket just to close a gap the simpler fix closes just as completely was rejected as the wrong ticket to carry that cost. A failed load is not sealed at all — its database is dropped outright, so there is nothing left to protect.
+
+**Consequences:** re-introspecting or otherwise touching a loaded dump's database as the owner is no longer possible after import — anything that needs write access to a sandbox database again (there is no such need identified; `M4-SCHEMA-ING-100`'s re-introspection is read-only, matching `askwell_sandbox_readonly`) would have to re-derive a reason to unseal it, which nothing here provides. If a future ticket needs the owner to write to an already-loaded database again, that is a new decision, not an oversight to route around silently.
+
+**Refs:** `AGENTS.md` §3 C3, `api/src/askwell/sandbox.py` (`seal_owner`), `api/src/askwell/dump_import.py`, issue #330 (closed), `docs/decisions.md`'s `M4-DUMP-DEPLOY-087` entry above.
+
+## 2026-09-18 — `M4-DUMP-ING-088`: structural table-name introspection only, full schema indexing stays `M4-SCHEMA-ING-100`
+
+**Decision:** a successful dump import returns the loaded database's table names (`information_schema.tables`, `table_schema = 'public'`) and nothing more — no column types, keys, relationships, or anything written to `schema_notes`. `M4-SCHEMA-ING-100`, listed as depending on this ticket, is where types, keys, relationships and retrieval-indexing of names actually happen.
+
+**Why:** the ticket's own scope says "handing off to schema introspection on success," not "introspecting the schema" — and the backlog's own `M4-SCHEMA-ING-100` entry describes exactly the fuller work (types, keys, relationships, indexing for relevance-based retrieval) as a separate, later ticket that depends on this one. Building that here would duplicate work `M4-SCHEMA-ING-100` is explicitly scoped to do, under a different name, with no eval or acceptance criteria of its own to check it against. Writing placeholder `schema_notes` rows (say, one per table with a generated, contentless description) was considered and rejected: `schema_notes.description` and `.origin` carry real meaning elsewhere (`docs/memory-and-clarification.md` — user-supplied notes outrank inferred ones, and `origin='inferred'` is a specific, measured claim about how a description was produced) that a bare table name does not honestly satisfy.
+
+**Consequences:** `M4-SCHEMA-ING-100` has a real database and a real dump-import outcome to build against, but nothing in `schema_notes` yet — it is starting from the same "nothing exists" state a live connection's first introspection would, which is the correct starting point for a ticket that has not landed. The cold-start walkthrough phrase "open the library and confirm the source is listed with its tables" is only fully true once `M4-SCHEMA-ING-100` (or a UI wired to this ticket's own return value) lands; this ticket proves the table names are recoverable, not that they are rendered anywhere yet.
+
+**Refs:** `docs/backlog/M4-it-answers-from-my-data.md` (`M4-DUMP-ING-088`, `M4-SCHEMA-ING-100`), `api/src/askwell/dump_import.py`.
+
+---
+
 ## 2026-09-18 — `M4-DUMP-DEPLOY-087`: two fixed sandbox roles, not a generated pair per database — with a known limit accepted and filed rather than silently carried
 
 **Decision:** the sandbox's isolation uses two fixed, shared login roles created once by `deploy/sandbox/10-roles.sh` — `askwell_sandbox_owner` (what dump content runs as) and `askwell_sandbox_readonly` (the query path) — rather than a freshly generated, per-database role pair for every imported source. What actually confines one sandbox database from another is `PUBLIC`'s default `CONNECT` privilege, explicitly revoked on each database the moment `askwell.sandbox.create_database` creates it and granted back only to those two roles, only on that one database.

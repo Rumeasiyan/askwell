@@ -21,6 +21,7 @@ from askwell.config import (
 def test_loads_with_only_the_required_variables(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ASKWELL_DATABASE_URL", "postgresql://u:p@postgres:5432/askwell")
     monkeypatch.setenv("ASKWELL_SANDBOX_DATABASE_URL", "postgresql://u:p@sandbox:5432/postgres")
+    monkeypatch.setenv("ASKWELL_SANDBOX_OWNER_PASSWORD", "pw")
     loaded = load_settings()
     assert loaded.environment is Environment.DEVELOPMENT
     assert loaded.profile is Profile.BALANCED
@@ -31,6 +32,7 @@ def test_missing_required_variable_names_it(monkeypatch: pytest.MonkeyPatch) -> 
     """The case a new contributor hits first."""
     monkeypatch.delenv("ASKWELL_DATABASE_URL", raising=False)
     monkeypatch.setenv("ASKWELL_SANDBOX_DATABASE_URL", "postgresql://u:p@sandbox:5432/postgres")
+    monkeypatch.setenv("ASKWELL_SANDBOX_OWNER_PASSWORD", "pw")
     with pytest.raises(ConfigurationError) as raised:
         load_settings()
     message = str(raised.value)
@@ -43,6 +45,7 @@ def test_missing_sandbox_database_url_names_it(monkeypatch: pytest.MonkeyPatch) 
     """A different instance, a different required variable — C3."""
     monkeypatch.setenv("ASKWELL_DATABASE_URL", "postgresql://u:p@postgres:5432/askwell")
     monkeypatch.delenv("ASKWELL_SANDBOX_DATABASE_URL", raising=False)
+    monkeypatch.setenv("ASKWELL_SANDBOX_OWNER_PASSWORD", "pw")
     with pytest.raises(ConfigurationError) as raised:
         load_settings()
     message = str(raised.value)
@@ -50,10 +53,23 @@ def test_missing_sandbox_database_url_names_it(monkeypatch: pytest.MonkeyPatch) 
     assert "no default" in message
 
 
+def test_missing_sandbox_owner_password_names_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The role a dump's content actually runs as (C3, `M4-DUMP-ING-088`)."""
+    monkeypatch.setenv("ASKWELL_DATABASE_URL", "postgresql://u:p@postgres:5432/askwell")
+    monkeypatch.setenv("ASKWELL_SANDBOX_DATABASE_URL", "postgresql://u:p@sandbox:5432/postgres")
+    monkeypatch.delenv("ASKWELL_SANDBOX_OWNER_PASSWORD", raising=False)
+    with pytest.raises(ConfigurationError) as raised:
+        load_settings()
+    message = str(raised.value)
+    assert "ASKWELL_SANDBOX_OWNER_PASSWORD" in message
+    assert "no default" in message
+
+
 def test_unknown_variable_is_reported_not_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
     """A typo must not leave the intended setting silently on its default."""
     monkeypatch.setenv("ASKWELL_DATABASE_URL", "postgresql://u:p@postgres:5432/askwell")
     monkeypatch.setenv("ASKWELL_SANDBOX_DATABASE_URL", "postgresql://u:p@sandbox:5432/postgres")
+    monkeypatch.setenv("ASKWELL_SANDBOX_OWNER_PASSWORD", "pw")
     monkeypatch.setenv("ASKWELL_LOG_LEVE", "DEBUG")  # missing the L
     with pytest.raises(ConfigurationError) as raised:
         load_settings()
@@ -65,6 +81,7 @@ def test_invalid_value_names_the_variable_and_the_problem(
 ) -> None:
     monkeypatch.setenv("ASKWELL_DATABASE_URL", "postgresql://u:p@postgres:5432/askwell")
     monkeypatch.setenv("ASKWELL_SANDBOX_DATABASE_URL", "postgresql://u:p@sandbox:5432/postgres")
+    monkeypatch.setenv("ASKWELL_SANDBOX_OWNER_PASSWORD", "pw")
     monkeypatch.setenv("ASKWELL_PORT", "70000")
     with pytest.raises(ConfigurationError) as raised:
         load_settings()
@@ -101,6 +118,13 @@ def test_sandbox_database_url_is_secret(settings: Settings) -> None:
     """C8, same reasoning — a different instance, still a credential."""
     assert isinstance(settings.sandbox_database_url, SecretStr)
     assert "pw" not in repr(settings)
+
+
+def test_sandbox_owner_password_is_secret(settings: Settings) -> None:
+    """C8 — the role a dump's content runs as, `M4-DUMP-ING-088`."""
+    assert isinstance(settings.sandbox_owner_password, SecretStr)
+    assert "pw" not in repr(settings)
+    assert settings.sandbox_owner_password.get_secret_value() == "pw"
 
 
 def test_sandbox_host_port_parses_out_of_the_secret(settings: Settings) -> None:
