@@ -10,6 +10,7 @@ does, so those are `requires_db`.
 
 import os
 import stat
+import time
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -22,10 +23,35 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from askwell import dump_import
 from askwell.config import Settings
-from askwell.dump_import import DumpImportFailed, _load_blocking, create_dump_source, import_dump
+from askwell.dump_import import (
+    DEFAULT_DUMP_SIZE_CAP_BYTES,
+    DEFAULT_DUMP_TIME_CAP_SECONDS,
+    DumpCapExceeded,
+    DumpImportFailed,
+    _load_blocking,
+    create_dump_source,
+    get_dump_size_cap_bytes,
+    get_dump_time_cap_seconds,
+    import_dump,
+    set_dump_size_cap_bytes,
+    set_dump_time_cap_seconds,
+)
 from askwell.sandbox import create_database, drop_database, generate_name, owner_url
 
 # --- _load_blocking, against a fake `psql` -----------------------------------
+
+# `_load_blocking`'s watchdog thread polls the sandbox database's own size to
+# enforce the size cap (`M4-DUMP-VAL-089`) — these tests have no real sandbox
+# instance behind `admin_url`/`database`, so the probe fails, is swallowed
+# (the watchdog treats an unreachable database as "nothing to measure yet",
+# not a crash), and the size cap never fires. Caps default high enough that
+# the time cap never fires either in the time these tests take to run.
+_NO_CAPS: dict[str, object] = {
+    "admin_url": "postgresql://ignored/ignored",
+    "database": "ignored",
+    "size_cap_bytes": DEFAULT_DUMP_SIZE_CAP_BYTES,
+    "time_cap_seconds": DEFAULT_DUMP_TIME_CAP_SECONDS,
+}
 
 
 def _fake_psql(tmp_path: Path, script: str) -> Path:
@@ -50,7 +76,10 @@ def test_load_blocking_reports_progress_and_returns_bytes_fed(
 
     reports: list[tuple[int, int]] = []
     done = _load_blocking(
-        "postgresql://ignored/ignored", dump_path, lambda d, t: reports.append((d, t))
+        "postgresql://ignored/ignored",
+        dump_path,
+        lambda d, t: reports.append((d, t)),
+        **_NO_CAPS,
     )
 
     assert done == len(content)
@@ -68,7 +97,7 @@ def test_load_blocking_raises_with_stderr_on_failure(
     dump_path.write_bytes(b"GARBLE NOT SQL;\n")
 
     with pytest.raises(DumpImportFailed, match="GARBLE"):
-        _load_blocking("postgresql://ignored/ignored", dump_path, None)
+        _load_blocking("postgresql://ignored/ignored", dump_path, None, **_NO_CAPS)
 
 
 def test_load_blocking_names_the_exit_status_when_psql_says_nothing(
@@ -81,12 +110,224 @@ def test_load_blocking_names_the_exit_status_when_psql_says_nothing(
     dump_path.write_bytes(b"anything\n")
 
     with pytest.raises(DumpImportFailed, match="status 2"):
-        _load_blocking("postgresql://ignored/ignored", dump_path, None)
+        _load_blocking("postgresql://ignored/ignored", dump_path, None, **_NO_CAPS)
+
+
+def test_load_blocking_aborts_on_the_time_cap_without_waiting_for_the_statement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`M4-DUMP-VAL-089`'s own edge case: "an abort during a long-running
+    statement — the statement is terminated rather than waited on." The fake
+    `psql` here sleeps for 5s after consuming stdin, standing in for a slow
+    statement; a 0.1s time cap has to end this well before that 5s is up."""
+    bin_dir = _fake_psql(tmp_path, "cat >/dev/null\nsleep 5\nexit 0")
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+
+    dump_path = tmp_path / "slow.sql"
+    dump_path.write_bytes(b"SELECT 1;\n")
+
+    started = time.monotonic()
+    with pytest.raises(DumpCapExceeded) as exc_info:
+        _load_blocking(
+            "postgresql://ignored/ignored",
+            dump_path,
+            None,
+            admin_url="postgresql://ignored/ignored",
+            database="ignored",
+            size_cap_bytes=DEFAULT_DUMP_SIZE_CAP_BYTES,
+            time_cap_seconds=0.1,
+        )
+    elapsed = time.monotonic() - started
+
+    assert exc_info.value.cap == "time"
+    assert elapsed < 3.0
+
+
+# --- dump caps: get/set, `M4-DUMP-VAL-089` -----------------------------------
+
+
+@pytest.mark.requires_db
+async def test_dump_size_cap_defaults_and_is_adjustable(
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with factory() as session:
+        assert await get_dump_size_cap_bytes(session) == DEFAULT_DUMP_SIZE_CAP_BYTES == 5 * 1024**3
+
+        await set_dump_size_cap_bytes(session, 2048)
+        await session.commit()
+
+    async with factory() as session:
+        assert await get_dump_size_cap_bytes(session) == 2048
+
+        kinds = {
+            row[0]
+            for row in (await session.execute(text("SELECT kind FROM audit_decisions"))).all()
+        }
+        assert "dump_cap_changed" in kinds
+
+
+@pytest.mark.requires_db
+async def test_dump_time_cap_defaults_and_is_adjustable(
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with factory() as session:
+        assert await get_dump_time_cap_seconds(session) == DEFAULT_DUMP_TIME_CAP_SECONDS == 600.0
+
+        await set_dump_time_cap_seconds(session, 30)
+        await session.commit()
+
+    async with factory() as session:
+        assert await get_dump_time_cap_seconds(session) == 30.0
+
+
+@pytest.mark.requires_db
+async def test_dump_caps_reject_non_positive_values(
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with factory() as session:
+        with pytest.raises(ValueError, match="size cap"):
+            await set_dump_size_cap_bytes(session, 0)
+        with pytest.raises(ValueError, match="time cap"):
+            await set_dump_time_cap_seconds(session, 0)
+
+
+# --- caps enforced during a real import --------------------------------------
+
+
+@pytest.mark.requires_db
+async def test_import_dump_aborts_and_drops_the_database_when_the_size_cap_is_exceeded(
+    factory: async_sessionmaker[AsyncSession],
+    dump_settings: Settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A freshly created, empty sandbox database already carries several MB
+    of catalog overhead — so a cap set below that trips on the very first
+    poll, before a single byte of the dump has even been fed to `psql`. That
+    is also the test's proof that the cap is measured on the sandbox
+    database's own loaded size, not on `dump_path`'s size on disk: this dump
+    is a few bytes and still aborts."""
+    fixed_name = generate_name()
+    monkeypatch.setattr(dump_import.sandbox, "generate_name", lambda: fixed_name)
+
+    dump_path = tmp_path / "tiny.sql"
+    dump_path.write_text("CREATE TABLE widgets (id integer);\n")
+    source_id = await _make_source(factory, dump_path)
+
+    admin_url = dump_settings.sandbox_database_url.get_secret_value()
+    async with factory() as session:
+        await dump_import.set_dump_size_cap_bytes(session, 1024)
+        await session.commit()
+
+    with pytest.raises(DumpCapExceeded) as exc_info:
+        await import_dump(factory, dump_settings, source_id, dump_path)
+    assert exc_info.value.cap == "size"
+
+    async with factory() as session:
+        row = (
+            await session.execute(
+                text("SELECT status, sandbox_db, last_error FROM sources WHERE id = :id"),
+                {"id": source_id},
+            )
+        ).one()
+        assert row[0] == "attention"
+        assert row[1] is None
+        assert "size cap" in row[2]
+
+        failed = (
+            await session.execute(
+                text(
+                    "SELECT payload FROM audit_decisions WHERE kind = 'dump_import_failed' "
+                    "AND payload->>'source_id' = :id"
+                ),
+                {"id": str(source_id)},
+            )
+        ).first()
+        assert failed is not None
+        assert failed[0]["cap"] == "size"
+
+    from askwell.sandbox import known_databases
+
+    assert fixed_name not in known_databases(admin_url)
+
+
+@pytest.mark.requires_db
+async def test_import_dump_aborts_and_drops_the_database_when_the_time_cap_is_exceeded(
+    factory: async_sessionmaker[AsyncSession],
+    dump_settings: Settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`pg_sleep` stands in for a slow statement (a big `CREATE INDEX`, in
+    reality) — the time cap has to abort while it is still running server
+    side, not wait for it to finish."""
+    fixed_name = generate_name()
+    monkeypatch.setattr(dump_import.sandbox, "generate_name", lambda: fixed_name)
+
+    dump_path = tmp_path / "slow.sql"
+    dump_path.write_text("SELECT pg_sleep(5);\n")
+    source_id = await _make_source(factory, dump_path)
+
+    admin_url = dump_settings.sandbox_database_url.get_secret_value()
+    async with factory() as session:
+        await dump_import.set_dump_time_cap_seconds(session, 0.3)
+        await session.commit()
+
+    started = time.monotonic()
+    with pytest.raises(DumpCapExceeded) as exc_info:
+        await import_dump(factory, dump_settings, source_id, dump_path)
+    elapsed = time.monotonic() - started
+    assert exc_info.value.cap == "time"
+    assert elapsed < 4.0  # would be ~5s+ if the sleep were waited out
+
+    async with factory() as session:
+        row = (
+            await session.execute(
+                text("SELECT status, sandbox_db, last_error FROM sources WHERE id = :id"),
+                {"id": source_id},
+            )
+        ).one()
+        assert row[0] == "attention"
+        assert row[1] is None
+        assert "time cap" in row[2]
+
+    from askwell.sandbox import known_databases
+
+    assert fixed_name not in known_databases(admin_url)
+
+
+@pytest.mark.requires_db
+async def test_import_dump_reports_the_size_cap_when_both_caps_are_exceeded_together(
+    factory: async_sessionmaker[AsyncSession],
+    dump_settings: Settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`M4-DUMP-VAL-089`'s own edge case: "an import that hits both caps at
+    once — reports the one hit first." The size check runs before the time
+    check on every poll (`dump_import._load_blocking.check_once`), and the
+    very first poll happens before a single byte is fed — so when both caps
+    are already impossible to meet, size is what gets reported."""
+    fixed_name = generate_name()
+    monkeypatch.setattr(dump_import.sandbox, "generate_name", lambda: fixed_name)
+
+    dump_path = tmp_path / "tiny.sql"
+    dump_path.write_text("CREATE TABLE widgets (id integer);\n")
+    source_id = await _make_source(factory, dump_path)
+
+    async with factory() as session:
+        await dump_import.set_dump_size_cap_bytes(session, 1)
+        await dump_import.set_dump_time_cap_seconds(session, 0.001)
+        await session.commit()
+
+    with pytest.raises(DumpCapExceeded) as exc_info:
+        await import_dump(factory, dump_settings, source_id, dump_path)
+    assert exc_info.value.cap == "size"
 
 
 # --- against a real, separate sandbox instance and Askwell's own database ----
 
-TABLES = "sources, audit_decisions"
+TABLES = "sources, audit_decisions, settings"
 
 
 @pytest_asyncio.fixture

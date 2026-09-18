@@ -4,6 +4,19 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.5 - 2026-09-18
+
+`M4-DUMP-VAL-089` — size and time caps that abort a dump import and drop the sandbox, `docs/data-sources.md` §3, C3. Default 5 GB / 10 minutes, both user-adjustable and enforced *during* the load, not checked once at the start: `askwell.dump_import._load_blocking` runs a watchdog thread alongside `psql` that polls the sandbox database's own loaded size (`pg_database_size`, not `dump_path`'s size on disk — a dump that is small as a file but expands once loaded is exactly the case a file-size check would miss) and the elapsed wall clock, killing `psql` the instant either cap is crossed so a statement already running server-side is terminated rather than waited on. `import_dump`'s existing failure path (drop the sandbox database `WITH (FORCE)`, mark the source `attention`, record `dump_import_failed`) handles a cap breach the same way it handles a bad dump, with `cap` added to that audit payload so "how many imports were aborted for a cap" stays a query over `audit_decisions` rather than a separately maintained counter.
+
+### Added
+
+- `askwell.dump_import.get_dump_size_cap_bytes`/`set_dump_size_cap_bytes`, `get_dump_time_cap_seconds`/`set_dump_time_cap_seconds` — settings-table-backed, same shape as `askwell.clarify`'s clarification cap; every change is a `dump_cap_changed` decisions record.
+- `askwell.dump_import.DumpCapExceeded` — names which cap (`"size"`/`"time"`) and the limit in force.
+
+### Changed
+
+- `askwell.dump_import._load_blocking` now takes the sandbox admin URL, database name and both caps, and runs a background watchdog thread for the life of the `psql` subprocess.
+
 ## 0.4.4 - 2026-09-18
 
 `M4-DUMP-ING-088` — import a PostgreSQL dump into its own sandbox database, `docs/data-sources.md` §3, C3. `askwell.dump_import.import_dump` creates a fresh sandbox database, streams the dump into `psql` as `askwell_sandbox_owner` (`--set ON_ERROR_STOP=1`, so a statement the restricted role cannot run — creating a role, a tablespace — aborts the whole load rather than partially applying it), introspects the loaded table names, and on success seals the owner role off the database (`askwell.sandbox.seal_owner`, closing issue #330) before marking the source `ready`. Any failure drops the sandbox database outright and records the reason on the source; a load interrupted by a stack restart is reclaimed at worker startup (`dump_import.reclaim_interrupted`), alongside the existing orphan sweep. Full schema indexing (types, keys, relationships) is `M4-SCHEMA-ING-100`, not this ticket.

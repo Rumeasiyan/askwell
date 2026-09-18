@@ -22,6 +22,26 @@ Template:
 
 ---
 
+## 2026-09-18 — `M4-DUMP-VAL-089`: caps enforced by a watchdog thread, not a check between chunks
+
+**Decision:** `dump_import._load_blocking` enforces both the size and time caps from a background `threading.Thread` that runs for the whole life of the `psql` subprocess and calls `proc.kill()` itself the moment either is crossed, plus one final authoritative check right after `psql` exits (success or failure) before the outcome is decided. Not a check placed between reads of `dump_path`, which was the first approach tried.
+
+**Why:** most of a real dump's wall-clock time is not spent being fed to `psql` — it is spent blocked *inside* a single `proc.stdin.write` once the OS pipe buffer fills and `psql` is busy running a statement, or inside the final `proc.wait()` once every byte has already been handed over and `psql` is still executing something (a big `CREATE INDEX`, or the edge case's own `pg_sleep`). A cap check that only runs between chunk reads never runs during either of those, which means it would never fire for exactly the case the ticket's own edge case names: "an abort during a long-running statement — the statement is terminated rather than waited on." An independent watchdog thread has no such blind spot; it polls on its own schedule regardless of what the main thread is doing, so `proc.kill()` reaches a stuck `write()`/`wait()` immediately. The final backstop check exists because the watchdog polls on `CAP_POLL_SECONDS`, and a load that finishes faster than one poll interval (an empty sandbox database's own catalog overhead can already be over a small cap before a single byte of the dump is fed in — a real scenario, not a contrived one, since it is exactly how the size-cap test proves measurement is against loaded size rather than file size) would otherwise report success with a cap already blown, purely because the watchdog never got a turn.
+
+**Consequences:** `_load_blocking` now starts a daemon thread per import; killed via `proc.kill()` (SIGKILL) rather than a graceful stop, because the goal is ending a stuck client immediately, not giving `psql` a chance to clean up (there is nothing for it to clean up — the sandbox database it was loading gets dropped `WITH (FORCE)` by the caller regardless). If a future change needs multiple concurrent imports to share one process-wide monitor instead of one thread per import, that is a new decision; nothing here assumes only one import runs at a time, but nothing shares state across imports either.
+
+**Refs:** `AGENTS.md` §3 C3, `docs/data-sources.md` §3, `api/src/askwell/dump_import.py` (`_load_blocking`, `check_once`, `watchdog`), `api/tests/test_dump_import.py`.
+
+## 2026-09-18 — `M4-DUMP-VAL-089`: dump caps live in the `settings` table, not on `Settings`
+
+**Decision:** the size and time caps are read and written through `askwell.dump_import.get_dump_size_cap_bytes`/`set_dump_size_cap_bytes` and their time equivalents, backed by the `settings` key/value table (`askwell.settings_store`), the same mechanism `askwell.clarify`'s clarification cap already uses. Not a field on `Settings` (`askwell.config`).
+
+**Why:** `docs/data-sources.md` §3 states both caps are "user-adjustable," and `Settings` is environment configuration read once at process start (`AGENTS.md` §3's own description) — changing a `Settings` field means restarting the process, which is not what "adjustable" means for a single-user desktop product with a settings screen. `askwell.clarify.set_clarification_cap` already established this exact pattern (a validated setter, an unconditional decision record on every change, a typed getter with a stated default) for the same shape of problem, so reusing it rather than inventing a second one was the only real choice.
+
+**Consequences:** a cap change takes effect on the *next* import, never the one in flight — `import_dump` reads both caps once, at the start of a given import, in the same session that creates the sandbox database, and threads them through to `_load_blocking` as plain values rather than re-reading the setting mid-load. `set_dump_time_cap_seconds`'s audit payload stores `previous`/`new` as strings rather than the `float` its own signature carries, because `audit.compute_hash` rejects a bare `float` outright (a float does not round-trip identically through jsonb, so a later chain verification would report tampering that never happened) — discovered by `scripts/dev.sh test-db` failing on this exact ticket, not found in review beforehand.
+
+**Refs:** `AGENTS.md` §3 C3, `docs/data-sources.md` §3, `api/src/askwell/dump_import.py`, `api/src/askwell/clarify.py` (`set_clarification_cap`, the precedent), `api/src/askwell/audit.py` (`_reject_floats`).
+
 ## 2026-09-18 — `M4-DUMP-ING-088`: the owner role is sealed after a successful load, not replaced with per-database credentials — issue #330 closed by option 1
 
 **Decision:** `askwell.sandbox.seal_owner` revokes `askwell_sandbox_owner`'s own `CONNECT` on a sandbox database the moment `askwell.dump_import.import_dump` finishes loading it successfully, leaving only `askwell_sandbox_readonly` attached for the query path afterwards. This is option 1 from issue #330 — the fixed-role design `M4-DUMP-DEPLOY-087` shipped, kept, closed by revoking rather than by generating a credential pair per database (option 2).
