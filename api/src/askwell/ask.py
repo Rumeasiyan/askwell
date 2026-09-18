@@ -442,6 +442,7 @@ def _cite_claim(
                     "fact": note.description,
                     "origin": note.origin,
                     "confidence": note.confidence,
+                    "stale": note.stale,
                     "supplied_at": note.created_at.isoformat()
                     if note.created_at is not None
                     else None,

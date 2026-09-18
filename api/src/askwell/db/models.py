@@ -453,6 +453,13 @@ class SchemaNote(Base):
     superseded_by: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("schema_notes.id", ondelete="SET NULL")
     )
+    # A `user`-origin note whose table/column position a re-introspection no
+    # longer finds — still active, still the best answer Askwell has, but
+    # flagged rather than silently applied to a column that is gone
+    # (`M4-SCHEMA-ING-101`, issue #355). Never set for an `inferred` note:
+    # those are superseded by themselves instead, which is retirement, not a
+    # caveat on a still-active answer.
+    stale: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     embedding: Mapped[Any | None] = mapped_column(Vector())
     created_at_: Mapped[datetime] = mapped_column(
         "created_at", DateTime(timezone=True), nullable=False, server_default=func.now()

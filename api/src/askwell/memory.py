@@ -138,6 +138,10 @@ class SchemaNote:
     origin: str
     confidence: float | None
     created_at: Any
+    # A user-origin note whose position a re-introspection no longer finds
+    # — still active and still retrieved, but carrying a caveat rather than
+    # being presented as current (`M4-SCHEMA-ING-101`, issue #355).
+    stale: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -900,7 +904,7 @@ async def get_active_schema_notes(
     rows = await session.execute(
         text(
             "SELECT id, source_id, table_name, column_name, description, origin, "
-            "confidence, created_at FROM schema_notes "
+            "confidence, created_at, stale FROM schema_notes "
             "WHERE superseded_by IS NULL "
             "AND (CAST(:source_id AS uuid) IS NULL OR source_id = :source_id) "
             "ORDER BY (origin != 'inferred') DESC, created_at DESC"
@@ -917,6 +921,7 @@ async def get_active_schema_notes(
             origin=row[5],
             confidence=float(row[6]) if row[6] is not None else None,
             created_at=row[7],
+            stale=bool(row[8]),
         )
         for row in rows
     ]
@@ -1391,7 +1396,7 @@ async def retrieve_relevant_facts(
         await session.execute(
             text(
                 "SELECT id, source_id, table_name, column_name, description, origin, "
-                "confidence, created_at FROM schema_notes "
+                "confidence, created_at, stale FROM schema_notes "
                 "WHERE superseded_by IS NULL "
                 "AND (CAST(:source_id AS uuid) IS NULL OR source_id = :source_id) "
                 "AND to_tsvector(:cfg, table_name || ' ' || coalesce(column_name, '') "
@@ -1419,6 +1424,7 @@ async def retrieve_relevant_facts(
             origin=row[5],
             confidence=float(row[6]) if row[6] is not None else None,
             created_at=row[7],
+            stale=bool(row[8]),
         )
         for row in note_rows
     ]
