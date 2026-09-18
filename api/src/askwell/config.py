@@ -119,6 +119,18 @@ class Settings(BaseSettings):
     egress_proxy_host: str = "egress-proxy"
     egress_proxy_port: Port = 3128
 
+    # A separate Postgres instance, not a second database in the first one:
+    # C3's whole guarantee is that a hostile dump destroys only its own
+    # database, which a shared instance cannot promise regardless of how its
+    # roles are configured. This is the instance superuser's connection to the
+    # sandbox's own `postgres` maintenance database — used only by
+    # `askwell.sandbox`'s control plane (`CREATE DATABASE` / `DROP DATABASE`
+    # cannot run as a role that owns nothing, and cannot run inside the
+    # sandbox database being created), never by anything that executes a
+    # dump's own content. Required, like `database_url`, and secret for the
+    # same reason.
+    sandbox_database_url: SecretStr
+
     # The embedding model's output dimension, and therefore the width of
     # chunks.embedding. It is configuration rather than a literal in the
     # migration because changing the model is a configuration change plus a
@@ -295,6 +307,18 @@ class Settings(BaseSettings):
 
         parts = urlsplit(self.database_url.get_secret_value())
         return parts.hostname or "postgres", parts.port or 5432
+
+    @property
+    def sandbox_host_port(self) -> tuple[str, int]:
+        """Host and port for the sandbox instance, parsed for health probing.
+
+        Same reasoning as `database_host_port`: the URL is secret because of
+        its password, the host and port inside it are not.
+        """
+        from urllib.parse import urlsplit
+
+        parts = urlsplit(self.sandbox_database_url.get_secret_value())
+        return parts.hostname or "sandbox", parts.port or 5432
 
 
 class ConfigurationError(RuntimeError):

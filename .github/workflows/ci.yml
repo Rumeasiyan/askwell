@@ -79,14 +79,40 @@ jobs:
           --health-timeout 3s
           --health-retries 30
 
+      # A second, separate instance — matching compose.yaml's `sandbox`
+      # service, not a second database on the one above. C3's whole guarantee
+      # is that a hostile dump destroys only its own database, which a shared
+      # instance cannot promise regardless of how its roles are configured, so
+      # the sandbox-backed tests (`test_sandbox.py`) need this to be real
+      # rather than mocked.
+      sandbox:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: askwell_sandbox
+          POSTGRES_PASSWORD: ci-only-sandbox-password
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U askwell_sandbox -d postgres"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+
     env:
       POSTGRES_USER: askwell
       POSTGRES_PASSWORD: ci-only-never-leaves-this-job
       POSTGRES_DB: askwell
       POSTGRES_APP_PASSWORD: ci-only-app-password
-      # `host`, so the test container reaches the service on localhost. Locally
-      # this is the Compose network; the tests do not know the difference.
+      SANDBOX_POSTGRES_USER: askwell_sandbox
+      SANDBOX_POSTGRES_PASSWORD: ci-only-sandbox-password
+      SANDBOX_OWNER_PASSWORD: ci-only-sandbox-owner-password
+      SANDBOX_READONLY_PASSWORD: ci-only-sandbox-readonly-password
+      # `host`, so the test container reaches both services on localhost.
+      # Locally this is two Compose networks joined at once; the tests do not
+      # know the difference.
       ASKWELL_COMPOSE_NETWORK: host
+      ASKWELL_SANDBOX_DB_HOST: 127.0.0.1
+      ASKWELL_SANDBOX_DB_PORT: "5433"
 
     steps:
       - uses: actions/checkout@v4
@@ -108,6 +134,47 @@ jobs:
               CREATE ROLE askwell_app LOGIN PASSWORD '$POSTGRES_APP_PASSWORD';
               CREATE ROLE askwell_readonly LOGIN PASSWORD '$POSTGRES_APP_PASSWORD';
               GRANT CONNECT ON DATABASE askwell TO askwell_app, askwell_readonly;
+            "
+
+      - name: Lock down the sandbox instance
+        # deploy/sandbox/10-roles.sh, run by hand: the GitHub Actions `services`
+        # container has no way to mount an init script, unlike Compose locally.
+        run: |
+          docker run --rm --network host \
+            -e PGPASSWORD="$SANDBOX_POSTGRES_PASSWORD" \
+            pgvector/pgvector:pg18 \
+            psql -h 127.0.0.1 -p 5433 -U askwell_sandbox -d postgres -v ON_ERROR_STOP=1 -c "
+              CREATE ROLE askwell_sandbox_owner LOGIN PASSWORD '$SANDBOX_OWNER_PASSWORD'
+                  NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+              CREATE ROLE askwell_sandbox_readonly LOGIN PASSWORD '$SANDBOX_READONLY_PASSWORD'
+                  NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+              REVOKE CONNECT ON DATABASE template1 FROM PUBLIC;
+              REVOKE CONNECT ON DATABASE postgres FROM PUBLIC;
+              REVOKE EXECUTE ON FUNCTION pg_catalog.lo_import(text) FROM PUBLIC;
+              REVOKE EXECUTE ON FUNCTION pg_catalog.lo_import(text, oid) FROM PUBLIC;
+              REVOKE EXECUTE ON FUNCTION pg_catalog.lo_export(oid, text) FROM PUBLIC;
+            "
+          docker run --rm --network host \
+            -e PGPASSWORD="$SANDBOX_POSTGRES_PASSWORD" \
+            pgvector/pgvector:pg18 \
+            psql -h 127.0.0.1 -p 5433 -U askwell_sandbox -d template1 -v ON_ERROR_STOP=1 -c "
+              REVOKE EXECUTE ON FUNCTION pg_catalog.lo_creat(integer) FROM PUBLIC;
+              REVOKE EXECUTE ON FUNCTION pg_catalog.lo_create(oid) FROM PUBLIC;
+              REVOKE EXECUTE ON FUNCTION pg_catalog.lo_open(oid, integer) FROM PUBLIC;
+              REVOKE EXECUTE ON FUNCTION pg_catalog.lo_close(integer) FROM PUBLIC;
+              REVOKE EXECUTE ON FUNCTION pg_catalog.lo_unlink(oid) FROM PUBLIC;
+              REVOKE EXECUTE ON FUNCTION pg_catalog.lo_lseek(integer, integer, integer) FROM PUBLIC;
+              REVOKE EXECUTE ON FUNCTION pg_catalog.lo_lseek64(integer, bigint, integer) FROM PUBLIC;
+              REVOKE EXECUTE ON FUNCTION pg_catalog.lo_tell(integer) FROM PUBLIC;
+              REVOKE EXECUTE ON FUNCTION pg_catalog.lo_tell64(integer) FROM PUBLIC;
+              REVOKE EXECUTE ON FUNCTION pg_catalog.lo_truncate(integer, integer) FROM PUBLIC;
+              REVOKE EXECUTE ON FUNCTION pg_catalog.lo_truncate64(integer, bigint) FROM PUBLIC;
+              REVOKE EXECUTE ON FUNCTION pg_catalog.lo_get(oid) FROM PUBLIC;
+              REVOKE EXECUTE ON FUNCTION pg_catalog.lo_get(oid, bigint, integer) FROM PUBLIC;
+              REVOKE EXECUTE ON FUNCTION pg_catalog.lo_put(oid, bigint, bytea) FROM PUBLIC;
+              REVOKE EXECUTE ON FUNCTION pg_catalog.lo_from_bytea(oid, bytea) FROM PUBLIC;
+              REVOKE EXECUTE ON FUNCTION pg_catalog.loread(integer, integer) FROM PUBLIC;
+              REVOKE EXECUTE ON FUNCTION pg_catalog.lowrite(integer, bytea) FROM PUBLIC;
             "
 
       - name: Database-backed tests

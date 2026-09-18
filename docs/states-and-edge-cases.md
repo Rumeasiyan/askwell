@@ -114,6 +114,7 @@ Highest-risk surface. The customer's production database is on the other side.
 | State | What the user sees | What the system does |
 | ----- | ------------------ | -------------------- |
 | **No connections configured** | Empty state; database questions say so rather than abstaining generically | Abstaining as if the corpus lacks it is misleading — the data exists, it just is not connected |
+| **Sandbox instance unreachable** | Dump-backed sources show "needs attention" in the library (`ux/library.md` §5) naming the sandbox as down; document sources are unaffected | `data-sources.md` §3, C3. The sandbox is a separate container (`M4-DUMP-DEPLOY-087`) that can fail to start independently of Postgres; a dump import cannot proceed without it, but nothing about that should read as "Askwell is broken" |
 | **Connection wizard: credentials pass the write probe** | Refused, naming which permission was detected | `data-sources.md` §4 — the wizard refuses write-capable credentials. Not a warning, a refusal |
 | **Connection dead at query time** | "The database is unreachable", not a generic failure. Admins see the connection error | Customer DBs go down independently of Askwell |
 | **Generated SQL rejected by `sqlglot`** | The user sees a normal "I could not answer that safely" and the SQL is **shown**, since disclosure is unconditional | C2. The rejection is logged with the offending SQL — this is the signal that a prompt change has degraded generation, and it must be visible |

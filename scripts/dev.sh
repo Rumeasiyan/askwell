@@ -87,6 +87,32 @@ _db_password() {
     [ -n "$value" ] || die "POSTGRES_PASSWORD is not set in .env. Copy .env.example and set it."
     printf '%s' "$value"
 }
+_sandbox_user() { _env_value SANDBOX_POSTGRES_USER askwell_sandbox; }
+# `sandbox` is the Compose service name, same reasoning as `_db_host`. CI
+# overrides this to reach its own service container on loopback instead.
+_sandbox_host() { _env_value ASKWELL_SANDBOX_DB_HOST sandbox; }
+# 5432 inside the stack, same as every other Postgres here. CI publishes the
+# sandbox service on a different host port from the main one — two services
+# cannot both claim 5432 on the one runner — and overrides this to match.
+_sandbox_port() { _env_value ASKWELL_SANDBOX_DB_PORT 5432; }
+_sandbox_password() {
+    local value
+    value="$(_env_value SANDBOX_POSTGRES_PASSWORD "")"
+    [ -n "$value" ] || die "SANDBOX_POSTGRES_PASSWORD is not set in .env. Copy .env.example and set it."
+    printf '%s' "$value"
+}
+_sandbox_owner_password() {
+    local value
+    value="$(_env_value SANDBOX_OWNER_PASSWORD "")"
+    [ -n "$value" ] || die "SANDBOX_OWNER_PASSWORD is not set in .env. Copy .env.example and set it."
+    printf '%s' "$value"
+}
+_sandbox_readonly_password() {
+    local value
+    value="$(_env_value SANDBOX_READONLY_PASSWORD "")"
+    [ -n "$value" ] || die "SANDBOX_READONLY_PASSWORD is not set in .env. Copy .env.example and set it."
+    printf '%s' "$value"
+}
 
 build_image() {
     note "building $IMAGE"
@@ -242,11 +268,21 @@ case "$cmd" in
         # TEST_DATABASE_URL names the server, not the database to use: the
         # harness creates its own for the run and drops it afterwards, so a run
         # never touches the development data and two runs cannot collide.
+        #
+        # Two networks, comma-joined (Podman accepts a list; CI overrides the
+        # whole value to `host`, a single network, where both services are
+        # already reachable on loopback). `askwell_sandbox` is what lets this
+        # ad hoc container reach the `sandbox` service at all — it sits on its
+        # own network, joined only by `api` and `worker` in the real stack
+        # (C3), and this container is neither.
         _image_exists "$IMAGE" || build_image
         "$CONTAINER" run --rm "${TTY_FLAGS[@]}" \
-            --network "${ASKWELL_COMPOSE_NETWORK:-askwell_internal}" \
+            --network "${ASKWELL_COMPOSE_NETWORK:-askwell_internal,askwell_sandbox}" \
             -e TEST_DATABASE_URL="postgresql://$(_db_user):$(_db_password)@$(_db_host):5432/$(_db_name)" \
             -e TEST_APP_PASSWORD="$(_app_password)" \
+            -e TEST_SANDBOX_DATABASE_URL="postgresql://$(_sandbox_user):$(_sandbox_password)@$(_sandbox_host):$(_sandbox_port)/postgres" \
+            -e TEST_SANDBOX_OWNER_PASSWORD="$(_sandbox_owner_password)" \
+            -e TEST_SANDBOX_READONLY_PASSWORD="$(_sandbox_readonly_password)" \
             -v "$REPO_ROOT":/app:z \
             -w /app/api \
             "$IMAGE" pytest -m requires_db "$@"

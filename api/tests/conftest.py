@@ -28,6 +28,7 @@ from askwell.config import Settings
 
 # Re-exported so every test module sees them without importing anything.
 from tests.conftest_db import app_database_url, database_url  # noqa: F401
+from tests.conftest_sandbox import sandbox_admin_url  # noqa: F401
 
 
 @pytest.fixture(autouse=True)
@@ -51,6 +52,7 @@ def settings() -> Settings:
     """
     return Settings(
         database_url="postgresql://askwell:pw@127.0.0.1:1/askwell",  # type: ignore[arg-type]
+        sandbox_database_url="postgresql://askwell_sandbox:pw@127.0.0.1:1/postgres",  # type: ignore[arg-type]
         redis_host="127.0.0.1",
         redis_port=1,
         # A key nothing writes, so the worker reads as not-checked-in by

@@ -11,15 +11,20 @@
 #   podman compose down           stop, keeping data
 #   podman compose down -v        stop and destroy the data. There is no undo.
 #
-# Not here yet, deliberately: the sandbox database for untrusted dumps (M4, C3),
-# voice (M6), and native inference, which runs as a host process rather than a
-# container because it needs the GPU.
+# Not here yet, deliberately: voice (M6), and native inference, which runs as a
+# host process rather than a container because it needs the GPU.
 #
 # C1 is enforced by the network topology, not by asking nicely. Every service
 # except the proxy sits on an `internal` network, which has no route off this
 # machine — so a container that ignores HTTP_PROXY does not find another way
 # out, it finds nothing. The proxy is the only service on both networks, and it
 # refuses everything.
+#
+# `sandbox` (M4, C3) sits on its own `sandbox` network, joined only by `api`
+# and `worker`. It is not on `internal` and not on `egress`: an imported dump
+# is untrusted code, so the database it loads into has no path to Askwell's
+# own database and no path to the proxy, let alone the internet. See
+# `docs/data-sources.md` §3.
 
 name: askwell
 
@@ -63,6 +68,50 @@ services:
     # No ports. Nothing outside the stack talks to the database, and publishing
     # it would put an open Postgres on the machine's network interface.
     networks: [internal]
+    restart: unless-stopped
+
+  sandbox:
+    # Same image as `postgres` deliberately — one thing to bundle, update and
+    # learn (`docs/architecture.md` §1). It is a second *instance*, not a
+    # second schema in the first one: C3 requires that a hostile dump be able
+    # to wreck only its own database, and a shared instance with the chunks,
+    # memory and audit log would make that untrue no matter how the roles
+    # inside it are configured.
+    image: docker.io/pgvector/pgvector:pg18
+    environment:
+      # The instance superuser. Used only by `askwell.sandbox`'s control
+      # plane — `CREATE DATABASE` / `DROP DATABASE` cannot run as a role that
+      # owns nothing, and cannot run inside a transaction, so it is not the
+      # role dump content ever executes as. Dump content runs as
+      # `askwell_sandbox_owner`, created by the init script below with no
+      # `CREATEDB`, so a dump cannot use this connection's privilege to make
+      # itself a second database to hide in.
+      POSTGRES_USER: ${SANDBOX_POSTGRES_USER:-askwell_sandbox}
+      POSTGRES_PASSWORD: ${SANDBOX_POSTGRES_PASSWORD:?SANDBOX_POSTGRES_PASSWORD is not set. Copy .env.example to .env and set it. It is never committed (C8).}
+      PGDATA: /var/lib/postgresql/data/pgdata
+      # Read by the init script below, not by Postgres itself.
+      SANDBOX_OWNER_PASSWORD: ${SANDBOX_OWNER_PASSWORD:?SANDBOX_OWNER_PASSWORD is not set. Copy .env.example to .env and set it (C8).}
+      SANDBOX_READONLY_PASSWORD: ${SANDBOX_READONLY_PASSWORD:?SANDBOX_READONLY_PASSWORD is not set. Copy .env.example to .env and set it (C8).}
+    volumes:
+      # Its own volume. `docs/data-sources.md` §3's per-import cap
+      # (`M4-DUMP-VAL-089`) is what actually bounds it; a separate volume is
+      # what makes that cap possible to apply without also capping the chunks,
+      # memory and audit log sharing the main one.
+      - sandbox-data:/var/lib/postgresql/data
+      # Locks PUBLIC's default CONNECT and large-object privileges down once,
+      # instance-wide, so every database `askwell.sandbox` creates afterwards
+      # inherits "nobody can reach this" rather than needing to be locked down
+      # one at a time. See `deploy/sandbox/10-roles.sh`.
+      - ./deploy/sandbox:/docker-entrypoint-initdb.d:ro,z
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${SANDBOX_POSTGRES_USER:-askwell_sandbox} -d postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+    # No ports, same reasoning as `postgres`. Reachable only from `api` and
+    # `worker`, which are the only other services on this network.
+    networks: [sandbox]
     restart: unless-stopped
 
   redis:
@@ -157,6 +206,11 @@ services:
       ASKWELL_LOG_LEVEL: ${ASKWELL_LOG_LEVEL:-INFO}
       ASKWELL_WEB_ASSETS_DIR: /app/web/out
       ASKWELL_INFERENCE_SOCKET: /run/askwell/inference.sock
+      # The sandbox's own superuser, over its own network. Used only by
+      # `askwell.sandbox`'s control plane to create and drop per-source
+      # databases (C3) — never by anything that runs dump content. See
+      # `deploy/sandbox/10-roles.sh`.
+      ASKWELL_SANDBOX_DATABASE_URL: postgresql://${SANDBOX_POSTGRES_USER:-askwell_sandbox}:${SANDBOX_POSTGRES_PASSWORD:?set SANDBOX_POSTGRES_PASSWORD in .env}@sandbox:5432/postgres
       # Read here only to say how long a queue will take. The worker is what
       # honours it; both must agree or the estimate is arithmetic over a number
       # nothing is using.
@@ -208,7 +262,13 @@ services:
       # no root can be nominated under it, so every root reports `not_mounted`
       # with the fix stated — which is exactly true on a fresh install.
       - ${ASKWELL_ROOTS_MOUNT:-/tmp/askwell-no-roots-mount}:${ASKWELL_ROOTS_MOUNT:-/tmp/askwell-no-roots-mount}:ro
-    networks: [internal]
+    # `sandbox` in addition to `internal`, not instead of it — the API still
+    # needs Postgres, Redis and the proxy. Not a `depends_on` on `sandbox`:
+    # the sandbox failing to start must not stop the API from starting,
+    # because document sources have to keep working regardless
+    # (`docs/data-sources.md` §3's edge case). `askwell.health` reports it
+    # separately instead.
+    networks: [internal, sandbox]
     ports:
       # 127.0.0.1 is load-bearing, not decoration. "8000:8000" would publish on
       # every interface, putting the user's entire corpus on whatever café
@@ -232,6 +292,9 @@ services:
       ASKWELL_DATABASE_URL: postgresql://askwell_app:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-askwell}
       ASKWELL_REDIS_HOST: redis
       ASKWELL_INFERENCE_SOCKET: /run/askwell/inference.sock
+      # See the api service — same control-plane connection, same reasoning.
+      # The worker is what reclaims an orphaned sandbox database at startup.
+      ASKWELL_SANDBOX_DATABASE_URL: postgresql://${SANDBOX_POSTGRES_USER:-askwell_sandbox}:${SANDBOX_POSTGRES_PASSWORD:?set SANDBOX_POSTGRES_PASSWORD in .env}@sandbox:5432/postgres
       # The worker is what actually reads and indexes the files, so it needs
       # the same window as the API and on the same terms. See the api service.
       ASKWELL_ROOTS_MOUNT: ${ASKWELL_ROOTS_MOUNT:-}
@@ -251,7 +314,8 @@ services:
     volumes:
       - ${ASKWELL_RUN_DIR:-./.run}:/run/askwell:z
       - ${ASKWELL_ROOTS_MOUNT:-/tmp/askwell-no-roots-mount}:${ASKWELL_ROOTS_MOUNT:-/tmp/askwell-no-roots-mount}:ro
-    networks: [internal]
+    # See the api service.
+    networks: [internal, sandbox]
     depends_on:
       postgres:
         condition: service_healthy
@@ -270,8 +334,19 @@ networks:
   # somewhere to refuse *to*.
   egress: {}
 
+  # `sandbox` alone, plus `api` and `worker`. Not `internal`: an imported dump
+  # is untrusted code, and this is what keeps the database it loads into from
+  # ever reaching Postgres, Redis or the proxy, in either direction — an
+  # absence of routing rather than a rule (C3).
+  sandbox:
+    internal: true
+
 volumes:
   # Named, so `podman compose down` keeps them. The user closes the lid and
   # reopens it the next day; their sources and conversations are still there.
   postgres-data:
   redis-data:
+  # Separate from postgres-data so a runaway import fills only this one
+  # (`docs/data-sources.md` §3's cap, `M4-DUMP-VAL-089`, is what bounds it —
+  # this is what makes bounding it possible without touching the main volume).
+  sandbox-data:

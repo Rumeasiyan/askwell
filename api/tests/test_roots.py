@@ -349,6 +349,7 @@ def test_an_unset_window_is_none_rather_than_a_directory_named_nothing() -> None
     """Compose always passes the variable, empty when the user has not set it."""
     settings = Settings(
         database_url="postgresql://askwell:pw@127.0.0.1:1/askwell",  # type: ignore[arg-type]
+        sandbox_database_url="postgresql://x:x@127.0.0.1:1/postgres",  # type: ignore[arg-type]
         roots_mount="",  # type: ignore[arg-type]
     )
     assert settings.roots_mount is None
@@ -359,6 +360,7 @@ def test_a_relative_window_is_refused() -> None:
     with pytest.raises(ValueError, match="absolute"):
         Settings(
             database_url="postgresql://askwell:pw@127.0.0.1:1/askwell",  # type: ignore[arg-type]
+            sandbox_database_url="postgresql://x:x@127.0.0.1:1/postgres",  # type: ignore[arg-type]
             roots_mount="./files",  # type: ignore[arg-type]
         )
 

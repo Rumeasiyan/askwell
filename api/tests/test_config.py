@@ -18,8 +18,9 @@ from askwell.config import (
 )
 
 
-def test_loads_with_only_the_required_variable(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_loads_with_only_the_required_variables(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ASKWELL_DATABASE_URL", "postgresql://u:p@postgres:5432/askwell")
+    monkeypatch.setenv("ASKWELL_SANDBOX_DATABASE_URL", "postgresql://u:p@sandbox:5432/postgres")
     loaded = load_settings()
     assert loaded.environment is Environment.DEVELOPMENT
     assert loaded.profile is Profile.BALANCED
@@ -29,6 +30,7 @@ def test_loads_with_only_the_required_variable(monkeypatch: pytest.MonkeyPatch) 
 def test_missing_required_variable_names_it(monkeypatch: pytest.MonkeyPatch) -> None:
     """The case a new contributor hits first."""
     monkeypatch.delenv("ASKWELL_DATABASE_URL", raising=False)
+    monkeypatch.setenv("ASKWELL_SANDBOX_DATABASE_URL", "postgresql://u:p@sandbox:5432/postgres")
     with pytest.raises(ConfigurationError) as raised:
         load_settings()
     message = str(raised.value)
@@ -37,9 +39,21 @@ def test_missing_required_variable_names_it(monkeypatch: pytest.MonkeyPatch) -> 
     assert "Nothing has started" in message
 
 
+def test_missing_sandbox_database_url_names_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A different instance, a different required variable — C3."""
+    monkeypatch.setenv("ASKWELL_DATABASE_URL", "postgresql://u:p@postgres:5432/askwell")
+    monkeypatch.delenv("ASKWELL_SANDBOX_DATABASE_URL", raising=False)
+    with pytest.raises(ConfigurationError) as raised:
+        load_settings()
+    message = str(raised.value)
+    assert "ASKWELL_SANDBOX_DATABASE_URL" in message
+    assert "no default" in message
+
+
 def test_unknown_variable_is_reported_not_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
     """A typo must not leave the intended setting silently on its default."""
     monkeypatch.setenv("ASKWELL_DATABASE_URL", "postgresql://u:p@postgres:5432/askwell")
+    monkeypatch.setenv("ASKWELL_SANDBOX_DATABASE_URL", "postgresql://u:p@sandbox:5432/postgres")
     monkeypatch.setenv("ASKWELL_LOG_LEVE", "DEBUG")  # missing the L
     with pytest.raises(ConfigurationError) as raised:
         load_settings()
@@ -50,6 +64,7 @@ def test_invalid_value_names_the_variable_and_the_problem(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("ASKWELL_DATABASE_URL", "postgresql://u:p@postgres:5432/askwell")
+    monkeypatch.setenv("ASKWELL_SANDBOX_DATABASE_URL", "postgresql://u:p@sandbox:5432/postgres")
     monkeypatch.setenv("ASKWELL_PORT", "70000")
     with pytest.raises(ConfigurationError) as raised:
         load_settings()
@@ -80,6 +95,16 @@ def test_database_url_is_secret(settings: Settings) -> None:
 
 def test_database_host_port_parses_out_of_the_secret(settings: Settings) -> None:
     assert settings.database_host_port == ("127.0.0.1", 1)
+
+
+def test_sandbox_database_url_is_secret(settings: Settings) -> None:
+    """C8, same reasoning — a different instance, still a credential."""
+    assert isinstance(settings.sandbox_database_url, SecretStr)
+    assert "pw" not in repr(settings)
+
+
+def test_sandbox_host_port_parses_out_of_the_secret(settings: Settings) -> None:
+    assert settings.sandbox_host_port == ("127.0.0.1", 1)
 
 
 def test_settings_are_frozen(settings: Settings) -> None:

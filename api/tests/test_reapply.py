@@ -53,6 +53,7 @@ async def session(factory: async_sessionmaker[AsyncSession]) -> AsyncIterator[As
 def settings() -> Settings:
     return Settings(
         database_url="postgresql://askwell:pw@127.0.0.1:1/askwell",  # type: ignore[arg-type]
+        sandbox_database_url="postgresql://x:x@127.0.0.1:1/postgres",  # type: ignore[arg-type]
         redis_host="127.0.0.1",
         redis_port=1,
     )
