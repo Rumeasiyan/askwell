@@ -90,6 +90,49 @@ async def test_an_unresolvable_column_raises_a_real_clarification_row(
     assert any("currency" in question for question, _status in rows)
 
 
+async def test_disambiguated_date_format_is_recorded_with_its_evidence(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session)
+    raw = b"dt_reg\n25/12/2026\n03/04/2026\n05/06/2026\n"
+    inference = infer_csv("registrations.csv", raw)
+    await raise_table_inference(session, source_id, inference)
+    await session.commit()
+
+    description = (
+        await session.execute(
+            text(
+                "SELECT description FROM schema_notes "
+                "WHERE source_id = :id AND column_name = 'dt_reg'"
+            ),
+            {"id": source_id},
+        )
+    ).scalar_one()
+    assert "DD/MM/YYYY" in description
+    assert "25/12/2026" in description
+
+
+async def test_ambiguous_date_column_raises_a_two_option_clarification(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session)
+    raw = b"dt_reg\n01/02/2026\n03/04/2026\n05/06/2026\n"
+    inference = infer_csv("registrations.csv", raw)
+    result = await raise_table_inference(session, source_id, inference)
+    await session.commit()
+
+    assert result.raised >= 1
+    rows = (
+        await session.execute(
+            text("SELECT question, options FROM clarifications WHERE source_id = :id"),
+            {"id": source_id},
+        )
+    ).all()
+    date_rows = [row for row in rows if "dt_reg" in row[0]]
+    assert date_rows
+    assert date_rows[0][1] is not None
+
+
 async def test_a_source_already_carrying_a_clarification_is_not_re_raised(
     session: AsyncSession,
 ) -> None:

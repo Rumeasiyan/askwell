@@ -9,9 +9,11 @@ import openpyxl
 import pytest
 
 from askwell.table_infer import (
+    DateFormatVerdict,
     HeaderVerdict,
     MalformedTable,
     build_candidates,
+    detect_date_format,
     detect_header,
     infer_column_types,
     infer_csv,
@@ -139,6 +141,102 @@ def test_an_entirely_empty_column_is_reported_rather_than_guessed() -> None:
     columns = infer_column_types(rows, ["blank"])
     assert columns[0].ambiguous
     assert columns[0].confidence == 0.0
+
+
+# --- date format ambiguity (M4-CSV-ING-093) -----------------------------
+
+
+def test_ambiguous_numeric_dates_are_not_inferred() -> None:
+    values = ["01/02/2026", "03/04/2026", "05/06/2026"]
+    result = detect_date_format(values)
+    assert result.verdict is DateFormatVerdict.AMBIGUOUS
+
+
+def test_a_day_value_above_twelve_disambiguates_day_first() -> None:
+    values = ["01/02/2026", "25/12/2026", "03/04/2026"]
+    result = detect_date_format(values)
+    assert result.verdict is DateFormatVerdict.DAY_FIRST
+    assert result.evidence_value == "25/12/2026"
+
+
+def test_a_day_value_above_twelve_in_the_second_slot_disambiguates_month_first() -> None:
+    values = ["01/02/2026", "12/25/2026", "03/04/2026"]
+    result = detect_date_format(values)
+    assert result.verdict is DateFormatVerdict.MONTH_FIRST
+    assert result.evidence_value == "12/25/2026"
+
+
+def test_conflicting_disambiguation_within_a_column_is_mixed() -> None:
+    values = ["25/12/2026", "12/25/2026"]
+    result = detect_date_format(values)
+    assert result.verdict is DateFormatVerdict.MIXED
+
+
+def test_iso_dates_have_nothing_to_disambiguate() -> None:
+    values = ["2026-01-01", "2026-02-14"]
+    result = detect_date_format(values)
+    assert result.verdict is DateFormatVerdict.NOT_APPLICABLE
+
+
+def test_ambiguous_date_column_raises_a_two_option_question() -> None:
+    header_row = ["dt_reg"]
+    data = [["01/02/2026"], ["03/04/2026"], ["05/06/2026"]]
+    rows = [header_row, *data]
+    header = detect_header(rows)
+    from askwell.table_infer import HeaderDetection
+
+    header = HeaderDetection(HeaderVerdict.PRESENT, 1.0, header_row, "forced for the test")
+    columns = infer_column_types(data, header.names)
+    assert columns[0].ambiguous
+    assert columns[0].date_format is not None
+    assert columns[0].date_format.verdict is DateFormatVerdict.AMBIGUOUS
+
+    candidates = build_candidates("t.csv", header, columns, data)
+    date_candidates = [c for c in candidates if c.trigger == "date_format"]
+    assert len(date_candidates) == 1
+    assert date_candidates[0].options == ["DD/MM/YYYY (day first)", "MM/DD/YYYY (month first)"]
+
+
+def test_disambiguating_date_column_raises_no_question() -> None:
+    header_row = ["dt_reg"]
+    data = [["25/12/2026"], ["03/04/2026"], ["05/06/2026"]]
+    rows = [header_row, *data]
+    header = detect_header(rows)
+    from askwell.table_infer import HeaderDetection
+
+    header = HeaderDetection(HeaderVerdict.PRESENT, 1.0, header_row, "forced for the test")
+    columns = infer_column_types(data, header.names)
+    assert not columns[0].ambiguous
+    assert columns[0].date_format is not None
+    assert columns[0].date_format.verdict is DateFormatVerdict.DAY_FIRST
+
+    candidates = build_candidates("t.csv", header, columns, data)
+    assert not any(c.trigger == "date_format" for c in candidates)
+    assert not any("dt_reg" in c.question for c in candidates)
+
+
+def test_mixed_date_formats_are_reported_as_malformed_not_asked() -> None:
+    header_row = ["dt_reg"]
+    data = [["25/12/2026"], ["12/25/2026"], ["03/04/2026"]]
+    rows = [header_row, *data]
+    header = detect_header(rows)
+    from askwell.table_infer import HeaderDetection
+
+    header = HeaderDetection(HeaderVerdict.PRESENT, 1.0, header_row, "forced for the test")
+    columns = infer_column_types(data, header.names)
+    assert columns[0].ambiguous
+    assert columns[0].inferred_type == "string"
+    assert "malformed" in (columns[0].ambiguity_reason or "")
+
+    candidates = build_candidates("t.csv", header, columns, data)
+    assert not any(c.trigger == "date_format" for c in candidates)
+    malformed = [c for c in candidates if "dt_reg" in c.question]
+    assert malformed and malformed[0].options is None
+
+
+def test_a_handful_of_ambiguous_rows_is_still_asked() -> None:
+    result = detect_date_format(["01/02/2026", "03/04/2026"])
+    assert result.verdict is DateFormatVerdict.AMBIGUOUS
 
 
 # --- candidate clarifications ------------------------------------------------

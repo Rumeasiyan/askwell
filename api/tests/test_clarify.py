@@ -645,9 +645,32 @@ def _scan_candidate(subject: str, total_pages: int) -> Candidate:
     )
 
 
+def _date_format_candidate(subject: str, row_count: int = 10) -> Candidate:
+    return Candidate(
+        trigger="date_format",
+        subject=subject,
+        question=f"{subject} looks like a date in DD/MM/YYYY or MM/DD/YYYY — which is it?",
+        passes=True,
+        reason="all three tests held",
+        options=["DD/MM/YYYY (day first)", "MM/DD/YYYY (month first)"],
+        evidence={"row_count": row_count},
+    )
+
+
 def test_a_contradiction_outranks_an_abbreviation() -> None:
     ranked = _rank_candidates([_abbrev_candidate("RFQ", 10), _contradiction_candidate("term")])
     assert [c.trigger for c in ranked] == ["contradiction", "abbreviation"]
+
+
+def test_date_format_ranks_second_only_to_contradiction() -> None:
+    ranked = _rank_candidates(
+        [
+            _abbrev_candidate("RFQ", 10),
+            _date_format_candidate("dt_reg"),
+            _contradiction_candidate("term"),
+        ]
+    )
+    assert [c.trigger for c in ranked] == ["contradiction", "date_format", "abbreviation"]
 
 
 def test_within_a_tier_higher_volume_ranks_first() -> None:

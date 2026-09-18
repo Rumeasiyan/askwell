@@ -4,6 +4,15 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.2 - 2026-09-18
+
+`M4-CSV-ING-093` — never infer silently between DD/MM and MM/DD, `docs/data-sources.md` §2. A date-shaped column whose numeric values do not disambiguate (no value's day/month slot exceeds 12) raises a discrete `date_format` clarification with two options, ranked second only to contradictions. Where a value's own shape rules one format out — a slot above 12 — the format is inferred silently and recorded in `schema_notes` with the disambiguating value as evidence. A column whose values disambiguate in *both* directions (some rows only valid day-first, others only valid month-first) is reported as malformed rather than asked about as if one format fit every row. ISO and named-month dates have nothing to disambiguate and raise no question, regardless of sample size.
+
+### Added
+
+- `askwell.table_infer.detect_date_format` and `DateFormatVerdict` (`DAY_FIRST`/`MONTH_FIRST`/`AMBIGUOUS`/`MIXED`/`NOT_APPLICABLE`) — the DD/MM-vs-MM/DD disambiguation `infer_column_types` now runs on every date-typed column.
+- `date_format` clarification trigger in `askwell.clarify._TRIGGER_PRIORITY`, ranked second only to `contradiction` per `docs/memory-and-clarification.md` §8.
+
 ## 0.4.1 - 2026-09-18
 
 `M4-CSV-ING-092` — CSV and spreadsheet parsing with type and header inference, `docs/data-sources.md` §2. Nothing is applied silently: every column lands in `schema_notes` as `origin='inferred'` with its confidence, and anything the parser cannot resolve on its own — a missing or blank header, a column mixing a thousands separator with a plain decimal, a merged `.xlsx` header cell — becomes a real `clarifications` row, capped and ranked the same way `askwell.clarify` caps document-derived candidates. A row count that disagrees with the rest of the file is reported by row number as malformed, never silently padded. Loading the inferred table into the sandbox (`M4-CSV-ING-094`) and the DD/MM-vs-MM/DD date rule (`M4-CSV-ING-093`) are both out of this ticket's scope — this only parses, infers, detects and raises.
