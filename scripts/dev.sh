@@ -298,7 +298,11 @@ case "$cmd" in
         # `mode: "grounded"` suite kind that seeds and queries the fixture
         # corpus through the real database, the same way `db`/`test-db`
         # already join the stack's network to reach it — an eval run is the
-        # local machine talking to itself, not egress.
+        # local machine talking to itself, not egress. `M4-EVAL-TEST-112`
+        # added `mode: "sql"`/`"sql_safety"`, which need the `sandbox`
+        # service too — `askwell_sandbox`, comma-joined, and the three
+        # `ASKWELL_SANDBOX_*` variables, exactly `test-db`'s own reasoning
+        # for reaching the same service from an ad hoc container.
         #
         # -w /app/api, not /app: Settings reads `.env` relative to the working
         # directory, and the real `.env` at the repo root carries the raw
@@ -308,9 +312,12 @@ case "$cmd" in
         [ "$#" -gt 0 ] || die "eval needs a suite, e.g. $SELF eval --suite smoke.v1"
         image_exists || build_image
         "$CONTAINER" run --rm "${TTY_FLAGS[@]}" \
-            --network "${ASKWELL_COMPOSE_NETWORK:-askwell_internal}" \
+            --network "${ASKWELL_COMPOSE_NETWORK:-askwell_internal,askwell_sandbox}" \
             -e ASKWELL_DATABASE_URL="postgresql://$(_db_user):$(_db_password)@$(_db_host):5432/$(_db_name)" \
             -e ASKWELL_PROFILE="${ASKWELL_PROFILE:-balanced}" \
+            -e ASKWELL_SANDBOX_DATABASE_URL="postgresql://$(_sandbox_user):$(_sandbox_password)@$(_sandbox_host):$(_sandbox_port)/postgres" \
+            -e ASKWELL_SANDBOX_OWNER_PASSWORD="$(_sandbox_owner_password)" \
+            -e ASKWELL_SANDBOX_READONLY_PASSWORD="$(_sandbox_readonly_password)" \
             -v "$REPO_ROOT":/app:z \
             -v "${ASKWELL_RUN_DIR:-$REPO_ROOT/.run}":/run/askwell:z \
             -w /app/api \

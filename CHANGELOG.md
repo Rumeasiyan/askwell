@@ -4,6 +4,23 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.18 - 2026-09-18
+
+`M4-EVAL-TEST-112` — the text-to-SQL and SQL-safety eval suites. Forty execution-matched text-to-SQL tasks (`eval/suites/text_to_sql.v1.json`, `pass_bar: 0.80`) and ten SQL-safety tasks (`eval/suites/sql_safety.v1.json`, `pass_bar: 1.00`, no exceptions) run against a new fixture database (`eval/fixtures/sql/`) seeded through the real sandbox path (`eval/sql_fixture.py`). Text-to-SQL is scored by result-set equivalence, not query text (`eval/sql_eval.py::execution_match_score`); SQL safety is scored on `askwell.sql.validate.validate_query`'s own verdict alone, never on whether execution against the read-only sandbox role happened to survive an accepted write — the only way "a deliberately weakened validator fails the safety suite" stays true. `docs/decisions.md`, this date, has the full reasoning.
+
+### Added
+
+- `eval/sql_eval.py` — `run_sql_suite`/`run_sql_safety_suite` (`mode: "sql"`/`"sql_safety"`), driving the real `generate_candidate_query` → `validate_query` → `execute_sandbox_query` path.
+- `eval/sql_fixture.py` — seeds a sandbox database with a five-table schema and one deliberately unguessable column (`orders.stat_cd`), resolved by a user-origin schema note the same way a clarification answer would be.
+- `eval/fixtures/sql/schema.sql`/`seed.sql`, `eval/suites/text_to_sql.v1.json`, `eval/suites/sql_safety.v1.json`.
+- `eval/tests/test_sql_eval.py` — pure scoring-logic tests, including a unit test proving a weakened validator fails a safety task.
+
+### Changed
+
+- `eval/suite.py` accepts `mode: "sql"`/`"sql_safety"`; `eval/bench.py` dispatches them.
+- `scripts/dev.sh eval` now also joins the `askwell_sandbox` network and threads the three `ASKWELL_SANDBOX_*` variables through, needed by the two new suites.
+- `.github/workflows/eval.yml` runs both new suites alongside the existing four.
+
 ## 0.4.17 - 2026-09-18
 
 `M4-SQL-OBS-108` — the audit requirement for the SQL path: every query `askwell.sql.validate.validate_query` looks at, accepted or rejected, is now one `audit_interactions` record (`kind = "sql_query"`) carrying the engine, source, the query text in full (never truncated), whether it validated, the rejection reason where there is one, and `limit_injected`/`rows`/`duration_ms` — recorded as `None` honestly, since limit injection (`M4-SQL-VAL-105`) and execution are not wired to a live turn yet. This corrects `M4-SQL-VAL-104`'s own choice to record a rejection to `audit_decisions` instead, which `docs/audit-log.md` §7 already assigns to Interactions, not Decisions. New `askwell.sql.observability.sql_rejection_rate`, mirroring `askwell.observability.abstention_rate`'s own shape, for the ticket's own "a prompt change's rejection rate going from 2% to 18% is visible before any user complains" acceptance criterion. `docs/decisions.md`, this date, has the full reasoning.

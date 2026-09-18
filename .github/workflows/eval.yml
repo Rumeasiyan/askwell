@@ -2,8 +2,8 @@
 #
 # The 165-task gate needs a model loaded and minutes of CPU/GPU time, which
 # `ci.yml`'s hosted runners do not comfortably give it — that workflow stays
-# fast on every push on purpose. This one runs the four suites that exist
-# today (`docs/build-plan.md`'s other four categories arrive with their
+# fast on every push on purpose. This one runs the six suites that exist
+# today (`docs/build-plan.md`'s other two categories arrive with their
 # features in M3-M6.5) on the one machine that actually has all three model
 # weights on disk already: per `AGENTS.md` §1, "one user, one machine" — the
 # self-hosted runner *is* the maintainer's own machine, registered with the
@@ -58,6 +58,12 @@ on:
   #     - "eval/grounded.py"
   #     - "eval/abstain.py"
   #     - "eval/conflict.py"
+  #     - "eval/sql_eval.py"
+  #     - "eval/sql_fixture.py"
+  #     - "eval/fixtures/sql/**"
+  #     - "api/src/askwell/agent/sql_generate.py"
+  #     - "api/src/askwell/sql/validate.py"
+  #     - "api/src/askwell/sql_execute.py"
   # pull_request:
   #   paths: *eval-paths
 
@@ -70,11 +76,11 @@ permissions:
 
 jobs:
   eval:
-    name: Eval gate — grounded QA, abstention, conflicting sources, memory application
+    name: Eval gate — grounded QA, abstention, conflicting sources, memory application, text-to-SQL, SQL safety
     runs-on: [self-hosted, askwell]
     # A runner that never picks this job up must fail loud rather than hang
     # a PR's checks forever — the "runner offline" edge case the ticket
-    # names. 35 minutes covers four suites' worth of a 4B model with room
+    # names. 35 minutes covers six suites' worth of a 4B model with room
     # to spare; a genuinely offline runner never leaves "queued", so this
     # bounds that case to a clear timeout instead of an indefinite wait.
     timeout-minutes: 35
@@ -205,7 +211,7 @@ jobs:
             echo "date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo
           } >> "$GITHUB_STEP_SUMMARY"
-          for SUITE in grounded_qa.v1 abstention.v1 conflicting_sources.v1 memory_apply.v1; do
+          for SUITE in grounded_qa.v1 abstention.v1 conflicting_sources.v1 memory_apply.v1 text_to_sql.v1 sql_safety.v1; do
             echo "::group::$SUITE"
             OUTPUT=$(scripts/dev.sh eval --suite "$SUITE" 2>&1)
             CODE=$?
