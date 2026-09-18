@@ -4,6 +4,14 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.21 - 2026-09-19
+
+`M4-SQL-VAL-106` — an `EXPLAIN`/`SHOWPLAN` dry run before a validated, limited query ever executes. `askwell.sql.dry_run.dry_run_sandbox_query`/`dry_run_connection_query` plan a query, under the same read-only role and statement timeout execution uses, without running it: Postgres and MySQL/MariaDB via `EXPLAIN`, SQL Server via a session-level `SET SHOWPLAN_ALL ON`. A query whose planner rejects it (a dropped column, a renamed table) comes back `DryRunReason.PLANNING_FAILED` and is recorded to `audit_interactions` as `sql_dry_run` — a different kind from `validate.SQL_QUERY`, so a planning failure and a validation rejection stay distinguishable in the log. A planner that itself times out is `TIMEOUT`; a database whose plan-only mode itself can't be entered (SQL Server only) is `UNSUPPORTED`, never silently treated as a pass. Also fixes issue #382: a connect-time failure now returns a `.FAILED` `DryRunResult` instead of propagating the driver's own operational-error class unhandled. **Not wired into `POST /ask`** — issue #375 tracks the remaining turn-flow wiring for validation, limit injection, dry run and execution together.
+
+### Added
+
+- `askwell.sql.dry_run.dry_run_sandbox_query`/`dry_run_connection_query`/`DryRunResult`/`DryRunReason`.
+
 ## 0.4.20 - 2026-09-19
 
 `M4-SQL-VAL-105` — automatic row-limit injection, and the injected limit made visible in the disclosed SQL. `askwell.sql.limit.inject_limit` adds `Settings.sql_row_limit` (`ASKWELL_SQL_ROW_LIMIT`, default 1000, adjustable) to an already-validated read that has no top-level aggregate and no limit clause of its own, marking the added `LIMIT` with a discarded-on-reparse SQL comment (`/* Added by Askwell */`) so it reads visibly different from one the model wrote. An explicit limit — `LIMIT n` or the SQL:2008 `FETCH FIRST/NEXT ... ROWS ONLY` form — is left untouched regardless of size. `result_was_truncated(row_count, limit)` labels a result landing exactly on the limit the same as one that exceeded it. Fixes two defects found in an earlier, unmerged attempt at this ticket: the injected-limit audit record now goes to `audit_interactions` rather than `audit_decisions` (#372), and a `FETCH FIRST/NEXT` clause is now recognised as an existing limit rather than silently overwritten (#371). **Not wired into `POST /ask`** — `M4-SQL-VAL-106` (the `EXPLAIN` dry run) is the remaining safety layer before a generated, validated, limited query can reach a real turn.
