@@ -91,6 +91,86 @@ def test_the_dump_endpoint_requires_a_session(client: TestClient) -> None:
     assert response.status_code == 401
 
 
+def test_the_connection_endpoint_requires_a_session(client: TestClient) -> None:
+    with client:
+        response = client.post(
+            "/sources/connection",
+            json={
+                "engine": "postgresql",
+                "host": "db.example.com",
+                "port": 5432,
+                "database": "prod",
+                "user": "reader",
+                "password": "secret",
+            },
+        )
+    assert response.status_code == 401
+
+
+def test_a_connection_with_a_blank_host_is_refused_before_any_socket_opens(
+    client: TestClient,
+) -> None:
+    """`docs/data-sources.md` §4: "Port and host validated before attempting."
+    Whitespace-only passes Pydantic's own `min_length=1` (it is not empty as
+    far as JSON shape goes), so this is `askwell.connections.validate_fields`
+    catching what the schema cannot — and no database is configured on this
+    fixture's client at all, so a query against `sources` would fail loudly
+    if this reached one, which it does not.
+    """
+    with client:
+        with_session(client)
+        response = client.post(
+            "/sources/connection",
+            json={
+                "engine": "postgresql",
+                "host": "   ",
+                "port": 5432,
+                "database": "prod",
+                "user": "reader",
+                "password": "secret",
+            },
+        )
+    assert response.status_code == 400
+    body = response.json()
+    assert body["reason_code"] == "invalid_host"
+    assert body["source"] is None
+
+
+def test_a_connection_with_an_unsupported_engine_is_refused_by_name(client: TestClient) -> None:
+    with client:
+        with_session(client)
+        response = client.post(
+            "/sources/connection",
+            json={
+                "engine": "oracle",
+                "host": "db.example.com",
+                "port": 1521,
+                "database": "prod",
+                "user": "reader",
+                "password": "secret",
+            },
+        )
+    assert response.status_code == 400
+    assert response.json()["reason_code"] == "unsupported_engine"
+
+
+def test_a_connection_refusal_never_echoes_the_password(client: TestClient) -> None:
+    with client:
+        with_session(client)
+        response = client.post(
+            "/sources/connection",
+            json={
+                "engine": "postgresql",
+                "host": "",
+                "port": 5432,
+                "database": "prod",
+                "user": "reader",
+                "password": "a-very-secret-value",
+            },
+        )
+    assert "a-very-secret-value" not in response.text
+
+
 def test_the_endpoint_takes_paths_and_never_bytes(client: TestClient) -> None:
     """Askwell indexes in place. This must never become an upload.
 

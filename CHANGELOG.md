@@ -4,6 +4,25 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.8 - 2026-09-18
+
+`M4-CONN-FE-096` — the connection wizard for a live database, `docs/data-sources.md` §4, `docs/ux/add-source.md` §4. Adds `POST /sources/connection`: validates host/port/database/user before any socket opens, then attempts a real connection against PostgreSQL (`psycopg`), MySQL/MariaDB (`pymysql`) or SQL Server (`python-tds`), a minimal read check (a table listing plus a best-effort SELECT-grant check), and — on success — creates a `connection`-kind source and dispatches `introspect_connection_job` to record its table names as `schema_notes` and mark it `ready`. `askwell.connections.py` classifies every failure into one of five distinguishable reasons (`host_unresolved`, `connection_refused`, `network_blocked`, `timeout`, `auth_failed`, plus `permission_denied` for a connection that succeeds but cannot read), matched against each driver's own exception types and, for `psycopg`, its message text — never guessed from a support matrix. `web/components/add/add-screen.tsx` gained `ConnectionRoute` (engine/host/port/database/user/password, one submit, a heading per `reason_code`) and `ConnectionQueued` (the same "recorded, now runs in the background" shape `DumpQueued` already has, polling `/ingest`). Settings gained a "Connected databases" section (`web/components/settings/connections.tsx`) with its own count, deliberately not folded into the network-activity zero. The library lists a connection's read status honestly: "read access confirmed, write permissions not yet checked" — `M4-CONN-SEC-097` (the write probe) is not built, so nothing claims a check that did not run.
+
+**What this does not do, on purpose.** The egress proxy still permits nothing (`docs/architecture.md` §5.1); building the permit-and-forward mechanism a live connection actually needs is out of scope here and filed as [#345](https://github.com/Rumeasiyan/askwell/issues/345) — reasoning in `docs/decisions.md`, this date. Proven live during this ticket: a connection to the sandbox Postgres (reachable because `api` already shares that network for C3) round-trips end to end; the identical request against a real external IP comes back `network_blocked`, and against a real external host name comes back `host_unresolved` — the second of which is itself a finding folded into #345, since DNS resolution for anything outside the container network fails the same way a genuine typo does.
+
+### Added
+
+- `POST /sources/connection` (`askwell.connections`, `askwell.sources.add_connection`) — validates, connects, and either creates a `connection` source or returns why not.
+- `askwell.connections.probe_connection` and its three per-engine blocking probers, each returning one of five typed, distinguishable outcomes.
+- `introspect_connection_job` (`askwell.worker`) — reconnects with the stored configuration, lists tables, writes `schema_notes`, marks the source `ready`.
+- `ASKWELL_CONNECTION_PROBE_TIMEOUT_SECONDS` (default `5.0`).
+- `web/lib/connection-source.ts`, `web/components/add/add-screen.tsx`'s `ConnectionRoute`/`ConnectionQueued`, `web/components/settings/connections.tsx`.
+
+### Changed
+
+- `ARRIVES["connection"]` flips from `"M4"` to `null` in `add-source.ts`, the same edit `M4-DUMP-FE-090` made for the dump route.
+- `docs/ux/settings.md` §4 now states that a connected-database count is separate from the network-activity zero, and that a connection's read-only status is honestly "not yet checked" until the write probe exists.
+
 ## 0.4.7 - 2026-09-18
 
 `M4-DUMP-FE-090` — the dump route on the add-source screen, `docs/ux/add-source.md` §3, C3. Adds `POST /sources/dump`: one file at a time, engine-detected server-side (`askwell.filetypes._dump_engine`, best-effort from the header) and routed three ways — a PostgreSQL dump is queued and handed to a worker (`askwell.dump_import.dispatch_import`, the same one-attempt nudge `askwell.ingest.dispatch` already uses); a MySQL or SQL Server dump is refused naming both routes out (connect live, or export as CSV); an engine `filetypes` cannot place at all is refused with a question rather than a guess. The calm sandbox statement from `docs/ux/add-source.md` §3 is rendered once on the route, never as a modal or a checkbox. `web/components/add/add-screen.tsx` gained `DumpRoute`, which asks for the file's folder the same way the files route does, then polls `/ingest` for the source's status to render queued/importing, imported, and failed (a cap abort and an ordinary load failure render identically — both are `status = 'attention'` with a specific `last_error`).

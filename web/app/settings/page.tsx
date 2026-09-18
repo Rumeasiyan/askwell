@@ -1,14 +1,16 @@
+import { Connections } from "@/components/settings/connections";
 import { Folders } from "@/components/settings/folders";
 
 /**
- * Settings — one real section so far.
+ * Settings — two real sections so far.
  *
  * The folders Askwell may read arrive here in M1 because that is where the
  * cold-start walkthrough looks for them: nominate a folder while adding a
- * source, then open settings and see it listed. The rest of the screen is
- * still its empty state, because `docs/states-and-edge-cases.md` requires
- * every surface to have one and a route stub with nothing in it teaches the
- * next person that empty states are optional.
+ * source, then open settings and see it listed. Connected databases arrives
+ * the same way in `M4-CONN-FE-096`. The rest of the screen is still its
+ * empty state, because `docs/states-and-edge-cases.md` requires every
+ * surface to have one and a route stub with nothing in it teaches the next
+ * person that empty states are optional.
  */
 export default function SettingsPage() {
   return (
@@ -32,6 +34,7 @@ export default function SettingsPage() {
       </section>
 
       <Folders />
+      <Connections />
     </div>
   );
 }

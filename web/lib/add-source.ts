@@ -59,8 +59,11 @@ export const ROUTES: {
   {
     id: "connection",
     title: "Connect a database",
-    accepts: "PostgreSQL, MySQL or SQL Server, read-only. Askwell refuses credentials that can write.",
-    arrives: "M4",
+    accepts:
+      "PostgreSQL, MySQL, MariaDB or SQL Server. Connect with a read-only user yourself for now — " +
+      "the refusal for a write-capable credential is not wired up yet.",
+    // `M4-CONN-FE-096`: this route is real now. `table` stays dated.
+    arrives: null,
   },
 ];
 
