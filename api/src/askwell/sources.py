@@ -73,11 +73,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from askwell import ingest, roots
+from askwell import dump_import, ingest, roots
 from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
-from askwell.filetypes import HEAD_BYTES, Detection, Verdict, detect
+from askwell.filetypes import HEAD_BYTES, Detection, Route, Verdict, detect
 from askwell.logging import get_logger
 
 log = get_logger(__name__)
@@ -936,6 +936,130 @@ async def delete_source(session: AsyncSession, source_id: uuid.UUID) -> int:
     return len(document_ids)
 
 
+# --- the dump route ----------------------------------------------------------
+
+
+def _peek(path: str) -> tuple[bytes, int]:
+    """The first few kilobytes and the size, without hashing the rest.
+
+    `fingerprint`'s whole-file hash exists for document deduplication, which a
+    dump import has no use for — `dump_import.create_dump_source` identifies a
+    source by its sandbox database, not a content hash — so hashing one here
+    would be a second full read of a file `psql` is about to read again for
+    real, and a dump can legitimately be gigabytes (`docs/data-sources.md` §7:
+    a 5 GB cap).
+    """
+    size = os.stat(path).st_size
+    with open(path, "rb") as handle:
+        head = handle.read(HEAD_BYTES)
+    return head, size
+
+
+@dataclass(frozen=True, slots=True)
+class DumpAddResult:
+    """What came of naming one dump file. `M4-DUMP-FE-090`.
+
+    `detection` is `None` only when the path itself could not be resolved or
+    read — outside every nominated root, missing, unreadable — the same cases
+    `_resolve` and `fingerprint` report for an ordinary file, where there is
+    nothing yet to have detected a format from.
+    """
+
+    detection: Detection | None
+    refusal: str | None
+    path: str | None
+    source_id: uuid.UUID | None
+    source_name: str | None
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "detection": None if self.detection is None else self.detection.as_dict(),
+            "refusal": self.refusal,
+            "source": (
+                None
+                if self.source_id is None
+                else {"id": str(self.source_id), "name": self.source_name, "status": "queued"}
+            ),
+        }
+
+
+async def add_dump(session: AsyncSession, folder: str, relative: str) -> DumpAddResult:
+    """Register one PostgreSQL dump for import, or refuse it with a way out.
+
+    One file, not a batch — `docs/ux/add-source.md` §3 is a single sealed
+    database per dump, so there is exactly one thing to name. Path resolution
+    and the roots check are the same ones `add()` uses for files: the promise
+    not to copy anything and to open only what a nominated root covers applies
+    here too, and `dump_import.import_dump`'s own docstring trusts its caller
+    (this function) to have made that check already.
+
+    Never raises for a bad dump — every outcome, including every refusal
+    `askwell.filetypes.detect` can produce for the dump route, comes back as a
+    `DumpAddResult` the caller renders. What *is* allowed to raise is
+    `roots.RootRefused`, for the same reason `add()` lets it: an absolute
+    folder that is not a real, readable directory is wrong about the request
+    itself, not about the file inside it.
+    """
+    root_path = roots.normalise(folder)
+    nominated = [item.path for item in await roots.active(session)]
+    path, filename, refusal = await asyncio.to_thread(_resolve, root_path, relative, nominated)
+    if refusal is not None:
+        return DumpAddResult(
+            detection=None, refusal=refusal, path=path, source_id=None, source_name=None
+        )
+
+    try:
+        head, size = await asyncio.to_thread(_peek, path)
+    except FileNotFoundError:
+        return DumpAddResult(
+            detection=None, refusal=MISSING_REASON, path=path, source_id=None, source_name=None
+        )
+    except PermissionError:
+        return DumpAddResult(
+            detection=None, refusal=UNREADABLE_REASON, path=path, source_id=None, source_name=None
+        )
+    except OSError as error:
+        why = f"Askwell could not read this file: {error.strerror}."
+        return DumpAddResult(
+            detection=None, refusal=why, path=path, source_id=None, source_name=None
+        )
+
+    detection = detect(filename, head, size)
+
+    if detection.route is not Route.DUMP:
+        # A file that resolved and read fine but is not a dump at all — a PDF
+        # someone dropped on this route by mistake. `detection.refusal` is
+        # already the right sentence when content refused it outright (a
+        # program, an archive); otherwise this route-mismatch is the reason.
+        refusal_text = detection.refusal or (
+            f"This does not look like a database dump — its contents are "
+            f"{detection.format}. Add it from the Files route instead."
+        )
+        log.info("dump_wrong_route", path=path, format=detection.format)
+        return DumpAddResult(
+            detection=detection,
+            refusal=refusal_text,
+            path=path,
+            source_id=None,
+            source_name=None,
+        )
+
+    if detection.verdict is not Verdict.SUPPORTED:
+        log.info("dump_refused", path=path, format=detection.format, reason=detection.refusal)
+        return DumpAddResult(
+            detection=detection,
+            refusal=detection.refusal,
+            path=path,
+            source_id=None,
+            source_name=None,
+        )
+
+    source_id = await dump_import.create_dump_source(session, filename, path)
+    return DumpAddResult(
+        detection=detection, refusal=None, path=path, source_id=source_id, source_name=filename
+    )
+
+
 # --- the surface ------------------------------------------------------------
 
 
@@ -961,6 +1085,14 @@ class AddRequest(BaseModel):
     version_decisions: dict[str, Literal["supersede", "keep_both"]] = Field(default_factory=dict)
 
 
+class AddDumpRequest(BaseModel):
+    """One dump file, named the same way `AddRequest` names a batch of files —
+    an absolute folder and a path relative to it, never bytes. `M4-DUMP-FE-090`."""
+
+    folder: str = Field(min_length=1, max_length=4096)
+    file: str = Field(min_length=1, max_length=4096)
+
+
 def register_sources(
     app: FastAPI, settings: Settings, factory: async_sessionmaker[AsyncSession]
 ) -> None:
@@ -983,6 +1115,23 @@ def register_sources(
         # import.
         await ingest.dispatch(settings, result.queued)
         return JSONResponse(result.as_dict(), status_code=201)
+
+    @app.post("/sources/dump")
+    async def add_dump_route(body: AddDumpRequest) -> JSONResponse:
+        try:
+            async with session_scope(factory) as db:
+                outcome = await add_dump(db, body.folder, body.file)
+        except roots.RootRefused as refusal:
+            return JSONResponse({"error": str(refusal), "folder": body.folder}, status_code=400)
+
+        if outcome.source_id is not None and outcome.path is not None:
+            # After the commit, same reasoning as `add_source` above: the
+            # `sources` row is already durable at `status = 'queued'`, and
+            # this only saves the worker its next opportunity to notice —
+            # except there currently is no such opportunity beyond this one
+            # nudge (issue #340, `dump_import.dispatch_import`'s own docstring).
+            await dump_import.dispatch_import(settings, outcome.source_id, outcome.path)
+        return JSONResponse(outcome.as_dict(), status_code=201)
 
     @app.post("/sources/{source_id}/reindex")
     async def reindex_source(source_id: uuid.UUID) -> JSONResponse:

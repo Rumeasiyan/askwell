@@ -4,6 +4,29 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.7 - 2026-09-18
+
+`M4-DUMP-FE-090` — the dump route on the add-source screen, `docs/ux/add-source.md` §3, C3. Adds `POST /sources/dump`: one file at a time, engine-detected server-side (`askwell.filetypes._dump_engine`, best-effort from the header) and routed three ways — a PostgreSQL dump is queued and handed to a worker (`askwell.dump_import.dispatch_import`, the same one-attempt nudge `askwell.ingest.dispatch` already uses); a MySQL or SQL Server dump is refused naming both routes out (connect live, or export as CSV); an engine `filetypes` cannot place at all is refused with a question rather than a guess. The calm sandbox statement from `docs/ux/add-source.md` §3 is rendered once on the route, never as a modal or a checkbox. `web/components/add/add-screen.tsx` gained `DumpRoute`, which asks for the file's folder the same way the files route does, then polls `/ingest` for the source's status to render queued/importing, imported, and failed (a cap abort and an ordinary load failure render identically — both are `status = 'attention'` with a specific `last_error`).
+
+Fixes two bugs found while building this: a `.sql`/`.dump`/`.backup` extension no longer overrides content when deciding whether something is a dump at all — a prose file renamed to a dump extension is now refused as *unsupported*, not indexed as plain text and not told it is an unidentified dump either (issue #341). A compressed dump (`backup.sql.gz`) gets a dump-specific refusal naming decompression and the two live-data routes out, rather than the generic "unpack it and add what is inside" archive message, which made no sense for a single-file database export (issue #342).
+
+`ARRIVES[Route.DUMP]` flips from `"M4"` to `None` in both `filetypes.py` and `add-source.ts` — the only edit `docs/decisions.md`'s `M1-ADD-BE-023` entry said this route would ever need once its screen existed. `docs/data-sources.md` §7's PostgreSQL-only decision is unchanged; MySQL and SQL Server dumps stay unsupported *as dumps*, by design, not by omission.
+
+Issue #340 (a failed Redis enqueue at add time leaves a `dump` source stuck `queued` forever, since there is no reconcile sweep for `dump`/`table` sources the way `askwell.ingest.reconcile` covers documents) is not fixed here — `dispatch_import`'s own docstring names the gap, and the issue stays open as a follow-up. Building the sweep is a second background job, not "one route and three messages," which is this ticket's own stated granularity.
+
+### Added
+
+- `POST /sources/dump` (`askwell.sources.add_dump`, `AddDumpRequest`) — resolves one dump file against the nominated roots, detects it, and either creates a `dump` source and dispatches the import or returns why not.
+- `askwell.dump_import.dispatch_import` — enqueues `import_dump_job` for a just-created dump source.
+- `askwell.filetypes._dump_engine` / `web/lib/add-source.ts`'s `dumpEngine` — best-effort PostgreSQL/MySQL/SQL Server/unknown classification from a dump's header.
+- `askwell.filetypes.REFUSED_DUMP_ENGINE_UNKNOWN`, `REFUSED_DUMP_COMPRESSED`, `REFUSED_DUMP_UNSUPPORTED`, and the MySQL/SQL Server refusal template — mirrored in `add-source.ts`.
+- `web/lib/dump-source.ts` (`addDumpSource`) and `web/components/add/add-screen.tsx`'s `DumpRoute`/`DumpQueued`.
+
+### Changed
+
+- `filetypes.detect`/`add-source.ts`'s `detect`: a dump-extension file with content that does not look like a dump is refused as unsupported rather than falling back to the files route as plain text (issue #341); a `.gz` file whose stacked extension names a dump gets the compressed-dump refusal instead of the generic archive one (issue #342).
+- `ARRIVES[Route.DUMP]` / `ROUTES` dump entry: `"M4"` → `null`. `SUPPORTED_SUMMARY` updated to match.
+
 ## 0.4.6 - 2026-09-18
 
 `M4-CSV-ING-094` — load a CSV or spreadsheet into its own sandbox database as a real, queryable table, `docs/data-sources.md` §2, C3. `askwell.table_load.process_table_source` runs `askwell.table_infer`'s existing parse-and-raise step (`M4-CSV-ING-092`/`093`) and then creates the table: column names normalised into valid identifiers (the original recorded as an `inferred` schema note so a question naming it still resolves), a column `table_infer` could not resolve with confidence loaded as `text` verbatim rather than coerced, and every other row cast to its confirmed type with per-row failures collected by row number rather than dropped. Answering a `date_format` clarification now does something real: `askwell.reapply` calls the new `askwell.table_load.reload_source`, which rebuilds the table from the source file with every date-format answer applied so far, turning a `text` column that was waiting on an answer into a real `date`. The size and time caps are the same ones `M4-DUMP-VAL-089` already added, read through `askwell.dump_import`'s own settings rather than a second pair a user would have to discover. `askwell.sandbox` gained `unseal_owner`, symmetric to `seal_owner` — unlike a dump, a table source can need a further owner-privileged write long after it is `ready`.

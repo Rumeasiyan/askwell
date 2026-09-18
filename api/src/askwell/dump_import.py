@@ -69,6 +69,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import psycopg
@@ -524,6 +525,53 @@ async def import_dump(
         )
     log.info("dump_import_succeeded", source_id=str(source_id), database=name, tables=len(tables))
     return tables
+
+
+async def dispatch_import(settings: Settings, source_id: uuid.UUID, dump_path: str) -> bool:
+    """Ask a worker to import this dump now, rather than waiting to be found.
+
+    `M4-DUMP-FE-090`. Mirrors `askwell.ingest.dispatch` exactly — one attempt,
+    swallowed and logged rather than raised, because `create_dump_source` has
+    already committed the `sources` row with `status = 'queued'` and this is
+    only a nudge to save a worker some idle time, never something the add
+    request should fail over.
+
+    **Unlike `ingest.dispatch`, there is nothing behind this to save it if the
+    nudge is lost.** `ingest.dispatch`'s own docstring can say "costs the user
+    up to one reconcile interval" because `askwell.ingest.reconcile` runs on a
+    timer and re-dispatches anything `queued` that never started. No such
+    sweep exists for `dump` (or `table`) sources yet — filed as issue #340
+    rather than built inside this ticket, whose own granularity is one route
+    and three messages, not a second background sweep. Until #340 lands, a
+    Redis that is down or drops this specific enqueue leaves the source stuck
+    at `queued` with nothing to notice. Recorded here rather than hidden so
+    the gap is legible from the one place someone debugging a stuck import
+    would actually look.
+    """
+    from arq import create_pool
+    from redis.exceptions import RedisError
+
+    from askwell.worker import redis_settings
+
+    queue = replace(redis_settings(settings), conn_retries=1, conn_retry_delay=0)
+
+    try:
+        pool = await create_pool(queue)
+    except (OSError, RedisError) as error:
+        log.warning("dump_import_dispatch_unavailable", error=str(error), source_id=str(source_id))
+        return False
+
+    try:
+        job = await pool.enqueue_job(
+            "import_dump_job", str(source_id), dump_path, _job_id=f"dump-import:{source_id}"
+        )
+    except (OSError, RedisError) as error:  # pragma: no cover - needs a mid-flight failure
+        log.warning("dump_import_dispatch_failed", error=str(error), source_id=str(source_id))
+        return False
+    finally:
+        await pool.aclose()
+
+    return job is not None
 
 
 async def reclaim_interrupted(session: AsyncSession, admin_url: str) -> list[uuid.UUID]:

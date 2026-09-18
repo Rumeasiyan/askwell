@@ -52,7 +52,9 @@ export const ROUTES: {
     id: "dump",
     title: "Database dump",
     accepts: "PostgreSQL .sql, .dump and .backup files, imported into a sealed database.",
-    arrives: "M4",
+    // `M4-DUMP-FE-090`: this route is real now. `table` and `connection`
+    // stay dated — see the matching comment on `filetypes.py`'s `ARRIVES`.
+    arrives: null,
   },
   {
     id: "connection",
@@ -117,8 +119,8 @@ export const MAX_FILES = 5000;
  * anyone whose material is mostly exports.
  */
 export const SUPPORTED_SUMMARY =
-  "PDF, Word, Excel, PowerPoint, plain text, Markdown, HTML and images are read today. " +
-  "CSV, database dumps and live connections arrive in M4.";
+  "PDF, Word, Excel, PowerPoint, plain text, Markdown, HTML, images and PostgreSQL database " +
+  "dumps are read today. CSV and live connections arrive in M4.";
 
 /** When each route starts working, from the one place that already says so. */
 const ARRIVES: Record<Route, string | null> = Object.fromEntries(
@@ -198,6 +200,35 @@ const REFUSED_PROGRAM =
 const REFUSED_ARCHIVE =
   "Askwell does not open archives. Unpack it and add what is inside — that way each document keeps its own name in your citations.";
 
+/** `docs/data-sources.md` §7: v1 imports PostgreSQL dumps only, and a refusal
+ * always names both routes out. `engine` is `"MySQL"` or `"SQL Server"`. */
+function refusedDumpEngine(engine: string): string {
+  return (
+    `Askwell imports PostgreSQL dumps. For ${engine}, either connect to the database ` +
+    "directly or export the tables as CSV; both work, and CSV usually gives better answers " +
+    "because Askwell will ask about anything ambiguous."
+  );
+}
+
+/** The header did not commit to an engine — asked rather than guessed at,
+ * `docs/ux/add-source.md` §3's own edge case. */
+const REFUSED_DUMP_ENGINE_UNKNOWN =
+  "Askwell could not tell which database produced this dump. If it came from PostgreSQL, " +
+  "resaving it with pg_dump's own default output usually fixes this. If it came from MySQL " +
+  "or SQL Server, connect to the database directly, or export the tables as CSV — both work, " +
+  "and CSV usually gives better answers because Askwell will ask about anything ambiguous.";
+
+/** A dump-specific refusal, never the generic archive one — issue 342. */
+const REFUSED_DUMP_COMPRESSED =
+  "Askwell does not import compressed dumps yet. Decompress it first, or connect to the " +
+  "database directly, or export the tables as CSV — both work, and CSV usually gives better " +
+  "answers because Askwell will ask about anything ambiguous.";
+
+/** A dump extension whose contents do not back it up — issue 341. */
+const REFUSED_DUMP_UNSUPPORTED =
+  "This does not look like a database dump. Askwell imports PostgreSQL .sql, .dump and " +
+  ".backup files.";
+
 function fromBytes(head: Uint8Array): Content | null {
   if (leads(head, bytesOf("%PDF-"))) {
     return { format: "a PDF document", route: "files" };
@@ -273,6 +304,47 @@ function decode(head: Uint8Array): string {
   let text = "";
   for (const byte of head) text += String.fromCharCode(byte);
   return text;
+}
+
+// SQL Server dumps carry no reliable textual preamble the way `pg_dump` and
+// `mysqldump` do. These pragmas are what every generated T-SQL script sets
+// near its top regardless of tool, and none of them is valid syntax for
+// PostgreSQL or MySQL.
+const SQLSERVER_MARKERS = ["set ansi_nulls on", "set quoted_identifier on", "sp_addextendedproperty"];
+
+type DumpEngine = "postgresql" | "mysql" | "sqlserver" | "unknown";
+
+/**
+ * Which database produced a dump, from its header — best-effort, mirroring
+ * `filetypes.py::_dump_engine`. `docs/ux/add-source.md` §3's own Assumptions
+ * line: "Engine detection from the dump's header is reliable enough to route
+ * the message." Anything matching none of these returns `"unknown"` rather
+ * than defaulting to PostgreSQL — a wrong guess would try to load a MySQL
+ * dump into the Postgres sandbox and fail with a `psql` syntax error instead
+ * of the honest refusal `docs/data-sources.md` §7 asks for.
+ */
+function dumpEngine(text: string): DumpEngine {
+  const lowered = text.toLowerCase();
+  if (lowered.includes("postgresql database dump") || lowered.includes("pg_dump")) {
+    return "postgresql";
+  }
+  if (
+    lowered.includes("mysql dump") ||
+    lowered.includes("mysqldump") ||
+    lowered.includes("/*!40")
+  ) {
+    return "mysql";
+  }
+  for (const line of text.split(/\r?\n/)) {
+    const stripped = line.trim().toLowerCase();
+    if (stripped === "go" || SQLSERVER_MARKERS.some((marker) => stripped.startsWith(marker))) {
+      return "sqlserver";
+    }
+    if (stripped.startsWith("-- host:") && stripped.includes("database:")) {
+      return "mysql";
+    }
+  }
+  return "unknown";
 }
 
 /** Comma or tab separated, judged on the first line having repeated separators. */
@@ -362,6 +434,25 @@ export function detect(name: string, head: Uint8Array, size: number): Detection 
 
   const content = fromBytes(head);
 
+  if (
+    content !== null &&
+    content.format === "a gzip archive" &&
+    (extension === "gz" || extension === "gzip") &&
+    ["sql", "dump", "backup"].includes(extensionOf(name.slice(0, -(extension.length + 1))))
+  ) {
+    // issue 342: a compressed dump is not "unpack it and add what is
+    // inside" — that is the generic multi-document archive refusal, and it
+    // is nonsense advice for a single-file database export.
+    return {
+      format: "a compressed database dump",
+      route: "dump",
+      verdict: "refused",
+      arrives: null,
+      mismatch: null,
+      refusal: REFUSED_DUMP_COMPRESSED,
+    };
+  }
+
   if (content?.container === "ooxml") {
     const named = OOXML[extension];
     if (named === undefined) {
@@ -410,8 +501,45 @@ export function detect(name: string, head: Uint8Array, size: number): Detection 
         refusal: null,
       };
     }
-    if (extension === "sql" || extension === "dump" || extension === "backup" || SQL_MARKERS.test(text)) {
-      return { ...onRoute("a SQL dump", "dump"), mismatch: null, refusal: null };
+    const isDumpExtension = extension === "sql" || extension === "dump" || extension === "backup";
+
+    if (isDumpExtension || SQL_MARKERS.test(text)) {
+      if (!SQL_MARKERS.test(text)) {
+        // issue 341: the extension claimed a dump and the contents do not
+        // back it up — refused as unsupported, not indexed as prose.
+        return {
+          format: "plain text",
+          route: "files",
+          verdict: "refused",
+          arrives: null,
+          mismatch: disagreement(claimed?.format ?? null, "plain text", extension),
+          refusal: REFUSED_DUMP_UNSUPPORTED,
+        };
+      }
+
+      const engine = dumpEngine(text);
+      if (engine === "postgresql") {
+        return { ...onRoute("a PostgreSQL dump", "dump"), mismatch: null, refusal: null };
+      }
+      if (engine === "mysql" || engine === "sqlserver") {
+        const engineName = engine === "mysql" ? "MySQL" : "SQL Server";
+        return {
+          format: `a ${engineName} dump`,
+          route: "dump",
+          verdict: "refused",
+          arrives: null,
+          mismatch: null,
+          refusal: refusedDumpEngine(engineName),
+        };
+      }
+      return {
+        format: "a SQL dump",
+        route: "dump",
+        verdict: "refused",
+        arrives: null,
+        mismatch: null,
+        refusal: REFUSED_DUMP_ENGINE_UNKNOWN,
+      };
     }
     if (extension === "csv" || extension === "tsv" || looksDelimited(text)) {
       const format = extension === "tsv" ? "a tab-separated file" : "a CSV file";

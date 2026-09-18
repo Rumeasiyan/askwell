@@ -92,12 +92,94 @@ test("a CSV goes to the tabular route, by contents as well as by name", () => {
 });
 
 test("a SQL dump goes to the dump route whether it is named .sql or not", () => {
-  assert.equal(detect("db.sql", head("-- a dump\nSELECT 1;\n"), 20).route, "dump");
+  assert.equal(
+    detect("db.sql", head("-- PostgreSQL database dump\nCREATE TABLE orders (id int);\n"), 60)
+      .route,
+    "dump",
+  );
   assert.equal(
     detect("backup.txt", head("--\n-- PostgreSQL database dump\n--\n"), 40).route,
     "dump",
   );
   assert.equal(detect("db.dump", bytes([0x50, 0x47, 0x44, 0x4d, 0x50]), 900).route, "dump");
+});
+
+test("a PostgreSQL dump is supported", () => {
+  const result = detect(
+    "backup.sql",
+    head("--\n-- PostgreSQL database dump\n--\nSET statement_timeout = 0;\nCREATE TABLE orders (id int);\n"),
+    120,
+  );
+  assert.equal(result.route, "dump");
+  assert.equal(result.verdict, "supported");
+  assert.equal(result.format, "a PostgreSQL dump");
+  assert.equal(result.refusal, null);
+});
+
+test("a MySQL dump is refused with both routes out", () => {
+  const result = detect(
+    "shop.sql",
+    head("-- MySQL dump 10.13  Distrib 8.0.34\n-- Host: localhost    Database: shop\nCREATE TABLE `orders` (id int);\n"),
+    140,
+  );
+  assert.equal(result.route, "dump");
+  assert.equal(result.verdict, "refused");
+  assert.match(result.refusal ?? "", /connect to the database directly/);
+  assert.match(result.refusal ?? "", /export the tables as CSV/);
+  assert.match(result.refusal ?? "", /MySQL/);
+});
+
+test("a SQL Server dump is refused with both routes out", () => {
+  const result = detect(
+    "orders.sql",
+    head("SET ANSI_NULLS ON\nSET QUOTED_IDENTIFIER ON\nGO\nCREATE TABLE [dbo].[Orders] (Id int)\nGO\n"),
+    100,
+  );
+  assert.equal(result.route, "dump");
+  assert.equal(result.verdict, "refused");
+  assert.match(result.refusal ?? "", /SQL Server/);
+  assert.match(result.refusal ?? "", /export the tables as CSV/);
+});
+
+test("a dump with no recognisable engine is asked about rather than guessed", () => {
+  const result = detect(
+    "widgets.sql",
+    head("CREATE TABLE widgets (id int);\nINSERT INTO widgets VALUES (1);\n"),
+    70,
+  );
+  assert.equal(result.route, "dump");
+  assert.equal(result.verdict, "refused");
+  assert.match(result.refusal ?? "", /could not tell which database/);
+});
+
+test("a letter renamed .sql is refused as unsupported, not as an unidentified dump", () => {
+  const result = detect("letter.sql", head("Dear Anna, thank you for the contract.\n"), 40);
+  assert.equal(result.verdict, "refused");
+  assert.match(result.refusal ?? "", /does not look like a database dump/);
+  assert.doesNotMatch(result.refusal ?? "", /could not tell which database/);
+});
+
+test("a compressed dump is refused with a dump-specific reason", () => {
+  const result = detect(
+    "backup.sql.gz",
+    bytes([0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 1, 2, 3]),
+    11,
+  );
+  assert.equal(result.route, "dump");
+  assert.equal(result.verdict, "refused");
+  assert.match(result.refusal ?? "", /compressed dumps/);
+  assert.doesNotMatch(result.refusal ?? "", /Unpack it/);
+});
+
+test("a compressed non-dump archive still gets the generic refusal", () => {
+  const result = detect(
+    "photos.tar.gz",
+    bytes([0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 1, 2, 3]),
+    11,
+  );
+  assert.equal(result.route, "files");
+  assert.equal(result.verdict, "refused");
+  assert.match(result.refusal ?? "", /Unpack it/);
 });
 
 test("prose is plain text, not a CSV, because one comma is not a column", () => {
@@ -150,10 +232,10 @@ test("a CSV is named as arriving, not as unsupported", () => {
   assert.doesNotMatch(laterLine("exports/q3.csv", result), /unsupported/i);
 });
 
-test("a dump is named as arriving too, in both its forms", () => {
-  assert.equal(detect("db.sql", head("-- a dump\nSELECT 1;\n"), 20).verdict, "later");
-  assert.equal(detect("db.dump", bytes([0x50, 0x47, 0x44, 0x4d, 0x50]), 900).verdict, "later");
-  assert.equal(detect("db.dump", bytes([0x50, 0x47, 0x44, 0x4d, 0x50]), 900).arrives, "M4");
+test("a PostgreSQL dump is supported today, not named as arriving later", () => {
+  const result = detect("db.dump", bytes([0x50, 0x47, 0x44, 0x4d, 0x50]), 900);
+  assert.equal(result.verdict, "supported");
+  assert.equal(result.arrives, null);
 });
 
 test("a zip renamed .pdf is still refused, and the line names the file and the type", () => {
@@ -166,11 +248,12 @@ test("a zip renamed .pdf is still refused, and the line names the file and the t
   assert.match(refusalLine("dropped/contracts.pdf", result), /Unpack it/);
 });
 
-test("the supported list names every format M1 reads, and dates the rest", () => {
+test("the supported list names every format read today, and dates the rest", () => {
   for (const format of ["PDF", "Word", "Excel", "PowerPoint", "plain text", "Markdown", "HTML", "images"]) {
     assert.ok(SUPPORTED_SUMMARY.includes(format), `${format} is missing from the supported list`);
   }
-  assert.match(SUPPORTED_SUMMARY, /CSV, database dumps and live connections arrive in M4/);
+  assert.match(SUPPORTED_SUMMARY, /PostgreSQL database\s+dumps are read today/);
+  assert.match(SUPPORTED_SUMMARY, /CSV and live connections arrive in M4/);
 });
 
 test("a corrupt but well-headed PDF is still supported, so it fails at extraction and not here", () => {

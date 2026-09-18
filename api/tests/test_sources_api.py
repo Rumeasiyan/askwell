@@ -85,6 +85,12 @@ def test_a_batch_larger_than_the_cap_is_refused_by_the_endpoint(client: TestClie
     assert response.status_code in (400, 422)
 
 
+def test_the_dump_endpoint_requires_a_session(client: TestClient) -> None:
+    with client:
+        response = client.post("/sources/dump", json={"folder": "/tmp", "file": "backup.sql"})
+    assert response.status_code == 401
+
+
 def test_the_endpoint_takes_paths_and_never_bytes(client: TestClient) -> None:
     """Askwell indexes in place. This must never become an upload.
 
@@ -174,6 +180,170 @@ def test_a_successful_add_is_committed_and_survives_the_request(
     with psycopg.connect(database_url, autocommit=True) as check:
         kinds = check.execute("SELECT kind FROM audit_decisions ORDER BY occurred_at").fetchall()
     assert [row[0] for row in kinds] == ["source_added", "document_added"]
+
+    with psycopg.connect(database_url, autocommit=True) as clean:
+        clean.execute("TRUNCATE roots, sources, documents, audit_decisions CASCADE")
+
+
+@pytest.mark.requires_db
+def test_a_postgresql_dump_is_queued_and_committed(
+    settings: Settings,
+    app_database_url: str,
+    database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The dump route's success path: a real row, `status = 'queued'`.
+
+    No Redis runs in this test, so `dispatch_import` fails to connect and
+    swallows it (the same as `ingest.dispatch` does) — the row being queued
+    and committed is what this asserts, not that a worker picked it up.
+    """
+    import psycopg
+
+    folder = tmp_path / "exports"
+    folder.mkdir()
+    (folder / "backup.sql").write_bytes(
+        b"--\n-- PostgreSQL database dump\n--\nSET statement_timeout = 0;\n"
+        b"CREATE TABLE orders (id int);\n"
+    )
+
+    with psycopg.connect(database_url, autocommit=True) as setup:
+        setup.execute("TRUNCATE roots, sources, documents, audit_decisions CASCADE")
+        setup.execute("INSERT INTO roots (path) VALUES (%s)", (str(tmp_path),))
+
+    async def fixed_secret(_db: object) -> bytes:
+        return b"0" * 32
+
+    monkeypatch.setattr(sessions, "secret", fixed_secret)
+    monkeypatch.setattr("askwell.middleware.sessions.secret", fixed_secret)
+
+    built = tmp_path / "out"
+    built.mkdir()
+    (built / "index.html").write_text("<!doctype html><title>Askwell</title>")
+    live = create_app(
+        settings.model_copy(
+            update={"database_url": SecretStr(app_database_url), "web_assets_dir": built}
+        )
+    )
+
+    with TestClient(live) as client:
+        with_session(client)
+        response = client.post("/sources/dump", json={"folder": str(folder), "file": "backup.sql"})
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["refusal"] is None
+    assert body["source"]["status"] == "queued"
+    assert body["detection"]["format"] == "a PostgreSQL dump"
+
+    with psycopg.connect(database_url, autocommit=True) as check:
+        rows = check.execute("SELECT kind, status, root_path FROM sources").fetchall()
+    assert rows == [("dump", "queued", str(folder / "backup.sql"))]
+
+    with psycopg.connect(database_url, autocommit=True) as clean:
+        clean.execute("TRUNCATE roots, sources, documents, audit_decisions CASCADE")
+
+
+@pytest.mark.requires_db
+def test_a_mysql_dump_is_refused_over_the_endpoint_with_both_routes_out(
+    settings: Settings,
+    app_database_url: str,
+    database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Refusal still needs a real database — `add_dump` reads the nominated
+    roots before it ever looks at the file's contents."""
+    import psycopg
+
+    folder = tmp_path / "exports"
+    folder.mkdir()
+    (folder / "shop.sql").write_bytes(
+        b"-- MySQL dump 10.13  Distrib 8.0.34\n"
+        b"-- Host: localhost    Database: shop\n"
+        b"CREATE TABLE `orders` (id int);\n"
+    )
+
+    with psycopg.connect(database_url, autocommit=True) as setup:
+        setup.execute("TRUNCATE roots, sources, documents, audit_decisions CASCADE")
+        setup.execute("INSERT INTO roots (path) VALUES (%s)", (str(tmp_path),))
+
+    async def fixed_secret(_db: object) -> bytes:
+        return b"0" * 32
+
+    monkeypatch.setattr(sessions, "secret", fixed_secret)
+    monkeypatch.setattr("askwell.middleware.sessions.secret", fixed_secret)
+
+    built = tmp_path / "out"
+    built.mkdir()
+    (built / "index.html").write_text("<!doctype html><title>Askwell</title>")
+    live = create_app(
+        settings.model_copy(
+            update={"database_url": SecretStr(app_database_url), "web_assets_dir": built}
+        )
+    )
+
+    with TestClient(live) as client:
+        with_session(client)
+        response = client.post("/sources/dump", json={"folder": str(folder), "file": "shop.sql"})
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["source"] is None
+    assert "connect to the database directly" in body["refusal"]
+    assert "export the tables as CSV" in body["refusal"]
+    assert body["detection"]["route"] == "dump"
+    assert body["detection"]["verdict"] == "refused"
+
+    with psycopg.connect(database_url, autocommit=True) as check:
+        assert check.execute("SELECT count(*) FROM sources").fetchone() == (0,)
+
+    with psycopg.connect(database_url, autocommit=True) as clean:
+        clean.execute("TRUNCATE roots, sources, documents, audit_decisions CASCADE")
+
+
+@pytest.mark.requires_db
+def test_a_text_file_renamed_dot_sql_is_refused_as_unsupported_over_the_endpoint(
+    settings: Settings,
+    app_database_url: str,
+    database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import psycopg
+
+    folder = tmp_path / "exports"
+    folder.mkdir()
+    (folder / "letter.sql").write_bytes(b"Dear Anna, thank you for the contract.\n")
+
+    with psycopg.connect(database_url, autocommit=True) as setup:
+        setup.execute("TRUNCATE roots, sources, documents, audit_decisions CASCADE")
+        setup.execute("INSERT INTO roots (path) VALUES (%s)", (str(tmp_path),))
+
+    async def fixed_secret(_db: object) -> bytes:
+        return b"0" * 32
+
+    monkeypatch.setattr(sessions, "secret", fixed_secret)
+    monkeypatch.setattr("askwell.middleware.sessions.secret", fixed_secret)
+
+    built = tmp_path / "out"
+    built.mkdir()
+    (built / "index.html").write_text("<!doctype html><title>Askwell</title>")
+    live = create_app(
+        settings.model_copy(
+            update={"database_url": SecretStr(app_database_url), "web_assets_dir": built}
+        )
+    )
+
+    with TestClient(live) as client:
+        with_session(client)
+        response = client.post("/sources/dump", json={"folder": str(folder), "file": "letter.sql"})
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["source"] is None
+    assert "does not look like a database dump" in body["refusal"]
 
     with psycopg.connect(database_url, autocommit=True) as clean:
         clean.execute("TRUNCATE roots, sources, documents, audit_decisions CASCADE")

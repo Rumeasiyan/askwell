@@ -3,13 +3,17 @@
 import { useEffect, useRef, useState } from "react";
 
 import {
+  HEAD_BYTES,
   ROUTES,
   SUPPORTED_SUMMARY,
+  type Detection,
   describeBatch,
+  detect,
   laterLine,
   plural,
   refusalLine,
 } from "@/lib/add-source";
+import { type DumpAddResult, addDumpSource } from "@/lib/dump-source";
 import {
   type IngestState,
   coverageSentence,
@@ -23,6 +27,7 @@ import {
   type FailedDocument,
   type FlaggedDocument,
 } from "@/lib/ingest";
+import { askCovering, nominate, type CoveringPrompt } from "@/lib/roots";
 import { HOST_GIVES_PATHS, fromFiles } from "@/lib/selection";
 import { type Recorded as RecordedOutcome, duplicateLine, withOutcome } from "@/lib/sources";
 import { type Batch, type Item, laterIn, refusedIn, supportedIn, useAdd } from "./add-state";
@@ -68,6 +73,7 @@ export function AddScreen() {
       </p>
 
       <FilesRoute />
+      <DumpRoute />
 
       {batches.length > 0 ? (
         <div className="flex flex-col gap-3" aria-live="polite">
@@ -170,6 +176,358 @@ function FilesRoute() {
         </p>
       )}
     </div>
+  );
+}
+
+// --- the dump route ----------------------------------------------------------
+
+type DumpPhase = "idle" | "picked" | "locating" | "queued";
+
+interface DumpPicked {
+  name: string;
+  relativePath: string;
+  size: number;
+  head(): Promise<Uint8Array>;
+}
+
+interface DumpState {
+  phase: DumpPhase;
+  picked: DumpPicked | null;
+  /** The client's own read of the bytes — a courtesy shown immediately,
+   * before anything is asked of the user. The server re-decides on submit;
+   * `result.detection` is what actually got stored. */
+  detection: Detection | null;
+  folder: string;
+  prompt: CoveringPrompt | null;
+  busy: boolean;
+  failure: string | null;
+  result: DumpAddResult | null;
+}
+
+const DUMP_IDLE: DumpState = {
+  phase: "idle",
+  picked: null,
+  detection: null,
+  folder: "",
+  prompt: null,
+  busy: false,
+  failure: null,
+  result: null,
+};
+
+/**
+ * Database dump — the route the ticket is named after.
+ *
+ * `docs/ux/add-source.md` §3: the statement is made once, in prose, before
+ * anything is picked — never a modal, never a checkbox to accept. One file
+ * at a time, because one dump becomes one sealed database
+ * (`docs/data-sources.md` §3), and a batch UI here would imply a queue that
+ * does not exist.
+ */
+function DumpRoute() {
+  const [state, setState] = useState<DumpState>(DUMP_IDLE);
+  const input = useRef<HTMLInputElement>(null);
+
+  async function onPick(file: File): Promise<void> {
+    const picked: DumpPicked = {
+      name: file.name,
+      relativePath: file.name,
+      size: file.size,
+      head: async () => new Uint8Array(await file.slice(0, HEAD_BYTES).arrayBuffer()),
+    };
+    let detection: Detection;
+    try {
+      detection = detect(picked.name, await picked.head(), picked.size);
+    } catch {
+      setState({
+        ...DUMP_IDLE,
+        phase: "picked",
+        picked,
+        failure: "Askwell could not read that file.",
+      });
+      return;
+    }
+    setState({ ...DUMP_IDLE, phase: "picked", picked, detection });
+  }
+
+  async function runSubmit(): Promise<void> {
+    if (state.picked === null) return;
+    setState((was) => ({ ...was, busy: true, failure: null }));
+
+    const base = state.folder.trim().replace(/\/+$/, "");
+    const path = `${base}/${state.picked.relativePath}`;
+
+    try {
+      const answer = await askCovering(path);
+      if (!answer.covered) {
+        setState((was) => ({ ...was, busy: false, prompt: answer.prompt, phase: "locating" }));
+        return;
+      }
+      const result = await addDumpSource(base, state.picked.relativePath);
+      setState((was) => ({
+        ...was,
+        busy: false,
+        folder: base,
+        prompt: null,
+        result,
+        phase: result.source === null ? "picked" : "queued",
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Askwell could not add that dump.";
+      setState((was) => ({ ...was, busy: false, folder: base, failure: message }));
+    }
+  }
+
+  async function nominateAndRetry(): Promise<void> {
+    if (state.prompt === null) return;
+    setState((was) => ({ ...was, busy: true }));
+    try {
+      await nominate(state.prompt.suggested_root);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "That folder was not accepted.";
+      setState((was) => ({ ...was, busy: false, failure: message }));
+      return;
+    }
+    setState((was) => ({ ...was, busy: false, prompt: null }));
+    await runSubmit();
+  }
+
+  const refused = state.detection !== null && state.detection.verdict === "refused";
+  const supported = state.detection !== null && state.detection.verdict === "supported";
+
+  return (
+    <div
+      className="flex flex-col gap-3 px-5 py-4"
+      style={{
+        background: "var(--surface)",
+        border: "1px dashed var(--rule-strong)",
+        borderRadius: "var(--radius)",
+      }}
+    >
+      <div>
+        <h2 style={{ fontSize: "var(--t-title)", lineHeight: "var(--t-title-lh)" }}>
+          Database dump
+        </h2>
+        <p className="ask-micro mt-1">
+          PostgreSQL .sql, .dump and .backup files. MySQL and SQL Server are not imported as
+          dumps — connect live, or export as CSV.
+        </p>
+      </div>
+
+      {/* The calm statement. Said once, here, whether or not a file has been
+          picked yet — not a modal, not a checkbox. `docs/ux/add-source.md` §3. */}
+      <p className="ask-prose">
+        <strong>This file contains commands, not just data.</strong> Askwell runs it inside a
+        sealed database that cannot reach your other sources, the internet, or Askwell&rsquo;s
+        own files. If the dump is broken or malicious, only that sealed copy is affected.
+      </p>
+
+      {state.phase === "queued" && state.result?.source ? (
+        <DumpQueued source={state.result.source} onAddAnother={() => setState(DUMP_IDLE)} />
+      ) : (
+        <>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => input.current?.click()}
+              className="ask-navigates px-4"
+              style={{
+                border: "1px solid var(--rule-strong)",
+                minHeight: "var(--control-height-primary)",
+                fontSize: "var(--t-ui)",
+              }}
+            >
+              Choose a dump file
+            </button>
+            {state.picked === null ? null : (
+              <span style={{ fontSize: "var(--t-ui)" }}>{state.picked.name}</span>
+            )}
+          </div>
+          <input
+            ref={input}
+            type="file"
+            className="hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              if (file !== undefined) void onPick(file);
+            }}
+          />
+
+          {refused && state.detection !== null ? (
+            <Note tone="alarm" heading={state.detection.format}>
+              {state.detection.refusal}
+            </Note>
+          ) : null}
+
+          {state.result !== null && state.result.source === null ? (
+            <Note tone="alarm" heading={state.result.detection?.format ?? "Not added"}>
+              {state.result.refusal}
+            </Note>
+          ) : null}
+
+          {supported && state.picked !== null ? (
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                void runSubmit();
+              }}
+              className="flex flex-col gap-2"
+            >
+              {state.prompt === null ? null : (
+                <Note tone="inferred" heading={state.prompt.headline}>
+                  {state.prompt.explanation}
+                  <span className="mt-2 block">
+                    <button
+                      type="button"
+                      disabled={state.busy}
+                      onClick={() => void nominateAndRetry()}
+                      className="ask-navigates px-3 py-1"
+                      style={{ border: "1px solid var(--rule-strong)", fontSize: "var(--t-ui)" }}
+                    >
+                      Nominate {state.prompt.suggested_root}
+                    </button>
+                  </span>
+                </Note>
+              )}
+              <label htmlFor="dump-folder" style={{ fontSize: "var(--t-ui)" }}>
+                Which folder is “{state.picked.name}” in?
+              </label>
+              <div className="flex gap-2">
+                <input
+                  id="dump-folder"
+                  value={state.folder}
+                  onChange={(event) => setState((was) => ({ ...was, folder: event.target.value }))}
+                  placeholder="/home/you/clients"
+                  spellCheck={false}
+                  autoComplete="off"
+                  className="ask-input flex-1 px-3"
+                  style={{ fontFamily: "var(--font-app)", fontSize: "var(--t-ui)" }}
+                />
+                <button
+                  type="submit"
+                  disabled={state.busy || state.folder.trim() === ""}
+                  className="ask-action-primary px-4"
+                  style={{ fontSize: "var(--t-ui)" }}
+                >
+                  {state.busy ? "Importing…" : "Import"}
+                </button>
+              </div>
+              {HOST_GIVES_PATHS ? null : (
+                <p className="ask-micro">
+                  The whole path. Askwell needs it because it opens the file where it is rather
+                  than keeping a copy.
+                </p>
+              )}
+            </form>
+          ) : null}
+
+          {state.failure === null ? null : (
+            <Note tone="alarm" heading="Askwell is not answering">
+              {state.failure}
+            </Note>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * What the import is doing, since the source was queued.
+ *
+ * `docs/ux/add-source.md` §3 asks for progress, abort and failure rendering.
+ * There is no byte-level progress persisted anywhere the API exposes yet
+ * (`dump_import.import_dump`'s own `report` callback is internal to the
+ * worker), so this names the *stage* honestly rather than faking a bar —
+ * the same rule `ingest.ts`'s own module docstring states for document
+ * ingestion. An abort from a size or time cap and an ordinary load failure
+ * are the same rendering here: both are `status = 'attention'` with a
+ * specific `last_error`, which is exactly the reason named.
+ */
+function DumpQueued({
+  source,
+  onAddAnother,
+}: {
+  source: { id: string; name: string | null };
+  onAddAnother: () => void;
+}) {
+  const [state, setState] = useState<IngestState | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let live = true;
+
+    fetchIngest(controller.signal)
+      .then((first) => {
+        if (live) setState(first);
+      })
+      .catch((error: unknown) => {
+        if (live && !controller.signal.aborted) setFailure(String(error));
+      });
+
+    const stop = subscribeIngest((next) => {
+      if (live) setState(next);
+    });
+
+    return () => {
+      live = false;
+      controller.abort();
+      stop();
+    };
+  }, []);
+
+  const row = state?.sources.find((item) => item.id === source.id) ?? null;
+  const status = row?.status ?? "queued";
+
+  return (
+    <>
+      <Note tone="provenance" heading="Queued">
+        {source.name ?? "This dump"} is queued from your machine. Indexing runs in the
+        background — you can leave this page and it carries on. Nothing has been copied.
+      </Note>
+
+      {failure !== null ? (
+        <span className="ask-micro block">
+          Askwell is not answering about the queue. The dump was recorded — nothing was lost.
+        </span>
+      ) : status === "queued" || status === "indexing" ? (
+        <span className="ask-micro block">
+          Importing {source.name ?? "the dump"} into a sealed database. This runs in the
+          background and does not need this page open.
+        </span>
+      ) : status === "ready" ? (
+        <Note tone="provenance" heading="Imported">
+          {source.name ?? "The dump"} loaded into its own sealed database.
+          <span className="mt-2 block">
+            <button
+              type="button"
+              onClick={onAddAnother}
+              className="ask-navigates px-3 py-1"
+              style={{ border: "1px solid var(--rule-strong)", fontSize: "var(--t-ui)" }}
+            >
+              Add another dump
+            </button>
+          </span>
+        </Note>
+      ) : (
+        <Note tone="alarm" heading="This import did not finish">
+          {row?.last_error ??
+            "Askwell could not load this dump. The sealed database it was loading into was dropped — nothing else was affected."}
+          <span className="mt-2 block">
+            <button
+              type="button"
+              onClick={onAddAnother}
+              className="ask-navigates px-3 py-1"
+              style={{ border: "1px solid var(--rule-strong)", fontSize: "var(--t-ui)" }}
+            >
+              Try another dump
+            </button>
+          </span>
+        </Note>
+      )}
+    </>
   );
 }
 
