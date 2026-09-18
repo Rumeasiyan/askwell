@@ -302,6 +302,60 @@ async def unseal_owner(session: AsyncSession, admin_url: str, name: str) -> None
     await audit.record(session, audit.Store.DECISIONS, "sandbox_owner_unsealed", {"database": name})
 
 
+class SandboxRoleMisconfigured(RuntimeError):
+    """`askwell_sandbox_readonly` can write, or does not exist. `M4-SQL-DB-107`.
+
+    Checked at worker startup, before anything executes a generated query as
+    this role — refusing to start, rather than falling back to the owner role
+    or silently proceeding, is the ticket's own explicit rule: a readonly
+    role that can write defeats the one guarantee this whole layer exists to
+    provide independently of `sqlglot` validation (C2), and a check that only
+    logs a warning is a check a busy session will scroll past.
+    """
+
+
+def _verify_readonly_role_blocking(admin_url: str, role: str) -> None:
+    with psycopg.connect(admin_url, autocommit=True) as admin:
+        row = admin.execute(
+            "SELECT rolsuper, rolcreatedb, rolcreaterole, rolbypassrls "
+            "FROM pg_roles WHERE rolname = %s",
+            (role,),
+        ).fetchone()
+    if row is None:
+        raise SandboxRoleMisconfigured(
+            f"{role!r} does not exist on the sandbox instance. "
+            f"deploy/sandbox/10-roles.sh creates it; run it (it runs "
+            f"automatically on first start of the sandbox container) before "
+            f"starting the worker again."
+        )
+    rolsuper, rolcreatedb, rolcreaterole, rolbypassrls = row
+    if rolsuper or rolcreatedb or rolcreaterole or rolbypassrls:
+        raise SandboxRoleMisconfigured(
+            f"{role!r} carries a privilege a read-only execution role must "
+            f"never have (superuser={rolsuper}, createdb={rolcreatedb}, "
+            f"createrole={rolcreaterole}, bypassrls={rolbypassrls}). Refusing "
+            f"to start rather than executing a generated query as a role "
+            f"that can write. Fix the role — deploy/sandbox/10-roles.sh — "
+            f"and restart the worker."
+        )
+
+
+async def verify_readonly_role(admin_url: str, role: str = READONLY_ROLE) -> None:
+    """Refuse to proceed unless `role` is a role that structurally cannot
+    write: not superuser, not `CREATEDB`, not `CREATEROLE`, not `BYPASSRLS`.
+
+    Table-level write privilege is not checked here — `create_database`
+    grants `askwell_sandbox_readonly` `SELECT` only, by default privilege,
+    never `INSERT`/`UPDATE`/`DELETE` on anything, on every sandbox database
+    it ever creates, structurally (see the module docstring). What a role
+    *attribute* like `CREATEDB` grants is not scoped to one database the way
+    a table grant is — it is true everywhere the role connects — which is
+    exactly why it is the one category of privilege escalation a per-database
+    grant could never catch, and the one this function exists to catch.
+    """
+    await asyncio.to_thread(_verify_readonly_role_blocking, admin_url, role)
+
+
 def known_databases(admin_url: str) -> list[str]:
     """Every sandbox database that currently exists on the instance."""
     with psycopg.connect(admin_url, autocommit=True) as admin:

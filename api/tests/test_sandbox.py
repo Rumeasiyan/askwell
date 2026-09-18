@@ -24,6 +24,7 @@ from askwell.sandbox import (
     PREFIX,
     READONLY_ROLE,
     InvalidSandboxName,
+    SandboxRoleMisconfigured,
     create_database,
     drop_database,
     generate_name,
@@ -31,6 +32,7 @@ from askwell.sandbox import (
     owner_url,
     reclaim_orphans,
     seal_owner,
+    verify_readonly_role,
 )
 from tests.conftest_sandbox import role_url
 
@@ -488,3 +490,41 @@ async def test_reclaim_orphans_writes_a_dropped_decisions_record_naming_the_reas
     row = result.first()
     assert row is not None
     assert row[0]["reason"] == "orphaned_at_startup"
+
+
+# --- verify_readonly_role: `M4-SQL-DB-107` -----------------------------------
+
+
+@pytest.mark.requires_db
+async def test_verify_readonly_role_accepts_the_real_role(sandbox_admin_url: str) -> None:
+    await verify_readonly_role(sandbox_admin_url, READONLY_ROLE)
+
+
+@pytest.mark.requires_db
+async def test_verify_readonly_role_refuses_a_role_that_does_not_exist(
+    sandbox_admin_url: str,
+) -> None:
+    with pytest.raises(SandboxRoleMisconfigured):
+        await verify_readonly_role(sandbox_admin_url, "askwell_test_role_never_created")
+
+
+@pytest.mark.requires_db
+async def test_verify_readonly_role_refuses_a_writable_role(sandbox_admin_url: str) -> None:
+    """The check that matters: a role with `CREATEDB` is refused even though
+    it carries no table-level grant at all — `CREATEDB` is not scoped to one
+    database, so no per-database table grant could ever catch it.
+
+    Misconfigures a *temporary* role, never `askwell_sandbox_readonly`
+    itself, so this run cannot leave the shared instance's real readonly
+    role in a broken state for the test that runs after it.
+    """
+    name = "askwell_test_misconfigured_readonly"
+    with psycopg.connect(sandbox_admin_url, autocommit=True) as admin:
+        admin.execute(f"DROP ROLE IF EXISTS {name}")
+        admin.execute(f"CREATE ROLE {name} LOGIN PASSWORD 'x' CREATEDB")
+    try:
+        with pytest.raises(SandboxRoleMisconfigured):
+            await verify_readonly_role(sandbox_admin_url, name)
+    finally:
+        with psycopg.connect(sandbox_admin_url, autocommit=True) as admin:
+            admin.execute(f"DROP ROLE IF EXISTS {name}")

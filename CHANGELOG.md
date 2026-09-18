@@ -4,6 +4,20 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.12 - 2026-09-18
+
+`M4-SQL-DB-107` — the independent read-only role and statement timeout: every generated query, once `M4-SQL-BE-103`/`VAL-104`–`106` exist to produce one, will execute as a role the database itself refuses a write from, with a 30-second `statement_timeout` per session — two safety layers independent of whatever `sqlglot` validation (C2) does to the query text. New `askwell.sql_execute.execute_sandbox_query`/`execute_connection_query` run a query as `askwell_sandbox_readonly` (sandbox, never the owner, C3) or a live connection's own already-write-probe-verified credential, on all three supported engines, with the timeout applied per session (Postgres `SET statement_timeout`, MySQL `SET SESSION MAX_EXECUTION_TIME`, MariaDB `SET SESSION max_statement_time`, SQL Server's connect-time `timeout`). A cancellation raises `StatementTimedOut`, naming the query and the timeout and suggesting narrowing it, and is recorded as a decisions row plus a local, never-transmitted counter. New `Settings.sql_statement_timeout_seconds` (`ASKWELL_SQL_STATEMENT_TIMEOUT_SECONDS`, default 30, adjustable). New `askwell.sandbox.verify_readonly_role` checks the readonly role's own attributes (`rolsuper`/`rolcreatedb`/`rolcreaterole`/`rolbypassrls`) at worker startup and refuses to start on a misconfiguration rather than falling back to a writable role — verified live: misconfiguring the role crash-loops the worker with the exact privilege named; restoring it resumes normally.
+
+### Added
+
+- `askwell.sql_execute`: `QueryResult`, `StatementTimedOut`, `execute_sandbox_query`, `execute_connection_query`.
+- `askwell.sandbox.verify_readonly_role`, `SandboxRoleMisconfigured`.
+- `Settings.sql_statement_timeout_seconds` (`ASKWELL_SQL_STATEMENT_TIMEOUT_SECONDS`), default 30.
+
+### Changed
+
+- `askwell.worker.startup` refuses to start if `askwell_sandbox_readonly` carries a privilege a read-only role must not have.
+
 ## 0.4.11 - 2026-09-18
 
 `M4-SCHEMA-ING-100` — full schema introspection: types, keys and relationships, for a live connection and a loaded sandbox database (dump or CSV) alike, on connect, on import, and now on demand. New `askwell.schema_introspect` reads every table and view's columns, primary keys and foreign keys in bulk (one query per shape per engine, not one per table) for PostgreSQL, MySQL/MariaDB and SQL Server, and writes plain-language table- and column-level `schema_notes` — `Table orders. Columns: id, customer_id, total. Primary key: id. Foreign keys: customer_id -> customers.id.` and `orders.customer_id — integer, references customers.id.` — which the existing lexical retrieval (`askwell.memory.retrieve_relevant_facts`, bounded to 5 notes per question) already ranks by relevance; no new retrieval path was needed. Views and materialized views are introspected and labelled distinctly. Re-introspection updates rather than duplicates: an inferred note with an unchanged description is left alone, one with a changed description is superseded by its replacement, and a table or column no longer present is superseded with nothing to replace it — a user-supplied note is never touched by any of this.

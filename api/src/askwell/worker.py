@@ -207,7 +207,7 @@ async def check_missing(ctx: dict[str, Any]) -> int:
 
 
 async def startup(ctx: dict[str, Any]) -> None:
-    from askwell import embed, ingest, reapply
+    from askwell import embed, ingest, reapply, sandbox
 
     settings: Settings = ctx["settings"]
     engine = build_engine(settings)
@@ -247,6 +247,25 @@ async def startup(ctx: dict[str, Any]) -> None:
         # at all; the timer below picks the work up on its next pass.
         log.warning("worker_resume_deferred", error=f"{type(error).__name__}: {error}")
         return
+
+    # `M4-SQL-DB-107`: the one place this is checked, once, rather than
+    # trusted every time a query later executes as this role. Sandbox admin
+    # credentials only, so this belongs beside `check_dimension` rather than
+    # in the API process, which never holds them. A separate try, after the
+    # main database's own resume above: the sandbox instance being merely not
+    # up yet (the ordinary case, same as the main database) must not skip the
+    # dimension check and job resume that do not depend on it at all — only
+    # an actual misconfiguration of the role refuses startup.
+    try:
+        await sandbox.verify_readonly_role(settings.sandbox_database_url.get_secret_value())
+    except sandbox.SandboxRoleMisconfigured:
+        # Fatal: a readonly role that can write is a fact about how this
+        # install is configured, not a database that is not up yet, and the
+        # ticket's own edge case says refuse rather than fall back to a
+        # writable role.
+        raise
+    except Exception as error:  # the sandbox instance may not be up yet
+        log.warning("worker_sandbox_role_check_deferred", error=f"{type(error).__name__}: {error}")
 
     reapply_dispatched = await reapply.dispatch(settings, resumed_reapply)
 
