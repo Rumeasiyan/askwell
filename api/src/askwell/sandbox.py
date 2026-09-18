@@ -255,6 +255,35 @@ async def seal_owner(session: AsyncSession, admin_url: str, name: str) -> None:
     await audit.record(session, audit.Store.DECISIONS, "sandbox_owner_sealed", {"database": name})
 
 
+def _unseal_owner_blocking(admin_url: str, name: str) -> None:
+    _validate(name)
+    with psycopg.connect(admin_url, autocommit=True) as admin:
+        admin.execute(
+            sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
+                sql.Identifier(name), sql.Identifier(OWNER_ROLE)
+            )
+        )
+    log.info("sandbox_owner_unsealed", database=name)
+
+
+async def unseal_owner(session: AsyncSession, admin_url: str, name: str) -> None:
+    """Re-grant `askwell_sandbox_owner`'s own `CONNECT` on a database that
+    `seal_owner` sealed, for a caller about to do more owner-privileged work
+    against it, and record the decision.
+
+    `askwell.table_load.reload_source` (`M4-CSV-ING-094`) is the one caller:
+    unlike a dump, a CSV's sandbox table can legitimately need a further
+    owner-privileged write after the source is `ready` — answering a
+    date-format clarification re-loads the affected column — so the seal
+    `import_dump` treats as final for a dump is, for a table source, a
+    between-writes state rather than a one-way door. The caller reseals with
+    `seal_owner` the moment its own write finishes; nothing here leaves the
+    grant open longer than the work that needed it.
+    """
+    await asyncio.to_thread(_unseal_owner_blocking, admin_url, name)
+    await audit.record(session, audit.Store.DECISIONS, "sandbox_owner_unsealed", {"database": name})
+
+
 def known_databases(admin_url: str) -> list[str]:
     """Every sandbox database that currently exists on the instance."""
     with psycopg.connect(admin_url, autocommit=True) as admin:

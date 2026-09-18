@@ -97,6 +97,23 @@ async def import_dump_job(ctx: dict[str, Any], source_id: str, dump_path: str) -
     )
 
 
+async def import_table_job(ctx: dict[str, Any], source_id: str, file_path: str) -> list[str]:
+    """Parse, raise clarifications for, and load one CSV or spreadsheet
+    source into its own sandbox database. `M4-CSV-ING-094`.
+
+    Thin, the same reason `import_dump_job` is: everything about what
+    processing a table source *is* lives in `askwell.table_load`, so it can
+    be tested without a Redis, a worker process and a job serialiser in the
+    way.
+    """
+    from askwell import table_load
+
+    results = await table_load.process_table_source(
+        ctx["sessions"], ctx["settings"], uuid.UUID(source_id), file_path
+    )
+    return [result.sql_table_name for result in results]
+
+
 async def reapply_job(ctx: dict[str, Any], job_id: str) -> None:
     """Re-process what one answered clarification affects. `M3-APPLY-ING-080`.
 
@@ -233,6 +250,7 @@ class WorkerSettings:
         ingest_document,
         reapply_job,
         import_dump_job,
+        import_table_job,
     ]
 
     # The repair timer. Its interval is configuration, so it is applied in

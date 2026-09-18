@@ -4,6 +4,21 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.6 - 2026-09-18
+
+`M4-CSV-ING-094` — load a CSV or spreadsheet into its own sandbox database as a real, queryable table, `docs/data-sources.md` §2, C3. `askwell.table_load.process_table_source` runs `askwell.table_infer`'s existing parse-and-raise step (`M4-CSV-ING-092`/`093`) and then creates the table: column names normalised into valid identifiers (the original recorded as an `inferred` schema note so a question naming it still resolves), a column `table_infer` could not resolve with confidence loaded as `text` verbatim rather than coerced, and every other row cast to its confirmed type with per-row failures collected by row number rather than dropped. Answering a `date_format` clarification now does something real: `askwell.reapply` calls the new `askwell.table_load.reload_source`, which rebuilds the table from the source file with every date-format answer applied so far, turning a `text` column that was waiting on an answer into a real `date`. The size and time caps are the same ones `M4-DUMP-VAL-089` already added, read through `askwell.dump_import`'s own settings rather than a second pair a user would have to discover. `askwell.sandbox` gained `unseal_owner`, symmetric to `seal_owner` — unlike a dump, a table source can need a further owner-privileged write long after it is `ready`.
+
+### Added
+
+- `api/src/askwell/table_load.py` — `create_table_source`, `process_table_source`, `load_source`, `reload_source`, and the identifier/type/cast logic underneath them.
+- `askwell.sandbox.unseal_owner` — re-grants the owner role's `CONNECT` on a database `seal_owner` sealed, for a reload's own write window.
+- `worker.import_table_job`, registered with `WorkerSettings`.
+- `askwell.table_infer.TableInference.rows` — the parsed data rows themselves, so loading does not re-parse the file a second time.
+
+### Changed
+
+- `askwell.reapply._process_item`/`run_job` now read a clarification's `trigger` and call `table_load.reload_source` when a `date_format` answer promotes a table source's schema note.
+
 ## 0.4.5 - 2026-09-18
 
 `M4-DUMP-VAL-089` — size and time caps that abort a dump import and drop the sandbox, `docs/data-sources.md` §3, C3. Default 5 GB / 10 minutes, both user-adjustable and enforced *during* the load, not checked once at the start: `askwell.dump_import._load_blocking` runs a watchdog thread alongside `psql` that polls the sandbox database's own loaded size (`pg_database_size`, not `dump_path`'s size on disk — a dump that is small as a file but expands once loaded is exactly the case a file-size check would miss) and the elapsed wall clock, killing `psql` the instant either cap is crossed so a statement already running server-side is terminated rather than waited on. `import_dump`'s existing failure path (drop the sandbox database `WITH (FORCE)`, mark the source `attention`, record `dump_import_failed`) handles a cap breach the same way it handles a bad dump, with `cap` added to that audit payload so "how many imports were aborted for a cap" stays a query over `audit_decisions` rather than a separately maintained counter.
