@@ -1173,6 +1173,7 @@ async def add_connection(
 
     source_id = await connections.create_connection_source(
         session,
+        settings,
         engine=body.engine,
         host=body.host,
         port=body.port,

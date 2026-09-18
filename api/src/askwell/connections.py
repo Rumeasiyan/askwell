@@ -4,10 +4,16 @@
 probe for write access, introspect the schema, raise clarifications for
 unguessable columns. This module builds the first two of those four steps —
 connect and a minimal read check — and the table-name inventory that lets a
-successful connection say something concrete about what it found. Credential
-encryption (`M4-CONN-SEC-098`) is still out of scope; full schema
+successful connection say something concrete about what it found. Full schema
 introspection — types, keys, relationships — is `M4-SCHEMA-ING-100`, the same
 split `dump_import.py` already draws for a loaded dump.
+
+**Credential encryption (`M4-CONN-SEC-098`).** `config_encrypted` is written
+and read through `askwell.crypto`, never as plain JSON. A lost or changed
+per-install secret makes a stored credential undecryptable rather than
+readable-but-wrong; that is reported as `credentials_locked` and the source
+moves to `attention` asking for re-entry, the same shape as any other
+introspection failure, never as a misleading `host_unresolved` or similar.
 
 **The write-permission probe (`M4-CONN-SEC-097`) refuses before either read
 check runs.** `docs/data-sources.md` §4 layer 1: the database role itself
@@ -70,7 +76,7 @@ from typing import TYPE_CHECKING, Literal
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from askwell import audit
+from askwell import audit, crypto
 from askwell.audit import Store
 from askwell.logging import get_logger
 
@@ -119,8 +125,16 @@ ReasonCode = Literal[
     "permission_denied",
     "write_capable",
     "probe_unreliable",
+    "credentials_locked",
     "unknown",
 ]
+
+CREDENTIALS_LOCKED_MESSAGE = (
+    "Askwell cannot decrypt this connection's stored credentials. The key "
+    "they were encrypted with is missing or has changed — re-enter the "
+    "password to reconnect. This is not the same as an unreachable host: "
+    "the database was never contacted."
+)
 
 NETWORK_BLOCKED_MESSAGE = (
     "Askwell's network policy blocked this connection. Local mode has no "
@@ -659,6 +673,7 @@ async def record_write_probe_refusal(
 
 async def create_connection_source(
     session: AsyncSession,
+    settings: "Settings",
     *,
     engine: str,
     host: str,
@@ -669,10 +684,10 @@ async def create_connection_source(
 ) -> uuid.UUID:
     """Register a live connection as a `sources` row.
 
-    `config_encrypted` holds the connection configuration as JSON bytes —
-    genuinely encrypted only once `M4-CONN-SEC-098` lands, this ticket's own
-    named "Out of Scope". Never logged and never in a decisions payload: the
-    record below names the destination, not the credential.
+    `config_encrypted` holds the connection configuration encrypted with a
+    key derived from the per-install secret (`askwell.crypto`, C8) — never
+    plain JSON. Never logged and never in a decisions payload: the record
+    below names the destination, not the credential.
     """
     import json
 
@@ -686,6 +701,8 @@ async def create_connection_source(
             "password": password,
         }
     ).encode("utf-8")
+    install_secret = crypto.load_or_create_install_secret(settings.install_secret_path)
+    config_encrypted = crypto.encrypt(config, crypto.derive_key(install_secret))
     name = f"{database} on {host}"
 
     result = await session.execute(
@@ -693,7 +710,7 @@ async def create_connection_source(
             "INSERT INTO sources (kind, name, config_encrypted, status) "
             "VALUES ('connection', :name, :config, 'queued') RETURNING id"
         ),
-        {"name": name, "config": config},
+        {"name": name, "config": config_encrypted},
     )
     source_id = result.scalar_one()
     await audit.record(
@@ -793,7 +810,9 @@ async def run_introspection(
     """The worker side of `dispatch_introspection`: reconnect with the stored
     configuration, list tables, and record the result — or mark the source
     `attention` if the database that just accepted a connection has since
-    stopped answering.
+    stopped answering, or if the stored credentials can no longer be
+    decrypted (`credentials_locked`, `M4-CONN-SEC-098`) — checked before any
+    socket opens, since there is no credential to connect with at all.
     """
     import json
 
@@ -807,7 +826,20 @@ async def run_introspection(
         ).first()
     if row is None or row[0] is None:
         raise ValueError(f"No connection configuration for source {source_id}.")
-    config = json.loads(bytes(row[0]).decode("utf-8"))
+
+    try:
+        install_secret = crypto.load_or_create_install_secret(settings.install_secret_path)
+        config = json.loads(
+            crypto.decrypt(bytes(row[0]), crypto.derive_key(install_secret)).decode("utf-8")
+        )
+    except (crypto.CredentialsLocked, OSError):
+        async with session_scope(factory) as session:
+            await session.execute(
+                text("UPDATE sources SET status = 'attention', last_error = :error WHERE id = :id"),
+                {"error": CREDENTIALS_LOCKED_MESSAGE, "id": source_id},
+            )
+        log.warning("connection_introspect_locked", source_id=str(source_id))
+        return ()
 
     outcome = await probe_connection(
         config["engine"],

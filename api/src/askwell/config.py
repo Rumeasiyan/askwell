@@ -265,6 +265,15 @@ class Settings(BaseSettings):
     # this long is indistinguishable from one that never will.
     connection_probe_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
 
+    # 32 random bytes that make a copied `postgres-data` volume alone
+    # insufficient to read `sources.config_encrypted` (C8, `M4-CONN-SEC-098`).
+    # Generated on first use if absent. Lives on the same bind mount the
+    # inference socket already uses (`${ASKWELL_RUN_DIR}:/run/askwell`), which
+    # is real host storage outside the database's own volume — not a default
+    # chosen for convenience, but the one path already shared, identically,
+    # between `api` and `worker`, both of which need this key.
+    install_secret_path: Path = Path("/run/askwell/install.key")
+
     @field_validator("roots_mount", mode="before")
     @classmethod
     def _optional_path(cls, value: object) -> object:
@@ -299,7 +308,9 @@ class Settings(BaseSettings):
             )
         return expanded
 
-    @field_validator("inference_model_path", "inference_socket", "trace_dir", mode="after")
+    @field_validator(
+        "inference_model_path", "inference_socket", "trace_dir", "install_secret_path", mode="after"
+    )
     @classmethod
     def _expand(cls, value: Path) -> Path:
         """`~` is how a person writes a path, and `Path` does not expand it.
