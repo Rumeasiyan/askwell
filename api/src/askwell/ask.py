@@ -86,6 +86,7 @@ from askwell import crypto
 from askwell.agent.abstain import AbstainReason, compose_abstention
 from askwell.agent.claims import Claim, locate_quoted_span, segment_claims
 from askwell.agent.conflict import compose_conflict, split_conflict_answer
+from askwell.agent.loop import LoopResult, run_tool_loop
 from askwell.agent.partial import split_partial_answer
 from askwell.agent.sql_generate import (
     GenerationReason,
@@ -1010,6 +1011,30 @@ async def _run_sql_turn(
     )
 
 
+async def _has_hybrid_sources(db: AsyncSession, settings: Settings) -> bool:
+    """Whether this corpus could need both a document lookup and a database
+    query in the same turn — `run_tool_loop`'s (`M5-LOOP-BE-115`) whole
+    reason to exist, per the ticket's own worked example. Deliberately
+    conservative: a corpus that is only documents or only a database already
+    has a fully-featured path (`_run_sql_turn`, then single-shot document
+    retrieval below) with memory, partial-coverage and conflict detection
+    the loop does not yet do for itself (tracked, not silently dropped —
+    issue #409). Trying the loop only when neither alone could be the whole
+    answer means an ordinary, single-kind-corpus turn is never routed
+    through it and never loses those features by construction, rather than
+    by tuning a heuristic to avoid it.
+    """
+    ready_documents = (
+        await db.execute(
+            text("SELECT count(*) FROM documents WHERE status = 'ready' AND deleted_at IS NULL")
+        )
+    ).scalar_one()
+    if not ready_documents:
+        return False
+    database_sources = await list_database_sources(db, settings)
+    return bool(database_sources)
+
+
 async def _generate(
     settings: Settings,
     factory: async_sessionmaker[AsyncSession],
@@ -1226,6 +1251,167 @@ async def _run_generation(
                 # override this field exists for only ever fires from the
                 # document turn's own abstention branch below, never from a
                 # turn `_run_sql_turn` itself answered.
+                "db_state": None,
+            },
+        )
+        turn.status = status
+        _retire(turn.message_id)
+        return
+
+    # `M5-LOOP-BE-115`: tried only for a corpus that is genuinely both
+    # documents and a database — `_has_hybrid_sources` — never for the
+    # ordinary single-kind case, which keeps every path below (abstention,
+    # partial coverage, conflict detection, citations) exactly as tested
+    # for every turn that was already exercising it. Citations for a
+    # loop-answered turn are its own follow-up (issue #407); this turn's
+    # `[index]` markers reach `messages.content` as the model wrote them,
+    # uncited in `citations`, same as `_run_sql_turn`'s canned text already
+    # is for the SQL epic.
+    loop_answer: LoopResult | None = None
+    if source_id is None:
+        try:
+            async with session_scope(factory) as db:
+                hybrid = await _has_hybrid_sources(db, settings)
+            if hybrid:
+                turn.emit("step", {"label": "Working through this in steps.", "kind": "tool"})
+                async with session_scope(factory) as db:
+                    loop_answer = await run_tool_loop(
+                        db, settings, client, question=question, source_id=source_id
+                    )
+        except Exception:
+            loop_answer = None
+            log.exception("ask_tool_loop_failed", message_id=str(turn.message_id))
+
+    if loop_answer is not None and loop_answer.tool_names_called:
+        for step in loop_answer.steps:
+            if not step.deduplicated:
+                turn.emit(
+                    "step",
+                    {"label": f"Called {step.tool}.", "kind": "tool", "tool": step.tool},
+                )
+        turn.text = loop_answer.text
+        turn.emit("token", {"text": loop_answer.text})
+        status = "completed"
+        trace_steps.extend(step.as_dict() for step in loop_answer.steps)
+        injection_flagged = any(step.injection_flagged for step in loop_answer.steps)
+        injection_patterns = tuple(
+            sorted({p for step in loop_answer.steps for p in step.injection_patterns})
+        )
+        duration_ms = int((time.monotonic() - turn_started) * 1000)
+        trace = {
+            "steps": trace_steps,
+            "backend": {"mode": "local", "model": model_name},
+            "stopped_early": loop_answer.stopped_reason != "answered",
+            "injection_flagged": injection_flagged,
+            "injection_patterns": list(injection_patterns),
+            "status": status,
+            "reason": reason,
+            "partial_coverage": False,
+            "uncovered_aspects": [],
+            "conflict_detected": False,
+            "conflict_topic": None,
+            "memory_fact_ids": [],
+            "schema_note_ids": [],
+            "memory_used": 0,
+            "loop_iterations": loop_answer.iterations,
+            "loop_stopped_reason": loop_answer.stopped_reason,
+        }
+        try:
+            turn_summary = summarize_turn(
+                question=question,
+                answer_text=turn.text,
+                status=status,
+                reason=reason,
+                partial=False,
+                citation_rows=[],
+                candidates=[],
+            )
+        except Exception:
+            log.error("ask_summary_failed", message_id=str(turn.message_id))
+            turn_summary = fallback_summary(question)
+        TraceRing(settings.trace_dir, settings.trace_max_bytes).write(turn.message_id, trace)
+        try:
+            async with session_scope(factory) as db:
+                await db.execute(
+                    text(
+                        "INSERT INTO messages "
+                        "(id, conversation_id, role, content, trace, summary, source_count) "
+                        "VALUES (:id, :conversation_id, 'assistant', :content, "
+                        "CAST(:trace AS jsonb), :summary, :source_count) "
+                        "ON CONFLICT (id) DO UPDATE SET "
+                        "content = :content, trace = CAST(:trace AS jsonb), "
+                        "summary = :summary, source_count = :source_count"
+                    ),
+                    {
+                        "id": turn.message_id,
+                        "conversation_id": turn.conversation_id,
+                        "content": turn.text,
+                        "trace": json.dumps(trace),
+                        "summary": turn_summary.summary,
+                        "source_count": turn_summary.source_count,
+                    },
+                )
+                await record(
+                    db,
+                    Store.INTERACTIONS,
+                    ASK_ASKED,
+                    {
+                        "conversation_id": str(turn.conversation_id),
+                        "message_id": str(turn.message_id),
+                        "question": question,
+                        "answer": turn.text,
+                        "status": status,
+                        "abstained": False,
+                        "partial": False,
+                        "uncovered_aspects": [],
+                        "conflict_detected": False,
+                        "conflict_topic": None,
+                        "memory_fact_ids": [],
+                        "schema_note_ids": [],
+                        "threshold": None,
+                        "source_id": str(source_id) if source_id else None,
+                        "citation_count": 0,
+                        "duration_ms": duration_ms,
+                        "backend": "local",
+                        "model": model_name,
+                        "retrieved_chunks": [],
+                    },
+                )
+        except (AuditError, SQLAlchemyError) as error:
+            status = "failed"
+            reason = f"Askwell could not save this answer: {error}"
+            log.error(
+                "ask_loop_audit_write_failed", message_id=str(turn.message_id), error=str(error)
+            )
+            failure_trace = {**trace, "status": status, "reason": reason}
+            try:
+                async with session_scope(factory) as db:
+                    await db.execute(
+                        text(
+                            "UPDATE messages SET content = :content, "
+                            "trace = CAST(:trace AS jsonb), summary = :summary, "
+                            "source_count = :source_count WHERE id = :id"
+                        ),
+                        {
+                            "id": turn.message_id,
+                            "content": "",
+                            "trace": json.dumps(failure_trace),
+                            "summary": turn_summary.summary,
+                            "source_count": turn_summary.source_count,
+                        },
+                    )
+            except Exception:
+                log.exception("ask_loop_failure_write_failed", message_id=str(turn.message_id))
+
+        turn.emit(
+            "done",
+            {
+                "status": status,
+                "reason": reason,
+                "summary": turn_summary.summary,
+                "source_count": turn_summary.source_count,
+                "sql_result": None,
+                "sql_query": None,
                 "db_state": None,
             },
         )
