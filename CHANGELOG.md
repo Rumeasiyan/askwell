@@ -4,6 +4,14 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.22 - 2026-09-19
+
+`M4-DUMP-SEC-091` — the containment claim demonstrated, not just asserted. `api/tests/test_dump_containment.py` runs six hostile fixture dumps (privilege escalation, reading a host file through `COPY ... FROM PROGRAM`, connecting to another database in the sandbox instance, reaching the network, exhausting disk, running indefinitely) through the real `import_dump` against a real sandbox instance. Every fixture must fail loudly, land the source in `attention` with a reason, record `dump_import_failed`, and drop the sandbox database — checked against a content hash (not a row count) of Askwell's own database and of a second, already-loaded sandbox database, both before the suite and after every single fixture, plus a whole-suite-in-sequence run confirming the product stays functional afterwards. Also resolves issue #389: `test_sandbox_network_has_no_route_to_the_proxy_or_the_internet` is a static assertion, parsed straight out of `compose.yaml`, that the `sandbox` network is `internal: true` and joined by nothing but `api`, `worker` and `sandbox` itself — the topology regression that would make the proxy's refusal counter matter, catchable in CI without a running proxy or Redis. The counter check itself stays the ticket's own cold-start manual walkthrough, now written up in `docs/manual-tests/M4-DUMP-SEC-091.md` and run against the real stack.
+
+### Added
+
+- `api/tests/test_dump_containment.py` — the hostile-dump containment suite, `requires_db`, plus an unmarked topology assertion.
+
 ## 0.4.21 - 2026-09-19
 
 `M4-SQL-VAL-106` — an `EXPLAIN`/`SHOWPLAN` dry run before a validated, limited query ever executes. `askwell.sql.dry_run.dry_run_sandbox_query`/`dry_run_connection_query` plan a query, under the same read-only role and statement timeout execution uses, without running it: Postgres and MySQL/MariaDB via `EXPLAIN`, SQL Server via a session-level `SET SHOWPLAN_ALL ON`. A query whose planner rejects it (a dropped column, a renamed table) comes back `DryRunReason.PLANNING_FAILED` and is recorded to `audit_interactions` as `sql_dry_run` — a different kind from `validate.SQL_QUERY`, so a planning failure and a validation rejection stay distinguishable in the log. A planner that itself times out is `TIMEOUT`; a database whose plan-only mode itself can't be entered (SQL Server only) is `UNSUPPORTED`, never silently treated as a pass. Also fixes issue #382: a connect-time failure now returns a `.FAILED` `DryRunResult` instead of propagating the driver's own operational-error class unhandled. **Not wired into `POST /ask`** — issue #375 tracks the remaining turn-flow wiring for validation, limit injection, dry run and execution together.
