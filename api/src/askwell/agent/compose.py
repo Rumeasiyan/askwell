@@ -9,6 +9,15 @@ asserts both are present in the prompt file and fails if either is removed —
 the one test in this module that exists to catch a future edit, not today's
 behaviour.
 
+`M5-TOOLS-BE-114` extends both to tool output: `delimit_tool_result` wraps a
+tool call's result in its own `<tool-result>` block, unforgeable from inside
+the data (`_escape_forged_delimiter`), and the prompt file's standing
+statement now names `<tool-result>` alongside `<retrieved-content>`
+explicitly rather than leaving tool output to an implied "and everything
+like it". `askwell.agent.tools._step` reuses `flag_injection_text` here
+rather than a second copy of the same heuristic, so a tool result's flag on
+`messages.trace` is the identical check a retrieved passage gets.
+
 Instruction-like pattern flagging is a mitigation, not a detection system: it
 misses anything that does not match a pattern, and it flags legitimate
 instructional prose (a policy manual) exactly as readily as a real attempt.
@@ -36,6 +45,13 @@ PROMPT_PATH = PROMPT_DIR / f"{PROMPT_VERSION}.md"
 # `test_compose.py` — if one changes without the other, delimitation and the
 # text describing it disagree, which is worse than either alone.
 CONTENT_TAG = "retrieved-content"
+
+# `M5-TOOLS-BE-114`. A tool result (a database row, a schema note fetched at
+# query time, a filename) is exactly as untrusted as a retrieved passage —
+# C7 does not distinguish by which pipeline produced the text, only by
+# whether the user wrote it themselves. Delimited the same way, with the
+# same standing statement extended to cover it in the prompt file.
+TOOL_RESULT_TAG = "tool-result"
 
 # Heuristic and known to both miss real attempts and flag harmless prose
 # (`docs/architecture.md` §9). Ordered roughly most- to least-specific; not
@@ -85,6 +101,31 @@ def delimit_candidates(candidates: list[Candidate]) -> str:
         for index, candidate in enumerate(candidates, start=1)
     ]
     return "\n\n".join(blocks)
+
+
+def _escape_forged_delimiter(text_: str, tag: str) -> str:
+    """Neutralise a literal `<tag ...>`/`</tag>` occurring inside data so it
+    cannot close the block early and splice fabricated text in as if it sat
+    outside the boundary. Prefix match on the opening tag (not just the bare
+    `<tag>` form) so an attacker cannot dodge the escape by adding an
+    attribute we don't otherwise care about, e.g. `<tool-result index="99">`
+    injected inside a row's own text.
+    """
+    return text_.replace(f"<{tag}", f"&lt;{tag}").replace(f"</{tag}>", f"&lt;/{tag}&gt;")
+
+
+def delimit_tool_result(index: int, tool_name: str, content: str) -> str:
+    """Wrap one tool call's result in its own `<tool-result>` block, labelled
+    by which tool produced it — the origin a trace step already records
+    (`askwell.agent.tools.ToolStep.tool`). The delimiter is unforgeable from
+    inside `content`: `_escape_forged_delimiter` runs first, so a row of
+    text containing a literal `<tool-result>`/`</tool-result>` cannot break
+    out of its own block.
+    """
+    escaped = _escape_forged_delimiter(content, TOOL_RESULT_TAG)
+    return (
+        f'<{TOOL_RESULT_TAG} index="{index}" tool="{tool_name}">\n{escaped}\n</{TOOL_RESULT_TAG}>'
+    )
 
 
 def flag_injection_text(texts: Sequence[str]) -> tuple[bool, tuple[str, ...]]:

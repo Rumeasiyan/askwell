@@ -22,6 +22,18 @@ Template:
 
 ---
 
+## 2026-09-19 — `M5-TOOLS-BE-114`: tool-result flagging lives in `call_tool` itself, not in the loop that does not exist yet
+
+**Decision:** `askwell.agent.tools._step` computes `injection_flagged`/`injection_patterns` on every `ToolStep`, unconditionally, by flattening a tool result's content to its string leaves and running it through `askwell.agent.compose.flag_injection_text` — the same heuristic a retrieved passage already goes through, not a second copy of it. Delimitation gets the same treatment: `askwell.agent.compose.delimit_tool_result` wraps a result in an unforgeable `<tool-result>` block, and the prompt file's C7 standing statement now names `<tool-result>` explicitly alongside `<retrieved-content>`.
+
+**Why:** `M5-TOOLS-BE-113` deliberately left the tool registry unwired — nothing calls `call_tool` more than once per turn until `M5-LOOP-BE-115` exists. The tempting shortcut here was to defer flagging to that same future ticket, on the reasoning that a flag nobody reads yet is pointless work. Rejected: C7 is a constraint on what the model sees, not on what the loop does with it, and a flag computed lazily by whichever caller shows up first is exactly the kind of thing that gets forgotten once that caller is under its own deadline pressure. Computing it in `call_tool` — the one place every tool result already passes through on its way to a trace step — means the loop inherits a correct, tested flag for free instead of having to remember to add one. Escaping was the other real decision: `delimit_candidates` (`M1-ASK-BE-037`) does not escape a candidate's own content against the `<retrieved-content>` tag appearing inside it, because document text forging an XML-looking tag is a much narrower threat than a database row an attacker fully controls (C3's untrusted-dump case). Tool results include exactly that case, so `delimit_tool_result` escapes unconditionally rather than matching the candidate path's lighter-touch behaviour — the two delimiters are allowed to diverge here, and this entry is that divergence written down before it looks like an inconsistency.
+
+**Consequences:** A future prompt actually assembled with tool-result blocks (the loop's own job) gets delimitation and flagging for free, already tested against escaping and nested-content edge cases. If `M5-LOOP-BE-115` needs multiple tool results indexed into one prompt, `delimit_tool_result`'s `index` argument is already threaded through per-call, the same shape `delimit_candidates` uses. Reopening this would mean either moving the flag computation into the loop (rejected above) or duplicating the escape behaviour onto `delimit_candidates` retroactively — neither is free, so a reason to reopen it should be a real incident, not a preference.
+
+**Refs:** `M5-TOOLS-BE-114`, `M5-TOOLS-BE-113`, `M1-ASK-BE-037`, `api/src/askwell/agent/tools.py`, `api/src/askwell/agent/compose.py`, `api/src/askwell/agent/prompts/answer_composition.v1.md`, `api/tests/test_tools.py`, `api/tests/test_compose.py`, `docs/architecture.md` §9, `docs/ux/trace.md` §3, `docs/states-and-edge-cases.md` §2.
+
+---
+
 ## 2026-09-19 — `M5-TOOLS-BE-113`: the tool registry re-orchestrates the checked SQL chain rather than sharing `askwell.ask._run_sql_turn`
 
 **Decision:** `askwell.agent.tools._database_query` calls the same underlying stages `askwell.ask._run_sql_turn` already calls — `generate_candidate_query` → `validate_query` → `inject_limit` → `dry_run_*` → `execute_checked_*` — with its own orchestration, rather than extracting `_run_sql_turn` into a function both modules share.

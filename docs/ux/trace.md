@@ -60,7 +60,7 @@ Numbered because this genuinely is a sequence and the order carries meaning — 
 | Memory facts used | Which belief shaped this answer |
 | Generated SQL, and whether validation accepted it | **Rejected SQL is recorded and shown.** It is the signal that a prompt change has degraded generation, and it is invisible unless surfaced (`../audit-log.md` §7) |
 | Injected `LIMIT` | A truncated result mistaken for a complete one is a wrong answer with no warning attached |
-| Injection flags | Where retrieved content contained instruction-like text (C7). Flagged here, not as an alarm in the answer |
+| Injection flags | Where retrieved content or a tool result contained instruction-like text (C7). Flagged here, per step for a tool call, not as an alarm in the answer |
 | Tool-ceiling stop | If it stopped at 8 steps, this is where the user sees what was skipped |
 | Backend | Local or online, and which model |
 

@@ -355,7 +355,7 @@ Every chunk retains source document, page, section heading, and ingestion timest
 - User databases are connected read-only, with credentials probed at setup and refused if they can write.
 - Imported dumps are sandboxed (§5, C3).
 - Documents encrypted at rest when a passphrase is set.
-- Prompt-injection defence: retrieved content is delimited, the system prompt states that retrieved content is data and never instruction, and tool calls arising from a turn whose retrieved content contained instruction-like patterns are flagged in the trace. **This is a mitigation, not a solution — document the residual risk honestly rather than overclaiming.**
+- Prompt-injection defence: retrieved content and tool results are each delimited (`<retrieved-content>`, `<tool-result>`), unforgeable from inside the data, the system prompt states that delimited content is data and never instruction, and a turn whose retrieved content or whose tool output contained instruction-like patterns is flagged in the trace, per step for a tool call. **This is a mitigation, not a solution — document the residual risk honestly rather than overclaiming.**
 
 ## 10. Model tooling
 
