@@ -1137,6 +1137,58 @@
 
 ---
 
+### M4-SQL-BE-108a — Run the validated query and store its result with the answer
+
+**Type:** Story
+
+**User Story**
+- **Actor:** somebody who asked a question that only their database can answer.
+- **User Need:** the rows, attached to the answer that cited them.
+- **Business Value:** every screen in `M4-RESULT-*` renders a result set. Generation, validation, the row limit, the dry run, the read-only role and the logging all exist and nothing runs the query — so the whole data half of the product stops one step short of an answer.
+- *As the ask path, I need to execute a query that has passed every check and keep what it returned, so that the result can be rendered, cited and re-read later.*
+
+**Context / Background**
+**Detailed Description:** `M4-SQL-BE-103` generates SQL, `-104` rejects anything that is not a single read, `-105` injects the row limit, `-106` dry-runs it, `-107` gives it an independent read-only role with a statement timeout, and `-108` records what was executed and what was refused. `api/src/askwell/sql/` today holds `validate.py`, `limit.py`, `dry_run.py` and `observability.py` — and no `execute.py`. Nothing calls the database, and `messages` has nowhere to put a result.
+
+This ticket was missing from the backlog. `M4-RESULT-FE-109` halted rather than build a table against data that cannot exist, and `-110` and `-111` are behind it. The same hole appeared in M3, where three frontend tickets named an endpoint no ticket created.
+
+**Scope**
+- `askwell.sql.execute` — run a query that has already passed validation, the limit and the dry run, under the read-only role and the statement timeout from `-107`. It never re-validates and never accepts raw model output: it takes the checked statement, so there is exactly one path to the database and C2 cannot be bypassed by a caller that forgets a step.
+- Store the result with the message: columns, rows, the row count, whether the limit truncated it, and the elapsed time.
+- Wire it into the ask path after the dry run succeeds.
+- Surface it on the answer so `-109` has something real to render.
+
+**Out of Scope**
+- Rendering (`M4-RESULT-FE-109`), the SQL disclosure (`-110`) and the database states (`-111`).
+- Charting or export of a result set.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** A question answerable from a connected database produces rows stored with the message, reachable when the conversation is re-opened. The stored result records whether the row limit truncated it, so the screen can say so rather than implying the query returned everything.
+- **Edge Cases:** Zero rows is a result, not a failure, and is stored as one. A statement timeout is reported with what was attempted. A connection that dies mid-query fails the turn with a stated reason and stores no partial result. A result too large to store is truncated at the stored limit with that fact recorded, never silently.
+- **Permissions / Roles:** Single user — no roles. Executes as the read-only role from `M4-SQL-DB-107`, never as the owner.
+- **UI States:** None; this is what `../ux/` result states are rendered from.
+- **Validation Rules:** Only a statement that passed `validate`, `limit` and `dry_run` may be executed. Nothing in this module parses or rewrites SQL — that is C2's enforcement point and it stays in one place.
+- **Audit / Logging Requirements:** The executed statement, its row count and its duration go to the interactions store via `M4-SQL-OBS-108`. A refusal was already recorded there.
+- **Analytics Events:** Local counters only — nothing transmitted (C1).
+
+**Real-World Example Scenarios**
+- "How many invoices are unpaid over ninety days?" returns 47 rows with the SQL shown on request, and re-opening the conversation a week later shows the same 47 rows rather than re-running against a database that has moved on.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M4-SQL-VAL-106, M4-SQL-DB-107, M4-SQL-OBS-108.
+- **API / Data Touchpoints:** `messages`, `connections`, `audit_interactions`, the sandbox and live databases.
+- **Assumptions:** A stored result is a snapshot, not a live view. Re-running is a thing the user asks for, not something a re-opened conversation does silently — the number in an old answer must not change under them.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** Connect a database, ask something countable, confirm the rows, then re-open the conversation and confirm the same rows without a second query.
+- **Other scenarios:** A query returning zero rows. One that hits the statement timeout. One whose result exceeds the stored limit. Killing the connection mid-query.
+- **Known gaps:** No streaming of large results — the limit from `-105` bounds them.
+
+**Effort & Granularity Check**
+- **Estimate:** 3-4 hours · **Priority:** High
+- **Labels / Component:** `phase:4`, backend, `constraint:sql-safety`
+- **Granularity:** One execution path, one stored shape, one wiring point.
+
 ### M4-RESULT-FE-109 — Render results with counts, pagination and the truncation label
 
 **Type:** Story
@@ -1173,7 +1225,7 @@
 - A user asks for late shipments, gets a table of forty rows with the count shown, and clicks through to see the query that produced it.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M4-SQL-DB-107, M1-VIEW-FE-047.
+- **Dependencies:** M4-SQL-BE-108a, M4-SQL-DB-107, M1-VIEW-FE-047.
 - **API / Data Touchpoints:** Result sets; `messages`.
 - **Assumptions:** Results are rendered from a stored snapshot rather than re-queried on pagination, so the page the user reads is internally consistent.
 
@@ -1224,7 +1276,7 @@
 - A user expands the query, sees a join they did not expect, and realises the question was ambiguous rather than the answer wrong.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M4-RESULT-FE-109, M4-SQL-VAL-105.
+- **Dependencies:** M4-SQL-BE-108a, M4-RESULT-FE-109, M4-SQL-VAL-105.
 - **API / Data Touchpoints:** `messages.trace` sql step.
 - **Assumptions:** Collapsed-by-default is the right balance; the query is present but not in the way.
 
@@ -1276,7 +1328,7 @@
 - A user asks about sales before connecting anything and is told to connect a database rather than being told their files do not cover it.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M4-RESULT-FE-110, M4-CONN-BE-099, M4-SQL-VAL-106.
+- **Dependencies:** M4-SQL-BE-108a, M4-RESULT-FE-110, M4-CONN-BE-099, M4-SQL-VAL-106.
 - **API / Data Touchpoints:** Source states; query outcomes.
 - **Assumptions:** A database-shaped question can be recognised well enough to route to the no-connections message rather than to abstention.
 
