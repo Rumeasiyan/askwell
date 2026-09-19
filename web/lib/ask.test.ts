@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  addSourceActionLabel,
   applyAskEvent,
   conversationOf,
   isAbstained,
@@ -494,4 +495,19 @@ test("a running or failed turn never reads as abstained, whatever its answer", (
     isAbstained({ status: "failed", answer: "", reason: "Askwell could not reach the assistant." }),
     false,
   );
+});
+
+// --- addSourceActionLabel (M4-RESULT-FE-111) ----------------------------------
+
+test("an ordinary document abstention gets the plain add-a-source label", () => {
+  assert.equal(addSourceActionLabel(null), "Add a source");
+});
+
+test("no connections configured relabels the control rather than adding a second one", () => {
+  assert.equal(addSourceActionLabel("no_connections"), "Connect a database");
+});
+
+test("a source still importing or needing attention drops the control entirely", () => {
+  assert.equal(addSourceActionLabel("source_importing"), null);
+  assert.equal(addSourceActionLabel("source_attention"), null);
 });

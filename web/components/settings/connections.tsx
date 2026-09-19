@@ -62,9 +62,11 @@ export function Connections() {
         </p>
       ) : connections.length === 0 ? (
         <p className="ask-prose" style={{ color: "var(--muted)" }}>
-          None connected. 0 connected databases — separate from the network activity count
-          below, which stays zero until a database you connect is explicitly permitted through
-          it.
+          None connected. Connecting a database lets Askwell answer questions straight from your
+          own data — counts, totals, records — not just your documents. It only ever asks for
+          read-only credentials, and refuses anything that can write. 0 connected databases —
+          separate from the network activity count below, which stays zero until a database you
+          connect is explicitly permitted through it.
         </p>
       ) : (
         <>

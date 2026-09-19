@@ -819,6 +819,71 @@ def test_all_candidates_below_threshold_abstains_with_the_near_miss_stored(
     assert abstain_step["reason_code"] == "below_threshold"
 
 
+def test_a_database_shaped_question_with_no_sources_at_all_reports_no_connection(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """`M4-RESULT-FE-111`: end to end through `POST /ask`, not just the
+    extracted `_no_database_answer` unit — an empty corpus plus a question
+    that mentions "database" gets the distinct "no database connected"
+    wording and `db_state`, not the ordinary empty-corpus abstention."""
+    _truncate(database_url)
+    fake = _FakeInferenceClient(settings, tokens=["should never be sent"], vector=_vector(0.0))
+    _patch_client(monkeypatch, fake)
+
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "What does my database say about sales?"})
+        events = _events(response.text)
+        done = next(data for kind, data in events if kind == "done")
+        message_id = uuid.UUID(done["message_id"])
+
+    assert not any(kind == "token" for kind, _ in events)
+    assert done["db_state"] == "no_connections"
+    with psycopg.connect(database_url, autocommit=True) as db:
+        content = db.execute(
+            "SELECT content FROM messages WHERE id = %s", (message_id,)
+        ).fetchone()[0]
+    assert content == (
+        "No database is connected. Connect one to answer questions like this "
+        "from your own data, not just your documents."
+    )
+
+    trace = _trace(database_url, message_id)
+    sql_step = next(step for step in trace["steps"] if step["kind"] == "sql")
+    assert sql_step["outcome"] == "no_connections"
+
+
+def test_a_database_shaped_question_that_documents_actually_cover_is_answered_from_them(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """Issue #400's own edge case: a question that could be answered from
+    documents but looks database-shaped must fall back to them rather than
+    reporting no connection — proven here with zero database sources *and*
+    a real, clearly-matching document, so the override never gets a chance
+    to fire ahead of a real answer."""
+    _truncate(database_url)
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "The sales database export shows total sales of $9,000.", vector)
+    fake = _FakeInferenceClient(
+        settings,
+        tokens=["Total sales were ", "$9,000 [1]."],
+        vector=vector,
+        rerank_score=2.0,
+    )
+    _patch_client(monkeypatch, fake)
+
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "What does my database say about sales?"})
+        events = _events(response.text)
+        done = next(data for kind, data in events if kind == "done")
+
+    assert any(kind == "token" for kind, _ in events)
+    assert done["db_state"] is None
+
+
 def test_a_clear_match_above_threshold_answers(
     settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
 ) -> None:

@@ -17,6 +17,7 @@ import {
 } from "@/lib/answer-annotations";
 import type { CitationCard } from "@/lib/citations";
 import { CONVERSATION_PAGE_SIZE, conversationWindow, dividerLabel, liveTurnId,
+  addSourceActionLabel,
   isAbstained,
   isFirstAnswer,
   recordInlineClarificationShown,
@@ -1237,9 +1238,18 @@ function InlineClarification({
  * `M6.5-WEB-FE-186` later adds two siblings beside, and that nothing may
  * render above the abstention statement (C10). Until that ticket, this
  * region holds exactly one control.
+ *
+ * `turn.dbState` (`M4-RESULT-FE-111`) relabels that one control rather than
+ * adding a second, for the same "exactly one control" reason: "no
+ * connections configured" still wants the add-source flow, just named for
+ * what it actually does here ("Connect a database"); "a source is still
+ * importing" or "needs attention" already names its own next action in the
+ * message text above, and adding a new source would not fix either — the
+ * control is dropped for those two rather than offering a wrong one.
  */
 function AbstentionState({ turn }: { turn: AskTurn }) {
   const lines = (turn.reason ?? "").split("\n").filter((line) => line !== "");
+  const label = addSourceActionLabel(turn.dbState);
 
   return (
     <div className="flex flex-col gap-6 py-4">
@@ -1254,9 +1264,11 @@ function AbstentionState({ turn }: { turn: AskTurn }) {
           </p>
         ))}
       </div>
-      <div>
-        <AddSourceAction question={turn.question} />
-      </div>
+      {label !== null ? (
+        <div>
+          <AddSourceAction question={turn.question} label={label} />
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1271,8 +1283,13 @@ function AbstentionState({ turn }: { turn: AskTurn }) {
  * it remounts on the way back to `/`, so the question the user just asked is
  * sitting in the composer, ready to re-ask, the moment the newly added
  * source is in.
+ *
+ * `label` (`M4-RESULT-FE-111`) is the only thing `AbstentionState` varies —
+ * the destination and the fill-then-navigate behaviour are identical
+ * regardless of which state asked for the button, since `/sources/add/` is
+ * where a database connection is added too.
  */
-function AddSourceAction({ question }: { question: string }) {
+function AddSourceAction({ question, label = "Add a source" }: { question: string; label?: string }) {
   const router = useRouter();
 
   const addSource = (): void => {
@@ -1287,7 +1304,7 @@ function AddSourceAction({ question }: { question: string }) {
       className="ask-navigates px-4 py-2"
       style={{ border: "1px solid var(--rule-strong)", fontSize: "var(--t-ui)" }}
     >
-      Add a source
+      {label}
     </button>
   );
 }
