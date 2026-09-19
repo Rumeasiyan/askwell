@@ -22,6 +22,16 @@ Template:
 
 ---
 
+## 2026-09-19 — `M5-TOOLS-BE-113`: the tool registry re-orchestrates the checked SQL chain rather than sharing `askwell.ask._run_sql_turn`
+
+**Decision:** `askwell.agent.tools._database_query` calls the same underlying stages `askwell.ask._run_sql_turn` already calls — `generate_candidate_query` → `validate_query` → `inject_limit` → `dry_run_*` → `execute_checked_*` — with its own orchestration, rather than extracting `_run_sql_turn` into a function both modules share.
+
+**Why:** The alternative — pulling `_run_sql_turn`'s body out of `askwell/ask.py` into a shared module both call — was considered and rejected for this ticket specifically. `ask.py` is a large, already-tested, currently-live turn path (`POST /ask`'s single-shot flow, `M4-SQL-BE-108a`); refactoring it to serve a caller that does not exist yet (the loop, `M5-LOOP-BE-115`) trades a small amount of duplicated wiring for real regression risk on the one path real turns already go through, for no present benefit — nothing calls the registry yet. What is *not* duplicated is every stage that actually enforces something: C2 validation lives in exactly one place (`askwell.sql.validate`), as does limit injection, the dry run, and execution under the read-only role — this ticket's module only repeats the order they are called in and how their outcomes map onto a `ToolResult` instead of a `messages.trace` step and an SSE event. If `M5-LOOP-BE-115` ends up needing `ask.py`'s own single-shot path to become a one-tool-call special case of the loop, that is the point to extract a shared orchestrator — with a real second caller in hand instead of a hypothetical one.
+
+**Consequences:** A change to the *order* stages are called in (not what each stage enforces) needs updating in both `_run_sql_turn` and `askwell.agent.tools._database_query` until such an extraction happens. `docs/BRAIN.md` names both call sites so the next session updating one remembers to check the other.
+
+**Refs:** `api/src/askwell/agent/tools.py`, `api/src/askwell/ask.py::_run_sql_turn`, `docs/backlog/M5-it-handles-harder-questions.md`.
+
 ## 2026-09-19 — `M4-RESULT-FE-111`: the "no database connected" override fires only from the document turn's own abstention branch, and its detector stays a two-word allowlist
 
 **Decision:** `askwell.ask._no_database_answer` is called only from `_run_generation`'s document-abstention branch — never from `_run_sql_turn`, and never for a source-scoped question (`source_id` given). A database-shaped question is always let through to document retrieval first; the "no database is connected" wording (plus its "still importing" / "needs attention" siblings) only ever replaces an abstention that was already going to happen. `_looks_database_shaped` stays a narrow, literal two-word allowlist (`"database"`, `"sql"`), not the wider word list ("table", "records", "total", "count of", …) issue #400 flagged as a risk.
