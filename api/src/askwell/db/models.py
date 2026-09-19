@@ -702,6 +702,10 @@ class Message(Base):
     # schema should not conflate the two).
     summary: Mapped[str | None] = mapped_column(Text)
     source_count: Mapped[int | None] = mapped_column(Integer)
+    # `M4-SQL-BE-108a`: a database-answered turn's rows, a snapshot taken at
+    # answer time — `NULL` for a document-grounded or abstained turn, same
+    # as `source_count` stays `NULL` rather than `0` for those.
+    sql_result: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     created_at_: Mapped[datetime] = mapped_column(
         "created_at", DateTime(timezone=True), nullable=False, server_default=func.now()
     )

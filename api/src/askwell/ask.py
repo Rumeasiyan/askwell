@@ -71,7 +71,9 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, NamedTuple
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Any, Literal, NamedTuple, cast
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -80,13 +82,16 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from askwell import crypto
 from askwell.agent.abstain import AbstainReason, compose_abstention
 from askwell.agent.claims import Claim, locate_quoted_span, segment_claims
 from askwell.agent.conflict import compose_conflict, split_conflict_answer
 from askwell.agent.partial import split_partial_answer
+from askwell.agent.sql_generate import GenerationReason, generate_candidate_query
 from askwell.agent.summarize import fallback_summary, summarize_turn
 from askwell.audit import AuditError, Store, record
 from askwell.config import Settings
+from askwell.connections import Engine
 from askwell.db.engine import session_scope
 from askwell.inference.client import InferenceClient, InferenceFailed, InferenceUnavailable
 from askwell.ingest import coverage
@@ -94,6 +99,16 @@ from askwell.inline_clarify import default_assumption, find_blocking
 from askwell.logging import get_logger
 from askwell.memory import MemoryFact, SchemaNote, retrieve_relevant_facts
 from askwell.retrieve import Candidate, candidate_score, retrieve
+from askwell.sql import execute as sql_execute_checked
+from askwell.sql.dry_run import DryRunReason, dry_run_connection_query, dry_run_sandbox_query
+from askwell.sql.limit import inject_limit
+from askwell.sql.validate import validate_query
+from askwell.sql_execute import (
+    ConnectionUnreachable,
+    CredentialsRejected,
+    QueryRejected,
+    StatementTimedOut,
+)
 from askwell.traces import TraceRing
 
 log = get_logger(__name__)
@@ -251,27 +266,31 @@ async def _tail(turn: _Turn, request: Request) -> AsyncIterator[str]:
 
 async def _load_finished(
     factory: async_sessionmaker[AsyncSession], message_id: uuid.UUID
-) -> tuple[str, str, str | None, int | None, str] | None:
+) -> tuple[str, str, str | None, int | None, str, dict[str, Any] | None] | None:
     """The stored answer for a turn no longer in memory — finished long
     enough ago to have been retired, or from before this process started."""
     async with session_scope(factory) as db:
         row = (
             await db.execute(
                 text(
-                    "SELECT content, trace, summary, source_count, conversation_id FROM messages "
-                    "WHERE id = :id AND role = 'assistant'"
+                    "SELECT content, trace, summary, source_count, conversation_id, sql_result "
+                    "FROM messages WHERE id = :id AND role = 'assistant'"
                 ),
                 {"id": message_id},
             )
         ).first()
     if row is None:
         return None
-    content, trace, summary, source_count, conversation_id = row
+    content, trace, summary, source_count, conversation_id, sql_result = row
     status = trace.get("status", "completed") if isinstance(trace, dict) else "completed"
     # The conversation id comes back with it: a browser reconnecting to a
     # finished turn needs it as much as one watching a live turn, and after a
     # reload it has no other way to learn which conversation it is in.
-    return str(content), str(status), summary, source_count, str(conversation_id)
+    # `sql_result` (`M4-SQL-BE-108a`): the same snapshot a database-answered
+    # turn's live `done` event carried, read back rather than re-run — the
+    # ticket's own Assumption that a stored result never changes under a
+    # reopened conversation.
+    return str(content), str(status), summary, source_count, str(conversation_id), sql_result
 
 
 async def reconcile_interrupted(factory: async_sessionmaker[AsyncSession]) -> int:
@@ -580,6 +599,260 @@ async def _abstain_reason(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _SqlAnswer:
+    """What answering a question from a connected database produced. Every
+    branch `_run_sql_turn` can take — ambiguous source, a rejected query, a
+    failed dry run, a query-time failure, or an executed result — collapses
+    to one of these, so `_run_generation` treats a database turn identically
+    regardless of which stage decided the outcome. `sql_result` is `None`
+    on every branch except a query that actually executed."""
+
+    text: str
+    status: Status
+    sql_result: dict[str, Any] | None
+    trace_step: dict[str, Any]
+
+
+def _json_safe(value: Any) -> Any:
+    """One raw row value, made `json.dumps`-able. `messages.sql_result` is
+    an ordinary `jsonb` column, not an audited payload — `audit.
+    canonical_payload`'s ban on floats does not apply here — but a driver's
+    own row values (`Decimal`, `date`/`datetime`, `UUID`, raw bytes) are not
+    JSON types as they come back from `psycopg`/`pymysql`/`pytds`.
+    """
+    if isinstance(value, (Decimal, uuid.UUID)):
+        return str(value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return bytes(value).hex()
+    return value
+
+
+async def _connection_credentials(settings: Settings, config_encrypted: bytes) -> dict[str, Any]:
+    """Decrypt a live connection's stored configuration for one query-time
+    call. The same install secret and shape `askwell.connections.
+    _load_connection_config` reads — done inline here, since `_run_sql_turn`
+    already holds an open session and that function insists on opening its
+    own via a `factory` this call site does not have a reason to thread
+    through.
+    """
+    install_secret = crypto.load_or_create_install_secret(settings.install_secret_path)
+    config: dict[str, Any] = json.loads(
+        crypto.decrypt(config_encrypted, crypto.derive_key(install_secret)).decode("utf-8")
+    )
+    return config
+
+
+def _dry_run_failure_text(reason: DryRunReason, detail: str | None) -> str:
+    if reason == DryRunReason.TIMEOUT:
+        return "Planning this query against your database took too long."
+    if reason == DryRunReason.UNSUPPORTED:
+        return "Your database does not support checking a query before running it."
+    return f"Askwell could not run this query against your database: {detail}"
+
+
+def _sql_result_text(row_count: int, truncated: bool) -> str:
+    if row_count == 0:
+        return "No matching records."
+    label = f"Found {row_count} row{'' if row_count == 1 else 's'}."
+    if truncated:
+        label += " This may not be all of them — the result was capped."
+    return label
+
+
+async def _run_sql_turn(
+    settings: Settings,
+    db: AsyncSession,
+    client: InferenceClient,
+    *,
+    question: str,
+    source_id: uuid.UUID | None,
+) -> _SqlAnswer | None:
+    """Attempt to answer `question` from a connected database, running the
+    full checked path `docs/data-sources.md` §4 describes: generation
+    (`M4-SQL-BE-103`) → validation (C2, `-104`) → limit injection (`-105`)
+    → dry run (`-106`) → execution (`M4-SQL-DB-107`, wrapped by `askwell.sql.
+    execute`). `None` means this was not a database question at all —
+    `NO_DATABASES`/`NOT_A_DATABASE_QUESTION` — and the caller falls through
+    to document retrieval exactly as it did before this ticket wired
+    anything in here.
+
+    Every other outcome is answered, never raised: a rejected query, a
+    failed dry run and a query-time failure are all things a person asking
+    a question needs told in plain language, not a 500 — the same "answer
+    it, don't crash it" shape `_run_generation`'s own abstention branch
+    already follows for a document turn that found nothing.
+    """
+    generation = await generate_candidate_query(
+        db, settings, client, question=question, source_id=source_id
+    )
+    if generation.reason in (
+        GenerationReason.NO_DATABASES,
+        GenerationReason.NOT_A_DATABASE_QUESTION,
+    ):
+        return None
+    if generation.reason == GenerationReason.AMBIGUOUS:
+        names = [source.name for source in generation.candidates]
+        return _SqlAnswer(
+            text=(
+                "More than one connected database could answer this: "
+                f"{', '.join(names)}. Ask again naming which one."
+            ),
+            status="completed",
+            sql_result=None,
+            trace_step={"kind": "sql", "outcome": "ambiguous", "candidates": names},
+        )
+
+    generated = generation.query
+    assert generated is not None
+    # `DatabaseSource.engine` is a plain `str` (`askwell.agent.sql_generate`'s
+    # own choice — it reads the engine back out of stored, already-validated
+    # configuration rather than re-deriving a `Literal`), but everything
+    # downstream from here narrows on `askwell.connections.Engine`.
+    engine = cast(Engine, generated.engine)
+
+    validation = await validate_query(
+        db, settings, engine=engine, query=generated.query, source_id=generated.source_id
+    )
+    if not validation.accepted:
+        assert validation.reason is not None
+        return _SqlAnswer(
+            text=(
+                "Askwell could not safely run the query it generated for your "
+                f"database: {validation.detail}"
+            ),
+            status="completed",
+            sql_result=None,
+            trace_step={
+                "kind": "sql",
+                "outcome": "rejected",
+                "reason": validation.reason.value,
+                "query": generated.query,
+            },
+        )
+
+    limited = await inject_limit(db, settings, engine=engine, query=generated.query)
+
+    source_row = (
+        await db.execute(
+            text("SELECT kind, sandbox_db, config_encrypted FROM sources WHERE id = :id"),
+            {"id": generated.source_id},
+        )
+    ).first()
+    if source_row is None:
+        # Deleted between source selection, a few lines up, and here —
+        # vanishingly rare on one machine with one user, but not impossible
+        # mid-turn.
+        return _SqlAnswer(
+            text="The database this question would have used is no longer connected.",
+            status="completed",
+            sql_result=None,
+            trace_step={"kind": "sql", "outcome": "source_gone"},
+        )
+    kind, sandbox_db, config_encrypted = source_row
+    config: dict[str, Any] | None = None
+
+    if kind == "connection":
+        config = await _connection_credentials(settings, bytes(config_encrypted))
+        dry_run = await dry_run_connection_query(
+            db,
+            settings,
+            source_id=generated.source_id,
+            engine=engine,
+            host=config["host"],
+            port=config["port"],
+            database=config["database"],
+            user=config["user"],
+            password=config["password"],
+            query=limited.query,
+        )
+    else:
+        assert sandbox_db is not None
+        dry_run = await dry_run_sandbox_query(
+            db, settings, database=sandbox_db, query=limited.query
+        )
+
+    if not dry_run.passed:
+        assert dry_run.reason is not None
+        return _SqlAnswer(
+            text=_dry_run_failure_text(dry_run.reason, dry_run.detail),
+            status="completed",
+            sql_result=None,
+            trace_step={
+                "kind": "sql",
+                "outcome": "dry_run_failed",
+                "reason": dry_run.reason.value,
+                "query": limited.query,
+            },
+        )
+
+    try:
+        if kind == "connection":
+            assert config is not None
+            checked = await sql_execute_checked.execute_checked_connection_query(
+                db,
+                settings,
+                source_id=generated.source_id,
+                engine=engine,
+                host=config["host"],
+                port=config["port"],
+                database=config["database"],
+                user=config["user"],
+                password=config["password"],
+                query=limited.query,
+                row_limit=limited.limit,
+            )
+        else:
+            assert sandbox_db is not None
+            checked = await sql_execute_checked.execute_checked_sandbox_query(
+                db, settings, database=sandbox_db, query=limited.query, row_limit=limited.limit
+            )
+    except StatementTimedOut as error:
+        return _SqlAnswer(
+            text=str(error),
+            status="completed",
+            sql_result=None,
+            trace_step={"kind": "sql", "outcome": "timeout", "query": limited.query},
+        )
+    except (ConnectionUnreachable, CredentialsRejected, QueryRejected) as error:
+        return _SqlAnswer(
+            text=str(error),
+            status="completed",
+            sql_result=None,
+            trace_step={
+                "kind": "sql",
+                "outcome": type(error).__name__,
+                "query": limited.query,
+            },
+        )
+
+    sql_result = {
+        "engine": engine,
+        "source_id": str(generated.source_id),
+        "query": limited.query,
+        "columns": list(checked.columns),
+        "rows": [[_json_safe(v) for v in row] for row in checked.rows],
+        "row_count": checked.row_count,
+        "truncated": checked.truncated,
+        "duration_ms": checked.duration_ms,
+    }
+    return _SqlAnswer(
+        text=_sql_result_text(checked.row_count, checked.truncated),
+        status="completed",
+        sql_result=sql_result,
+        trace_step={
+            "kind": "sql",
+            "outcome": "executed",
+            "rows": checked.row_count,
+            "truncated": checked.truncated,
+            "duration_ms": checked.duration_ms,
+            "query": limited.query,
+        },
+    )
+
+
 async def _generate(
     settings: Settings,
     factory: async_sessionmaker[AsyncSession],
@@ -628,11 +901,163 @@ async def _run_generation(
     conflict_topic: str | None = None
     memory_fact_ids: list[uuid.UUID] = []
     schema_note_ids: list[uuid.UUID] = []
+    sql_result: dict[str, Any] | None = None
     # The model file's own name, not its full path — read from configuration
     # (never hardcoded, `AGENTS.md` §4) so this ticket's "backend and model
     # used" survives a deployment-profile change with no code edit.
     model_name = settings.inference_model_path.stem
     turn_started = time.monotonic()
+
+    try:
+        # `M4-SQL-BE-108a`: tried first, on every turn — `_run_sql_turn`
+        # itself decides whether this is a database question at all
+        # (`GenerationReason.NOT_A_DATABASE_QUESTION`/`NO_DATABASES` both
+        # come back as `None`) and falls through to the document path below
+        # exactly as if this ticket had never wired anything in.
+        turn.emit("step", {"label": "Checking your connected databases.", "kind": "sql"})
+        async with session_scope(factory) as db:
+            sql_answer = await _run_sql_turn(
+                settings, db, client, question=question, source_id=source_id
+            )
+    except Exception:
+        sql_answer = None
+        log.exception("ask_sql_turn_failed", message_id=str(turn.message_id))
+
+    if sql_answer is not None:
+        turn.text = sql_answer.text
+        turn.emit("token", {"text": sql_answer.text})
+        sql_result = sql_answer.sql_result
+        status = sql_answer.status
+        trace_steps.append(sql_answer.trace_step)
+        turn.emit("step", {"label": "Answered from your database.", "kind": "sql"})
+        duration_ms = int((time.monotonic() - turn_started) * 1000)
+        trace = {
+            "steps": trace_steps,
+            "backend": {"mode": "local", "model": model_name},
+            "stopped_early": status != "completed",
+            "injection_flagged": False,
+            "injection_patterns": [],
+            "status": status,
+            "reason": reason,
+            "partial_coverage": False,
+            "uncovered_aspects": [],
+            "conflict_detected": False,
+            "conflict_topic": None,
+            "memory_fact_ids": [],
+            "schema_note_ids": [],
+            "memory_used": 0,
+        }
+        try:
+            turn_summary = summarize_turn(
+                question=question,
+                answer_text=turn.text,
+                status=status,
+                reason=reason,
+                partial=False,
+                citation_rows=[],
+                candidates=[],
+            )
+        except Exception:
+            log.error("ask_summary_failed", message_id=str(turn.message_id))
+            turn_summary = fallback_summary(question)
+        TraceRing(settings.trace_dir, settings.trace_max_bytes).write(turn.message_id, trace)
+        try:
+            async with session_scope(factory) as db:
+                await db.execute(
+                    text(
+                        "INSERT INTO messages "
+                        "(id, conversation_id, role, content, trace, summary, source_count, "
+                        "sql_result) "
+                        "VALUES (:id, :conversation_id, 'assistant', :content, "
+                        "CAST(:trace AS jsonb), :summary, :source_count, "
+                        "CAST(:sql_result AS jsonb)) "
+                        "ON CONFLICT (id) DO UPDATE SET "
+                        "content = :content, trace = CAST(:trace AS jsonb), "
+                        "summary = :summary, source_count = :source_count, "
+                        "sql_result = CAST(:sql_result AS jsonb)"
+                    ),
+                    {
+                        "id": turn.message_id,
+                        "conversation_id": turn.conversation_id,
+                        "content": turn.text,
+                        "trace": json.dumps(trace),
+                        "summary": turn_summary.summary,
+                        "source_count": turn_summary.source_count,
+                        "sql_result": json.dumps(sql_result) if sql_result is not None else None,
+                    },
+                )
+                await record(
+                    db,
+                    Store.INTERACTIONS,
+                    ASK_ASKED,
+                    {
+                        "conversation_id": str(turn.conversation_id),
+                        "message_id": str(turn.message_id),
+                        "question": question,
+                        "answer": turn.text,
+                        "status": status,
+                        "abstained": False,
+                        "partial": False,
+                        "uncovered_aspects": [],
+                        "conflict_detected": False,
+                        "conflict_topic": None,
+                        "memory_fact_ids": [],
+                        "schema_note_ids": [],
+                        "threshold": None,
+                        "source_id": str(source_id) if source_id else None,
+                        "citation_count": 0,
+                        "duration_ms": duration_ms,
+                        "backend": "local",
+                        "model": model_name,
+                        "retrieved_chunks": [],
+                    },
+                )
+        except (AuditError, SQLAlchemyError) as error:
+            # Same failure shape `_run_generation`'s document-turn path
+            # handles below: the whole transaction above rolled back, so
+            # `sql_result` — real rows, already computed — must not be
+            # shipped on the live `done` event either (issue #390's own
+            # bug in miniature, avoided here by never letting a rolled-back
+            # value survive past this point).
+            status = "failed"
+            reason = f"Askwell could not save this answer: {error}"
+            sql_result = None
+            log.error(
+                "ask_sql_audit_write_failed", message_id=str(turn.message_id), error=str(error)
+            )
+            failure_trace = {**trace, "status": status, "reason": reason}
+            try:
+                async with session_scope(factory) as db:
+                    await db.execute(
+                        text(
+                            "UPDATE messages SET content = :content, "
+                            "trace = CAST(:trace AS jsonb), summary = :summary, "
+                            "source_count = :source_count, sql_result = NULL WHERE id = :id"
+                        ),
+                        {
+                            "id": turn.message_id,
+                            "content": "",
+                            "trace": json.dumps(failure_trace),
+                            "summary": turn_summary.summary,
+                            "source_count": turn_summary.source_count,
+                        },
+                    )
+            except Exception:
+                log.exception("ask_sql_failure_write_failed", message_id=str(turn.message_id))
+
+        turn.emit(
+            "done",
+            {
+                "status": status,
+                "reason": reason,
+                "summary": turn_summary.summary,
+                "source_count": turn_summary.source_count,
+                "sql_result": sql_result,
+            },
+        )
+        turn.status = status
+        _retire(turn.message_id)
+        return
 
     turn.emit("step", {"label": "Searching your files.", "kind": "retrieve"})
 
@@ -1112,6 +1537,12 @@ async def _run_generation(
             "reason": reason,
             "summary": turn_summary.summary,
             "source_count": turn_summary.source_count,
+            # `M4-SQL-BE-108a`: always `None` on this, the document-grounded
+            # path — a database-answered turn returns from `_run_sql_turn`'s
+            # own branch above and never reaches here. Present on every
+            # `done` event regardless, so a client never has to treat the
+            # key's absence as meaningful.
+            "sql_result": None,
         },
     )
     turn.status = status
@@ -1234,7 +1665,7 @@ def register_ask(
         stored = await _load_finished(factory, message_id)
         if stored is None:
             return JSONResponse({"error": "Askwell has no turn with that id."}, status_code=404)
-        content, status, summary, source_count, conversation_id = stored
+        content, status, summary, source_count, conversation_id, sql_result = stored
 
         async def replay() -> AsyncIterator[str]:
             if content:
@@ -1255,6 +1686,7 @@ def register_ask(
                     "conversation_id": conversation_id,
                     "summary": summary,
                     "source_count": source_count,
+                    "sql_result": sql_result,
                 },
             )
 

@@ -11,12 +11,15 @@ looked at it. `askwell.sql_execute`'s own module docstring establishes the
 same boundary from the other side: it runs a query string it is handed, and
 does not know how that string was produced.
 
-Not wired into `askwell.ask`'s turn flow — the same call `M4-SQL-DB-107`
-made about wiring itself in ahead of this ticket applies here in reverse:
-executing a candidate query before `M4-SQL-VAL-104` exists to validate it
-would be the one thing C2 exists to prevent, so this module is exercised
-directly (tests, and a real run against the stack) rather than reachable
-from `POST /ask` yet.
+**Since `M4-SQL-BE-108a`, this is reachable from `POST /ask`.** `askwell.ask
+._run_sql_turn` calls `generate_candidate_query` as the first step of every
+turn, ahead of document retrieval, then runs its result through
+`askwell.sql.validate` → `askwell.sql.limit` → `askwell.sql.dry_run` →
+`askwell.sql.execute` in that order — the same chain this module's own
+functions were already built to feed, now actually fed. `NO_DATABASES` and
+`NOT_A_DATABASE_QUESTION` both come back from `_run_sql_turn` as `None`,
+which is what lets a turn with no relevant database fall through to
+document retrieval exactly as it did before this ticket existed.
 
 **Schema retrieval reuses `schema_notes`, not a second schema
 representation.** `M4-SCHEMA-ING-100` through `-102` already turned a live

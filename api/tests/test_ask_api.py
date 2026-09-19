@@ -1692,10 +1692,48 @@ async def test_load_finished_reads_a_completed_turn_back_from_the_database(
     loaded = await ask_module._load_finished(factory, message_id)
     # The conversation id comes back with it: a browser reconnecting to a
     # finished turn has no other way to learn which conversation it is in (#156).
-    assert loaded == ("Ninety days.", "completed", None, None, str(conversation_id))
+    assert loaded == ("Ninety days.", "completed", None, None, str(conversation_id), None)
 
     missing = await ask_module._load_finished(factory, uuid.uuid4())
     assert missing is None
+
+
+async def test_load_finished_round_trips_a_stored_sql_result(
+    database_url: str, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """`M4-SQL-BE-108a`: a database-answered turn's rows survive a reopen —
+    the ticket's own headline Acceptance Criteria — read back exactly as
+    `_run_sql_turn` wrote them, not `NULL` (issue #391's own named gap:
+    nothing previously asserted this round trip at all)."""
+    _truncate(database_url)
+    message_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    sql_result = {
+        "engine": "postgresql",
+        "source_id": str(uuid.uuid4()),
+        "query": "SELECT count(*) FROM invoices",
+        "columns": ["count"],
+        "rows": [[47]],
+        "row_count": 1,
+        "truncated": False,
+        "duration_ms": 12,
+    }
+    with psycopg.connect(database_url, autocommit=True) as db:
+        db.execute("INSERT INTO conversations (id) VALUES (%s)", (conversation_id,))
+        db.execute(
+            "INSERT INTO messages (id, conversation_id, role, content, trace, sql_result) "
+            "VALUES (%s, %s, 'assistant', 'Found 1 row.', %s, %s)",
+            (
+                message_id,
+                conversation_id,
+                json.dumps({"status": "completed", "steps": []}),
+                json.dumps(sql_result),
+            ),
+        )
+
+    loaded = await ask_module._load_finished(factory, message_id)
+    assert loaded is not None
+    assert loaded[5] == sql_result
 
 
 # --- the client leaving does not stop the answer -------------------------------
