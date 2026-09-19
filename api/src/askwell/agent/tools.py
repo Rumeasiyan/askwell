@@ -11,6 +11,14 @@ corpus, no connection, a rejected query, invalid arguments. `call_tool`
 times every call and produces the trace step (`docs/ux/trace.md` §2)
 alongside it.
 
+**`M5-TOOLS-BE-114`: every tool result is C7 data, never instruction, before
+it ever reaches a trace or a prompt.** `_step` flags a result's content
+against the same heuristic `askwell.agent.compose` already applies to a
+retrieved passage, and `askwell.agent.compose.delimit_tool_result` wraps a
+result in an unforgeable `<tool-result>` block for whichever prompt the loop
+below eventually assembles it into — flagging happens here, unconditionally,
+so it does not depend on the loop existing yet.
+
 **This module does not loop.** `M5-LOOP-BE-115` is what calls a tool more
 than once per turn, feeds a result back to the model, and decides when to
 stop. Nothing here is wired into `askwell.ask` yet — the same "do not wire
@@ -46,6 +54,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from askwell import crypto
+from askwell.agent.compose import flag_injection_text
 from askwell.agent.sql_generate import GenerationReason, generate_candidate_query
 from askwell.config import Settings
 from askwell.connections import Engine
@@ -470,7 +479,16 @@ TOOLS: dict[str, Tool] = {
 
 @dataclass(frozen=True, slots=True)
 class ToolStep:
-    """One trace step for a tool call. `docs/ux/trace.md` §2."""
+    """One trace step for a tool call. `docs/ux/trace.md` §2.
+
+    `injection_flagged`/`injection_patterns` are C7 (`M5-TOOLS-BE-114`) for
+    a tool result the same way `ComposedPrompt.injection_flagged` is for a
+    retrieved passage: a database row or schema note is exactly as untrusted
+    as document text, so it goes through the identical heuristic
+    (`askwell.agent.compose.flag_injection_text`) before it ever reaches the
+    trace. The flag never changes `outcome` or `content` — flagging is not
+    blocking, by design (this ticket's own out-of-scope line).
+    """
 
     kind: str
     tool: str
@@ -479,12 +497,30 @@ class ToolStep:
     outcome: str
     truncated: bool
     detail: dict[str, Any]
+    injection_flagged: bool
+    injection_patterns: tuple[str, ...]
+
+
+def _flatten_strings(value: Any) -> list[str]:
+    """Every string leaf in a tool result's `content`/`detail`, however
+    deeply nested — a flagged row three levels down a `database_query`
+    result (a JSON column, say) must not be missed because it wasn't at the
+    top level.
+    """
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [text_ for v in value.values() for text_ in _flatten_strings(v)]
+    if isinstance(value, (list, tuple)):
+        return [text_ for v in value for text_ in _flatten_strings(v)]
+    return []
 
 
 def _step(name: str, raw_arguments: dict[str, Any], started: float, result: ToolResult) -> ToolStep:
     duration_ms = round((time.monotonic() - started) * 1000)
     outcome = "ok" if result.ok else cast(ToolError, result.error).code.value
     detail = result.content if result.ok else cast(ToolError, result.error).detail
+    injection_flagged, injection_patterns = flag_injection_text(_flatten_strings(detail or {}))
     return ToolStep(
         kind="tool",
         tool=name,
@@ -493,6 +529,8 @@ def _step(name: str, raw_arguments: dict[str, Any], started: float, result: Tool
         outcome=outcome,
         truncated=result.truncated,
         detail=detail or {},
+        injection_flagged=injection_flagged,
+        injection_patterns=injection_patterns,
     )
 
 
