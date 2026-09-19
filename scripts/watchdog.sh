@@ -145,10 +145,22 @@ if command -v gh >/dev/null 2>&1; then
     branch="feat/$branch"
     state=$(gh pr view "$branch" --json state --jq .state 2>/dev/null)
     case "$state" in
-      MERGED|OPEN|"") continue ;;
+      MERGED|"") continue ;;
       CLOSED)
         rm -f "$marker"
         say "$ticket was marked done but its pull request was closed unmerged — marker removed"
+        ;;
+      OPEN)
+        # An open PR is usually a ticket mid-flight, which must be left alone.
+        # One that cannot merge is different: the queue only marks a ticket
+        # done after its own merge step, so a conflicting PR under a done
+        # marker means the merge never happened and never will without help.
+        # M4-DUMP-SEC-091 sat exactly like that for a day — marked done, PR
+        # conflicting, CI red — while the queue skipped it as complete.
+        if [ "$(gh pr view "$branch" --json mergeable --jq .mergeable 2>/dev/null)" = "CONFLICTING" ]; then
+          rm -f "$marker"
+          say "$ticket was marked done but its pull request cannot merge — marker removed"
+        fi
         ;;
     esac
   done
