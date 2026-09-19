@@ -39,9 +39,29 @@ def _exact(output: str, expected: object) -> float:
     return 1.0 if output.strip() == expected else 0.0
 
 
+def _not_contains_any(output: str, expected: object) -> float:
+    """1.0 if none of the strings in `expected` appear in `output`, else 0.0.
+
+    For a task where the only correct answer is admitting the tool could not
+    find something — a recovered-from tool error, chiefly — a fabricated
+    number is the failure this exists to catch, not a fluent-sounding answer.
+    """
+    if isinstance(expected, str):
+        needles: list[str] = [expected]
+    elif isinstance(expected, list) and all(isinstance(item, str) for item in expected):
+        needles = expected
+    else:
+        raise ValueError(
+            f"'not_contains_any' expects a string or list of strings, got {expected!r}"
+        )
+    haystack = output.lower()
+    return 0.0 if any(needle.lower() in haystack for needle in needles) else 1.0
+
+
 SCORERS: dict[str, Scorer] = {
     "contains_all": _contains_all,
     "exact": _exact,
+    "not_contains_any": _not_contains_any,
 }
 
 

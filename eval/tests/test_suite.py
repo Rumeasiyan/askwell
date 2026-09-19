@@ -199,3 +199,80 @@ def test_resolve_conflicting_sources_suite_has_ten_tasks() -> None:
     for task in genuine:
         assert len(task.position_values) == 2
         assert len(task.expected_documents) == 2
+
+
+def test_tool_selection_mode_reads_expected_tool_routes(tmp_path: Path) -> None:
+    payload = _valid_payload()
+    payload["mode"] = "tool_selection"
+    payload["tasks"] = [
+        {
+            "id": "a",
+            "prompt": "hi",
+            "scorer": "contains_all",
+            "expected": "hi",
+            "expected_tools": [["document_search"], ["database_query"]],
+        }
+    ]
+    suite = load_suite(_write(tmp_path, payload))
+    assert suite.mode == "tool_selection"
+    assert suite.tasks[0].expected_tool_routes == (
+        ("document_search",),
+        ("database_query",),
+    )
+    assert suite.tasks[0].require_parallel is False
+
+
+def test_tool_selection_mode_accepts_a_no_tool_route(tmp_path: Path) -> None:
+    payload = _valid_payload()
+    payload["mode"] = "tool_selection"
+    payload["tasks"] = [
+        {
+            "id": "a",
+            "prompt": "what is 2 + 2?",
+            "scorer": "contains_all",
+            "expected": "4",
+            "expected_tools": [[]],
+        }
+    ]
+    suite = load_suite(_write(tmp_path, payload))
+    assert suite.tasks[0].expected_tool_routes == ((),)
+
+
+def test_tool_selection_mode_requires_expected_tools(tmp_path: Path) -> None:
+    payload = _valid_payload()
+    payload["mode"] = "tool_selection"
+    with pytest.raises(SuiteError, match="expected_tools"):
+        load_suite(_write(tmp_path, payload))
+
+
+def test_tool_selection_mode_rejects_require_parallel_without_a_multi_tool_route(
+    tmp_path: Path,
+) -> None:
+    payload = _valid_payload()
+    payload["mode"] = "tool_selection"
+    payload["tasks"] = [
+        {
+            "id": "a",
+            "prompt": "hi",
+            "scorer": "contains_all",
+            "expected": "hi",
+            "expected_tools": [["document_search"]],
+            "require_parallel": True,
+        }
+    ]
+    with pytest.raises(SuiteError, match="require_parallel"):
+        load_suite(_write(tmp_path, payload))
+
+
+def test_resolve_tool_selection_suite_has_twenty_five_tasks() -> None:
+    suite = load_suite(resolve_suite_path("tool_selection.v1"))
+    assert suite.mode == "tool_selection"
+    assert suite.category == "tool_selection"
+    assert suite.pass_bar == 0.85
+    assert len(suite.tasks) == 25
+    for task in suite.tasks:
+        assert task.expected_tool_routes
+    parallel_tasks = [task for task in suite.tasks if task.require_parallel]
+    assert len(parallel_tasks) == 4
+    for task in parallel_tasks:
+        assert any(len(route) >= 2 for route in task.expected_tool_routes)

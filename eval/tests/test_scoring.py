@@ -21,6 +21,21 @@ def test_exact_strips_whitespace_only() -> None:
     assert score("exact", "four", "4") == 0.0
 
 
+def test_not_contains_any_passes_when_none_present() -> None:
+    assert score("not_contains_any", "I don't have that information.", ["0", "1", "2"]) == 1.0
+
+
+def test_not_contains_any_fails_when_one_present() -> None:
+    assert (
+        score("not_contains_any", "There are 5 warehouses.", ["0", "1", "2", "3", "4", "5"]) == 0.0
+    )
+
+
+def test_not_contains_any_rejects_bad_expected_type() -> None:
+    with pytest.raises(ValueError, match="not_contains_any"):
+        score("not_contains_any", "anything", 4)
+
+
 def test_unknown_scorer_lists_available() -> None:
     with pytest.raises(ValueError, match="contains_all"):
         score("no-such-scorer", "x", "x")

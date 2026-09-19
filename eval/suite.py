@@ -47,6 +47,17 @@ class Task:
     the "no silent preference" check, since a silently preferred source
     would only surface one. For a false conflict or a superseded pair, the
     single correct value."""
+    expected_tool_routes: tuple[tuple[str, ...], ...] = ()
+    """`mode: "tool_selection"` only: every acceptable set of tools for this
+    task, unordered — more than one entry is the ticket's own "two acceptable
+    tool routes" edge case, both scored correct. An empty tuple within this
+    is itself an acceptable route: the "correct behaviour is no tool at all"
+    edge case."""
+    require_parallel: bool = False
+    """`mode: "tool_selection"` only: this task's accepted route has more
+    than one tool, and those tools must be dispatched in the same iteration
+    (concurrently), not across separate turns — the ticket's own "emitting
+    independent calls in parallel" behaviour, checked rather than assumed."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,7 +89,12 @@ class Suite:
     boundary (`M3-EVAL-TEST-086`). `"sql"` runs `eval.sql_eval.run_sql_suite`
     — text-to-SQL over the fixture sandbox database `eval.sql_fixture`
     seeds, scored by result-set equivalence against `expected`, a gold query
-    (`M4-EVAL-TEST-112`). `"sql_safety"` runs
+    (`M4-EVAL-TEST-112`). `"tool_selection"` runs
+    `eval.tool_selection.run_tool_selection_suite` — the real
+    `askwell.agent.loop.run_tool_loop` path against the fixture corpus and
+    the fixture sandbox database together, scored on tool choice (including
+    parallel dispatch) and the final answer, separately
+    (`M5-EVAL-TEST-124`). `"sql_safety"` runs
     `eval.sql_eval.run_sql_safety_suite` — the same generate/validate path,
     scored on whether `askwell.sql.validate.validate_query` (C2) ever
     accepts a candidate a task expects to be refused."""
@@ -129,10 +145,11 @@ def load_suite(path: Path) -> Suite:
         "memory",
         "sql",
         "sql_safety",
+        "tool_selection",
     ):
         raise SuiteError(
             f"{path}: unknown mode {mode!r}. Available: completion, grounded, abstain, "
-            "conflict, memory, sql, sql_safety"
+            "conflict, memory, sql, sql_safety, tool_selection"
         )
     if mode == "grounded":
         for task in tasks:
@@ -148,6 +165,20 @@ def load_suite(path: Path) -> Suite:
                     f"{path}: task {task.id!r} is in a 'conflict' suite but is missing "
                     "'expected_documents' and/or 'position_values'"
                 )
+    if mode == "tool_selection":
+        for task in tasks:
+            if not task.expected_tool_routes:
+                raise SuiteError(
+                    f"{path}: task {task.id!r} is in a 'tool_selection' suite but is "
+                    "missing 'expected_tools'"
+                )
+            if task.require_parallel and not any(
+                len(route) >= 2 for route in task.expected_tool_routes
+            ):
+                raise SuiteError(
+                    f"{path}: task {task.id!r} sets 'require_parallel' but no accepted "
+                    "route in 'expected_tools' has more than one tool"
+                )
 
     return Suite(
         name=str(raw["name"]),
@@ -161,9 +192,7 @@ def load_suite(path: Path) -> Suite:
 def _load_task(path: Path, entry: Any) -> Task:
     for field in ("id", "prompt", "scorer", "expected"):
         if field not in entry:
-            raise SuiteError(
-                f"{path}: task {entry!r} is missing required field '{field}'"
-            )
+            raise SuiteError(f"{path}: task {entry!r} is missing required field '{field}'")
     return Task(
         id=str(entry["id"]),
         prompt=str(entry["prompt"]),
@@ -174,6 +203,8 @@ def _load_task(path: Path, entry: Any) -> Task:
         expected_passages=tuple(entry.get("expected_passages", ())),
         expect_conflict=bool(entry.get("expect_conflict", True)),
         position_values=tuple(entry.get("position_values", ())),
+        expected_tool_routes=tuple(tuple(route) for route in entry.get("expected_tools", ())),
+        require_parallel=bool(entry.get("require_parallel", False)),
     )
 
 

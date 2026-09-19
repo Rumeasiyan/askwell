@@ -4,6 +4,19 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.32 - 2026-09-20
+
+`M5-EVAL-TEST-124` — the quality gate's "Tool selection incl. parallel" category (`docs/build-plan.md`'s 25-task, ≥0.85 row) gets its suite. `eval/tool_selection.py` drives the real `askwell.agent.loop.run_tool_loop` — not a mock of it — over both the fixture document corpus and the fixture sandbox database seeded together, so a task can genuinely need either, both, or neither. Every task is scored on two things kept separate rather than folded into one number: `tool_choice_score` checks the distinct tools the loop actually called against a task's `expected_tool_routes` (more than one accepted route is scored correct — the "two acceptable tool routes" edge case; an empty route covers "the correct behaviour is no tool at all"), and the ordinary `eval.scoring.score` grades the final answer text — so a right answer reached by the wrong tool, or a wrong answer despite the right tool, is visible rather than averaged away.
+
+Parallel dispatch gets its own check rather than being assumed from a passing answer: `parallel_achieved` looks at `LoopStep.iteration` for two freshly-dispatched (non-deduplicated) calls sharing one iteration — the one trace signature `asyncio.gather`-based dispatch produces and a regression to one-call-per-iteration cannot fake. A task marking `require_parallel` scores its tool component 0 if that signature is absent, independent of whether the right tools were eventually called — proven by `eval/tests/test_tool_selection.py`'s own "parallel required but not achieved scores zero" case, so removing parallel dispatch from the loop fails exactly the tasks built to catch it. Recovering from a real tool error (asking the connected database about a table that does not exist) is graded with a new `not_contains_any` scorer — the failure this exists to catch is a fabricated number standing in for an honest "I don't have that," not a fluent-sounding wrong answer. The suite is wired into `eval/bench.py` (`--suite tool_selection.v1`) and `.github/workflows/eval.yml`'s gate loop.
+
+### Added
+
+- `eval/tool_selection.py` — `run_tool_selection_suite`, `tool_choice_score`, `parallel_achieved`, `combined_tool_score`.
+- `eval/suites/tool_selection.v1.json` — 25 tasks.
+- `eval.scoring._not_contains_any` (`"not_contains_any"` scorer).
+- `eval.suite.Task.expected_tool_routes` / `.require_parallel`, and the `"tool_selection"` suite mode.
+
 ## 0.4.31 - 2026-09-20
 
 `M5-LOOP-BE-117` — the two gaps left in `messages.trace` (`docs/architecture.md` §7.1) after every earlier trace-populating ticket: a missing step kind, and a store that never actually rotated. A database turn's schema lookup (`askwell.agent.sql_generate.generate_candidate_query`) now times itself and reports its own `"schema"` step — `kind`, `ms`, `source_id` — carried on `_SqlAnswer.schema_step` and prepended ahead of the `"sql"` step in every branch that got as far as selecting a source, matching the doc's own worked example ("Looked up schema" before "Queried sales-2024") rather than folding that time into the SQL step's. The executed-query step also gained `limit_injected`, the one field `docs/architecture.md`'s shape names that nothing populated yet.
