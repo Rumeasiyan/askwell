@@ -15,6 +15,7 @@ import { buildPageText, itemsInRange } from "@/lib/pdf-text-map";
 
 import { ContextRail, SupersededBanner } from "./context-rail";
 import { ConvertedTextView } from "./converted-text-view";
+import { DatabaseResultView } from "./database-result-view";
 import { SpreadsheetView } from "./spreadsheet-view";
 import {
   DeletedSourceNotice,
@@ -102,6 +103,14 @@ export function DocumentViewer() {
   // without the others — so reading them here as a single optional group
   // rather than three independent nullable reads.
   const turnParam = searchParams.get("turn");
+  // A database source's own citation (`sqlResultHref`, `lib/sql-result.ts`) —
+  // a message id in place of a document id, since a query result has no
+  // document to key on. Read here, ahead of every document-only hook below,
+  // but only branched on after them (`DatabaseResultView`, below the
+  // `documentId === null` check) so the hook order this component runs stays
+  // identical on every render regardless of which citation kind sent someone
+  // here.
+  const resultParam = searchParams.get("result");
   const claimParam = searchParams.get("claim");
   const chunkParam = searchParams.get("chunk");
   const claimOrdinal = claimParam !== null ? Number.parseInt(claimParam, 10) : null;
@@ -363,6 +372,10 @@ export function DocumentViewer() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- pageNumber is read, not written, by this effect except to clamp it once on load
   }, [state.kind, documentId, quotedSpan, passage]);
+
+  if (resultParam !== null) {
+    return <DatabaseResultView messageId={resultParam} turnId={turnParam} />;
+  }
 
   if (documentId === null) {
     return (
