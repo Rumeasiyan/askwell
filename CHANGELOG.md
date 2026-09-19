@@ -4,6 +4,21 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.23 - 2026-09-19
+
+`M4-SQL-BE-108a` — the checked query path finally runs, and its rows survive a reopen. `askwell.ask._run_sql_turn` wires `askwell.agent.sql_generate` → `askwell.sql.validate` → `askwell.sql.limit` → `askwell.sql.dry_run` → the new `askwell.sql.execute` into every turn, ahead of document retrieval — a question with no relevant connected database falls through to the document path exactly as before. The new module wraps `askwell.sql_execute` (`M4-SQL-DB-107`) rather than duplicating it, adding truncation labelling and its own `sql_execute` audit kind. `messages.sql_result` (migration `7f40fa52d49d`) stores columns, rows, row count, truncation and duration as a snapshot at answer time, carried on every `done` event — live or replayed after a reopen — and reset to `NULL` if the write that would have persisted it rolls back, so the live stream never shows rows the database does not actually hold (closes issue #390). Fixes the stale "not wired into `POST /ask`" claims left in `askwell.agent.sql_generate`'s own module docstring and in the `M4-SQL-VAL-106` decision-log entry (issue #392), and closes issue #375.
+
+### Added
+
+- `askwell.sql.execute.execute_checked_sandbox_query`/`execute_checked_connection_query`/`ExecuteResult`.
+- `messages.sql_result` (`jsonb`, nullable).
+- `askwell.ask._run_sql_turn`/`_SqlAnswer` — the checked path's turn-flow wiring.
+
+### Fixed
+
+- `askwell.agent.sql_generate`'s own module docstring, and the `M4-SQL-VAL-106` decision-log entry, no longer claim the SQL path is unreachable from `POST /ask` (#392).
+- A rolled-back audit write can no longer ship a live `sql_result` the persisted message does not hold (#390).
+
 ## 0.4.22 - 2026-09-19
 
 `M4-DUMP-SEC-091` — the containment claim demonstrated, not just asserted. `api/tests/test_dump_containment.py` runs six hostile fixture dumps (privilege escalation, reading a host file through `COPY ... FROM PROGRAM`, connecting to another database in the sandbox instance, reaching the network, exhausting disk, running indefinitely) through the real `import_dump` against a real sandbox instance. Every fixture must fail loudly, land the source in `attention` with a reason, record `dump_import_failed`, and drop the sandbox database — checked against a content hash (not a row count) of Askwell's own database and of a second, already-loaded sandbox database, both before the suite and after every single fixture, plus a whole-suite-in-sequence run confirming the product stays functional afterwards. Also resolves issue #389: `test_sandbox_network_has_no_route_to_the_proxy_or_the_internet` is a static assertion, parsed straight out of `compose.yaml`, that the `sandbox` network is `internal: true` and joined by nothing but `api`, `worker` and `sandbox` itself — the topology regression that would make the proxy's refusal counter matter, catchable in CI without a running proxy or Redis. The counter check itself stays the ticket's own cold-start manual walkthrough, now written up in `docs/manual-tests/M4-DUMP-SEC-091.md` and run against the real stack.
