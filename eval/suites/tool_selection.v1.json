@@ -1,0 +1,41 @@
+{
+  "name": "tool_selection.v1",
+  "category": "tool_selection",
+  "pass_bar": 0.85,
+  "mode": "tool_selection",
+  "tasks": [
+    {"id": "tool-doc-password", "prompt": "What is Meridian Loom's minimum password length according to policy?", "expected_tools": [["document_search"]], "scorer": "contains_all", "expected": ["eighteen"]},
+    {"id": "tool-doc-bluetooth", "prompt": "What Bluetooth version does the Loomwear Sensor Mk3 use?", "expected_tools": [["document_search"]], "scorer": "contains_all", "expected": ["5.3"]},
+    {"id": "tool-doc-hotline", "prompt": "What is the Meridian Loom whistleblower hotline number?", "expected_tools": [["document_search"]], "scorer": "contains_all", "expected": ["800-555-0177"]},
+    {"id": "tool-doc-warranty", "prompt": "How long is the warranty period for the Loomwear Sensor Mk3?", "expected_tools": [["document_search"]], "scorer": "contains_all", "expected": ["three years"]},
+    {"id": "tool-doc-firmware", "prompt": "How often are firmware updates released for the Loomwear Sensor Mk3?", "expected_tools": [["document_search"]], "scorer": "contains_all", "expected": ["six weeks"]},
+
+    {"id": "tool-db-customers-count", "prompt": "How many customers are there in total, according to the connected database?", "expected_tools": [["database_query"]], "scorer": "contains_all", "expected": ["10"]},
+    {"id": "tool-db-premium-count", "prompt": "How many premium-tier customers are in the connected database?", "expected_tools": [["database_query"]], "scorer": "contains_all", "expected": ["3"]},
+    {"id": "tool-db-cancelled-orders", "prompt": "How many orders have been cancelled, per the connected database?", "expected_tools": [["database_query"]], "scorer": "contains_all", "expected": ["2"]},
+    {"id": "tool-db-open-tickets", "prompt": "How many support tickets in the connected database are still open, meaning they have no closed date?", "expected_tools": [["database_query"]], "scorer": "contains_all", "expected": ["3"]},
+    {"id": "tool-db-shipped-orders", "prompt": "How many orders have shipped, according to the connected database?", "expected_tools": [["database_query"]], "scorer": "contains_all", "expected": ["11"]},
+
+    {"id": "tool-schema-statcd", "prompt": "What does the stat_cd column in the orders table mean, per the connected database's schema notes?", "expected_tools": [["schema_lookup"]], "scorer": "contains_all", "expected": ["shipped", "cancelled"]},
+    {"id": "tool-schema-or-query-columns", "prompt": "What columns does the orders table have in the connected database?", "expected_tools": [["schema_lookup"], ["database_query"]], "scorer": "contains_all", "expected": ["stat_cd"]},
+
+    {"id": "tool-listing-filenames", "prompt": "What documents do I currently have indexed?", "expected_tools": [["document_listing"]], "scorer": "contains_all", "expected": ["handbook_a.pdf"]},
+    {"id": "tool-listing-or-search-sensor-doc", "prompt": "Do I have a document about the Loomwear Sensor Mk3 indexed? What is it called?", "expected_tools": [["document_listing"], ["document_search"]], "scorer": "contains_all", "expected": ["spec.docx"]},
+
+    {"id": "tool-current-date", "prompt": "What is today's date?", "expected_tools": [["current_date"]], "scorer": "contains_all", "expected": ["202"]},
+
+    {"id": "tool-no-tool-arithmetic", "prompt": "What is 25 plus 17?", "expected_tools": [[]], "scorer": "contains_all", "expected": ["42"]},
+
+    {"id": "tool-tempt-db-revenue", "prompt": "What was the Textiles department's Q1 revenue?", "expected_tools": [["document_search"]], "scorer": "contains_all", "expected": ["482"]},
+    {"id": "tool-tempt-db-headcount", "prompt": "How many people work in the Logistics department?", "expected_tools": [["document_search"]], "scorer": "contains_all", "expected": ["19"]},
+    {"id": "tool-tempt-doc-gear-products", "prompt": "How many products are there in the gear category, according to the connected database?", "expected_tools": [["database_query"]], "scorer": "contains_all", "expected": ["3"]},
+
+    {"id": "tool-parallel-password-and-premium", "prompt": "What is Meridian Loom's minimum password length according to policy, and how many premium-tier customers are in the connected database?", "expected_tools": [["document_search", "database_query"]], "require_parallel": true, "scorer": "contains_all", "expected": ["eighteen", "3"]},
+    {"id": "tool-parallel-warranty-and-cancelled", "prompt": "How long is the Loomwear Sensor Mk3's warranty, and how many orders have been cancelled in the connected database?", "expected_tools": [["document_search", "database_query"]], "require_parallel": true, "scorer": "contains_all", "expected": ["three years", "2"]},
+    {"id": "tool-parallel-listing-and-schema", "prompt": "What documents do I have indexed, and what does the stat_cd column mean in the connected database?", "expected_tools": [["document_listing", "schema_lookup"]], "require_parallel": true, "scorer": "contains_all", "expected": ["handbook_a.pdf", "shipped"]},
+    {"id": "tool-parallel-bounty-and-enterprise", "prompt": "What is the Meridian Loom bug bounty program's minimum payout for a critical finding, and how many customers are on the enterprise tier in the connected database?", "expected_tools": [["document_search", "database_query"]], "require_parallel": true, "scorer": "contains_all", "expected": ["two thousand", "2"]},
+
+    {"id": "tool-recover-nonexistent-warehouses", "prompt": "How many warehouses does Meridian Loom operate, according to the connected database?", "expected_tools": [["database_query"]], "scorer": "not_contains_any", "expected": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]},
+    {"id": "tool-recover-nonexistent-vendors", "prompt": "According to the connected database, how many vendors does Meridian Loom have?", "expected_tools": [["database_query"]], "scorer": "not_contains_any", "expected": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]}
+  ]
+}
