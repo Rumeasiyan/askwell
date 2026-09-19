@@ -128,6 +128,13 @@ export interface AskDoneData {
    * every document-grounded turn and for `ambiguous` (several candidate
    * databases, no one query to show). */
   sql_query?: SqlQueryDisclosure | null;
+  /** Which database-routing state, if any, overrode this turn's abstention
+   * wording — `"no_connections"`, `"source_importing"`, `"source_attention"`,
+   * or `null` for an ordinary document abstention (`askwell.ask.
+   * _no_database_answer`, `M4-RESULT-FE-111`). Only ever set alongside an
+   * abstained turn; a document-grounded or SQL-answered turn always
+   * carries `null`. */
+  db_state?: string | null;
 }
 
 export type AskEvent =
@@ -511,4 +518,19 @@ export function isAbstained<T extends { status: string; answer: string; reason: 
 export function conversationOf(event: AskEvent): string | null {
   const data = event.data as { conversation_id?: unknown };
   return typeof data.conversation_id === "string" ? data.conversation_id : null;
+}
+
+/**
+ * The abstained state's one add-source control (`ask-screen.tsx`'s
+ * `AbstentionState`), decided from `dbState` (`M4-RESULT-FE-111`). `null`
+ * means the control does not render at all: "a source is still importing"
+ * or "needs attention" already names its own next action in the message
+ * text, and adding a new source fixes neither. Every other case — an
+ * ordinary document abstention, or "no database connected" — gets the one
+ * control, relabelled for what it actually does here.
+ */
+export function addSourceActionLabel(dbState: string | null): string | null {
+  if (dbState === "source_importing" || dbState === "source_attention") return null;
+  if (dbState === "no_connections") return "Connect a database";
+  return "Add a source";
 }

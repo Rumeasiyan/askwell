@@ -4,6 +4,21 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.26 - 2026-09-19
+
+`M4-RESULT-FE-111` — the last of the `SQL` epic's five database states: no connections configured, unreachable, zero rows, timeout, rejected. Four already had distinct messages (`unreachable`/`timeout`/`rejected` from `askwell.sql_execute`/`askwell.sql.validate`, `zero_rows` from `M4-RESULT-FE-109`); the fifth — a database-shaped question with nothing connected at all — did not exist until this ticket. New `askwell.ask._no_database_answer` fires only from the document turn's own abstention branch, after document retrieval has already found nothing (issue #400's own recommended fix): a database-shaped question is answered from the user's documents whenever they actually cover it, and is only ever reported as unconnected once that has genuinely failed, closing #400's short-circuit concern by construction rather than by tuning a word list. `_looks_database_shaped` is deliberately narrow (`"database"`/`"sql"` only) — a wider list matches ordinary business prose and the abstention eval's own near-miss questions, which must never be misdiagnosed as a missing connection. Two named edge cases from the same helper: a relevant source that is still importing says so rather than "unreachable", and several connections where one needs attention names which. `db_state` is a new field on the `done` event and `AskTurn`, read by `AbstentionState`'s one add-source control (`web/lib/ask.ts`'s `addSourceActionLabel`) to relabel it "Connect a database" for the no-connections case and drop it entirely for the other two, since adding a new source fixes neither.
+
+### Added
+
+- `askwell.ask._looks_database_shaped`, `_non_ready_sql_sources`, `_no_database_answer` — the "no connections configured" state and its two edge cases.
+- `db_state` on the `done` event, `AskDoneData`, and `AskTurn` (`web/components/ask/ask-state.tsx`).
+- `addSourceActionLabel` (`web/lib/ask.ts`) — the pure decision behind `AbstentionState`'s one control.
+- `docs/states-and-edge-cases.md` §4 — the "no connections configured" row's real copy, plus the two new "still importing"/"needs attention" rows.
+
+### Changed
+
+- `web/components/settings/connections.tsx` — the empty state now says what connecting enables and that credentials must be read-only (`states-and-edge-cases.md` §7).
+
 ## 0.4.25 - 2026-09-19
 
 `M4-RESULT-FE-110` — the generated query is disclosed for every database answer, not only the ones that executed. `QueryDisclosure` (`web/components/ask/sql-result-table.tsx`) is now the one collapsed-by-default control both an executed result (`SqlResultTable`) and every other outcome (`SqlQueryCard`, new) render, so a database answer looks like one system whether or not the query ran. Expanding it marks the injected `LIMIT` clause distinctly from the rest of the query (`segmentInjectedLimit`, matching the trailing `/* Added by Askwell */` comment `askwell.sql.limit` already attaches), scrolls rather than wraps or truncates a very long query, and adds a **Copy query** action. Disclosure on a rejection, a failed dry run, a timeout, a query-time failure or the source vanishing mid-turn needed a new wire field — `sql_result` deliberately stays `None` on every one of those branches (C2's own "never executed" contract) — so `askwell.ask` now also sends `sql_query` (`{query, outcome}`) on the `done` event for exactly the branches `sql_result` does not cover, reconstructed from the already-stored `messages.trace` on a reopened turn rather than a second stored column.

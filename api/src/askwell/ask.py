@@ -87,7 +87,11 @@ from askwell.agent.abstain import AbstainReason, compose_abstention
 from askwell.agent.claims import Claim, locate_quoted_span, segment_claims
 from askwell.agent.conflict import compose_conflict, split_conflict_answer
 from askwell.agent.partial import split_partial_answer
-from askwell.agent.sql_generate import GenerationReason, generate_candidate_query
+from askwell.agent.sql_generate import (
+    GenerationReason,
+    generate_candidate_query,
+    list_database_sources,
+)
 from askwell.agent.summarize import fallback_summary, summarize_turn
 from askwell.audit import AuditError, Store, record
 from askwell.config import Settings
@@ -714,6 +718,107 @@ def _sql_result_text(row_count: int, truncated: bool) -> str:
     return label
 
 
+# `askwell.agent.sql_generate._DATABASE_SOURCE_KINDS` (private there): the
+# kinds a question can actually be answered against with SQL. Deliberately
+# not `_DATABASE_SOURCE_KINDS` above, which excludes `csv` for the abstain
+# extent count's own different purpose (`_abstain_reason`'s "documents vs
+# databases" split) — a loaded CSV is SQL-queryable exactly like a dump.
+_SQL_SOURCE_KINDS = ("dump", "csv", "connection")
+
+# `M4-RESULT-FE-111`: deliberately narrow. Issue #400 found that a wide word
+# list ("table", "records", "total", "count of", ...) matches ordinary
+# prose about the user's own documents — and, just as dangerous, matches
+# the abstention eval's own near-miss questions ("total revenue",
+# "headcount"), which must never be diagnosed as a missing database
+# connection. This only ever *replaces the wording of an abstention that
+# was already going to happen* (see `_no_database_answer`'s own call site,
+# after document retrieval has already abstained) — a missed match here
+# still abstains correctly with the ordinary message; a false match would
+# either mislabel a real "not in your documents" case or corrupt the
+# abstention eval's own exact-prefix scoring (`eval.abstain.ABSTAIN_PREFIX`).
+# Recall is deliberately sacrificed for precision on both counts.
+_DATABASE_SHAPED_PATTERNS = ("database", "sql")
+
+
+def _looks_database_shaped(question: str) -> bool:
+    lowered = question.lower()
+    return any(pattern in lowered for pattern in _DATABASE_SHAPED_PATTERNS)
+
+
+async def _non_ready_sql_sources(db: AsyncSession) -> list[tuple[str, str, str | None]]:
+    """Every database-backed source that is not `ready` — name, status,
+    last error. `askwell.agent.sql_generate.list_database_sources` only
+    ever returns `ready` sources, so a source still importing or needing
+    attention looks identical to "nothing connected at all" unless this is
+    checked separately. Called only once no `ready` database source exists
+    at all (`_no_database_answer`)."""
+    rows = (
+        await db.execute(
+            text(
+                "SELECT name, status, last_error FROM sources "
+                "WHERE kind = ANY(:kinds) AND status NOT IN ('ready', 'deleted') "
+                "ORDER BY name"
+            ),
+            {"kinds": list(_SQL_SOURCE_KINDS)},
+        )
+    ).all()
+    return [(name, status, last_error) for name, status, last_error in rows]
+
+
+def _join_names(names: list[str]) -> str:
+    return ", ".join(names)
+
+
+async def _no_database_answer(
+    db: AsyncSession, settings: Settings, question: str
+) -> tuple[str, dict[str, Any]] | None:
+    """The "no connections configured" state, plus its own two named edge
+    cases — a source that exists but is still importing, and several
+    connections where one needs attention (`docs/states-and-edge-cases.md`
+    §4). Called only from the document turn's own abstention branch, after
+    document retrieval has already found nothing (issue #400's own
+    recommended fix, option 3): a database-shaped question is answered from
+    the user's documents whenever they actually cover it, and is only ever
+    reported as unconnected once that has genuinely failed — this never
+    runs ahead of document retrieval and so can never suppress a real
+    document answer, unlike the keyword short-circuit #400 found.
+
+    `None` when there is nothing database-specific to say — the ordinary
+    document abstention text stands unchanged.
+    """
+    if not _looks_database_shaped(question):
+        return None
+    ready = await list_database_sources(db, settings)
+    if ready:
+        # A database is connected and none of it matched this question at
+        # all — a genuine "not about your data" case, not a connection
+        # problem to report.
+        return None
+    pending = await _non_ready_sql_sources(db)
+    if not pending:
+        return (
+            "No database is connected. Connect one to answer questions like this "
+            "from your own data, not just your documents.",
+            {"kind": "sql", "outcome": "no_connections"},
+        )
+    attention = [name for name, status, _ in pending if status == "attention"]
+    importing = [name for name, status, _ in pending if status == "indexing"]
+    if attention:
+        verb = "needs" if len(attention) == 1 else "need"
+        return (
+            f"{_join_names(attention)} {verb} attention and can't answer questions right "
+            "now. Check its connection in the library.",
+            {"kind": "sql", "outcome": "source_attention", "sources": attention},
+        )
+    if importing:
+        verb = "is" if len(importing) == 1 else "are"
+        return (
+            f"{_join_names(importing)} {verb} still importing. Try again once it finishes.",
+            {"kind": "sql", "outcome": "source_importing", "sources": importing},
+        )
+    return None
+
+
 async def _run_sql_turn(
     settings: Settings,
     db: AsyncSession,
@@ -954,6 +1059,11 @@ async def _run_generation(
     memory_fact_ids: list[uuid.UUID] = []
     schema_note_ids: list[uuid.UUID] = []
     sql_result: dict[str, Any] | None = None
+    # `M4-RESULT-FE-111`: which of the database-routing states, if any,
+    # overrode this turn's abstention text — `None` for every ordinary
+    # document abstention. Carried onto the `done` event and the trace so
+    # the FE can render the right next action without re-parsing prose.
+    db_state: str | None = None
     # The model file's own name, not its full path — read from configuration
     # (never hardcoded, `AGENTS.md` §4) so this ticket's "backend and model
     # used" survives a deployment-profile change with no code edit.
@@ -1112,6 +1222,11 @@ async def _run_generation(
                 "sql_query": (
                     None if sql_result is not None else _sql_query_disclosure(sql_answer.trace_step)
                 ),
+                # `M4-RESULT-FE-111`: always `None` here — the routing
+                # override this field exists for only ever fires from the
+                # document turn's own abstention branch below, never from a
+                # turn `_run_sql_turn` itself answered.
+                "db_state": None,
             },
         )
         turn.status = status
@@ -1168,7 +1283,21 @@ async def _run_generation(
                 database_count=abstain_context.database_count,
                 nearest_heading=nearest_heading,
             )
-            trace_steps.append({"kind": "abstain", "reason_code": abstain_context.reason_code})
+            # `M4-RESULT-FE-111`: only for an unscoped question — scoping to
+            # a source (`docs/decisions.md`'s own precedent for
+            # `test_scoping_to_a_document_source_never_reports_no_connection`)
+            # already means the person picked a specific source themselves,
+            # so there is nothing for this override to add.
+            db_override = None
+            if source_id is None:
+                async with session_scope(factory) as db:
+                    db_override = await _no_database_answer(db, settings, question)
+            if db_override is not None:
+                reason, sql_trace_step = db_override
+                db_state = sql_trace_step["outcome"]
+                trace_steps.append(sql_trace_step)
+            else:
+                trace_steps.append({"kind": "abstain", "reason_code": abstain_context.reason_code})
             turn.emit("step", {"label": "Nothing in your files answers this.", "kind": "read"})
             # `messages.content` and the audit record's own `answer`
             # (below) carry the composed copy — streamed as a `token` event
@@ -1387,6 +1516,7 @@ async def _run_generation(
         "memory_fact_ids": [str(i) for i in memory_fact_ids],
         "schema_note_ids": [str(i) for i in schema_note_ids],
         "memory_used": len(memory_fact_ids) + len(schema_note_ids),
+        "db_state": db_state,
     }
 
     # `M1-CONV-BE-177`: the summary and source count a collapsed past turn
@@ -1603,6 +1733,11 @@ async def _run_generation(
             # key's absence as meaningful.
             "sql_result": None,
             "sql_query": None,
+            # `M4-RESULT-FE-111`: which database-routing state, if any,
+            # overrode this abstention's wording — `None` for an ordinary
+            # document abstention. Present on every `done` event regardless,
+            # matching `sql_result`/`sql_query`'s own "never absent" contract.
+            "db_state": db_state,
         },
     )
     turn.status = status

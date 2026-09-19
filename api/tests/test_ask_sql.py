@@ -228,3 +228,115 @@ async def test_a_write_disguised_as_a_read_is_rejected_with_no_stored_result(
     with psycopg.connect(owner, autocommit=True) as conn:
         count = conn.execute("SELECT count(*) FROM invoices").fetchone()
         assert count is not None and count[0] == 3
+
+
+# `M4-RESULT-FE-111`: `_no_database_answer`, the "no connections configured"
+# state and its two named edge cases (a source still importing, a source
+# that needs attention). Never reached through `_run_sql_turn` itself — this
+# is the document turn's own abstention-branch override
+# (`_run_generation`), so it is exercised directly here the same way
+# `_run_sql_turn` is above.
+
+
+async def test_no_database_answer_ignores_a_question_that_does_not_look_database_shaped(
+    sandbox_session: AsyncSession, sandbox_settings: Settings
+) -> None:
+    answer = await ask_module._no_database_answer(
+        sandbox_session, sandbox_settings, "what is the sick leave policy?"
+    )
+    assert answer is None
+
+
+async def test_no_database_answer_reports_nothing_connected(
+    sandbox_session: AsyncSession, sandbox_settings: Settings
+) -> None:
+    answer = await ask_module._no_database_answer(
+        sandbox_session, sandbox_settings, "what does my database say about sales?"
+    )
+    assert answer is not None
+    text_, step = answer
+    assert text_ == (
+        "No database is connected. Connect one to answer questions like this "
+        "from your own data, not just your documents."
+    )
+    assert step == {"kind": "sql", "outcome": "no_connections"}
+
+
+async def test_no_database_answer_names_a_source_still_importing(
+    sandbox_session: AsyncSession, sandbox_settings: Settings
+) -> None:
+    await sandbox_session.execute(
+        text(
+            "INSERT INTO sources (id, kind, name, status) "
+            "VALUES (:id, 'connection', 'Warehouse', 'indexing')"
+        ),
+        {"id": uuid.uuid4()},
+    )
+    await sandbox_session.commit()
+
+    answer = await ask_module._no_database_answer(
+        sandbox_session, sandbox_settings, "run a sql query for me"
+    )
+    assert answer is not None
+    text_, step = answer
+    assert text_ == "Warehouse is still importing. Try again once it finishes."
+    assert step == {"kind": "sql", "outcome": "source_importing", "sources": ["Warehouse"]}
+
+
+async def test_no_database_answer_names_a_source_needing_attention(
+    sandbox_session: AsyncSession, sandbox_settings: Settings
+) -> None:
+    await sandbox_session.execute(
+        text(
+            "INSERT INTO sources (id, kind, name, status, last_error) "
+            "VALUES (:id, 'connection', 'Warehouse', 'attention', 'connection refused')"
+        ),
+        {"id": uuid.uuid4()},
+    )
+    await sandbox_session.commit()
+
+    answer = await ask_module._no_database_answer(
+        sandbox_session, sandbox_settings, "query my database please"
+    )
+    assert answer is not None
+    text_, step = answer
+    assert text_ == (
+        "Warehouse needs attention and can't answer questions right now. "
+        "Check its connection in the library."
+    )
+    assert step == {"kind": "sql", "outcome": "source_attention", "sources": ["Warehouse"]}
+
+
+async def test_no_database_answer_none_when_a_ready_source_exists(
+    sandbox_session: AsyncSession, sandbox_settings: Settings, loaded_database: str
+) -> None:
+    """A database is connected — this is a "not about your data" case, not
+    a connection problem, even though the question looks database-shaped."""
+    await _dump_source(sandbox_session, sandbox_db=loaded_database)
+    await sandbox_session.commit()
+
+    answer = await ask_module._no_database_answer(
+        sandbox_session, sandbox_settings, "does my database have anything about the weather?"
+    )
+    assert answer is None
+
+
+def test_no_two_of_the_five_states_share_a_message() -> None:
+    """The ticket's own Validation Rule. `unreachable`, `timeout` and
+    `rejected` come from `askwell.sql_execute`/`_run_sql_turn` directly;
+    `no_connections` and `zero_rows` are asserted here alongside them so a
+    future edit to any one is caught if it ever collides with another."""
+    from askwell.sql_execute import CREDENTIALS_REJECTED_MESSAGE, UNREACHABLE_MESSAGE
+
+    messages = {
+        "no_connections": (
+            "No database is connected. Connect one to answer questions like this "
+            "from your own data, not just your documents."
+        ),
+        "unreachable": UNREACHABLE_MESSAGE,
+        "credentials_rejected": CREDENTIALS_REJECTED_MESSAGE,
+        "zero_rows": "No matching records.",
+        "timeout_marker": "took too long",
+        "rejected_marker": "could not safely run",
+    }
+    assert len(set(messages.values())) == len(messages)

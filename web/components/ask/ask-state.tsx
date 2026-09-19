@@ -100,6 +100,11 @@ export interface AskTurn {
    * failure, or the source gone, `null` for every other turn. Mutually
    * exclusive with `sqlResult`, same `done`-event lifecycle. `M4-RESULT-FE-110`. */
   sqlQuery: SqlQueryDisclosure | null;
+  /** Which database-routing state, if any, overrode this turn's abstention
+   * wording — `null` for an ordinary document abstention. Set once, from
+   * the `done` event, same lifecycle as `sqlResult`/`sqlQuery`.
+   * `M4-RESULT-FE-111`. */
+  dbState: string | null;
   /** `M3-INLINE-FE-085`: set from a `clarification` event while this turn is
    * paused waiting for it to be answered or skipped, `null` the rest of the
    * time — including once a `clarification_resolved` event clears it and
@@ -165,6 +170,7 @@ function blankTurn(
     sourceCount: null,
     sqlResult: null,
     sqlQuery: null,
+    dbState: null,
     blocking: null,
   };
 }
@@ -237,6 +243,7 @@ export function AskProvider({ children }: { children: ReactNode }) {
       let finalSourceCount: number | null = null;
       let finalSqlResult: SqlResultData | null = null;
       let finalSqlQuery: SqlQueryDisclosure | null = null;
+      let finalDbState: string | null = null;
       try {
         await streamAsk(
           next.question,
@@ -250,6 +257,7 @@ export function AskProvider({ children }: { children: ReactNode }) {
               finalSourceCount = event.data.source_count ?? null;
               finalSqlResult = event.data.sql_result ?? null;
               finalSqlQuery = event.data.sql_query ?? null;
+              finalDbState = event.data.db_state ?? null;
               return;
             }
             // Derived from the previous turn inside the updater, never from a ref.
@@ -298,6 +306,7 @@ export function AskProvider({ children }: { children: ReactNode }) {
         sourceCount: finalSourceCount,
         sqlResult: finalSqlResult,
         sqlQuery: finalSqlQuery,
+        dbState: finalDbState,
       });
       dispatching.current = false;
     })();
