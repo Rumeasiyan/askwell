@@ -162,6 +162,15 @@ async def test_executes_a_generated_query_and_returns_a_stored_result(
     assert answer.sql_result["columns"] == ["id"]
     assert sorted(row[0] for row in answer.sql_result["rows"]) == [1, 3]
     assert "2" in answer.text
+    # `M5-LOOP-BE-117`: its own "schema" trace step (`docs/architecture.md`
+    # §7.1), with the source the schema was looked up for and a real
+    # duration — not folded into the "sql" step's own timing.
+    assert answer.schema_step is not None
+    assert answer.schema_step["kind"] == "schema"
+    assert answer.schema_step["source_id"] == str(source_id)
+    assert answer.schema_step["ms"] >= 0
+    assert answer.trace_step["outcome"] == "executed"
+    assert answer.trace_step["limit_injected"] == sandbox_settings.sql_row_limit
 
 
 async def test_zero_rows_is_reported_as_a_result_not_an_error(
@@ -218,6 +227,11 @@ async def test_a_write_disguised_as_a_read_is_rejected_with_no_stored_result(
         "query": rejected_query,
         "outcome": "rejected",
     }
+    # `M5-LOOP-BE-117`: the schema lookup happened before validation ever
+    # ran, so its own step is recorded even though the query it fed was
+    # rejected.
+    assert answer.schema_step is not None
+    assert answer.schema_step["source_id"] == str(source_id)
 
     owner = role_url(
         sandbox_admin_url,

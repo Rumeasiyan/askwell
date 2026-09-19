@@ -16,6 +16,7 @@ long after its tool detail has been dropped.
 import json
 import os
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,20 @@ from askwell.logging import get_logger
 log = get_logger(__name__)
 
 SUFFIX = ".trace.json"
+
+
+@dataclass(frozen=True, slots=True)
+class TraceWriteResult:
+    """What one `TraceRing.write()` call did — the path it wrote (`None` on
+    a failed write, matching the old return value so a caller checking
+    truthiness sees no change), plus the message ids whose trace files were
+    dropped to make room, so `messages.trace` (`docs/architecture.md` §7.1)
+    can be trimmed in the same step rather than drifting out of sync with
+    the file ring buffer it is supposed to rotate with (`M5-LOOP-BE-117`).
+    """
+
+    path: Path | None
+    dropped: tuple[uuid.UUID, ...]
 
 
 class TraceRing:
@@ -40,8 +55,8 @@ class TraceRing:
         self.directory = directory
         self.max_bytes = max_bytes
 
-    def write(self, message_id: uuid.UUID, trace: dict[str, Any]) -> Path | None:
-        """Store one trace. Returns None if it could not be stored.
+    def write(self, message_id: uuid.UUID, trace: dict[str, Any]) -> TraceWriteResult:
+        """Store one trace. `.path` is None if it could not be stored.
 
         Never raises. A caller that checks the return value is welcome to; a
         caller that ignores it is behaving correctly too.
@@ -64,10 +79,10 @@ class TraceRing:
             # The disk is full, or the directory is not writable. Neither is a
             # reason to fail the answer the user just asked for.
             log.warning("trace_write_failed", message_id=str(message_id), error=str(error))
-            return None
+            return TraceWriteResult(path=None, dropped=())
 
-        self.prune()
-        return path
+        dropped = self.prune()
+        return TraceWriteResult(path=path, dropped=dropped)
 
     def read(self, message_id: uuid.UUID) -> dict[str, Any] | None:
         """One trace, or None if it has rotated out. Rotating out is normal."""
@@ -81,21 +96,24 @@ class TraceRing:
     def total_bytes(self) -> int:
         return sum(path.stat().st_size for path in self._files())
 
-    def prune(self) -> int:
+    def prune(self) -> tuple[uuid.UUID, ...]:
         """Drop oldest traces until the directory fits its cap.
 
-        Returns how many were dropped. Silent by design at the individual
-        level — a trace ageing out is the buffer working, not an incident — but
-        the total is logged so that a cap set far too low is visible as a
+        Returns the message ids whose trace files were dropped, so a caller
+        can trim `messages.trace` (`docs/architecture.md` §7.1) for the same
+        ids in the same step — the file ring buffer and the database column
+        rotate together, `M5-LOOP-BE-117`. Silent by design at the individual
+        level — a trace ageing out is the buffer working, not an incident —
+        but the total is logged so that a cap set far too low is visible as a
         stream of prunes rather than as traces mysteriously never being there.
         """
         try:
             files = sorted(self._files(), key=lambda path: path.stat().st_mtime)
         except OSError:
-            return 0
+            return ()
 
         total = sum(path.stat().st_size for path in files)
-        dropped = 0
+        dropped: list[uuid.UUID] = []
         for path in files:
             if total <= self.max_bytes:
                 break
@@ -105,11 +123,14 @@ class TraceRing:
             except OSError:  # pragma: no cover - raced with another prune
                 continue
             total -= size
-            dropped += 1
+            try:
+                dropped.append(uuid.UUID(path.name[: -len(SUFFIX)]))
+            except ValueError:  # pragma: no cover - only a foreign file would fail this
+                pass
 
         if dropped:
-            log.info("traces_pruned", dropped=dropped, remaining_bytes=total)
-        return dropped
+            log.info("traces_pruned", dropped=len(dropped), remaining_bytes=total)
+        return tuple(dropped)
 
     def _files(self) -> list[Path]:
         try:

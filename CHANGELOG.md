@@ -4,6 +4,19 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.31 - 2026-09-20
+
+`M5-LOOP-BE-117` — the two gaps left in `messages.trace` (`docs/architecture.md` §7.1) after every earlier trace-populating ticket: a missing step kind, and a store that never actually rotated. A database turn's schema lookup (`askwell.agent.sql_generate.generate_candidate_query`) now times itself and reports its own `"schema"` step — `kind`, `ms`, `source_id` — carried on `_SqlAnswer.schema_step` and prepended ahead of the `"sql"` step in every branch that got as far as selecting a source, matching the doc's own worked example ("Looked up schema" before "Queried sales-2024") rather than folding that time into the SQL step's. The executed-query step also gained `limit_injected`, the one field `docs/architecture.md`'s shape names that nothing populated yet.
+
+Second: `messages.trace` had never actually rotated with the file-backed `TraceRing` it is documented to rotate with — the DB column kept every turn's full step detail forever regardless of what aged out on disk. `TraceRing.prune()` now reports the message ids it actually dropped (`TraceRing.write()` returns a `TraceWriteResult` carrying them), and `askwell.ask._trim_rotated_traces` clears `steps` for exactly those rows — in the same transaction as the triggering turn's own write — leaving every other trace field (`status`, `backend`, …) intact so a reopened old turn still renders, and leaving citations and fact usage untouched entirely, since those are real tables and never rotate. A `"steps_truncated"` flag was also added, covering the ticket's own named edge case — a turn whose own trace exceeds a new 50-step per-turn bound (`TRACE_STEP_BOUND`) is truncated with that fact stated on the trace itself rather than silently cut.
+
+### Added
+
+- `askwell.agent.sql_generate.GeneratedQuery.schema_lookup_ms` and the `"schema"` trace step it feeds.
+- `TraceWriteResult` (`askwell.traces`) — `TraceRing.write()`'s new return shape, carrying which message ids rotated out.
+- `askwell.ask._trim_rotated_traces` — trims `messages.trace.steps` for a rotated-out trace.
+- `askwell.ask.TRACE_STEP_BOUND` / `_bound_trace_steps` — the per-turn trace size bound and its `steps_truncated` flag.
+
 ## 0.4.30 - 2026-09-20
 
 `M5-LOOP-BE-116` — the 8-call ceiling `M5-LOOP-BE-115` deliberately left as a crash guard becomes the product's real, user-visible one. `askwell.agent.loop.CALL_CEILING` (8, `docs/architecture.md` §10) is now enforced inside `run_tool_loop` itself: a parallel batch that would cross it is truncated at 8, and the calls that were cut are never dispatched — they surface on the new `LoopResult.pending_calls` instead, the trace's own "what it was about to do" (`docs/ux/trace.md` §5). A ceiling reached one call at a time (no single batch ever crosses it) is caught at the next iteration by a dedicated `_stop_at_ceiling` helper, which asks the model exactly one more time — told plainly that no further tool calls will run — to compose from what is already gathered; if it asks for tools anyway, that request becomes `pending_calls` instead of being honoured. Composing from nothing is refused outright: if none of the 8 calls actually succeeded, the turn says so (`_NOTHING_GATHERED_TEXT`) rather than asking the model to invent something, the ticket's own named edge case. A stopped-early answer's note (`_CEILING_NOTE`) is appended by the loop itself, never left to the model to remember, so the Validation Rule ("never omit the note") holds regardless of what the model wrote.
