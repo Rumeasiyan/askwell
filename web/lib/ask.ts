@@ -17,6 +17,8 @@
  * `done` once.
  */
 
+import type { SqlResultData } from "@/lib/sql-result";
+
 export interface AskStepData {
   message_id: string;
   label: string;
@@ -113,6 +115,11 @@ export interface AskDoneData {
   /** Distinct documents actually cited, or `null` if the turn abstained —
    * never `0`, matching `askwell.agent.summarize`'s own contract. */
   source_count?: number | null;
+  /** A database-answered turn's row snapshot (`askwell.ask`'s `sql_result`,
+   * `M4-SQL-BE-108a`) — `null`/absent for every document-grounded, abstained
+   * or SQL-rejected turn, matching the server's own "only a real, executed
+   * query gets rows" contract. `M4-RESULT-FE-109`. */
+  sql_result?: SqlResultData | null;
 }
 
 export type AskEvent =

@@ -24,6 +24,7 @@ import {
 } from "@/lib/ask";
 import { applyCitation, type CitationCard } from "@/lib/citations";
 import { applyFactCitation, type FactChip } from "@/lib/memory-chips";
+import type { SqlResultData } from "@/lib/sql-result";
 
 /**
  * The conversation, held once for the whole application. `M1-ASK-FE-039`.
@@ -88,6 +89,12 @@ export interface AskTurn {
    * A collapsed turn with `null` here renders no count at all
    * (`conversation.md` §2, §5). */
   sourceCount: number | null;
+  /** A database-answered turn's row snapshot (`M4-SQL-BE-108a`), `null` for
+   * everything else — a document-grounded answer, an abstention, or a
+   * turn whose SQL was rejected/failed before ever executing. Set once,
+   * from the `done` event, same lifecycle as `summary`/`sourceCount`.
+   * `M4-RESULT-FE-109`. */
+  sqlResult: SqlResultData | null;
   /** `M3-INLINE-FE-085`: set from a `clarification` event while this turn is
    * paused waiting for it to be answered or skipped, `null` the rest of the
    * time — including once a `clarification_resolved` event clears it and
@@ -151,6 +158,7 @@ function blankTurn(
     createdAt: Date.now(),
     summary,
     sourceCount: null,
+    sqlResult: null,
     blocking: null,
   };
 }
@@ -221,6 +229,7 @@ export function AskProvider({ children }: { children: ReactNode }) {
       let finalReason: string | null = "Askwell could not reach the assistant.";
       let finalSummary: string | null = null;
       let finalSourceCount: number | null = null;
+      let finalSqlResult: SqlResultData | null = null;
       try {
         await streamAsk(
           next.question,
@@ -232,6 +241,7 @@ export function AskProvider({ children }: { children: ReactNode }) {
               finalReason = event.data.reason;
               finalSummary = event.data.summary ?? null;
               finalSourceCount = event.data.source_count ?? null;
+              finalSqlResult = event.data.sql_result ?? null;
               return;
             }
             // Derived from the previous turn inside the updater, never from a ref.
@@ -278,6 +288,7 @@ export function AskProvider({ children }: { children: ReactNode }) {
         reason: finalReason,
         summary: finalSummary,
         sourceCount: finalSourceCount,
+        sqlResult: finalSqlResult,
       });
       dispatching.current = false;
     })();

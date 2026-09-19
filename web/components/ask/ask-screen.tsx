@@ -7,6 +7,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type React
 import { type AskTurn, useAsk } from "@/components/ask/ask-state";
 import { useClaimRef, useHoverHandlers, useScrollToClaim } from "@/components/ask/leader";
 import { InlineSourceCards, useRaised } from "@/components/ask/provenance-margin";
+import { SqlResultTable } from "@/components/ask/sql-result-table";
 import { EvidenceBlock } from "@/components/clarifications/clarifications-screen";
 import {
   isConflict,
@@ -1316,6 +1317,9 @@ function AnsweredContent({ turn }: { turn: AskTurn }) {
       {conflict ? <ConflictBanner topic={annotations.conflictTopic!} /> : null}
       {annotations.cleanedText !== "" ? (
         <AnswerProse turnId={turn.id} text={annotations.cleanedText} factChips={turn.factChips} />
+      ) : null}
+      {turn.sqlResult !== null ? (
+        <SqlResultTable result={turn.sqlResult} messageId={turn.serverId} turnId={turn.id} />
       ) : null}
       {partial ? <UncoveredBlock items={annotations.uncovered} /> : null}
       {conflict ? <ResolveOffer topic={annotations.conflictTopic!} citations={turn.citations} /> : null}

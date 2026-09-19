@@ -4,6 +4,17 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.24 - 2026-09-19
+
+`M4-RESULT-FE-109` — a database-answered turn renders as a table, not just a sentence, now that `M4-SQL-BE-108a` gives it a real `sql_result` to render from. `SqlResultTable` (`web/components/ask/sql-result-table.tsx`) covers the ticket's own four states: a single value shown as a number rather than a one-cell table, a zero-row result labelled distinctly from an error or an abstention, an ordinary result as a client-paginated table with type-inferred column alignment and null/empty cells rendered distinguishably, and a truncated result labelled "first N of possibly more" whenever the injected `LIMIT` was actually hit. The query is disclosed unconditionally behind a "Show query" toggle, matching `states-and-edge-cases.md` §4's "the query is the citation". "View full result and query" opens the database row of the source viewer (`/documents/?result=<message_id>`, `database-result-view.tsx`) — reading the live turn out of `AskProvider` first, exactly as the document viewer's own `ContextRail` does, and falling back to replaying `GET /ask/{message_id}/stream` only if a reload dropped that in-memory state, so a paged-through result is never re-queried. Closes issues #375 and #386.
+
+### Added
+
+- `web/lib/sql-result.ts` — `SqlResultData` and the pure pagination/formatting/alignment helpers behind the table.
+- `web/components/ask/sql-result-table.tsx` — the table itself, wired into `AnsweredContent` (`ask-screen.tsx`) for both the live and a collapsed-and-reopened turn.
+- `web/components/documents/database-result-view.tsx` — the source viewer's database row.
+- `AskDoneData.sql_result` (`web/lib/ask.ts`), `AskTurn.sqlResult` (`web/components/ask/ask-state.tsx`).
+
 ## 0.4.23 - 2026-09-19
 
 `M4-SQL-BE-108a` — the checked query path finally runs, and its rows survive a reopen. `askwell.ask._run_sql_turn` wires `askwell.agent.sql_generate` → `askwell.sql.validate` → `askwell.sql.limit` → `askwell.sql.dry_run` → the new `askwell.sql.execute` into every turn, ahead of document retrieval — a question with no relevant connected database falls through to the document path exactly as before. The new module wraps `askwell.sql_execute` (`M4-SQL-DB-107`) rather than duplicating it, adding truncation labelling and its own `sql_execute` audit kind. `messages.sql_result` (migration `7f40fa52d49d`) stores columns, rows, row count, truncation and duration as a snapshot at answer time, carried on every `done` event — live or replayed after a reopen — and reset to `NULL` if the write that would have persisted it rolls back, so the live stream never shows rows the database does not actually hold (closes issue #390). Fixes the stale "not wired into `POST /ask`" claims left in `askwell.agent.sql_generate`'s own module docstring and in the `M4-SQL-VAL-106` decision-log entry (issue #392), and closes issue #375.
