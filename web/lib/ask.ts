@@ -17,7 +17,7 @@
  * `done` once.
  */
 
-import type { SqlResultData } from "@/lib/sql-result";
+import type { SqlQueryDisclosure, SqlResultData } from "@/lib/sql-result";
 
 export interface AskStepData {
   message_id: string;
@@ -120,6 +120,14 @@ export interface AskDoneData {
    * or SQL-rejected turn, matching the server's own "only a real, executed
    * query gets rows" contract. `M4-RESULT-FE-109`. */
   sql_result?: SqlResultData | null;
+  /** The query and outcome for a database turn that never reached
+   * `sql_result` — rejected, a failed dry run, timed out, a query-time
+   * failure, or the source gone (`askwell.ask._sql_query_disclosure`,
+   * `M4-RESULT-FE-110`). Mutually exclusive with `sql_result`: an executed
+   * query discloses itself through `sql_result.query` instead. `null` for
+   * every document-grounded turn and for `ambiguous` (several candidate
+   * databases, no one query to show). */
+  sql_query?: SqlQueryDisclosure | null;
 }
 
 export type AskEvent =

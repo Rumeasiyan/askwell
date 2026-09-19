@@ -4,6 +4,21 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.25 - 2026-09-19
+
+`M4-RESULT-FE-110` — the generated query is disclosed for every database answer, not only the ones that executed. `QueryDisclosure` (`web/components/ask/sql-result-table.tsx`) is now the one collapsed-by-default control both an executed result (`SqlResultTable`) and every other outcome (`SqlQueryCard`, new) render, so a database answer looks like one system whether or not the query ran. Expanding it marks the injected `LIMIT` clause distinctly from the rest of the query (`segmentInjectedLimit`, matching the trailing `/* Added by Askwell */` comment `askwell.sql.limit` already attaches), scrolls rather than wraps or truncates a very long query, and adds a **Copy query** action. Disclosure on a rejection, a failed dry run, a timeout, a query-time failure or the source vanishing mid-turn needed a new wire field — `sql_result` deliberately stays `None` on every one of those branches (C2's own "never executed" contract) — so `askwell.ask` now also sends `sql_query` (`{query, outcome}`) on the `done` event for exactly the branches `sql_result` does not cover, reconstructed from the already-stored `messages.trace` on a reopened turn rather than a second stored column.
+
+### Added
+
+- `askwell.ask._sql_query_disclosure`/`_sql_query_from_trace`, `AskDoneData.sql_query` — the disclosure `sql_result` never carries.
+- `web/lib/sql-result.ts` — `SqlQueryDisclosure`, `segmentInjectedLimit`, the local disclosures-expanded counter (C1: never transmitted).
+- `SqlQueryCard` (`web/components/ask/sql-result-table.tsx`) — the disclosure-only card for a database answer with no `sql_result`.
+- `AskTurn.sqlQuery` (`web/components/ask/ask-state.tsx`).
+
+### Changed
+
+- `QueryDisclosure` (`web/components/ask/sql-result-table.tsx`) — exported, adds the injected-limit marking, scrolling instead of wrapping, and **Copy query**.
+
 ## 0.4.24 - 2026-09-19
 
 `M4-RESULT-FE-109` — a database-answered turn renders as a table, not just a sentence, now that `M4-SQL-BE-108a` gives it a real `sql_result` to render from. `SqlResultTable` (`web/components/ask/sql-result-table.tsx`) covers the ticket's own four states: a single value shown as a number rather than a one-cell table, a zero-row result labelled distinctly from an error or an abstention, an ordinary result as a client-paginated table with type-inferred column alignment and null/empty cells rendered distinguishably, and a truncated result labelled "first N of possibly more" whenever the injected `LIMIT` was actually hit. The query is disclosed unconditionally behind a "Show query" toggle, matching `states-and-edge-cases.md` §4's "the query is the citation". "View full result and query" opens the database row of the source viewer (`/documents/?result=<message_id>`, `database-result-view.tsx`) — reading the live turn out of `AskProvider` first, exactly as the document viewer's own `ContextRail` does, and falling back to replaying `GET /ask/{message_id}/stream` only if a reload dropped that in-memory state, so a paged-through result is never re-queried. Closes issues #375 and #386.

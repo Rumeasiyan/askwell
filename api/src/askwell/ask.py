@@ -264,9 +264,15 @@ async def _tail(turn: _Turn, request: Request) -> AsyncIterator[str]:
         await asyncio.sleep(STREAM_INTERVAL_SECONDS)
 
 
+# content, status, summary, source_count, conversation_id, sql_result, sql_query
+_FinishedTurn = tuple[
+    str, str, str | None, int | None, str, dict[str, Any] | None, dict[str, Any] | None
+]
+
+
 async def _load_finished(
     factory: async_sessionmaker[AsyncSession], message_id: uuid.UUID
-) -> tuple[str, str, str | None, int | None, str, dict[str, Any] | None] | None:
+) -> _FinishedTurn | None:
     """The stored answer for a turn no longer in memory — finished long
     enough ago to have been retired, or from before this process started."""
     async with session_scope(factory) as db:
@@ -289,8 +295,20 @@ async def _load_finished(
     # `sql_result` (`M4-SQL-BE-108a`): the same snapshot a database-answered
     # turn's live `done` event carried, read back rather than re-run — the
     # ticket's own Assumption that a stored result never changes under a
-    # reopened conversation.
-    return str(content), str(status), summary, source_count, str(conversation_id), sql_result
+    # reopened conversation. `sql_query` (`M4-RESULT-FE-110`): the same
+    # disclosure a live `done` event carries for a branch `sql_result` never
+    # does, reconstructed from the sql step already sitting in this same
+    # stored `trace` rather than a second column.
+    sql_query = _sql_query_from_trace(trace) if sql_result is None else None
+    return (
+        str(content),
+        str(status),
+        summary,
+        source_count,
+        str(conversation_id),
+        sql_result,
+        sql_query,
+    )
 
 
 async def reconcile_interrupted(factory: async_sessionmaker[AsyncSession]) -> int:
@@ -653,6 +671,40 @@ def _dry_run_failure_text(reason: DryRunReason, detail: str | None) -> str:
     return f"Askwell could not run this query against your database: {detail}"
 
 
+def _sql_query_disclosure(trace_step: dict[str, Any]) -> dict[str, Any] | None:
+    """The query and outcome to disclose for a database turn that never
+    reached `sql_result` — a rejection, a failed dry run, a timeout, a
+    query-time failure, or the source vanishing mid-turn. `M4-RESULT-FE-110`:
+    disclosure is unconditional (C2), so the query that a check refused has
+    to reach the browser exactly as much as one that executed — `sql_result`
+    itself deliberately stays `None` on every one of those branches
+    (`_run_sql_turn`'s own docstring, and the C2 test locking that
+    behaviour in), so this is the one other channel a `done` event carries
+    it on. `None` only for `ambiguous` — several candidate databases, no
+    single query to show — and for the document-grounded path, which never
+    ran `_run_sql_turn` far enough to produce a step with a `query` key at
+    all."""
+    query = trace_step.get("query")
+    if query is None:
+        return None
+    return {"query": query, "outcome": trace_step["outcome"]}
+
+
+def _sql_query_from_trace(trace: Any) -> dict[str, Any] | None:
+    """The same disclosure, reconstructed from a stored `messages.trace`
+    row rather than a live `_SqlAnswer` — what `/ask/{id}/stream` replays
+    once a finished turn has aged out of the in-memory `_turns` registry.
+    `trace` is read back as an ordinary Python `dict` (the driver already
+    decoded the `jsonb` column), so this walks it exactly the shape
+    `_generate` wrote."""
+    if not isinstance(trace, dict):
+        return None
+    for step in trace.get("steps", []):
+        if isinstance(step, dict) and step.get("kind") == "sql":
+            return _sql_query_disclosure(step)
+    return None
+
+
 def _sql_result_text(row_count: int, truncated: bool) -> str:
     if row_count == 0:
         return "No matching records."
@@ -749,7 +801,7 @@ async def _run_sql_turn(
             text="The database this question would have used is no longer connected.",
             status="completed",
             sql_result=None,
-            trace_step={"kind": "sql", "outcome": "source_gone"},
+            trace_step={"kind": "sql", "outcome": "source_gone", "query": limited.query},
         )
     kind, sandbox_db, config_encrypted = source_row
     config: dict[str, Any] | None = None
@@ -1053,6 +1105,13 @@ async def _run_generation(
                 "summary": turn_summary.summary,
                 "source_count": turn_summary.source_count,
                 "sql_result": sql_result,
+                # `M4-RESULT-FE-110`: disclosure on the branches `sql_result`
+                # deliberately never carries — mutually exclusive with it,
+                # never both, since an executed query already discloses
+                # itself through `sql_result.query`.
+                "sql_query": (
+                    None if sql_result is not None else _sql_query_disclosure(sql_answer.trace_step)
+                ),
             },
         )
         turn.status = status
@@ -1543,6 +1602,7 @@ async def _run_generation(
             # `done` event regardless, so a client never has to treat the
             # key's absence as meaningful.
             "sql_result": None,
+            "sql_query": None,
         },
     )
     turn.status = status
@@ -1665,7 +1725,7 @@ def register_ask(
         stored = await _load_finished(factory, message_id)
         if stored is None:
             return JSONResponse({"error": "Askwell has no turn with that id."}, status_code=404)
-        content, status, summary, source_count, conversation_id, sql_result = stored
+        content, status, summary, source_count, conversation_id, sql_result, sql_query = stored
 
         async def replay() -> AsyncIterator[str]:
             if content:
@@ -1687,6 +1747,7 @@ def register_ask(
                     "summary": summary,
                     "source_count": source_count,
                     "sql_result": sql_result,
+                    "sql_query": sql_query,
                 },
             )
 
