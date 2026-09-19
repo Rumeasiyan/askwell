@@ -18,7 +18,7 @@ from typing import Any, cast
 import pytest
 
 from askwell.agent import loop as loop_module
-from askwell.agent.loop import LoopResult, run_tool_loop
+from askwell.agent.loop import LoopContinuation, LoopResult, run_tool_loop
 from askwell.agent.tools import ToolError, ToolErrorCode, ToolResult, ToolStep
 from askwell.inference.client import Completion
 
@@ -348,3 +348,181 @@ async def test_an_empty_calls_list_is_treated_as_malformed_not_a_silent_stall(
     )
 
     assert result.stopped_reason == "malformed_response"
+
+
+def _outcomes_for(queries: list[str]) -> dict[str, tuple[ToolResult, ToolStep]]:
+    return {
+        f'document_search:{{"query": "{q}"}}': _ok_outcome(
+            "document_search", {"passages": [q]}, {"query": q}
+        )
+        for q in queries
+    }
+
+
+def _batch_calls(queries: list[str]) -> str:
+    return json.dumps(
+        {
+            "type": "tool_calls",
+            "calls": [{"tool": "document_search", "arguments": {"query": q}} for q in queries],
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_batch_crossing_the_ceiling_is_truncated_at_eight_and_recorded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`M5-LOOP-BE-116`'s own named edge case: a parallel batch of 10 in one
+    turn only ever runs the first 8 — the remaining 2 are never dispatched
+    (a `KeyError` from the fake would fail this test if they were) and
+    surface as `pending_calls` instead, exactly the "what it was about to
+    do" the trace records."""
+    queries = [f"q{i}" for i in range(1, 9)]  # only the first 8 have outcomes queued
+    fake_tool = _FakeCallTool(_outcomes_for(queries))
+    _install_call_tool(monkeypatch, fake_tool)
+    client = _FakeClient(
+        responses=[
+            _batch_calls([f"q{i}" for i in range(1, 11)]),  # 10 requested, 2 over budget
+            json.dumps({"type": "answer", "text": "Found something useful [1]."}),
+        ]
+    )
+
+    result = await run_tool_loop(
+        cast(Any, None), cast(Any, None), cast(Any, client), question="Everything about this?"
+    )
+
+    assert len(fake_tool.calls) == 8
+    assert result.stopped_reason == "tool_ceiling"
+    assert result.iterations == 1
+    assert {c["arguments"]["query"] for c in result.pending_calls} == {"q9", "q10"}
+    assert result.text == "Found something useful [1]." + loop_module._CEILING_NOTE
+    assert result.continuation is not None
+    assert result.continuation.next_result_index == 9
+
+
+@pytest.mark.asyncio
+async def test_the_ceiling_reached_one_call_at_a_time_still_stops_and_composes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No single batch ever crosses the ceiling here — each iteration asks
+    for exactly one more call — so the loop only discovers it is out of
+    budget at the *next* iteration, and asks the model one last time
+    (`_stop_at_ceiling`'s own forced call) to compose from what it has."""
+    queries = [f"q{i}" for i in range(1, 9)]
+    fake_tool = _FakeCallTool(_outcomes_for(queries))
+    _install_call_tool(monkeypatch, fake_tool)
+    per_call_requests = [_batch_calls([q]) for q in queries]
+    client = _FakeClient(
+        responses=[
+            *per_call_requests,
+            json.dumps({"type": "answer", "text": "Here is what I found [3]."}),
+        ]
+    )
+
+    result = await run_tool_loop(
+        cast(Any, None), cast(Any, None), cast(Any, client), question="Everything about this?"
+    )
+
+    assert len(fake_tool.calls) == 8
+    assert len(client.calls) == 9  # 8 ordinary iterations + the forced compose call
+    assert result.stopped_reason == "tool_ceiling"
+    assert result.pending_calls == ()
+    assert result.text == "Here is what I found [3]." + loop_module._CEILING_NOTE
+    assert "8 tool calls" in client.calls[-1]  # the forced-answer notice reached the model
+
+
+@pytest.mark.asyncio
+async def test_the_ceiling_reached_with_nothing_gathered_never_composes_from_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ticket's own named edge case: every one of the 8 calls failed, so
+    there is nothing to compose an answer from — honest about that instead,
+    and never asks the model to invent something from an empty history."""
+    error_outcomes = {
+        f'document_search:{{"query": "q{i}"}}': (
+            ToolResult(
+                content=None,
+                truncated=False,
+                error=ToolError(ToolErrorCode.NOT_FOUND, "no match"),
+            ),
+            _tool_step("document_search", outcome="not_found", arguments={"query": f"q{i}"}),
+        )
+        for i in range(1, 9)
+    }
+    fake_tool = _FakeCallTool(error_outcomes)
+    _install_call_tool(monkeypatch, fake_tool)
+    client = _FakeClient(responses=[_batch_calls([f"q{i}" for i in range(1, 9)])])
+
+    result = await run_tool_loop(
+        cast(Any, None), cast(Any, None), cast(Any, client), question="Everything about this?"
+    )
+
+    assert len(fake_tool.calls) == 8
+    assert len(client.calls) == 1  # never asked again to compose from nothing
+    assert result.stopped_reason == "tool_ceiling"
+    assert result.text == loop_module._NOTHING_GATHERED_TEXT
+
+
+@pytest.mark.asyncio
+async def test_continuing_from_a_prior_stop_gets_a_fresh_budget_and_the_seeded_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`Continue` (`M5-LOOP-BE-116`) starts a new turn: the 8-call ceiling
+    resets, but the earlier turn's own gathered `<tool-result>` history is
+    still in the prompt so the model is not asked to redo it."""
+    resume = LoopContinuation(
+        history_blocks=('<tool-result index="1" tool="document_search">\nnet 30\n</tool-result>',),
+        next_result_index=2,
+    )
+    queries = [f"q{i}" for i in range(1, 9)]
+    fake_tool = _FakeCallTool(_outcomes_for(queries))
+    _install_call_tool(monkeypatch, fake_tool)
+    client = _FakeClient(
+        responses=[
+            _batch_calls(queries),
+            json.dumps({"type": "answer", "text": "Done [9]."}),
+        ]
+    )
+
+    result = await run_tool_loop(
+        cast(Any, None),
+        cast(Any, None),
+        cast(Any, client),
+        question="Everything about this?",
+        resume=resume,
+    )
+
+    # All 8 fresh calls ran — the ceiling counted only this turn's own calls,
+    # not anything from the turn `resume` was seeded from.
+    assert len(fake_tool.calls) == 8
+    assert result.stopped_reason == "tool_ceiling"
+    assert result.text == "Done [9]." + loop_module._CEILING_NOTE
+    assert "net 30" in client.calls[0]
+    assert "continues an earlier turn" in client.calls[0]
+
+
+@pytest.mark.asyncio
+async def test_a_second_ceiling_stop_in_the_same_chain_narrows_instead_of_continuing_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queries = [f"q{i}" for i in range(1, 9)]
+    fake_tool = _FakeCallTool(_outcomes_for(queries))
+    _install_call_tool(monkeypatch, fake_tool)
+    client = _FakeClient(
+        responses=[
+            _batch_calls([f"q{i}" for i in range(1, 11)]),
+            json.dumps({"type": "answer", "text": "Still partial [1]."}),
+        ]
+    )
+
+    result = await run_tool_loop(
+        cast(Any, None),
+        cast(Any, None),
+        cast(Any, client),
+        question="Everything about this?",
+        continuation_count=1,
+    )
+
+    assert result.stopped_reason == "tool_ceiling"
+    assert result.continuation is None
+    assert result.text.endswith(loop_module._NARROW_AGAIN_NOTE)

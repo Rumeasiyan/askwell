@@ -86,7 +86,7 @@ from askwell import crypto
 from askwell.agent.abstain import AbstainReason, compose_abstention
 from askwell.agent.claims import Claim, locate_quoted_span, segment_claims
 from askwell.agent.conflict import compose_conflict, split_conflict_answer
-from askwell.agent.loop import LoopResult, run_tool_loop
+from askwell.agent.loop import LoopContinuation, LoopResult, run_tool_loop
 from askwell.agent.partial import split_partial_answer
 from askwell.agent.sql_generate import (
     GenerationReason,
@@ -352,11 +352,20 @@ async def reconcile_interrupted(factory: async_sessionmaker[AsyncSession]) -> in
 
 class AskRequest(BaseModel):
     """One question. `source_id` scopes retrieval the same way `retrieve()`
-    already allows; omitted, the whole live corpus is searched."""
+    already allows; omitted, the whole live corpus is searched.
+
+    `continue_from` (`M5-LOOP-BE-116`) is the **Continue** action's own
+    field: the id of a turn that stopped at the tool-call ceiling, so this
+    new turn can pick up its gathered `<tool-result>` history rather than
+    starting over. `question` is still required and should be resent
+    unchanged — this is a new turn, not a resumed HTTP request, and the
+    server has no other way to know what it is continuing to answer.
+    """
 
     question: str = Field(min_length=1, max_length=8000)
     conversation_id: uuid.UUID | None = None
     source_id: uuid.UUID | None = None
+    continue_from: uuid.UUID | None = None
 
 
 class ClarifyResolveRequest(BaseModel):
@@ -1041,6 +1050,7 @@ async def _generate(
     turn: _Turn,
     question: str,
     source_id: uuid.UUID | None,
+    continue_from: uuid.UUID | None = None,
 ) -> None:
     """Retrieve, compose and stream one answer. Runs independently of every
     HTTP connection — see the module docstring.
@@ -1053,7 +1063,38 @@ async def _generate(
     the actual work yet.
     """
     async with _semaphore(settings):
-        await _run_generation(settings, factory, turn, question, source_id)
+        await _run_generation(settings, factory, turn, question, source_id, continue_from)
+
+
+class _LoopContinuationState(NamedTuple):
+    """What `continue_from` resolved to, or `None` if it did not name a turn
+    that actually stopped at the ceiling — a stale, wrong, or ordinary
+    message id falls back to answering as an ordinary new question rather
+    than failing the turn (`M5-LOOP-BE-116`)."""
+
+    continuation: LoopContinuation
+    continuation_count: int
+
+
+async def _load_loop_continuation(
+    db: AsyncSession, continue_from: uuid.UUID
+) -> _LoopContinuationState | None:
+    row = (
+        await db.execute(
+            text("SELECT trace FROM messages WHERE id = :id AND role = 'assistant'"),
+            {"id": continue_from},
+        )
+    ).first()
+    if row is None or not isinstance(row[0], dict):
+        return None
+    trace = row[0]
+    stored = trace.get("loop_continuation")
+    if not isinstance(stored, dict):
+        return None
+    return _LoopContinuationState(
+        continuation=LoopContinuation.from_dict(stored),
+        continuation_count=int(trace.get("loop_continuation_count", 0)),
+    )
 
 
 async def _run_generation(
@@ -1062,6 +1103,7 @@ async def _run_generation(
     turn: _Turn,
     question: str,
     source_id: uuid.UUID | None,
+    continue_from: uuid.UUID | None = None,
 ) -> None:
     client = InferenceClient(settings)
     status: Status = "running"
@@ -1095,20 +1137,40 @@ async def _run_generation(
     model_name = settings.inference_model_path.stem
     turn_started = time.monotonic()
 
-    try:
-        # `M4-SQL-BE-108a`: tried first, on every turn — `_run_sql_turn`
-        # itself decides whether this is a database question at all
-        # (`GenerationReason.NOT_A_DATABASE_QUESTION`/`NO_DATABASES` both
-        # come back as `None`) and falls through to the document path below
-        # exactly as if this ticket had never wired anything in.
-        turn.emit("step", {"label": "Checking your connected databases.", "kind": "sql"})
+    # `M5-LOOP-BE-116`: a `Continue` click names the turn it picks up from.
+    # A stale, wrong, or ordinary (non-loop) id resolves to `None` and this
+    # turn answers as an ordinary new question instead of failing outright.
+    resume_state: LoopContinuation | None = None
+    continuation_count = 0
+    if continue_from is not None:
         async with session_scope(factory) as db:
-            sql_answer = await _run_sql_turn(
-                settings, db, client, question=question, source_id=source_id
-            )
-    except Exception:
-        sql_answer = None
-        log.exception("ask_sql_turn_failed", message_id=str(turn.message_id))
+            loaded = await _load_loop_continuation(db, continue_from)
+        if loaded is not None:
+            resume_state = loaded.continuation
+            # Already the count to hand `run_tool_loop` directly — stored as
+            # such at the previous stop (see the `loop_continuation_count`
+            # trace field below), not a raw stop tally to increment again.
+            continuation_count = loaded.continuation_count
+
+    sql_answer: _SqlAnswer | None = None
+    if resume_state is None:
+        try:
+            # `M4-SQL-BE-108a`: tried first, on every ordinary turn —
+            # `_run_sql_turn` itself decides whether this is a database
+            # question at all (`GenerationReason.NOT_A_DATABASE_QUESTION`/
+            # `NO_DATABASES` both come back as `None`) and falls through to
+            # the document path below exactly as if this ticket had never
+            # wired anything in. Skipped entirely once a turn is known to be
+            # continuing a stopped loop — it is already answering with
+            # `run_tool_loop`, which can reach a database itself.
+            turn.emit("step", {"label": "Checking your connected databases.", "kind": "sql"})
+            async with session_scope(factory) as db:
+                sql_answer = await _run_sql_turn(
+                    settings, db, client, question=question, source_id=source_id
+                )
+        except Exception:
+            sql_answer = None
+            log.exception("ask_sql_turn_failed", message_id=str(turn.message_id))
 
     if sql_answer is not None:
         turn.text = sql_answer.text
@@ -1268,7 +1330,27 @@ async def _run_generation(
     # uncited in `citations`, same as `_run_sql_turn`'s canned text already
     # is for the SQL epic.
     loop_answer: LoopResult | None = None
-    if source_id is None:
+    if resume_state is not None:
+        # `M5-LOOP-BE-116`: a `Continue` turn is already known to be a loop
+        # turn — go straight there rather than re-running `_has_hybrid_
+        # sources`, which only exists to decide whether to try the loop at
+        # all for an *ordinary* question.
+        try:
+            turn.emit("step", {"label": "Continuing where it left off.", "kind": "tool"})
+            async with session_scope(factory) as db:
+                loop_answer = await run_tool_loop(
+                    db,
+                    settings,
+                    client,
+                    question=question,
+                    source_id=source_id,
+                    resume=resume_state,
+                    continuation_count=continuation_count,
+                )
+        except Exception:
+            loop_answer = None
+            log.exception("ask_tool_loop_continue_failed", message_id=str(turn.message_id))
+    elif source_id is None:
         try:
             async with session_scope(factory) as db:
                 hybrid = await _has_hybrid_sources(db, settings)
@@ -1283,12 +1365,21 @@ async def _run_generation(
             log.exception("ask_tool_loop_failed", message_id=str(turn.message_id))
 
     if loop_answer is not None and loop_answer.tool_names_called:
+        tool_ceiling = loop_answer.stopped_reason == "tool_ceiling"
         for step in loop_answer.steps:
             if not step.deduplicated:
                 turn.emit(
                     "step",
                     {"label": f"Called {step.tool}.", "kind": "tool", "tool": step.tool},
                 )
+        if tool_ceiling:
+            # `M5-LOOP-BE-116`: named plainly as its own step, not left to be
+            # inferred from the answer text — `docs/ux/ask.md` §5's own
+            # "Tool ceiling hit" state.
+            turn.emit(
+                "step",
+                {"label": "Stopped after 8 steps for this question.", "kind": "tool"},
+            )
         turn.text = loop_answer.text
         turn.emit("token", {"text": loop_answer.text})
         status = "completed"
@@ -1315,6 +1406,15 @@ async def _run_generation(
             "memory_used": 0,
             "loop_iterations": loop_answer.iterations,
             "loop_stopped_reason": loop_answer.stopped_reason,
+            # `M5-LOOP-BE-116`: what the turn was about to do when the
+            # ceiling cut it off (`docs/ux/trace.md` §5), and what a
+            # `Continue` click needs — `None`/`[]` on every ordinary,
+            # non-ceiling loop turn, same as before this ticket.
+            "loop_pending_calls": list(loop_answer.pending_calls),
+            "loop_continuation_count": loop_answer.continuation_count + (1 if tool_ceiling else 0),
+            "loop_continuation": (
+                loop_answer.continuation.as_dict() if loop_answer.continuation is not None else None
+            ),
         }
         try:
             turn_summary = summarize_turn(
@@ -1375,6 +1475,11 @@ async def _run_generation(
                         "backend": "local",
                         "model": model_name,
                         "retrieved_chunks": [],
+                        # `M5-LOOP-BE-116`'s own Audit / Logging Requirement:
+                        # a tool-ceiling stop recorded in the interaction
+                        # log, not only in the trace ring buffer that
+                        # rotates.
+                        "tool_ceiling": tool_ceiling,
                     },
                 )
         except (AuditError, SQLAlchemyError) as error:
@@ -1413,6 +1518,12 @@ async def _run_generation(
                 "sql_result": None,
                 "sql_query": None,
                 "db_state": None,
+                # `M5-LOOP-BE-116`: the browser's own signal to render the
+                # "stopped after 8 steps" state and, when `can_continue`, a
+                # **Continue** action posting `continue_from` back as this
+                # turn's own `message_id` (`docs/ux/ask.md` §5).
+                "tool_ceiling": tool_ceiling,
+                "can_continue": tool_ceiling and trace["loop_continuation"] is not None,
             },
         )
         turn.status = status
@@ -1961,6 +2072,11 @@ def register_ask(
         because the assistant itself errored. A subset of `failed`, kept
         separate so "the model keeps erroring" and "the machine keeps
         getting restarted mid-answer" read as the different facts they are.
+
+        `tool_ceiling_stops` is `M5-LOOP-BE-116`'s own local counter — the
+        ticket's Analytics Events line, and C1 governs it the same way as
+        every other figure here: read from this machine's own rows, on
+        demand, transmitted nowhere.
         """
         async with session_scope(factory) as db:
             result = await db.execute(
@@ -1970,7 +2086,10 @@ def register_ask(
                     "count(*) FILTER (WHERE trace ->> 'status' = 'stopped') AS stopped, "
                     "count(*) FILTER (WHERE trace ->> 'status' = 'failed') AS failed, "
                     "count(*) FILTER (WHERE trace ->> 'status' = 'running') AS running, "
-                    "count(*) FILTER (WHERE (trace ->> 'interrupted')::boolean) AS abandoned "
+                    "count(*) FILTER (WHERE (trace ->> 'interrupted')::boolean) AS abandoned, "
+                    "count(*) FILTER "
+                    "(WHERE trace ->> 'loop_stopped_reason' = 'tool_ceiling') "
+                    "AS tool_ceiling_stops "
                     "FROM messages WHERE role = 'assistant'"
                 )
             )
@@ -1983,6 +2102,7 @@ def register_ask(
                 "failed": row[3],
                 "running": row[4],
                 "abandoned": row[5],
+                "tool_ceiling_stops": row[6],
             }
         )
 
@@ -2026,7 +2146,7 @@ def register_ask(
         turn = _Turn(message_id=message_id, conversation_id=conversation_id)
         _turns[turn.message_id] = turn
         asyncio.create_task(  # noqa: RUF006 — deliberately outlives this request; see module docstring
-            _generate(settings, factory, turn, body.question, body.source_id)
+            _generate(settings, factory, turn, body.question, body.source_id, body.continue_from)
         )
 
         return StreamingResponse(

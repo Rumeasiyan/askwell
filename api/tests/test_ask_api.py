@@ -1667,6 +1667,7 @@ def test_the_local_counters_come_from_the_rows_rather_than_from_memory(
             "failed": 0,
             "running": 0,
             "abandoned": 0,
+            "tool_ceiling_stops": 0,
         }
 
         client.post("/ask", json={"question": "Anything?"})

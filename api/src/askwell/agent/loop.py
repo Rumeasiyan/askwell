@@ -22,13 +22,26 @@ went through `askwell.sql.validate` once, and running it twice teaches
 nothing new while doubling the wait.
 
 **`_SAFETY_MAX_ITERATIONS` is a crash guard, not the product's call
-ceiling.** The ceiling a user sees — "stopped after 8 steps", with a
-**Continue** control (`docs/ux/ask.md` §5) — is `M5-LOOP-BE-116`, deliberately
-out of this ticket's scope. Without any bound at all, a model stuck
-answering-then-re-asking-itself would loop until something else killed the
-request; this number exists only so that does not happen before -116 lands,
-and is set well above the ceiling -116 will enforce so it is never what a
-real turn actually hits.
+ceiling.** `CALL_CEILING` (`M5-LOOP-BE-116`) is the ceiling a user actually
+sees — 8 tool calls per turn, `docs/architecture.md` §10 — and it is what
+stops an ordinary turn long before `_SAFETY_MAX_ITERATIONS` (25) would.
+`_SAFETY_MAX_ITERATIONS` stays only as a guard against a turn that keeps
+re-asking for calls it already has cached (every one deduplicated, so
+`CALL_CEILING` is never actually reached) rather than ever answering.
+
+**Reaching `CALL_CEILING` never presents a partial result as complete.**
+The turn stops, composes what it gathered into an answer if anything useful
+was gathered at all (never invented from nothing — closer to abstention
+otherwise), and always says plainly that it stopped early and why
+(`_CEILING_NOTE`/`_NOTHING_GATHERED_TEXT`, never omitted). A parallel batch
+that would cross the ceiling is truncated at it; the calls that were cut are
+recorded as `LoopResult.pending_calls` — what the turn was about to do
+(`docs/ux/trace.md` §5) — rather than silently dropped. `LoopResult.
+continuation`, present only on a turn's first ceiling stop, is what
+`askwell.ask` persists so a **Continue** click can start a new turn that
+picks up the gathered `<tool-result>` history rather than re-fetching it; a
+second stop in the same chain narrows the answer's own text instead of
+offering a third continuation, so there is no infinite chain.
 """
 
 from __future__ import annotations
@@ -59,8 +72,41 @@ PROMPT_PATH = PROMPT_DIR / f"{PROMPT_VERSION}.md"
 # A crash guard, not the product's ceiling — see the module docstring.
 _SAFETY_MAX_ITERATIONS = 25
 
+# The product's own ceiling. `M5-LOOP-BE-116`, `docs/architecture.md` §10:
+# fixed in v1, raising it is a recorded decision, not a config knob.
+CALL_CEILING = 8
+
 LOOP_MAX_TOKENS = 700
 LOOP_TEMPERATURE = 0.0
+
+_CEILING_NOTICE = (
+    "\n\nYou have reached the maximum of 8 tool calls for this question. No "
+    "further tool calls will be run. Answer now using only the tool results "
+    "already gathered above; if they are not enough to fully answer, say so "
+    "and name what you would still need to check."
+)
+
+# Appended to whatever the model composed at the ceiling — never relied on
+# the model to say this itself, since a stopped-early answer must never omit
+# the note (this ticket's own Validation Rule).
+_CEILING_NOTE = (
+    " Askwell stopped after reaching its 8-step limit for this question — "
+    "this is what it found before then, not a complete answer."
+)
+
+# The ceiling reached with nothing useful gathered at all — the named edge
+# case that is "closer to abstention" than a composed answer would be.
+_NOTHING_GATHERED_TEXT = (
+    "Askwell reached its 8-step limit for this question without finding "
+    "anything useful to answer from. Try narrowing the question, or check "
+    "that the right sources are connected."
+)
+
+# A second stop in the same continuation chain — told plainly rather than
+# offering a third continuation and risking an endless one.
+_NARROW_AGAIN_NOTE = (
+    " This question has now stopped twice without finishing — it may need narrowing."
+)
 
 
 @lru_cache(maxsize=1)
@@ -128,6 +174,41 @@ class LoopStep:
 
 
 @dataclass(frozen=True, slots=True)
+class LoopContinuation:
+    """What a **Continue** click (`M5-LOOP-BE-116`, `docs/ux/ask.md` §5)
+    needs to start a new turn that picks up from a ceiling stop rather than
+    repeating the same calls. Present on `LoopResult.continuation` only for
+    a turn's *first* ceiling stop — a second stop in the same chain narrows
+    the answer's text instead, so there is nothing to offer a third time.
+
+    Persisted verbatim into `messages.trace.loop_continuation` by
+    `askwell.ask` and read back into `run_tool_loop(resume=...)` on the
+    follow-up turn. Deliberately just the `<tool-result>` history and the
+    next index to hand out — cross-turn tool-call dedup is not attempted:
+    seeding `history_blocks` back into the prompt already gives the model
+    every result it needs without asking again, and reconstructing the
+    dedup cache itself would mean persisting each tool's raw content a
+    second time for no benefit over the model simply not re-asking.
+    """
+
+    history_blocks: tuple[str, ...]
+    next_result_index: int
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "history_blocks": list(self.history_blocks),
+            "next_result_index": self.next_result_index,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> LoopContinuation:
+        return cls(
+            history_blocks=tuple(str(block) for block in data.get("history_blocks", [])),
+            next_result_index=int(data.get("next_result_index", 1)),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class LoopResult:
     """What one turn's worth of looping produced.
 
@@ -135,8 +216,17 @@ class LoopResult:
     it had enough), `"malformed_response"` when the model's output could not
     be parsed as either action and was used verbatim as the answer instead
     (never a crash — the same "answer it, don't crash it" posture
-    `askwell.ask._run_sql_turn`'s own docstring names), or `"safety_limit"`
-    when `_SAFETY_MAX_ITERATIONS` was reached with no answer yet.
+    `askwell.ask._run_sql_turn`'s own docstring names), `"tool_ceiling"`
+    when `CALL_CEILING` (8, `M5-LOOP-BE-116`) was reached before the model
+    answered, or `"safety_limit"` when `_SAFETY_MAX_ITERATIONS` was reached
+    with no answer yet — unreachable in ordinary operation now that the
+    ceiling stops a turn first, and kept only as the crash guard the module
+    docstring describes.
+
+    `pending_calls` is what the turn was about to do when the ceiling cut it
+    off (`docs/ux/trace.md` §5) — empty on every other `stopped_reason`.
+    `continuation` carries what a **Continue** click needs, and is `None`
+    unless this is a turn's first ceiling stop.
     """
 
     text: str
@@ -144,6 +234,9 @@ class LoopResult:
     iterations: int
     stopped_reason: str
     tool_names_called: tuple[str, ...]
+    pending_calls: tuple[dict[str, Any], ...] = ()
+    continuation: LoopContinuation | None = None
+    continuation_count: int = 0
 
 
 @dataclass(slots=True)
@@ -193,6 +286,88 @@ def _valid_calls(parsed: dict[str, Any]) -> list[tuple[str, dict[str, Any]]] | N
     return out or None
 
 
+async def _stop_at_ceiling(
+    *,
+    client: InferenceClient,
+    system_prompt: str,
+    catalogue: str,
+    question: str,
+    resume_note: str,
+    history_blocks: list[str],
+    steps: list[LoopStep],
+    tool_names_called: list[str],
+    iteration: int,
+    pending_calls: tuple[dict[str, Any], ...],
+    continuation_count: int,
+    next_result_index: int,
+) -> LoopResult:
+    """`CALL_CEILING` was reached this iteration — compose what to hand
+    back rather than ever presenting it as complete (module docstring).
+
+    Only asks the model for one more turn when there is actually something
+    to compose from (`has_gathered`): a ceiling hit with nothing useful
+    gathered composes to nothing worth having, so it is told plainly
+    instead — closer to abstention than an invented answer, the ticket's own
+    named edge case. When `pending_calls` was not already known from a
+    truncated batch, this last call also doubles as how "what it was about
+    to do" (`docs/ux/trace.md` §5) gets captured for the exact-fit case: the
+    model, told no more tools are available, may ask for one anyway.
+    """
+    has_gathered = any(step.outcome == "ok" for step in steps)
+    if has_gathered:
+        history = "\n\n".join(history_blocks)
+        user_content = (
+            f"{catalogue}\n\nQuestion: {question}"
+            + (f"\n\n{history}" if history else "")
+            + resume_note
+            + _CEILING_NOTICE
+        )
+        prompt = f"{system_prompt}\n\n{user_content}"
+        completion = await client.generate(
+            prompt, max_tokens=LOOP_MAX_TOKENS, temperature=LOOP_TEMPERATURE
+        )
+        parsed = _parse_model_response(completion.text)
+        model_text: str | None = None
+        if parsed is not None and parsed.get("type") == "answer":
+            candidate_text = parsed.get("text")
+            if isinstance(candidate_text, str) and candidate_text.strip():
+                model_text = candidate_text
+        if model_text is None and not pending_calls and parsed is not None:
+            calls = _valid_calls(parsed) if parsed.get("type") == "tool_calls" else None
+            if calls:
+                unique: dict[str, dict[str, Any]] = {}
+                for tool_name, arguments in calls:
+                    unique.setdefault(
+                        _call_key(tool_name, arguments),
+                        {"tool": tool_name, "arguments": arguments},
+                    )
+                pending_calls = tuple(unique.values())
+        text = (model_text or "Here is what Askwell found before stopping.") + _CEILING_NOTE
+    else:
+        text = _NOTHING_GATHERED_TEXT
+
+    if continuation_count >= 1:
+        # Already a continuation of an earlier stop — no third continuation,
+        # named plainly instead (module docstring).
+        text += _NARROW_AGAIN_NOTE
+        continuation = None
+    else:
+        continuation = LoopContinuation(
+            history_blocks=tuple(history_blocks), next_result_index=next_result_index
+        )
+
+    return LoopResult(
+        text=text,
+        steps=tuple(steps),
+        iterations=iteration,
+        stopped_reason="tool_ceiling",
+        tool_names_called=tuple(tool_names_called),
+        pending_calls=pending_calls,
+        continuation=continuation,
+        continuation_count=continuation_count,
+    )
+
+
 async def run_tool_loop(
     session: AsyncSession,
     settings: Settings,
@@ -200,6 +375,8 @@ async def run_tool_loop(
     *,
     question: str,
     source_id: UUID | None = None,
+    resume: LoopContinuation | None = None,
+    continuation_count: int = 0,
 ) -> LoopResult:
     """Call tools, read results, decide whether more is needed, then answer.
 
@@ -209,21 +386,54 @@ async def run_tool_loop(
     iteration run concurrently via `asyncio.gather`, deduplicated first —
     a duplicate reuses the earlier result rather than calling the tool
     again, recorded as such.
+
+    `resume` (`M5-LOOP-BE-116`) seeds a fresh turn's history from an earlier
+    turn's ceiling stop — a **Continue** click — so this turn's own
+    `CALL_CEILING` starts counting from zero rather than inheriting the
+    stopped turn's count; the point of a new turn is a fresh budget, not a
+    shared one. `continuation_count` is how many stops already led to this
+    turn, `0` for an original question.
     """
     loop_started = time.monotonic()
     system_prompt = _load_system_prompt()
     catalogue = _tool_catalogue()
 
-    history_blocks: list[str] = []
+    history_blocks: list[str] = list(resume.history_blocks) if resume is not None else []
     records: dict[str, _CallRecord] = {}
     steps: list[LoopStep] = []
     tool_names_called: list[str] = []
-    next_result_index = 1
+    next_result_index = resume.next_result_index if resume is not None else 1
+    total_calls_made = 0
+    resume_note = (
+        "\n\nThis continues an earlier turn on the same question that stopped after "
+        "reaching its 8-call limit. The tool results it already gathered are included "
+        "above — do not repeat a call whose result you already have."
+        if resume is not None
+        else ""
+    )
 
     for iteration in range(1, _SAFETY_MAX_ITERATIONS + 1):
+        if total_calls_made >= CALL_CEILING:
+            return await _stop_at_ceiling(
+                client=client,
+                system_prompt=system_prompt,
+                catalogue=catalogue,
+                question=question,
+                resume_note=resume_note,
+                history_blocks=history_blocks,
+                steps=steps,
+                tool_names_called=tool_names_called,
+                iteration=iteration,
+                pending_calls=(),
+                continuation_count=continuation_count,
+                next_result_index=next_result_index,
+            )
+
         history = "\n\n".join(history_blocks)
-        user_content = f"{catalogue}\n\nQuestion: {question}" + (
-            f"\n\n{history}" if history else ""
+        user_content = (
+            f"{catalogue}\n\nQuestion: {question}"
+            + (f"\n\n{history}" if history else "")
+            + resume_note
         )
         prompt = f"{system_prompt}\n\n{user_content}"
         completion = await client.generate(
@@ -238,6 +448,7 @@ async def run_tool_loop(
                 iterations=iteration,
                 stopped_reason="malformed_response",
                 tool_names_called=tuple(tool_names_called),
+                continuation_count=continuation_count,
             )
 
         if parsed.get("type") == "answer":
@@ -249,6 +460,7 @@ async def run_tool_loop(
                     iterations=iteration,
                     stopped_reason="malformed_response",
                     tool_names_called=tuple(tool_names_called),
+                    continuation_count=continuation_count,
                 )
             return LoopResult(
                 text=answer_text,
@@ -256,6 +468,7 @@ async def run_tool_loop(
                 iterations=iteration,
                 stopped_reason="answered",
                 tool_names_called=tuple(tool_names_called),
+                continuation_count=continuation_count,
             )
 
         calls = _valid_calls(parsed) if parsed.get("type") == "tool_calls" else None
@@ -266,6 +479,7 @@ async def run_tool_loop(
                 iterations=iteration,
                 stopped_reason="malformed_response",
                 tool_names_called=tuple(tool_names_called),
+                continuation_count=continuation_count,
             )
 
         # Every call the model emitted this iteration, verbatim — a repeat
@@ -296,15 +510,32 @@ async def run_tool_loop(
             seen.add(key)
             fresh.append((tool_name, arguments, key))
 
+        # `CALL_CEILING`: only the calls this turn's remaining budget covers
+        # are actually dispatched. A batch that would cross the ceiling is
+        # truncated at it — the rest never run and are recorded below as
+        # `pending_calls` (`docs/ux/trace.md` §5's "what it was about to
+        # do"), never silently dropped.
+        budget = CALL_CEILING - total_calls_made
+        run_now = fresh[:budget]
+        overflow_keys = {key for _, _, key in fresh[budget:]}
+
         results: dict[str, tuple[ToolResult, ToolStep]] = {}
-        if fresh:
+        if run_now:
             # Concurrent, not sequential: none of the five tools write
             # anything, so two independently emitted calls have no reason
             # to wait on each other (the module docstring).
-            outcomes = await asyncio.gather(*(_run_one(n, a) for n, a, _ in fresh))
-            results = {key: outcome for (_, _, key), outcome in zip(fresh, outcomes, strict=True)}
+            outcomes = await asyncio.gather(*(_run_one(n, a) for n, a, _ in run_now))
+            results = {key: outcome for (_, _, key), outcome in zip(run_now, outcomes, strict=True)}
 
-        for tool_name, _arguments, key in to_run:
+        pending_calls: list[dict[str, Any]] = []
+        pending_seen: set[str] = set()
+
+        for tool_name, arguments, key in to_run:
+            if key in overflow_keys:
+                if key not in pending_seen:
+                    pending_seen.add(key)
+                    pending_calls.append({"tool": tool_name, "arguments": arguments})
+                continue
             deduplicated = key in records
             if not deduplicated:
                 result, tool_step = results[key]
@@ -361,9 +592,28 @@ async def run_tool_loop(
                 )
             steps.append(loop_step)
 
+        total_calls_made += len(run_now)
+
+        if pending_calls:
+            return await _stop_at_ceiling(
+                client=client,
+                system_prompt=system_prompt,
+                catalogue=catalogue,
+                question=question,
+                resume_note=resume_note,
+                history_blocks=history_blocks,
+                steps=steps,
+                tool_names_called=tool_names_called,
+                iteration=iteration,
+                pending_calls=tuple(pending_calls),
+                continuation_count=continuation_count,
+                next_result_index=next_result_index,
+            )
+
     # `_SAFETY_MAX_ITERATIONS` reached with no answer — never silently drop
     # what was actually gathered; the steps already collected are still
-    # returned on `LoopResult.steps`.
+    # returned on `LoopResult.steps`. Unreachable in ordinary operation now
+    # that `CALL_CEILING` stops a turn first — see the module docstring.
     fallback_text = (
         "Askwell gathered information across several steps but did not reach a final "
         "answer before stopping."
@@ -374,4 +624,5 @@ async def run_tool_loop(
         iterations=_SAFETY_MAX_ITERATIONS,
         stopped_reason="safety_limit",
         tool_names_called=tuple(tool_names_called),
+        continuation_count=continuation_count,
     )
