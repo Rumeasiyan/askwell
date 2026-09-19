@@ -1876,6 +1876,77 @@ def test_sql_query_from_trace_is_none_for_a_document_turns_trace() -> None:
     assert ask_module._sql_query_from_trace(None) is None
 
 
+# --- `_bound_trace_steps` (`M5-LOOP-BE-117`), pure ------------------------------
+
+
+def test_a_turn_under_the_bound_is_left_untouched() -> None:
+    """A turn with a single step is a valid one-step trace, not an empty
+    one — the ticket's own named edge case."""
+    steps = [{"kind": "retrieve"}]
+    bounded, truncated = ask_module._bound_trace_steps(steps)
+    assert bounded == steps
+    assert truncated is False
+
+
+def test_a_turn_over_the_bound_is_truncated_and_says_so() -> None:
+    steps = [{"kind": "tool", "iteration": i} for i in range(ask_module.TRACE_STEP_BOUND + 5)]
+    bounded, truncated = ask_module._bound_trace_steps(steps)
+    assert len(bounded) == ask_module.TRACE_STEP_BOUND
+    assert bounded == steps[: ask_module.TRACE_STEP_BOUND]
+    assert truncated is True
+
+
+# --- `_trim_rotated_traces` (`M5-LOOP-BE-117`) ----------------------------------
+
+
+async def test_trimming_a_rotated_trace_clears_steps_but_not_the_rest(
+    database_url: str, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """`docs/architecture.md` §7.1: `messages.trace` is trimmed with the
+    file ring buffer. Only `steps` — the detail the ring buffer actually
+    caps — is dropped; `status`/`backend` and the rest survive so a
+    reopened turn still renders."""
+    _truncate(database_url)
+    conversation_id = uuid.uuid4()
+    message_id = uuid.uuid4()
+    with psycopg.connect(database_url, autocommit=True) as db:
+        db.execute("INSERT INTO conversations (id) VALUES (%s)", (conversation_id,))
+        db.execute(
+            "INSERT INTO messages (id, conversation_id, role, content, trace) "
+            "VALUES (%s, %s, 'assistant', 'Ninety days.', %s::jsonb)",
+            (
+                message_id,
+                conversation_id,
+                json.dumps(
+                    {
+                        "steps": [{"kind": "retrieve", "hits": [{"score": 0.81}]}],
+                        "status": "completed",
+                        "backend": {"mode": "local", "model": "qwen3-8b-q4km"},
+                    }
+                ),
+            ),
+        )
+
+    async with factory() as db:
+        await ask_module._trim_rotated_traces(db, (message_id,))
+        await db.commit()
+
+    trace = _trace(database_url, message_id)
+    assert trace["steps"] == []
+    assert trace["trace_rotated"] is True
+    assert trace["status"] == "completed"
+    assert trace["backend"] == {"mode": "local", "model": "qwen3-8b-q4km"}
+
+
+async def test_trimming_nothing_dropped_is_a_no_op(
+    database_url: str, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    async with factory() as db:
+        # Never even issues a query — nothing to trim.
+        await ask_module._trim_rotated_traces(db, ())
+        await db.commit()
+
+
 # --- the client leaving does not stop the answer -------------------------------
 
 

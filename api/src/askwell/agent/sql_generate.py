@@ -53,6 +53,7 @@ once, without a second, unreliable heuristic to tell them apart.
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -152,6 +153,11 @@ class GeneratedQuery:
     memory_fact_ids: tuple[uuid.UUID, ...]
     injection_flagged: bool
     injection_patterns: tuple[str, ...]
+    # `M5-LOOP-BE-117`: how long the schema-notes lookup itself took, kept
+    # apart from generation/validation/execution so `messages.trace` can give
+    # the "schema" step (`docs/architecture.md` §7.1) its own duration rather
+    # than folding it into the "sql" step's.
+    schema_lookup_ms: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,9 +371,11 @@ async def generate_candidate_query(
     source = selection.source
     assert source is not None
 
+    schema_started = time.monotonic()
     relevant: RelevantMemory = await retrieve_relevant_facts(
         session, question=question, source_id=source.id, note_limit=SCHEMA_NOTE_LIMIT
     )
+    schema_lookup_ms = (time.monotonic() - schema_started) * 1000
     if not relevant.notes:
         # Nothing about this source's schema bears on the question at all —
         # the ticket's own "not about data at all" edge case. The caller
@@ -393,6 +401,7 @@ async def generate_candidate_query(
         memory_fact_ids=tuple(fact.id for fact in relevant.facts),
         injection_flagged=composed.injection_flagged,
         injection_patterns=composed.injection_patterns,
+        schema_lookup_ms=schema_lookup_ms,
     )
     await record(
         session,

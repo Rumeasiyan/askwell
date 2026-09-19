@@ -644,6 +644,11 @@ class _SqlAnswer:
     status: Status
     sql_result: dict[str, Any] | None
     trace_step: dict[str, Any]
+    # `M5-LOOP-BE-117`: its own "schema" step (`docs/architecture.md` §7.1),
+    # `None` on every branch that never got as far as selecting a source and
+    # looking up its schema notes (`no_connections`/`source_attention`/
+    # `source_importing`/`ambiguous`).
+    schema_step: dict[str, Any] | None = None
 
 
 def _json_safe(value: Any) -> Any:
@@ -717,6 +722,49 @@ def _sql_query_from_trace(trace: Any) -> dict[str, Any] | None:
         if isinstance(step, dict) and step.get("kind") == "sql":
             return _sql_query_disclosure(step)
     return None
+
+
+# `M5-LOOP-BE-117`'s own edge case: "a trace larger than the per-turn bound
+# — truncated with the truncation stated inside the trace." The tool-call
+# ceiling (`askwell.agent.loop.CALL_CEILING`) already keeps an ordinary loop
+# turn well under this; this bound exists for what that guard does not
+# cover — a turn built from many small non-tool steps.
+TRACE_STEP_BOUND = 50
+
+
+def _bound_trace_steps(steps: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
+    """Cap how many steps one turn's trace carries. Never drops a step
+    silently — the caller states `steps_truncated` on the trace itself
+    rather than a reader having to notice a suspiciously round count."""
+    if len(steps) <= TRACE_STEP_BOUND:
+        return steps, False
+    return steps[:TRACE_STEP_BOUND], True
+
+
+async def _trim_rotated_traces(db: AsyncSession, dropped: tuple[uuid.UUID, ...]) -> None:
+    """Trim `messages.trace` for every message whose trace file just rotated
+    out of `TraceRing` (`docs/architecture.md` §7.1: "`messages.trace` is
+    trimmed with them" — them being the file ring buffer). `steps` is the
+    detail the ring buffer actually caps; every other trace field is left
+    alone since a reopened turn still needs its `status`, `backend` and the
+    rest to render at all. Citations and fact usage live in their own
+    tables and are untouched — an old answer keeps its sources long after
+    its debugging detail is gone (`M5-LOOP-BE-117`'s own acceptance
+    criterion). Best-effort like the rest of `askwell.traces`: a message row
+    that no longer exists, or a `trace` that somehow is not a JSON object, is
+    simply skipped rather than raised — this never gates the answer that
+    triggered it.
+    """
+    if not dropped:
+        return
+    await db.execute(
+        text(
+            "UPDATE messages SET trace = jsonb_set(trace, '{steps}', '[]'::jsonb) "
+            "|| jsonb_build_object('trace_rotated', true) "
+            "WHERE id = ANY(:ids) AND jsonb_typeof(trace -> 'steps') = 'array'"
+        ),
+        {"ids": list(dropped)},
+    )
 
 
 def _sql_result_text(row_count: int, truncated: bool) -> str:
@@ -880,6 +928,15 @@ async def _run_sql_turn(
     # downstream from here narrows on `askwell.connections.Engine`.
     engine = cast(Engine, generated.engine)
 
+    # `M5-LOOP-BE-117`: its own "schema" step (`docs/architecture.md` §7.1) —
+    # attached to every `_SqlAnswer` returned from here on, since every one
+    # of them reflects a turn that got this far.
+    schema_step = {
+        "kind": "schema",
+        "ms": generated.schema_lookup_ms,
+        "source_id": str(generated.source_id),
+    }
+
     validation = await validate_query(
         db, settings, engine=engine, query=generated.query, source_id=generated.source_id
     )
@@ -892,6 +949,7 @@ async def _run_sql_turn(
             ),
             status="completed",
             sql_result=None,
+            schema_step=schema_step,
             trace_step={
                 "kind": "sql",
                 "outcome": "rejected",
@@ -916,6 +974,7 @@ async def _run_sql_turn(
             text="The database this question would have used is no longer connected.",
             status="completed",
             sql_result=None,
+            schema_step=schema_step,
             trace_step={"kind": "sql", "outcome": "source_gone", "query": limited.query},
         )
     kind, sandbox_db, config_encrypted = source_row
@@ -947,6 +1006,7 @@ async def _run_sql_turn(
             text=_dry_run_failure_text(dry_run.reason, dry_run.detail),
             status="completed",
             sql_result=None,
+            schema_step=schema_step,
             trace_step={
                 "kind": "sql",
                 "outcome": "dry_run_failed",
@@ -981,6 +1041,7 @@ async def _run_sql_turn(
             text=str(error),
             status="completed",
             sql_result=None,
+            schema_step=schema_step,
             trace_step={"kind": "sql", "outcome": "timeout", "query": limited.query},
         )
     except (ConnectionUnreachable, CredentialsRejected, QueryRejected) as error:
@@ -988,6 +1049,7 @@ async def _run_sql_turn(
             text=str(error),
             status="completed",
             sql_result=None,
+            schema_step=schema_step,
             trace_step={
                 "kind": "sql",
                 "outcome": type(error).__name__,
@@ -1009,12 +1071,14 @@ async def _run_sql_turn(
         text=_sql_result_text(checked.row_count, checked.truncated),
         status="completed",
         sql_result=sql_result,
+        schema_step=schema_step,
         trace_step={
             "kind": "sql",
             "outcome": "executed",
             "rows": checked.row_count,
             "truncated": checked.truncated,
             "duration_ms": checked.duration_ms,
+            "limit_injected": limited.limit,
             "query": limited.query,
         },
     )
@@ -1177,11 +1241,15 @@ async def _run_generation(
         turn.emit("token", {"text": sql_answer.text})
         sql_result = sql_answer.sql_result
         status = sql_answer.status
+        if sql_answer.schema_step is not None:
+            trace_steps.append(sql_answer.schema_step)
         trace_steps.append(sql_answer.trace_step)
         turn.emit("step", {"label": "Answered from your database.", "kind": "sql"})
         duration_ms = int((time.monotonic() - turn_started) * 1000)
+        bounded_steps, steps_truncated = _bound_trace_steps(trace_steps)
         trace = {
-            "steps": trace_steps,
+            "steps": bounded_steps,
+            "steps_truncated": steps_truncated,
             "backend": {"mode": "local", "model": model_name},
             "stopped_early": status != "completed",
             "injection_flagged": False,
@@ -1209,9 +1277,14 @@ async def _run_generation(
         except Exception:
             log.error("ask_summary_failed", message_id=str(turn.message_id))
             turn_summary = fallback_summary(question)
-        TraceRing(settings.trace_dir, settings.trace_max_bytes).write(turn.message_id, trace)
+        rotated = (
+            TraceRing(settings.trace_dir, settings.trace_max_bytes)
+            .write(turn.message_id, trace)
+            .dropped
+        )
         try:
             async with session_scope(factory) as db:
+                await _trim_rotated_traces(db, rotated)
                 await db.execute(
                     text(
                         "INSERT INTO messages "
@@ -1389,8 +1462,10 @@ async def _run_generation(
             sorted({p for step in loop_answer.steps for p in step.injection_patterns})
         )
         duration_ms = int((time.monotonic() - turn_started) * 1000)
+        bounded_steps, steps_truncated = _bound_trace_steps(trace_steps)
         trace = {
-            "steps": trace_steps,
+            "steps": bounded_steps,
+            "steps_truncated": steps_truncated,
             "backend": {"mode": "local", "model": model_name},
             "stopped_early": loop_answer.stopped_reason != "answered",
             "injection_flagged": injection_flagged,
@@ -1429,9 +1504,14 @@ async def _run_generation(
         except Exception:
             log.error("ask_summary_failed", message_id=str(turn.message_id))
             turn_summary = fallback_summary(question)
-        TraceRing(settings.trace_dir, settings.trace_max_bytes).write(turn.message_id, trace)
+        rotated = (
+            TraceRing(settings.trace_dir, settings.trace_max_bytes)
+            .write(turn.message_id, trace)
+            .dropped
+        )
         try:
             async with session_scope(factory) as db:
+                await _trim_rotated_traces(db, rotated)
                 await db.execute(
                     text(
                         "INSERT INTO messages "
@@ -1786,8 +1866,10 @@ async def _run_generation(
 
     duration_ms = int((time.monotonic() - turn_started) * 1000)
 
+    bounded_steps, steps_truncated = _bound_trace_steps(trace_steps)
     trace = {
-        "steps": trace_steps,
+        "steps": bounded_steps,
+        "steps_truncated": steps_truncated,
         "backend": {"mode": "local", "model": model_name},
         "stopped_early": status != "completed",
         "injection_flagged": injection_flagged,
@@ -1840,10 +1922,18 @@ async def _run_generation(
     # `TraceRing.write` cannot raise, matching `askwell.traces`'s own "fails
     # open" guarantee. Written ahead of the audited write below so a trace
     # written but a failed audit record still leaves the full detail on disk.
-    TraceRing(settings.trace_dir, settings.trace_max_bytes).write(turn.message_id, trace)
+    rotated = (
+        TraceRing(settings.trace_dir, settings.trace_max_bytes)
+        .write(turn.message_id, trace)
+        .dropped
+    )
 
     try:
         async with session_scope(factory) as db:
+            # `M5-LOOP-BE-117`: trim `messages.trace` for whatever just
+            # rotated out of the file ring buffer, in the same step as this
+            # turn's own write — see `_trim_rotated_traces`.
+            await _trim_rotated_traces(db, rotated)
             # `ON CONFLICT` rather than a plain `UPDATE`: `ask()` always
             # inserts the pending row ahead of this, but a caller driving
             # `_generate` directly against a turn it built itself — every

@@ -20,7 +20,9 @@ def ring(tmp_path: Path) -> TraceRing:
 
 def test_a_trace_round_trips(ring: TraceRing) -> None:
     message = uuid.uuid4()
-    ring.write(message, {"steps": [{"kind": "retrieve", "ms": 340}]})
+    result = ring.write(message, {"steps": [{"kind": "retrieve", "ms": 340}]})
+    assert result.path is not None
+    assert result.dropped == ()
     loaded = ring.read(message)
     assert loaded is not None
     assert loaded["trace"]["steps"][0]["kind"] == "retrieve"
@@ -43,7 +45,9 @@ def test_an_unwritable_directory_does_not_raise(tmp_path: Path) -> None:
     # Reported by return value, not by exception. A caller that ignores the
     # return value is behaving correctly: nothing about a trace should be able
     # to reach the action that produced it.
-    assert ring.write(uuid.uuid4(), {"steps": []}) is None
+    result = ring.write(uuid.uuid4(), {"steps": []})
+    assert result.path is None
+    assert result.dropped == ()
 
 
 def test_the_oldest_traces_are_dropped_when_the_cap_is_reached(tmp_path: Path) -> None:
@@ -51,13 +55,21 @@ def test_the_oldest_traces_are_dropped_when_the_cap_is_reached(tmp_path: Path) -
     payload = {"steps": [{"kind": "compose", "note": "x" * 400}]}
 
     written = [uuid.uuid4() for _ in range(12)]
+    all_dropped: set[uuid.UUID] = set()
     for message in written:
-        ring.write(message, payload)
+        all_dropped |= set(ring.write(message, payload).dropped)
 
     assert ring.total_bytes() <= 2000
     # The most recent survives; something older did not.
     assert ring.read(written[-1]) is not None
     assert any(ring.read(message) is None for message in written[:4])
+    # Every id `prune()` reported as dropped really did rotate out, and it
+    # reported the actual message id — not a placeholder — so a caller can
+    # use it to trim `messages.trace` for the right row (`M5-LOOP-BE-117`).
+    assert all_dropped
+    assert all_dropped <= set(written)
+    for message in all_dropped:
+        assert ring.read(message) is None
 
 
 def test_an_interrupted_write_leaves_no_corrupt_trace(ring: TraceRing) -> None:
@@ -74,4 +86,4 @@ def test_an_interrupted_write_leaves_no_corrupt_trace(ring: TraceRing) -> None:
 
 
 def test_pruning_an_absent_directory_is_not_an_error(tmp_path: Path) -> None:
-    assert TraceRing(tmp_path / "never-created", max_bytes=10).prune() == 0
+    assert TraceRing(tmp_path / "never-created", max_bytes=10).prune() == ()
