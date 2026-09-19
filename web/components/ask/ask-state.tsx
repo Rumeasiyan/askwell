@@ -24,7 +24,7 @@ import {
 } from "@/lib/ask";
 import { applyCitation, type CitationCard } from "@/lib/citations";
 import { applyFactCitation, type FactChip } from "@/lib/memory-chips";
-import type { SqlResultData } from "@/lib/sql-result";
+import type { SqlQueryDisclosure, SqlResultData } from "@/lib/sql-result";
 
 /**
  * The conversation, held once for the whole application. `M1-ASK-FE-039`.
@@ -95,6 +95,11 @@ export interface AskTurn {
    * from the `done` event, same lifecycle as `summary`/`sourceCount`.
    * `M4-RESULT-FE-109`. */
   sqlResult: SqlResultData | null;
+  /** The query and outcome for a database turn that never reached
+   * `sqlResult` — rejected, a failed dry run, timed out, a query-time
+   * failure, or the source gone, `null` for every other turn. Mutually
+   * exclusive with `sqlResult`, same `done`-event lifecycle. `M4-RESULT-FE-110`. */
+  sqlQuery: SqlQueryDisclosure | null;
   /** `M3-INLINE-FE-085`: set from a `clarification` event while this turn is
    * paused waiting for it to be answered or skipped, `null` the rest of the
    * time — including once a `clarification_resolved` event clears it and
@@ -159,6 +164,7 @@ function blankTurn(
     summary,
     sourceCount: null,
     sqlResult: null,
+    sqlQuery: null,
     blocking: null,
   };
 }
@@ -230,6 +236,7 @@ export function AskProvider({ children }: { children: ReactNode }) {
       let finalSummary: string | null = null;
       let finalSourceCount: number | null = null;
       let finalSqlResult: SqlResultData | null = null;
+      let finalSqlQuery: SqlQueryDisclosure | null = null;
       try {
         await streamAsk(
           next.question,
@@ -242,6 +249,7 @@ export function AskProvider({ children }: { children: ReactNode }) {
               finalSummary = event.data.summary ?? null;
               finalSourceCount = event.data.source_count ?? null;
               finalSqlResult = event.data.sql_result ?? null;
+              finalSqlQuery = event.data.sql_query ?? null;
               return;
             }
             // Derived from the previous turn inside the updater, never from a ref.
@@ -289,6 +297,7 @@ export function AskProvider({ children }: { children: ReactNode }) {
         summary: finalSummary,
         sourceCount: finalSourceCount,
         sqlResult: finalSqlResult,
+        sqlQuery: finalSqlQuery,
       });
       dispatching.current = false;
     })();

@@ -210,6 +210,14 @@ async def test_a_write_disguised_as_a_read_is_rejected_with_no_stored_result(
     assert answer is not None
     assert answer.sql_result is None
     assert "could not safely run" in answer.text
+    # `M4-RESULT-FE-110`: disclosure is unconditional — the rejected query
+    # itself still travels in the trace step, since `sql_result` never will.
+    rejected_query = "WITH d AS (DELETE FROM invoices RETURNING *) SELECT * FROM d"
+    assert answer.trace_step["query"] == rejected_query
+    assert ask_module._sql_query_disclosure(answer.trace_step) == {
+        "query": rejected_query,
+        "outcome": "rejected",
+    }
 
     owner = role_url(
         sandbox_admin_url,

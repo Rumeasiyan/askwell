@@ -120,6 +120,67 @@ export function paginateSqlRows(
   };
 }
 
+/**
+ * A database answer that never reached `sql_result` — rejected, a failed
+ * dry run, a timeout, a query-time failure, or the source vanishing
+ * mid-turn (`askwell.ask._sql_query_disclosure`, `M4-RESULT-FE-110`).
+ * `outcome` mirrors the server's own trace step verbatim (`"rejected"`,
+ * `"timeout"`, `"dry_run_failed"`, …) — this module never re-derives it
+ * from the refusal text, which is prose meant for a person, not a value to
+ * pattern-match on.
+ */
+export interface SqlQueryDisclosure {
+  query: string;
+  outcome: string;
+}
+
+/** The exact trailing comment `askwell.sql.limit.INJECTED_LIMIT_COMMENT`
+ * attaches to a `LIMIT` clause it added — never one the model wrote. Kept
+ * as one literal here rather than imported, the same way this module
+ * already mirrors `askwell.ask`'s wire shapes without importing Python. */
+const INJECTED_LIMIT_COMMENT = "Added by Askwell";
+
+export interface QuerySegment {
+  text: string;
+  injected: boolean;
+}
+
+/**
+ * Splits a query into plain text and the injected `LIMIT` clause, so the
+ * caller can render the clause distinguishably (`ask.md` §4: "`LIMIT`
+ * visible if injected") without re-parsing SQL client-side. Matches the
+ * clause and its trailing comment together — `LIMIT 1000 /* Added by
+ * Askwell *\/` — rather than only the comment, since the comment alone,
+ * highlighted on its own, would not visually point at what it is marking.
+ * A query with no injected limit (the model's own cap, or none needed)
+ * comes back as a single, unmarked segment.
+ */
+export function segmentInjectedLimit(query: string): QuerySegment[] {
+  const pattern = new RegExp(`\\bLIMIT\\s+\\d+\\s*\\/\\*\\s*${INJECTED_LIMIT_COMMENT}\\s*\\*\\/`, "i");
+  const match = pattern.exec(query);
+  if (match === null) return [{ text: query, injected: false }];
+  const before = query.slice(0, match.index);
+  const after = query.slice(match.index + match[0].length);
+  const segments: QuerySegment[] = [];
+  if (before !== "") segments.push({ text: before, injected: false });
+  segments.push({ text: match[0], injected: true });
+  if (after !== "") segments.push({ text: after, injected: false });
+  return segments;
+}
+
+// A local counter of SQL disclosures expanded (this ticket's own Analytics
+// Events line) — in-memory only, never persisted or transmitted (C1), same
+// shape as `answer-annotations.ts`'s `conflictsPresentedCount`.
+let sqlDisclosuresExpandedCount = 0;
+
+export function recordSqlDisclosureExpanded(): void {
+  sqlDisclosuresExpandedCount += 1;
+}
+
+export function getSqlDisclosuresExpandedCount(): number {
+  return sqlDisclosuresExpandedCount;
+}
+
 /** Where "View full result" (`SqlResultTable`) opens the database source
  * view (`docs/ux/source-viewer.md` §2's database row) — the same
  * query-string-on-one-static-route shape `documentHref` (`lib/citations.ts`)

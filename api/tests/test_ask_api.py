@@ -1692,7 +1692,7 @@ async def test_load_finished_reads_a_completed_turn_back_from_the_database(
     loaded = await ask_module._load_finished(factory, message_id)
     # The conversation id comes back with it: a browser reconnecting to a
     # finished turn has no other way to learn which conversation it is in (#156).
-    assert loaded == ("Ninety days.", "completed", None, None, str(conversation_id), None)
+    assert loaded == ("Ninety days.", "completed", None, None, str(conversation_id), None, None)
 
     missing = await ask_module._load_finished(factory, uuid.uuid4())
     assert missing is None
@@ -1734,6 +1734,80 @@ async def test_load_finished_round_trips_a_stored_sql_result(
     loaded = await ask_module._load_finished(factory, message_id)
     assert loaded is not None
     assert loaded[5] == sql_result
+    # An executed query discloses itself through `sql_result.query` —
+    # `sql_query` (`M4-RESULT-FE-110`) stays `None` rather than duplicating it.
+    assert loaded[6] is None
+
+
+async def test_load_finished_reconstructs_a_rejected_querys_disclosure(
+    database_url: str, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """`M4-RESULT-FE-110`: a rejected/timed-out/dry-run-failed query never
+    gets a `sql_result` (C2's own "never executed" contract), so its
+    disclosure has to survive a reopen some other way — read back here from
+    the same `messages.trace` the live turn already wrote its sql step
+    into, rather than a second stored column."""
+    _truncate(database_url)
+    message_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    trace = {
+        "status": "completed",
+        "steps": [
+            {
+                "kind": "sql",
+                "outcome": "rejected",
+                "reason": "not_a_select",
+                "query": "DELETE FROM invoices",
+            }
+        ],
+    }
+    with psycopg.connect(database_url, autocommit=True) as db:
+        db.execute("INSERT INTO conversations (id) VALUES (%s)", (conversation_id,))
+        db.execute(
+            "INSERT INTO messages (id, conversation_id, role, content, trace) "
+            "VALUES (%s, %s, 'assistant', 'Askwell could not safely run this.', %s)",
+            (message_id, conversation_id, json.dumps(trace)),
+        )
+
+    loaded = await ask_module._load_finished(factory, message_id)
+    assert loaded is not None
+    assert loaded[5] is None
+    assert loaded[6] == {"query": "DELETE FROM invoices", "outcome": "rejected"}
+
+
+# --- `_sql_query_disclosure` / `_sql_query_from_trace` (`M4-RESULT-FE-110`), pure ---
+
+
+def test_sql_query_disclosure_is_none_without_a_query() -> None:
+    """The `ambiguous` outcome — several candidate databases, no one query
+    to show — is the one `_run_sql_turn` branch whose trace step never
+    carries a `query` key at all."""
+    assert ask_module._sql_query_disclosure({"kind": "sql", "outcome": "ambiguous"}) is None
+
+
+def test_sql_query_disclosure_pairs_the_query_with_its_outcome() -> None:
+    assert ask_module._sql_query_disclosure(
+        {"kind": "sql", "outcome": "timeout", "query": "SELECT * FROM orders"}
+    ) == {"query": "SELECT * FROM orders", "outcome": "timeout"}
+
+
+def test_sql_query_from_trace_finds_the_sql_step_among_others() -> None:
+    trace = {
+        "status": "completed",
+        "steps": [
+            {"kind": "retrieve", "label": "Searching your files."},
+            {"kind": "sql", "outcome": "dry_run_failed", "query": "SELECT * FROM orders"},
+        ],
+    }
+    assert ask_module._sql_query_from_trace(trace) == {
+        "query": "SELECT * FROM orders",
+        "outcome": "dry_run_failed",
+    }
+
+
+def test_sql_query_from_trace_is_none_for_a_document_turns_trace() -> None:
+    assert ask_module._sql_query_from_trace({"status": "completed", "steps": []}) is None
+    assert ask_module._sql_query_from_trace(None) is None
 
 
 # --- the client leaving does not stop the answer -------------------------------

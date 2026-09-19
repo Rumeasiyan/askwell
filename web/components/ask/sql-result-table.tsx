@@ -9,8 +9,11 @@ import {
   formatCell,
   isSingleValue,
   paginateSqlRows,
+  recordSqlDisclosureExpanded,
+  segmentInjectedLimit,
   sqlResultHref,
   truncationLabel,
+  type SqlQueryDisclosure,
   type SqlResultData,
 } from "@/lib/sql-result";
 
@@ -25,6 +28,10 @@ import {
  * every one of them — `states-and-edge-cases.md` §4's "disclosure is
  * unconditional" applies as much to a result that came back empty as to one
  * that came back rejected.
+ *
+ * `SqlQueryCard`, below, is this same disclosure's sibling for the branches
+ * that never reach a `sql_result` at all — a rejection, a timeout, a failed
+ * dry run — `M4-RESULT-FE-110`.
  */
 export function SqlResultTable({
   result,
@@ -191,36 +198,132 @@ function ResultTable({ result }: { result: SqlResultData }) {
   );
 }
 
-/** The query, shown unconditionally (`states-and-edge-cases.md` §4: "the
- * query is the citation") — collapsed behind a disclosure rather than always
- * open, since most readers trust the table and only some want to check the
- * SQL itself. */
-function QueryDisclosure({ query }: { query: string }) {
+/**
+ * The query, shown unconditionally (`states-and-edge-cases.md` §4: "the
+ * query is the citation") — collapsed behind a disclosure rather than
+ * always open, since most readers trust the table and only some want to
+ * check the SQL itself. `M4-RESULT-FE-110`: this is the one control both
+ * `SqlResultTable` (an executed query) and `SqlQueryCard` (every other
+ * outcome) render, so the two can never drift on what "expand" shows.
+ *
+ * `recordSqlDisclosureExpanded` fires on the transition into `expanded`
+ * only, never on the way back out — the ticket's own Analytics Events line
+ * ("disclosures expanded"), a count of how often, not how long.
+ *
+ * A very long query scrolls rather than wraps or truncates (the ticket's
+ * own edge case) — `maxHeight` plus `overflow: auto` on a `pre` that keeps
+ * its own line breaks, instead of `white-space: pre-wrap` forcing every
+ * line to re-flow to the container width.
+ */
+export function QueryDisclosure({ query }: { query: string }) {
   const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const segments = segmentInjectedLimit(query);
+
+  const toggle = (): void => {
+    setExpanded((value) => {
+      if (!value) recordSqlDisclosureExpanded();
+      return !value;
+    });
+  };
+
+  const copy = (): void => {
+    void navigator.clipboard.writeText(query).then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      },
+      () => setCopied(false),
+    );
+  };
+
   return (
     <div className="flex flex-col gap-1">
       <button
         type="button"
-        onClick={() => setExpanded((value) => !value)}
+        onClick={toggle}
+        aria-expanded={expanded}
         className="ask-micro w-fit"
         style={{ background: "none", border: "none", cursor: "pointer", padding: 0 }}
       >
         {expanded ? "Hide query" : "Show query"}
       </button>
       {expanded ? (
-        <pre
-          className="ask-micro"
-          style={{
-            textTransform: "none",
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-word",
-            color: "var(--muted)",
-            margin: 0,
-          }}
-        >
-          {query}
-        </pre>
+        <div className="flex flex-col gap-2">
+          <pre
+            className="ask-micro"
+            style={{
+              textTransform: "none",
+              whiteSpace: "pre",
+              overflow: "auto",
+              maxHeight: "16rem",
+              color: "var(--muted)",
+              background: "var(--paper)",
+              border: "1px solid var(--rule)",
+              borderRadius: "var(--radius)",
+              padding: "0.5rem 0.625rem",
+              margin: 0,
+            }}
+          >
+            {segments.map((segment, index) =>
+              segment.injected ? (
+                <mark
+                  key={index}
+                  style={{
+                    background: "var(--provenance)",
+                    color: "var(--paper)",
+                    borderRadius: "2px",
+                  }}
+                >
+                  {segment.text}
+                </mark>
+              ) : (
+                <span key={index}>{segment.text}</span>
+              ),
+            )}
+          </pre>
+          <button
+            type="button"
+            onClick={copy}
+            className="ask-navigates ask-micro w-fit"
+            style={{
+              border: "1px solid var(--rule-strong)",
+              padding: "0.125rem 0.5rem",
+              textTransform: "none",
+            }}
+          >
+            {copied ? "Copied" : "Copy query"}
+          </button>
+        </div>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * The disclosure for a database answer that never reached `sql_result` — a
+ * rejected query, a failed dry run, a timeout, a query-time failure, or the
+ * source vanishing mid-turn (`SqlQueryDisclosure`, `lib/sql-result.ts`,
+ * `M4-RESULT-FE-110`). The refusal or timeout message itself is already the
+ * turn's ordinary answer text, rendered by `AnswerProse` above this — this
+ * card adds only what that prose cannot: the query the check was run
+ * against, which is the whole reason a rejection is legible rather than a
+ * bare "something went wrong". Same card shell and `QueryDisclosure` as
+ * `SqlResultTable`, so a database answer looks like one system whether or
+ * not the query ran.
+ */
+export function SqlQueryCard({ disclosure }: { disclosure: SqlQueryDisclosure }) {
+  return (
+    <div
+      className="ask-card-raised flex flex-col gap-2 p-3"
+      style={{
+        background: "var(--surface)",
+        border: "1px solid var(--rule)",
+        borderLeft: "2px solid var(--provenance)",
+        borderRadius: "var(--radius)",
+      }}
+    >
+      <QueryDisclosure query={disclosure.query} />
     </div>
   );
 }

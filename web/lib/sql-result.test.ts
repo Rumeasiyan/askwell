@@ -9,8 +9,11 @@ import { test } from "node:test";
 import {
   columnAlign,
   formatCell,
+  getSqlDisclosuresExpandedCount,
   isSingleValue,
   paginateSqlRows,
+  recordSqlDisclosureExpanded,
+  segmentInjectedLimit,
   sqlResultHref,
   truncationLabel,
   type SqlResultData,
@@ -108,4 +111,32 @@ test("pagination of an empty result is one empty page, not zero pages", () => {
 test("the source-view link carries the message id and, when given, the turn", () => {
   assert.equal(sqlResultHref("m1"), "/documents/?result=m1");
   assert.equal(sqlResultHref("m1", "t1"), "/documents/?result=m1&turn=t1");
+});
+
+// --- `segmentInjectedLimit` (`M4-RESULT-FE-110`) ----------------------------
+
+test("a query with no injected limit comes back as one unmarked segment", () => {
+  const query = "SELECT id FROM orders WHERE status = 'open'";
+  assert.deepEqual(segmentInjectedLimit(query), [{ text: query, injected: false }]);
+});
+
+test("an injected limit is marked distinctly from the query around it", () => {
+  const query = "SELECT id FROM orders LIMIT 1000 /* Added by Askwell */";
+  assert.deepEqual(segmentInjectedLimit(query), [
+    { text: "SELECT id FROM orders ", injected: false },
+    { text: "LIMIT 1000 /* Added by Askwell */", injected: true },
+  ]);
+});
+
+test("a model-written LIMIT with no Askwell comment is never marked injected", () => {
+  const query = "SELECT id FROM orders LIMIT 10";
+  assert.deepEqual(segmentInjectedLimit(query), [{ text: query, injected: false }]);
+});
+
+// --- the local disclosures-expanded counter (this ticket's own Analytics Events line) ---
+
+test("the disclosures-expanded counter only counts what was actually recorded", () => {
+  const before = getSqlDisclosuresExpandedCount();
+  recordSqlDisclosureExpanded();
+  assert.equal(getSqlDisclosuresExpandedCount(), before + 1);
 });
