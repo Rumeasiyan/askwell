@@ -10,8 +10,10 @@ transcript, a confidence measure, or an unsupported-language / no-speech
 verdict back. `M6-STT-BE-128` adds `/vad`: `api`'s
 `askwell.voice_turn_detection` calls it with a frame-aligned slice of audio
 as it streams in, well before a turn ends, to close a turn on a pause rather
-than waiting for the client's own `end` signal. Synthesis (`M6-TTS-BE-130`)
-has no endpoint yet.
+than waiting for the client's own `end` signal. `M6-TTS-BE-130` adds
+`/synthesize`: `api`'s `askwell.voice_tts` calls it once per completed
+sentence as an answer streams, so speech can start well before the whole
+answer exists.
 
 Runs on `internal` only (`compose.yaml`) — no egress network membership at
 all, unlike `api` and `worker`. It has nothing to reach: every model is a
@@ -27,12 +29,13 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from askwell import __version__
 from askwell.config import Environment, Settings, load_settings
 from askwell.logging import configure_logging, get_logger
 from askwell.voice.models import VoiceModels, load_models
+from askwell.voice.synthesize import synthesize
 from askwell.voice.transcribe import transcribe
 from askwell.voice.vad import score_frames
 
@@ -133,6 +136,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         audio = await request.body()
         probabilities = score_frames(models.vad_session, audio)
         return JSONResponse({"speech_probabilities": probabilities})
+
+    @app.post("/synthesize")
+    async def synthesize_endpoint(request: Request) -> Response:
+        models: VoiceModels = app.state.models
+        if models.kokoro is None:
+            # Same refusal shape as `/transcribe`: an action the caller must
+            # fail rather than receive 200 with nothing usable in it.
+            return JSONResponse(
+                {"reason": models.kokoro_health.reason or "Synthesis model not loaded."},
+                status_code=503,
+            )
+        settings: Settings = app.state.settings
+        payload = await request.json()
+        text_ = str(payload.get("text", "")).strip()
+        if not text_:
+            return JSONResponse({"reason": "No text to synthesize."}, status_code=400)
+        result = synthesize(models.kokoro, text_, settings.voice_kokoro_voice)
+        return Response(
+            content=result.audio,
+            media_type="application/octet-stream",
+            headers={"X-Sample-Rate": str(result.sample_rate)},
+        )
 
     return app
 

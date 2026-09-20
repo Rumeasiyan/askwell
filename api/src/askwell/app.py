@@ -32,7 +32,7 @@ from askwell.setup import register_setup
 from askwell.sources import register_sources
 from askwell.suggestions import register_suggestions
 from askwell.voice_channel import register_voice_channel
-from askwell.voice_stt import build_stt_driver
+from askwell.voice_tts import build_tts_driver
 from askwell.voice_turn_detection import build_vad_turn_detector
 
 log = get_logger(__name__)
@@ -119,7 +119,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_voice_channel(
         app,
         resolved,
-        driver=build_stt_driver(resolved, app.state.sessions),
+        driver=build_tts_driver(resolved, app.state.sessions),
         turn_detector=build_vad_turn_detector(resolved),
     )
 

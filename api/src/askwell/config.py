@@ -134,6 +134,14 @@ class Settings(BaseSettings):
     voice_vad_model_path: Path = Path("/models/silero_vad.onnx")
     voice_kokoro_model_path: Path = Path("/models/kokoro-v1.0.onnx")
     voice_kokoro_voices_path: Path = Path("/models/voices-v1.0.bin")
+
+    # `M6-TTS-BE-130`. `af_heart` is the single voice `hexgrad/Kokoro-82M`'s
+    # own `VOICES.md` grades "A" overall (the top grade in the American
+    # English table) and marks as its favourite (verified against the
+    # registry 2026-09-20) — a sensible default, never hardcoded past this
+    # one configuration point (`AGENTS.md` §4), and out of scope for this
+    # ticket to make user-selectable.
+    voice_kokoro_voice: str = "af_heart"
     voice_host: str = "0.0.0.0"
     voice_port: Port = 8090
 

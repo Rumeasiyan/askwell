@@ -2,10 +2,10 @@
 transcript and text on one connection; backpressure; and a reconnect that
 recovers a completed turn without replaying audio from the start.
 
-No transcription or synthesis exists yet (`M6-STT-BE-127`/`M6-TTS-BE-130`),
-so every test here supplies its own fake `driver` — proving the channel
-itself, exactly what this ticket owns, in place of a real pipeline that does
-not exist yet.
+Real transcription and synthesis exist now (`M6-STT-BE-127`, `M6-TTS-BE-130`
+— `askwell.voice_stt`, `askwell.voice_tts`), but every test here still
+supplies its own fake `driver` — proving the channel itself, exactly what
+this ticket owns, independent of whatever pipeline sits behind it.
 """
 
 import asyncio
