@@ -4,6 +4,27 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.39 - 2026-09-20
+
+`M5-TRACE-FE-122` — threshold adjustment from an abstention trace, with the consequence stated. The last ticket in the `TRACE` epic.
+
+The retrieval threshold becomes a real, runtime-adjustable setting for the first time: `askwell.retrieve.get_retrieval_threshold`/`set_retrieval_threshold` read and write an override in the `settings` table (the same shape `askwell.clarify`'s clarification cap already established), with `Settings.retrieval_score_threshold` staying the shipped default a fresh install starts from. `set_retrieval_threshold` is the only way the value changes, and it always writes an `audit_decisions` record (`retrieval_threshold_changed`) with the old and new value — never automatic, never a side effect of anything else. New `GET`/`POST /settings/retrieval-threshold` (`askwell.retrieve.register_retrieval_threshold`) is the one endpoint pair both surfaces below use.
+
+The abstention trace panel offers `RetrievalThresholdControl` (`web/components/settings/retrieval-threshold.tsx`) only when `lib/retrieval-threshold.ts`'s new `nearMiss()` finds one — an abstention whose `abstain` step says `below_threshold` and whose `retrieve` step actually has a hit, never for `empty_corpus`/`source_indexing`, where loosening the threshold would not have helped. The control states the consequence with the real scores ("The closest passage scored 0.61, just under the 0.65 threshold...") and a number field plus an explicit "Change threshold" button — deliberately not a slider, so a change is a submitted decision rather than a value that drifted while dragging. The same component, same warning copy, is now also reachable from the settings screen's new "Retrieval threshold" section, without the near-miss sentence.
+
+**Verified**: `scripts/dev.sh check` clean (842 passed, 1 skipped — this ticket adds no new `api/tests/` case outside the `requires_db` file below); `scripts/dev.sh test-db` clean (644 passed, 4 new in `api/tests/test_retrieve_records.py`: the threshold defaults to the configured value, a stored override is read back and used by `retrieve()`, changing it writes a decisions record with the old and new value, and a value outside `[0, 1]` is rejected); `scripts/dev.sh web-check` clean (290 tests, 5 new in `web/lib/retrieval-threshold.test.ts` covering `nearMiss()`'s five cases). **Cold-start walkthrough run against the real, rebuilt, running stack**: `GET /settings/retrieval-threshold` returned the default `0.65`; `POST` to `0.5` was read back as `0.5` immediately; `POST` with `1.5` was rejected `422`; `audit_decisions` recorded `{"previous": "0.65", "new": "0.5"}`; `askwell-verify` confirmed the chain intact both with the test record present and after removing it (the tail of the chain, safe to remove without leaving a gap). No browser available in this session — the trace panel's near-miss gating and the settings screen's new section are verified at the unit level (`nearMiss()`'s five cases) and by reading the wiring, not by an interactive click-through; re-verify visually once a real abstention with a near-miss exists in a cold-started browser session.
+
+### Added
+
+- `askwell.retrieve` — `get_retrieval_threshold`, `set_retrieval_threshold`, `InvalidThreshold`, `register_retrieval_threshold` (`GET`/`POST /settings/retrieval-threshold`).
+- `web/lib/retrieval-threshold.ts` — `fetchRetrievalThreshold`, `setRetrievalThreshold`, `nearMiss`, `recordThresholdChanged`/`getThresholdChangesCount`.
+- `web/components/settings/retrieval-threshold.tsx` — `RetrievalThresholdControl`, shared by the trace panel and the settings screen.
+
+### Changed
+
+- `web/components/ask/trace-panel.tsx` — offers `RetrievalThresholdControl` below the step list when `nearMiss()` finds one.
+- `web/app/settings/page.tsx` — new "Retrieval threshold" section.
+
 ## 0.4.38 - 2026-09-20
 
 `M5-TRACE-FE-121` — trace interactions: expand, click through, copy. The last ticket in the `TRACE` chain (`M5-TRACE-FE-119`/`-120`/`-BE-125`).

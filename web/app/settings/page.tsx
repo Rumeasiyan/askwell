@@ -1,16 +1,23 @@
 import { Connections } from "@/components/settings/connections";
 import { Folders } from "@/components/settings/folders";
+import { RetrievalThresholdControl } from "@/components/settings/retrieval-threshold";
 
 /**
- * Settings — two real sections so far.
+ * Settings — three real sections so far.
  *
  * The folders Askwell may read arrive here in M1 because that is where the
  * cold-start walkthrough looks for them: nominate a folder while adding a
  * source, then open settings and see it listed. Connected databases arrives
- * the same way in `M4-CONN-FE-096`. The rest of the screen is still its
- * empty state, because `docs/states-and-edge-cases.md` requires every
- * surface to have one and a route stub with nothing in it teaches the next
- * person that empty states are optional.
+ * the same way in `M4-CONN-FE-096`. The retrieval threshold arrives with
+ * `M5-TRACE-FE-122` — one setting brought forward ahead of the general M7
+ * settings surface, the same way the two before it were, because
+ * `docs/ux/settings.md` §2 requires it reachable here with the same warning
+ * the abstention trace's own near-miss control uses
+ * (`web/components/settings/retrieval-threshold.tsx`, shared by both). The
+ * rest of the screen is still its empty state, because
+ * `docs/states-and-edge-cases.md` requires every surface to have one and a
+ * route stub with nothing in it teaches the next person that empty states
+ * are optional.
  */
 export default function SettingsPage() {
   return (
@@ -35,6 +42,13 @@ export default function SettingsPage() {
 
       <Folders />
       <Connections />
+
+      <section className="flex flex-col gap-3">
+        <h2 style={{ fontSize: "var(--t-title)", lineHeight: "var(--t-title-lh)" }}>
+          Retrieval threshold
+        </h2>
+        <RetrievalThresholdControl />
+      </section>
     </div>
   );
 }

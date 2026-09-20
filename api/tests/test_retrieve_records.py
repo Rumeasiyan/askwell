@@ -457,3 +457,56 @@ async def test_search_with_the_assistant_down_and_no_lexical_match_returns_nothi
 
     assert result.keyword_only is True
     assert result.candidates == []
+
+
+# --- `M5-TRACE-FE-122`: the runtime-adjustable retrieval threshold ----------
+
+
+async def test_the_threshold_defaults_to_the_configured_value(
+    session: AsyncSession, settings: Settings
+) -> None:
+    default = await retrieve_module.get_retrieval_threshold(session, settings)
+    assert default == settings.retrieval_score_threshold
+
+
+async def test_setting_the_threshold_is_read_back_and_used_by_retrieve(
+    session: AsyncSession, settings: Settings
+) -> None:
+    source_id = await _source(session)
+    document_id = await _document(session, source_id)
+    await _chunk(session, document_id, "renewal terms and conditions", _vector(1.0))
+    await _committed(session)
+
+    await retrieve_module.set_retrieval_threshold(session, settings, 0.3)
+
+    assert await retrieve_module.get_retrieval_threshold(session, settings) == 0.3
+    result = await retrieve_module.retrieve(
+        session, _FakeClient(_vector(1.0)), settings, "renewal terms"
+    )
+    assert result.threshold == 0.3
+
+
+async def test_changing_the_threshold_writes_a_decisions_record_with_old_and_new(
+    session: AsyncSession, settings: Settings
+) -> None:
+    await retrieve_module.set_retrieval_threshold(session, settings, 0.5)
+    await retrieve_module.set_retrieval_threshold(session, settings, 0.8)
+
+    rows = (
+        await session.execute(
+            text(
+                "SELECT payload ->> 'previous', payload ->> 'new' FROM audit_decisions "
+                "WHERE kind = 'retrieval_threshold_changed' ORDER BY occurred_at"
+            )
+        )
+    ).all()
+    assert [(str(settings.retrieval_score_threshold), "0.5"), ("0.5", "0.8")] == rows
+
+
+async def test_setting_the_threshold_outside_zero_to_one_is_rejected(
+    session: AsyncSession, settings: Settings
+) -> None:
+    with pytest.raises(retrieve_module.InvalidThreshold):
+        await retrieve_module.set_retrieval_threshold(session, settings, 1.5)
+    with pytest.raises(retrieve_module.InvalidThreshold):
+        await retrieve_module.set_retrieval_threshold(session, settings, -0.1)

@@ -18,9 +18,11 @@ null score for the other, which is a fact about that candidate, not a missing
 value to paper over with a zero.
 
 **The threshold is captured here, applied by the caller.** `RetrievalResult.threshold`
-is `Settings.retrieval_score_threshold` as configured at the moment of this
-call, so a trace written today still reads correctly after the setting
-changes tomorrow. Deciding whether a candidate clears it — the abstention
+is `get_retrieval_threshold()`'s value as of the moment of this call — the
+user's own stored override (`M5-TRACE-FE-122`) if one exists, else
+`Settings.retrieval_score_threshold` — so a trace written today still reads
+correctly after the setting changes tomorrow. Deciding whether a candidate
+clears it — the abstention
 decision itself, `candidate_score()` below and `askwell.ask`'s use of it,
 `M2-ABSTAIN-RET-053` — stays out of this function: `retrieve()` runs the same
 way for every question, and an empty or all-below-threshold candidate list is
@@ -57,15 +59,28 @@ from dataclasses import dataclass, replace
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
 from askwell.inference.client import InferenceClient, InferenceFailed, InferenceUnavailable
 from askwell.logging import get_logger
+from askwell.settings_store import get_setting, set_setting
 
 log = get_logger(__name__)
+
+# `docs/ux/trace.md` §4 / `docs/ux/settings.md` §2: the threshold is
+# adjustable at runtime, per install — a deployment-time `Settings` field
+# cannot be that, since changing it means editing `.env` and restarting. The
+# generic `settings` table (`get_clarification_cap`'s own precedent,
+# `askwell.clarify`) holds the override; `Settings.retrieval_score_threshold`
+# stays the shipped default a fresh install starts from and the floor a
+# corrupted or missing override falls back to.
+RETRIEVAL_THRESHOLD_KEY = "retrieval_score_threshold"
+RETRIEVAL_THRESHOLD_CHANGED = "retrieval_threshold_changed"
 
 # Matches `chunks.content_tsv`'s own generated expression (`c7e2f814a5b3`).
 # Query-side text gets the identical hyphen-to-space substitution before
@@ -79,6 +94,44 @@ TEXT_SEARCH_CONFIG = "english"
 # between both searches — the entire point of fusing two rankings instead of
 # trusting either alone.
 RRF_K = 60
+
+
+async def get_retrieval_threshold(session: AsyncSession, settings: Settings) -> float:
+    """The threshold in force right now: the stored override if a person has
+    ever set one, else the shipped default. Never recomputed from anything
+    else — this is the one place `retrieve()` and the settings/trace routes
+    below both read from, so they cannot disagree."""
+    stored = await get_setting(session, RETRIEVAL_THRESHOLD_KEY)
+    return settings.retrieval_score_threshold if stored is None else float(stored)
+
+
+class InvalidThreshold(ValueError):
+    """Outside `[0, 1]` — the same bound `Settings.retrieval_score_threshold`
+    itself enforces at deploy time, kept here too since a runtime override
+    bypasses that `Field(ge=0, le=1)` validator entirely."""
+
+
+async def set_retrieval_threshold(session: AsyncSession, settings: Settings, value: float) -> float:
+    """The only way the threshold changes. `docs/ux/trace.md` §4 / `M5-TRACE-
+    FE-122`'s own Validation Rule: never automatic, never a side effect —
+    every change, raised or lowered, is a decisions record with the old and
+    new values, the same shape `set_clarification_cap` already established
+    for a per-install preference change. Returns the new effective value.
+    """
+    if not (0.0 <= value <= 1.0):
+        raise InvalidThreshold("retrieval threshold must be between 0 and 1")
+    previous = await get_retrieval_threshold(session, settings)
+    await set_setting(session, RETRIEVAL_THRESHOLD_KEY, str(value))
+    # Strings, not floats: `canonical_payload` refuses a float outright (a
+    # `jsonb` round trip does not preserve one identically, which would make
+    # every later verification report tampering that never happened).
+    await record(
+        session,
+        Store.DECISIONS,
+        RETRIEVAL_THRESHOLD_CHANGED,
+        {"previous": str(previous), "new": str(value)},
+    )
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -395,7 +448,7 @@ async def retrieve(
 
     return RetrievalResult(
         candidates=candidates,
-        threshold=settings.retrieval_score_threshold,
+        threshold=await get_retrieval_threshold(session, settings),
         reranked=reranked,
         rerank_duration_ms=rerank_duration_ms,
         rerank_skipped_reason=rerank_skipped_reason,
@@ -459,6 +512,32 @@ async def search(
     )
 
     return SearchResult(candidates=candidates, keyword_only=keyword_only)
+
+
+class SetThresholdRequest(BaseModel):
+    threshold: float = Field(ge=0.0, le=1.0)
+
+
+def register_retrieval_threshold(
+    app: FastAPI, settings: Settings, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """The one read/write pair for the retrieval threshold — reached from
+    the abstention trace's near-miss control (`docs/ux/trace.md` §4) and
+    from the settings screen (`docs/ux/settings.md` §2), both against this
+    same endpoint so the two surfaces cannot drift apart (`M5-TRACE-FE-122`).
+    """
+
+    @app.get("/settings/retrieval-threshold")
+    async def get_threshold() -> JSONResponse:
+        async with session_scope(factory) as db:
+            value = await get_retrieval_threshold(db, settings)
+        return JSONResponse({"threshold": value})
+
+    @app.post("/settings/retrieval-threshold")
+    async def set_threshold(body: SetThresholdRequest) -> JSONResponse:
+        async with session_scope(factory) as db:
+            value = await set_retrieval_threshold(db, settings, body.threshold)
+        return JSONResponse({"threshold": value})
 
 
 def register_search(
