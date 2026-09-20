@@ -270,6 +270,60 @@
 
 ---
 
+### M5-LOOP-BE-117a — Emit each tool call as it starts and as it finishes
+
+**Type:** Task
+
+**User Story**
+- **Actor:** the streaming endpoint, which has to say what is happening while it is happening.
+- **User Need:** a signal at the moment a tool call begins and at the moment it returns, one per call, not one per loop.
+- **Business Value:** without it the only honest label is "working", and "working" for twenty seconds is indistinguishable from hung — which is the whole thing the step labels exist to prevent.
+- *As the code behind the progress labels, I want to know when each call starts, so that the label can be true rather than reconstructed afterwards.*
+
+**Context / Background**
+**Detailed Description:** `run_tool_loop` (`api/src/askwell/agent/loop.py`) today returns a `LoopResult` only once every iteration is finished, so `ask.py` emits one generic step before the loop and then a burst of one step per `LoopStep` after it — a post-hoc replay with no timing relationship to what actually ran. Add an optional observer to `run_tool_loop` that fires immediately before a tool is dispatched and immediately after it returns, **once per call**, including for calls dispatched concurrently inside the same `asyncio.gather` batch. Wire the two `ask.py` call sites to emit their `step` events from the observer instead of from the pre-loop label and the post-loop burst.
+
+The observer is optional and the loop's behaviour without one is unchanged — an observer that raises must not fail the turn, for the same reason a trace write does not (M5-LOOP-BE-117).
+
+**Scope**
+- An optional per-call start/end observer parameter on `run_tool_loop`.
+- Invocation once per call, inside the concurrent batch rather than around it.
+- Both `ask.py` call sites emitting `step` live from the observer, replacing the pre-loop generic label and the post-loop burst.
+- An observer failure isolated from the loop.
+
+**Out of Scope**
+- The wire shape the frontend reads (`AskStepData` tool / call-id / start-vs-end discriminator) — that belongs to the ticket that renders it.
+- Any rendering (M5-LOOP-FE-118).
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** A turn with N tool calls produces N start events and N end events, each naming its tool and carrying enough to identify which call it belongs to. In a batch of parallel calls the start events all arrive before any of that batch's end events — proving they are observed per call, not per batch. With no observer passed, the loop behaves exactly as before.
+- **Edge Cases:** A call that raises — an end event still fires, marked failed; the loop's existing error handling is unchanged. The ceiling reached mid-batch (M5-LOOP-BE-116) — already-started calls still report their end. An observer that raises — swallowed and logged, the turn completes.
+- **Permissions / Roles:** Single user — no roles. Not applicable.
+- **UI States:** None — no surface in this ticket.
+- **Validation Rules:** An event names the real tool and its real arguments-derived subject, never a placeholder — the label built from it is only as honest as this is.
+- **Audit / Logging Requirements:** None beyond the existing trace; this ticket does not change what M5-LOOP-BE-117 records.
+- **Analytics Events:** Local counters only — nothing transmitted (C1).
+
+**Real-World Example Scenarios**
+- A question that searches files and queries a database at once: both labels appear together within a second of each other, and each clears when its own call returns — instead of both appearing after the slower one finished.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M5-LOOP-BE-115, M5-LOOP-BE-116, M5-LOOP-BE-117.
+- **API / Data Touchpoints:** `api/src/askwell/agent/loop.py` `run_tool_loop`; `api/src/askwell/ask.py` the two loop call sites and `turn.emit("step", ...)`.
+- **Assumptions:** The existing `LoopStep` record stays the source of truth for the trace; this adds a live channel alongside it and does not replace it.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** Cold start, ask a question that needs a file search and a database query, and read the emitted step events in order from the stream. Confirm two starts arrive before either end, and that each names its own tool.
+- **Other scenarios:** A test in `api/tests/test_loop.py` with two deliberately staggered fake tools asserting the interleaving — both starts recorded before the first end. A test passing no observer, asserting the `LoopResult` is unchanged. A test with an observer that raises, asserting the turn still completes.
+- **Known gaps:** Nothing renders these yet — M5-LOOP-FE-118 does.
+
+**Effort & Granularity Check**
+- **Estimate:** 3–4 hours · **Priority:** Critical
+- **Labels / Component:** `phase:5`, backend
+- **Granularity:** One parameter, one invocation point, two call sites wired.
+
+---
+
 ### M5-LOOP-FE-118 — Step labels for multi-step turns
 
 **Type:** Story
@@ -304,7 +358,7 @@
 - The user sees "searching your files", then "querying sales-2024", then "reading 2 documents", and knows exactly where the wait is going.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M5-LOOP-BE-117, M1-ASK-FE-039.
+- **Dependencies:** M5-LOOP-BE-117a, M1-ASK-FE-039.
 - **API / Data Touchpoints:** The streaming endpoint's step events.
 - **Assumptions:** Step events arrive fast enough that labels are not misleadingly behind.
 
@@ -355,7 +409,7 @@
 - A user opens the trace once, understands that retrieval was instant and the model was slow, and stops assuming the product is broken.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M5-LOOP-BE-117, M1-ASK-FE-039.
+- **Dependencies:** M5-LOOP-BE-117a, M1-ASK-FE-039.
 - **API / Data Touchpoints:** `messages.trace`.
 - **Assumptions:** A panel over Ask is right rather than a route, because the user is investigating one answer and must not lose their place.
 
