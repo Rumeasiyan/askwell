@@ -55,6 +55,34 @@ says must stay unchanged. Only document citations get a natural mention: a
 memory-fact or schema-note citation has no filename to build one from, and
 the ticket's own example (`docs/ux/voice.md` §6) is document-shaped. Recorded
 as a decision, not just this comment (`docs/decisions.md`, this date).
+
+**A synthesis failure never fails the turn. `M6-TTS-BE-131`.** `_speak_answer`
+used to let `SynthesisUnavailable`/`SynthesisFailed` propagate out of the poll
+loop, which `askwell.voice_channel._run_driver`'s broad `except Exception`
+then turned into the whole turn failing — the answer was already generating
+correctly and got thrown away over an unrelated model not being loaded. Now
+the first such failure, for a given turn, flips `turn.synthesis_available`
+off (`VoiceTurn.emit_synthesis_unavailable`, `docs/ux/voice.md` §5's "answer
+delivered as text with a note") and no further sentence is sent to
+`/synthesize` for the rest of *this* turn — deliberately no per-sentence
+retry, since a model that isn't loaded won't load between two sentences a
+few hundred milliseconds apart, and "no automatic repair" is the ticket's own
+stated gap. Generation itself is untouched: token and citation events keep
+draining exactly as before, so the on-screen answer completes normally.
+
+Availability is tracked across turns, not just within one, via the
+`availability` mapping `build_tts_driver` closes over and passes into every
+call: a turn's failure sets `availability["synthesis"] = False` once (logged
+as `voice_synthesis_unavailable`), and the next turn whose first synthesis
+call succeeds flips it back (logged as `voice_synthesis_recovered`) — the
+"recovery without a reload" acceptance criterion holds structurally, because
+each turn's first `/synthesize` call is a fresh attempt regardless of the
+turn before it, and these two log lines are what let an operator see the
+transition happen without re-deriving it from a wall of per-sentence noise.
+Both log lines double as the ticket's own "local counter" analytics
+requirement (`AGENTS.md` §3 C1) and its audit requirement that availability
+transitions are logged — grep for the event name, same shape as every other
+local counter in this codebase (`chunk.py`'s `chunk_completed`, and so on).
 """
 
 from __future__ import annotations
@@ -180,6 +208,7 @@ async def _speak_answer(
     question: str,
     tts_client_factory: ClientFactory,
     generate: GenerateFn,
+    availability: dict[str, bool] | None = None,
 ) -> None:
     assert turn.conversation_id is not None  # set by the STT driver before this hook runs
     ask_turn = AskTurn(message_id=uuid.uuid4(), conversation_id=turn.conversation_id)
@@ -189,11 +218,18 @@ async def _speak_answer(
         generate(settings, factory, ask_turn, question, None, None)
     )
 
+    # `None` for callers (mostly tests) that don't care about the transition
+    # log across turns — a plain dict local to this one call, same as it
+    # always was, just no cross-turn recovery to detect.
+    if availability is None:
+        availability = {"synthesis": True}
+
     events_cursor = 0
     sentences_spoken = 0
     filename_by_index: dict[int, str] = {}
     mentioned_filenames: set[str] = set()
     stopped = False
+    synthesis_unavailable_this_turn = False
 
     def _drain_events() -> None:
         nonlocal events_cursor
@@ -212,12 +248,31 @@ async def _speak_answer(
                 turn.emit_fact_citation(event.data)
         events_cursor = len(ask_turn.events)
 
+    async def _speak_sentence(spoken: str) -> None:
+        nonlocal synthesis_unavailable_this_turn
+        if synthesis_unavailable_this_turn:
+            return
+        try:
+            await _synthesize_and_queue(turn, spoken, tts_client_factory)
+        except (SynthesisUnavailable, SynthesisFailed) as error:
+            synthesis_unavailable_this_turn = True
+            turn.emit_synthesis_unavailable(str(error))
+            if availability["synthesis"]:
+                availability["synthesis"] = False
+                log.warning(
+                    "voice_synthesis_unavailable", turn_id=str(turn.turn_id), reason=str(error)
+                )
+            return
+        if not availability["synthesis"]:
+            availability["synthesis"] = True
+            log.info("voice_synthesis_recovered", turn_id=str(turn.turn_id))
+
     async def _speak_new_sentences() -> None:
         nonlocal sentences_spoken
         sentences = segment_sentences(ask_turn.text)
         for sentence in sentences[sentences_spoken:]:
             spoken = _spoken_form(sentence, filename_by_index, mentioned_filenames)
-            await _synthesize_and_queue(turn, spoken, tts_client_factory)
+            await _speak_sentence(spoken)
         sentences_spoken = len(sentences)
 
     try:
@@ -246,7 +301,7 @@ async def _speak_answer(
             tail_start = consumed[-1].end if consumed else 0
             leftover = ask_turn.text[tail_start:].strip()
             if leftover:
-                await _synthesize_and_queue(turn, leftover, tts_client_factory)
+                await _speak_sentence(leftover)
     finally:
         if not gen_task.done():
             gen_task.cancel()
@@ -282,6 +337,12 @@ def build_tts_driver(
     make_tts_client = tts_client_factory if tts_client_factory is not None else _default_tts_client
     run_generation = generate if generate is not None else ask_generate
 
+    # Shared across every turn this driver ever handles, deliberately outside
+    # `on_transcript` — this is what lets a later turn's successful synthesis
+    # log a recovery relative to an earlier turn's failure, rather than each
+    # turn starting with no memory of the one before it.
+    availability: dict[str, bool] = {"synthesis": True}
+
     async def on_transcript(turn: VoiceTurn, transcript: str) -> None:
         await _speak_answer(
             turn,
@@ -290,6 +351,7 @@ def build_tts_driver(
             question=transcript,
             tts_client_factory=make_tts_client,
             generate=run_generation,
+            availability=availability,
         )
 
     return build_stt_driver(settings, factory, stt_client_factory, on_transcript)

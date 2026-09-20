@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from askwell.config import Settings
 from askwell.voice_channel import VoiceTurn
-from askwell.voice_tts import POLL_INTERVAL_SECONDS, SynthesisUnavailable, _speak_answer
+from askwell.voice_tts import POLL_INTERVAL_SECONDS, _speak_answer
 
 pytestmark = pytest.mark.requires_db
 
@@ -316,9 +316,12 @@ async def test_stopping_mid_answer_speaks_no_further_sentence(
     assert turn.status == "completed"
 
 
-async def test_a_synthesis_failure_from_the_voice_service_propagates(
+async def test_synthesis_unavailable_falls_back_to_text_with_a_note_and_the_turn_still_completes(
     settings: Settings, database_url: str, factory: async_sessionmaker[AsyncSession]
 ) -> None:
+    """`M6-TTS-BE-131`: a voice failure never blocks an answer — the answer
+    is delivered as text, with a `voice` event carrying the note, and the
+    turn completes normally rather than failing."""
     _truncate(database_url)
     conversation_id = _conversation(database_url)
     turn = _voice_turn(conversation_id)
@@ -328,15 +331,123 @@ async def test_a_synthesis_failure_from_the_voice_service_propagates(
         ask_turn.emit("token", {"text": ask_turn.text})
         ask_turn.status = "completed"
 
-    with pytest.raises(SynthesisUnavailable):
-        await _speak_answer(
-            turn,
-            settings=settings,
-            factory=factory,
-            question="q",
-            tts_client_factory=_tts_client_factory(status_code=503),
-            generate=fake_generate,
-        )
+    await _speak_answer(
+        turn,
+        settings=settings,
+        factory=factory,
+        question="q",
+        tts_client_factory=_tts_client_factory(status_code=503),
+        generate=fake_generate,
+    )
+
+    assert turn.status == "completed"
+    assert turn.text == "Notice is ninety days."
+    voice_events = [e for e in turn.events if e.kind == "voice"]
+    assert len(voice_events) == 1
+    assert voice_events[0].fields["available"] is False
+    assert turn.synthesis_available is False
+    audio = await _drain_audio(turn)
+    assert audio == []
+
+
+async def test_synthesis_failing_mid_answer_speaks_no_more_but_the_rest_of_the_answer_is_still_text(
+    settings: Settings, database_url: str, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """Edge case: synthesis fails partway through a multi-sentence answer.
+    The already-spoken sentence stays spoken; the rest streams as text with
+    one note, not a repeated one per remaining sentence."""
+    _truncate(database_url)
+    conversation_id = _conversation(database_url)
+    turn = _voice_turn(conversation_id)
+
+    synthesized: list[str] = []
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        sent_text = json.loads(request.content)["text"]
+        if call_count == 1:
+            synthesized.append(sent_text)
+            return httpx.Response(
+                200, content=f"AUDIO[{sent_text}]".encode(), headers={"X-Sample-Rate": "24000"}
+            )
+        return httpx.Response(503, json={"reason": "no kokoro file"})
+
+    def make_client() -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://voice")
+
+    async def fake_generate(_settings, _factory, ask_turn, _question, _source_id, _continue_from):
+        ask_turn.text = "First sentence is here. Second sentence is here. Third is here."
+        ask_turn.emit("token", {"text": ask_turn.text})
+        ask_turn.status = "completed"
+
+    await _speak_answer(
+        turn,
+        settings=settings,
+        factory=factory,
+        question="q",
+        tts_client_factory=make_client,
+        generate=fake_generate,
+    )
+
+    assert turn.status == "completed"
+    assert turn.text == "First sentence is here. Second sentence is here. Third is here."
+    assert synthesized == ["First sentence is here."]
+    voice_events = [e for e in turn.events if e.kind == "voice"]
+    assert len(voice_events) == 1
+
+
+async def test_synthesis_recovers_on_the_next_turn_without_a_reload(
+    settings: Settings, database_url: str, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """`availability` is the mapping `build_tts_driver` shares across every
+    turn a real driver handles — a turn after a failure whose own synthesis
+    succeeds is spoken normally, with no reload or restart in between."""
+    _truncate(database_url)
+    conversation_id = _conversation(database_url)
+    availability: dict[str, bool] = {"synthesis": True}
+
+    failing_turn = _voice_turn(conversation_id)
+
+    async def fake_generate_1(_settings, _factory, ask_turn, _question, _source_id, _continue_from):
+        ask_turn.text = "Notice is ninety days."
+        ask_turn.emit("token", {"text": ask_turn.text})
+        ask_turn.status = "completed"
+
+    await _speak_answer(
+        failing_turn,
+        settings=settings,
+        factory=factory,
+        question="q1",
+        tts_client_factory=_tts_client_factory(status_code=503),
+        generate=fake_generate_1,
+        availability=availability,
+    )
+    assert availability["synthesis"] is False
+
+    recovering_turn = _voice_turn(conversation_id)
+    synthesized: list[str] = []
+
+    async def fake_generate_2(_settings, _factory, ask_turn, _question, _source_id, _continue_from):
+        ask_turn.text = "Renewal is automatic."
+        ask_turn.emit("token", {"text": ask_turn.text})
+        ask_turn.status = "completed"
+
+    await _speak_answer(
+        recovering_turn,
+        settings=settings,
+        factory=factory,
+        question="q2",
+        tts_client_factory=_tts_client_factory(on_request=synthesized.append),
+        generate=fake_generate_2,
+        availability=availability,
+    )
+
+    assert availability["synthesis"] is True
+    assert synthesized == ["Renewal is automatic."]
+    assert recovering_turn.synthesis_available is True
+    assert [e for e in recovering_turn.events if e.kind == "voice"] == []
 
 
 async def test_the_pending_answer_row_is_written_before_generation_starts(
