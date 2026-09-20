@@ -8,6 +8,7 @@ import { type AskTurn, useAsk } from "@/components/ask/ask-state";
 import { useClaimRef, useHoverHandlers, useScrollToClaim } from "@/components/ask/leader";
 import { InlineSourceCards, useRaised } from "@/components/ask/provenance-margin";
 import { SqlQueryCard, SqlResultTable } from "@/components/ask/sql-result-table";
+import { TraceToggle } from "@/components/ask/trace-panel";
 import { EvidenceBlock } from "@/components/clarifications/clarifications-screen";
 import {
   isConflict,
@@ -882,7 +883,7 @@ function CollapsedTurn({ turn }: { turn: AskTurn }) {
               showDate={isConflict(parseAnswerAnnotations(turn.answer))}
             />
           </div>
-          <div>
+          <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={toggle}
@@ -891,6 +892,7 @@ function CollapsedTurn({ turn }: { turn: AskTurn }) {
             >
               Collapse
             </button>
+            <TraceToggle messageId={turn.serverId} running={false} />
           </div>
         </div>
       ) : null}
@@ -1029,6 +1031,12 @@ function LiveTurn({ turn }: { turn: AskTurn }) {
       {turn.status === "completed" ? <FirstAnswerNote turn={turn} /> : null}
 
       {turn.status === "completed" ? <FollowUpSuggestions turn={turn} /> : null}
+
+      {turn.status !== "queued" ? (
+        <div>
+          <TraceToggle messageId={turn.serverId} running={turn.status === "running"} />
+        </div>
+      ) : null}
 
       {isRunning && running?.id === turn.id ? (
         <div>

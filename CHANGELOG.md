@@ -4,6 +4,19 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.36 - 2026-09-20
+
+`M5-TRACE-FE-119` — the trace panel: "How did you get this?" A toggle under any answer (streaming, completed, abstained, stopped or failed) opens a panel over Ask — never a page, so the reader never loses their place in the conversation — showing `GET /ask/{message_id}/trace`'s stored steps as a numbered vertical sequence: a plain-language summary line and a duration per step, raw detail (the step's own JSON, verbatim, per C4) expandable underneath rather than in a separate mode. Timings are always visible, never behind the expander. A step whose only fields are `kind` plus whatever the summary and duration already surfaced gets no expander at all — the stated edge case for "nothing worth expanding." Opened while a turn is still running, the panel polls the same endpoint every second and stops the moment the fetched trace itself is no longer `"running"`; a rotated trace (`docs/architecture.md` §7.1's ring buffer) shows the stated "cleared" copy instead of an empty step list, which would otherwise look identical. A local, untransmitted counter (C1) records opens, matching `lib/ask.ts`'s existing `inlineClarificationsShownCount` shape.
+
+`web/lib/trace.ts`'s `stepSummary` reads the raw, differently-shaped-per-`kind` object `askwell.ask` actually persists (`retrieve`, `abstain`, `memory_retrieve`, `inline_clarification`, `compose`, `schema`, `sql` with its several `outcome` values, and `tool`/loop steps named by their real tool) rather than a friendlier shape invented for this ticket — verified against a real, completed trace read back through the running stack (`GET /ask/{id}/trace`, cookie-authenticated), not just fabricated fixtures. Formatting *within* a step's raw detail (rendering scores against the threshold, a clickable passage, a copyable query) is `M5-TRACE-FE-120`'s own scope and deliberately not attempted here; an unfamiliar step kind falls back to naming itself literally rather than a blank line, so a future step type is never silently dropped from the sequence.
+
+Issue #425 (a tool-loop turn's mid-turn trace poll returns no steps until the loop finishes) is confirmed live now that a real client polls mid-turn, and re-owned rather than fixed — the fix is backend-only (`run_tool_loop`'s existing `ToolCallObserver` appending to `trace_steps` incrementally) and out of this ticket's own scope, which is the panel over whatever the endpoint returns. No browser available in this session, so the panel was not visually screenshotted — the summary/duration/expander logic was verified directly against a real trace payload read from the running stack instead.
+
+### Added
+
+- `web/lib/trace.ts` — `fetchTrace`, `stepSummary`, `formatDuration`, `hasExpandableDetail`, `traceRows`, `recordTraceOpened`/`getTraceOpensCount`.
+- `web/components/ask/trace-panel.tsx` — `TraceToggle`/`TracePanel`, wired under both the live and collapsed-turn answer views in `ask-screen.tsx`.
+
 ## 0.4.35 - 2026-09-20
 
 `M5-TRACE-BE-125` — `GET /ask/{message_id}/trace` serves `messages.trace` to the browser for the first time; nothing did before this, which is why `M5-TRACE-FE-119` (issue #415) was blocked. Returns the stored trace verbatim (C4: never recomputed) — the step sequence plus `trace_rotated`/`steps_truncated`. An unknown `message_id` is a 404; a message that exists with `trace IS NULL` (a turn that failed before `_run_generation` ever wrote one) is a valid empty-step trace instead. A turn still `running` is served from the new `_Turn.trace_steps` — the same list `_run_generation` builds `messages.trace` from, shared by reference so a step is visible the moment it is appended, before the row that will eventually hold it is written at all.
