@@ -33,6 +33,7 @@ from askwell.sources import register_sources
 from askwell.suggestions import register_suggestions
 from askwell.voice_channel import register_voice_channel
 from askwell.voice_stt import build_stt_driver
+from askwell.voice_turn_detection import build_vad_turn_detector
 
 log = get_logger(__name__)
 
@@ -115,7 +116,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_review(app, resolved, app.state.sessions)
     register_memory(app, resolved, app.state.sessions)
     register_setup(app, resolved, app.state.sessions)
-    register_voice_channel(app, resolved, driver=build_stt_driver(resolved, app.state.sessions))
+    register_voice_channel(
+        app,
+        resolved,
+        driver=build_stt_driver(resolved, app.state.sessions),
+        turn_detector=build_vad_turn_detector(resolved),
+    )
 
     @app.get("/health")
     async def health(request: Request) -> JSONResponse:

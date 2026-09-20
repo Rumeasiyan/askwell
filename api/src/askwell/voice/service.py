@@ -1,5 +1,5 @@
 """The voice service: a `/health` surface over the three loaded models, plus
-`/transcribe` since `M6-STT-BE-127`.
+`/transcribe` since `M6-STT-BE-127` and `/vad` since `M6-STT-BE-128`.
 
 `M6-AUDIO-DEPLOY-125` built the health surface: this process loads what it can
 from local files at startup and says, per model, whether it is usable and why
@@ -7,7 +7,11 @@ not. `M6-STT-BE-127` adds the one thing worth doing with a loaded Whisper —
 `api`'s voice WebSocket channel (`askwell.voice_channel`, `askwell.voice_stt`)
 calls `/transcribe` with one complete spoken turn's audio and gets a
 transcript, a confidence measure, or an unsupported-language / no-speech
-verdict back. Synthesis (`M6-TTS-BE-130`) has no endpoint yet.
+verdict back. `M6-STT-BE-128` adds `/vad`: `api`'s
+`askwell.voice_turn_detection` calls it with a frame-aligned slice of audio
+as it streams in, well before a turn ends, to close a turn on a pause rather
+than waiting for the client's own `end` signal. Synthesis (`M6-TTS-BE-130`)
+has no endpoint yet.
 
 Runs on `internal` only (`compose.yaml`) — no egress network membership at
 all, unlike `api` and `worker`. It has nothing to reach: every model is a
@@ -30,6 +34,7 @@ from askwell.config import Environment, Settings, load_settings
 from askwell.logging import configure_logging, get_logger
 from askwell.voice.models import VoiceModels, load_models
 from askwell.voice.transcribe import transcribe
+from askwell.voice.vad import score_frames
 
 log = get_logger(__name__)
 
@@ -114,6 +119,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "language_probability": result.language_probability,
             }
         )
+
+    @app.post("/vad")
+    async def vad_endpoint(request: Request) -> JSONResponse:
+        models: VoiceModels = app.state.models
+        if models.vad_session is None:
+            # Same shape as `/transcribe`'s own refusal: an action a caller
+            # must fail rather than receive 200 with nothing usable in it.
+            return JSONResponse(
+                {"reason": models.vad_health.reason or "VAD model not loaded."},
+                status_code=503,
+            )
+        audio = await request.body()
+        probabilities = score_frames(models.vad_session, audio)
+        return JSONResponse({"speech_probabilities": probabilities})
 
     return app
 

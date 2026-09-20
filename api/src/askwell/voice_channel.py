@@ -20,6 +20,18 @@ this ticket. Turning an answer into speech is still `M6-TTS-BE-130`.
 `register_voice_channel` takes a `driver` override so that ticket, and every
 test here, can supply a different pipeline without changing the transport.
 
+**A turn also closes itself on a pause, since `M6-STT-BE-128`.** Every raw
+audio frame `_receive_loop` reads is fed to a `TurnDetector`
+(`askwell.voice_turn_detection`) alongside the existing `audio_in.put(...)` —
+production wires `build_vad_turn_detector`, which calls the `voice`
+container's `/vad` and tracks accumulated trailing silence since the last
+frame that looked like speech. The moment it reports a pause, the loop closes
+`audio_in` exactly as it would for the client's own `end` message: same
+sentinel, same `audio_in_closed` guard, so a driver downstream cannot tell
+the difference. `register_voice_channel`'s default (`turn_detector=None`)
+never fires, so a turn keeps closing only on `end`/`stop` unless a real
+detector is supplied — same fallback shape as `driver`.
+
 **Reconnection is a delivery problem, not a generation one** (the ticket's own
 Assumption, leaning on `M1-ASK-BE-040`'s "generation continues server-side"):
 a `VoiceTurn` lives independently of any one connection, keyed by `turn_id`,
@@ -64,6 +76,11 @@ from fastapi import FastAPI, WebSocket
 
 from askwell.config import Settings
 from askwell.logging import get_logger
+from askwell.voice_turn_detection import (
+    TurnDetector,
+    TurnDetectorFactory,
+    null_turn_detector_factory,
+)
 
 log = get_logger(__name__)
 
@@ -210,20 +227,32 @@ def _attach(
     return turn
 
 
-async def _receive_loop(websocket: WebSocket, turn: VoiceTurn) -> None:
+async def _receive_loop(websocket: WebSocket, turn: VoiceTurn, detector: TurnDetector) -> None:
     """Forward binary frames into `audio_in` as they arrive — never buffered
     whole, so a long spoken question streams rather than accumulating into
     one blob (`docs/ux/voice.md` §5's "very long answer" edge case, applied
     to input). `await turn.audio_in.put(...)` is the backpressure: it blocks
     before the next frame is read whenever the queue is full, so a consumer
-    that falls behind stalls this loop rather than memory growing."""
+    that falls behind stalls this loop rather than memory growing.
+
+    Every frame is also fed to `detector` (`M6-STT-BE-128`) — once it reports
+    a pause, the loop closes `audio_in` itself, the same as an `end` message
+    from the client. Frames arriving after that are dropped rather than
+    queued: nothing is consuming `audio_in` past its closing `None` sentinel,
+    so still forwarding them would grow the queue unread instead of stalling
+    cleanly the way backpressure otherwise would."""
     while True:
         message = await websocket.receive()
         if message["type"] == "websocket.disconnect":
             return
         raw_bytes = message.get("bytes")
         if raw_bytes is not None:
+            if turn.audio_in_closed:
+                continue
             await turn.audio_in.put(raw_bytes)
+            if await detector.feed(raw_bytes):
+                turn.audio_in_closed = True
+                await turn.audio_in.put(None)
             continue
         raw_text = message.get("text")
         if raw_text is None:
@@ -286,13 +315,21 @@ async def _send_loop(websocket: WebSocket, turn: VoiceTurn, cursor: int) -> None
 
 
 def register_voice_channel(
-    app: FastAPI, settings: Settings, driver: TurnDriver | None = None
+    app: FastAPI,
+    settings: Settings,
+    driver: TurnDriver | None = None,
+    turn_detector: TurnDetectorFactory | None = None,
 ) -> None:
     """Attach the voice channel. `driver` is the injection point for a real
     (or, in tests, fake) transcription/synthesis pipeline; production runs
     with `askwell.voice_stt.build_stt_driver` since `M6-STT-BE-127`, and
-    `_default_driver` only when no driver is given at all."""
+    `_default_driver` only when no driver is given at all. `turn_detector` is
+    the same shape for pause detection since `M6-STT-BE-128`: production runs
+    `askwell.voice_turn_detection.build_vad_turn_detector`, and
+    `null_turn_detector_factory` (never closes a turn on its own) when none
+    is given."""
     turn_driver = driver if driver is not None else _default_driver
+    detector_factory = turn_detector if turn_detector is not None else null_turn_detector_factory
     queue_size = settings.voice_audio_queue_size
 
     @app.websocket("/voice/ws")
@@ -326,9 +363,11 @@ def register_voice_channel(
             )
 
         sender = asyncio.create_task(_send_loop(websocket, turn, len(turn.events)))
+        detector = detector_factory()
         try:
-            await _receive_loop(websocket, turn)
+            await _receive_loop(websocket, turn, detector)
         finally:
+            await detector.aclose()
             sender.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await sender

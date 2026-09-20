@@ -155,6 +155,19 @@ class Settings(BaseSettings):
     # fast audio.
     voice_audio_queue_size: int = Field(default=32, ge=1, le=1024)
 
+    # How long a pause has to run, after speech was heard, before
+    # `askwell.voice_turn_detection` closes the turn on its own
+    # (`M6-STT-BE-128`). Generous on purpose: the ticket's own edge case is a
+    # thinking pause mid-question, and cutting that off is worse than a turn
+    # staying open an extra beat after the user is actually done. 700ms sits
+    # above a typical in-sentence breath (150-300ms) and below the pause most
+    # people leave while composing a follow-on clause — a reasoned starting
+    # point, not a measured one: no recorded-speech fixtures exist in this
+    # environment to tune it against, so it should be revisited with real
+    # audio once `M6-VUI-FE-132` makes hands-free reachable end to end
+    # (`docs/decisions.md`, this date).
+    voice_vad_pause_ms: int = Field(default=700, ge=100, le=5000)
+
     # A separate Postgres instance, not a second database in the first one:
     # C3's whole guarantee is that a hostile dump destroys only its own
     # database, which a shared instance cannot promise regardless of how its
