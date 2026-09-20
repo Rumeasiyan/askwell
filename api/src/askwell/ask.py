@@ -535,6 +535,54 @@ def _label_for_sources(document_count: int) -> str:
     return f"Reading {document_count} sources."
 
 
+# `M5-LOOP-FE-118`: one line per tool naming the real operation, never the
+# raw tool name `M5-LOOP-BE-117a` shipped as a placeholder (`Called
+# document_search.`) until this ticket's frontend could tell a `start` from
+# an `end`. Source-scoped wording (`querying sales-2024`) is deferred —
+# `ToolCallEvent.arguments` carries only a `source_id` UUID, and resolving it
+# to a name needs a database read this observer, called synchronously from
+# inside `run_tool_loop`, cannot make without either an async signature
+# change to `ToolCallObserver` (`M5-LOOP-BE-117a`'s own explicit scope
+# boundary) or a second query per call — filed as issue #422 rather than
+# guessed at here.
+_TOOL_STEP_LABELS: dict[str, tuple[str, str]] = {
+    "document_search": ("Searching your files.", "Searched your files."),
+    "database_query": ("Querying your database.", "Queried your database."),
+    "schema_lookup": ("Looking up your database schema.", "Looked up your database schema."),
+    "document_listing": ("Listing your documents.", "Listed your documents."),
+    "current_date": ("Checking today's date.", "Checked today's date."),
+}
+
+
+def _tool_call_step(event: ToolCallEvent) -> dict[str, Any]:
+    """One `step` payload for a live per-call event. `call_id` and `phase`
+    travel on every event so `web/lib/ask.ts::applyAskEvent` can update a
+    call's own entry in place rather than appending a second line for the
+    same call — which is also what lets two calls dispatched in the same
+    batch render as two concurrent entries instead of a queue, since each
+    keeps its own `call_id`.
+    """
+    starting, finished = _TOOL_STEP_LABELS.get(
+        event.tool, (f"Calling {event.tool}.", f"Called {event.tool}.")
+    )
+    if event.phase == "start":
+        label = starting
+    elif event.outcome == "ok":
+        label = finished
+    else:
+        # Edge case named in the ticket itself: a failed call names the
+        # change of approach rather than freezing on the attempt that just
+        # failed.
+        label = f"{starting} That didn't work — trying another way."
+    return {
+        "label": label,
+        "kind": "tool",
+        "tool": event.tool,
+        "call_id": event.call_id,
+        "phase": event.phase,
+    }
+
+
 class _AbstainContext(NamedTuple):
     """Why this turn abstained, plus what `askwell.agent.abstain.compose_abstention`
     needs to prove the search happened: real counts, not the top-K
@@ -1403,18 +1451,13 @@ async def _run_generation(
     # uncited in `citations`, same as `_run_sql_turn`'s canned text already
     # is for the SQL epic.
     def _emit_tool_call_step(event: ToolCallEvent) -> None:
-        # `M5-LOOP-BE-117a`: live per-call events replace the post-loop
-        # burst — a `"Called {tool}."` step now lands the moment that call
-        # actually returns, not all at once after every call in the turn
-        # has. `"start"` is deliberately not surfaced here too (issue
-        # #420): the frontend has no phase discriminator yet to collapse a
-        # start/end pair into one label — that lands with `M5-LOOP-FE-118`
-        # — so emitting both today would double every visible label. The
-        # pre-loop label above still covers "something is happening" until
-        # the first call actually finishes.
-        if event.phase != "end":
-            return
-        turn.emit("step", {"label": f"Called {event.tool}.", "kind": "tool", "tool": event.tool})
+        # `M5-LOOP-BE-117a` shipped `"end"`-only, generic `Called {tool}.`
+        # labels — issue #420's deliberate stopgap until the frontend could
+        # tell a `start` from an `end` on the same call. `M5-LOOP-FE-118`
+        # is that ticket: `web/lib/ask.ts::applyAskEvent` now keys on
+        # `call_id`, so both phases are forwarded, each named for its real
+        # operation by `_tool_call_step`.
+        turn.emit("step", _tool_call_step(event))
 
     loop_answer: LoopResult | None = None
     if resume_state is not None:

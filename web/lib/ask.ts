@@ -23,6 +23,14 @@ export interface AskStepData {
   message_id: string;
   label: string;
   kind: string;
+  /** `M5-LOOP-FE-118`: present only for a live tool-call step
+   * (`askwell.ask._tool_call_step`) — the same key across a call's
+   * `start` and `end` so `applyAskEvent` can update one entry in place
+   * instead of appending a second line for the same call. A generic step
+   * (retrieval, SQL) carries neither field and is always appended, same
+   * as before this ticket. */
+  call_id?: string;
+  phase?: "start" | "end";
 }
 
 export interface AskTokenData {
@@ -433,11 +441,23 @@ export function applyAskEvent<T extends AskTurnState>(
   event: AskEvent,
 ): Partial<AskTurnState> {
   switch (event.event) {
-    case "step":
+    case "step": {
+      const { label, kind, call_id: callId } = event.data;
+      // `M5-LOOP-FE-118`: a tool call's `start` and its later `end` share
+      // a `call_id` and update the same entry in place — two calls
+      // dispatched together keep two separate entries the whole time,
+      // which is what renders them as concurrent rather than a queue. A
+      // generic step (no `call_id`) always appends, same as before.
+      const nextStep = callId === undefined ? { label, kind } : { label, kind, callId };
+      const steps =
+        callId !== undefined && turn.steps.some((step) => step.callId === callId)
+          ? turn.steps.map((step) => (step.callId === callId ? nextStep : step))
+          : [...turn.steps, nextStep];
       return {
         serverId: turn.serverId ?? event.data.message_id,
-        steps: [...turn.steps, { label: event.data.label, kind: event.data.kind }],
+        steps,
       };
+    }
     case "token":
       return { answer: turn.answer + event.data.text };
     default:
@@ -448,7 +468,7 @@ export function applyAskEvent<T extends AskTurnState>(
 /** The part of a turn `applyAskEvent` reads and writes. */
 export interface AskTurnState {
   serverId: string | null;
-  steps: { label: string; kind: string }[];
+  steps: { label: string; kind: string; callId?: string }[];
   answer: string;
 }
 

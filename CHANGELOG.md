@@ -4,6 +4,22 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.34 - 2026-09-20
+
+`M5-LOOP-FE-118` — a live tool call's `step` events now carry `call_id` and `phase`, and `askwell.ask._emit_tool_call_step` forwards both `"start"` and `"end"` instead of only `"end"` (the `M5-LOOP-BE-117a` stopgap issue #420 named, closed here). `_tool_call_step` names each phase for its real operation — "Searching your files." / "Searched your files.", "Querying your database." / "Queried your database.", and so on per tool — rather than the raw `"Called {tool}."` placeholder, and a failed call's `"end"` says so ("That didn't work — trying another way.") instead of freezing on the label its `"start"` used. `web/lib/ask.ts::applyAskEvent` keys a step on `call_id` when present: an `"end"` updates its own `"start"`'s entry in place rather than appending a second line for the same call, and two calls dispatched in the same batch keep separate entries the whole time — which is what renders them concurrently rather than as a queue, since both are visible at once. A generic step with no `call_id` (retrieval, SQL) is unaffected and still always appends.
+
+Source-scoped wording (the backlog ticket's own `"querying sales-2024"` example) is deferred to issue #422 — `ToolCallEvent.arguments` carries only a `source_id` UUID, and resolving it to a name needs a database read the observer's synchronous signature cannot make without a scope change `M5-LOOP-BE-117a` deliberately left out.
+
+### Added
+
+- `AskStepData.call_id` / `.phase` (`web/lib/ask.ts`), `AskTurnState.steps[].callId`.
+- `askwell.ask._tool_call_step`, tested directly in `api/tests/test_ask_tool_step_labels.py`.
+
+### Changed
+
+- `askwell.ask._emit_tool_call_step` forwards both tool-call phases instead of only `"end"`.
+- `applyAskEvent`'s `"step"` case updates a step in place when `call_id` matches an existing entry, instead of always appending.
+
 ## 0.4.33 - 2026-09-20
 
 `M5-LOOP-BE-117a` — `run_tool_loop` (`api/src/askwell/agent/loop.py`) takes an optional `on_tool_call` observer that fires once per call actually dispatched: a `"start"` event immediately before it runs, an `"end"` event immediately after, including inside a concurrent `asyncio.gather` batch, where every `"start"` in the batch fires before any of that batch's `"end"`s — proven in `api/tests/test_loop.py` with two staggered fake tools that finish in the opposite order they were dispatched. A deduplicated call, never actually run, fires no event; a failed call still fires its `"end"`, marked with the real outcome. An observer that raises is swallowed and logged (`_notify`), same posture as `askwell.traces.TraceRing.write` — a caller's own bug in a callback watching the turn is not a reason to fail it. With no observer given, `run_tool_loop`'s behaviour is unchanged.
