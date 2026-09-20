@@ -11,11 +11,15 @@ question — a `messages` row plus an `audit_interactions` record, in the same
 transaction, so a transcript that could not be recorded is not left standing
 without one (`AGENTS.md` §3 C6).
 
-**Answering the question is not this ticket.** Wiring a transcript into
-`askwell.ask`'s own generation is `M6-TTS-BE-130`'s dependency on
-`M1-ASK-API-038`, not this one's — this driver ends the turn the moment a
-transcript (or its absence) is settled, deliberately not stubbing the answer
-that does not exist yet.
+**Answering the question is `M6-TTS-BE-130`'s job, not this one's.**
+`build_stt_driver` takes an optional `on_transcript` hook: given a `status ==
+"ok"` transcript, once it is stored, control passes to that hook instead of
+this module ending the turn itself. `askwell.voice_tts.build_tts_driver` is
+the production hook — it wires the transcript into `askwell.ask`'s own
+generation and speaks the answer sentence by sentence. `on_transcript` is
+`None` for every other caller (this module's own tests, and any caller that
+has not wired one up), and the turn ends here exactly as it always did,
+deliberately not stubbing an answer that does not exist for it.
 
 Three outcomes, and only two of them touch the database at all:
 
@@ -36,7 +40,7 @@ Three outcomes, and only two of them touch the database at all:
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -152,14 +156,21 @@ def _language_probability_pct(probability: float | None) -> int | None:
     return round(min(max(probability, 0.0), 1.0) * 100)
 
 
+OnTranscript = Callable[[VoiceTurn, str], Awaitable[None]]
+
+
 def build_stt_driver(
     settings: Settings,
     factory: async_sessionmaker[AsyncSession],
     client_factory: ClientFactory | None = None,
+    on_transcript: OnTranscript | None = None,
 ) -> Callable[[VoiceTurn], Any]:
     """Build the production `TurnDriver`. `client_factory` is the injection
     point tests use to fake the `voice` container's `/transcribe` without a
-    real HTTP call."""
+    real HTTP call. `on_transcript` is the injection point
+    `askwell.voice_tts` uses to continue a successfully transcribed turn into
+    generation and speech instead of ending it here — see the module
+    docstring."""
 
     def _default_client() -> httpx.AsyncClient:
         return httpx.AsyncClient(
@@ -246,6 +257,11 @@ def build_stt_driver(
             turn.status = "failed"
             await turn.audio_out.put(None)
             return
+
+        if on_transcript is not None:
+            await on_transcript(turn, transcript)
+            return
+
         turn.status = "completed"
         await turn.audio_out.put(None)
 

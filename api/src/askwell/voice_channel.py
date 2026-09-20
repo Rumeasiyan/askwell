@@ -16,7 +16,8 @@ container's `/transcribe`, and emits `transcript`/`confidence`/`language`
 events. `_default_driver` remains only as `register_voice_channel`'s fallback
 when no driver is given (tests, and any caller that has not wired one up) —
 it drains audio and ends the turn without producing anything, same as before
-this ticket. Turning an answer into speech is still `M6-TTS-BE-130`.
+this ticket. Turning an answer into speech is `M6-TTS-BE-130`
+(`askwell.voice_tts.build_tts_driver`), production since that ticket.
 `register_voice_channel` takes a `driver` override so that ticket, and every
 test here, can supply a different pipeline without changing the transport.
 
@@ -107,16 +108,32 @@ class _Event:
     `fields` rather than a fixed `text` column: `transcript`/`text` carry a
     `text` delta, `confidence`/`language` (`M6-STT-BE-127`) carry a differently
     shaped payload, and a generic mapping is what lets `_flush_events` send
-    either without knowing the difference."""
+    either without knowing the difference. `citation`/`fact_citation`
+    (`M6-TTS-BE-130`) carry the same source metadata `askwell.ask`'s own
+    events of that name do — forwarded verbatim by
+    `askwell.voice_tts.build_tts_driver` so the screen can render source
+    cards in voice mode exactly as it does in text mode: citations are
+    satisfied by the screen, never spoken aloud."""
 
-    kind: Literal["transcript", "text", "confidence", "language"]
+    kind: Literal["transcript", "text", "confidence", "language", "citation", "fact_citation"]
     fields: dict[str, Any]
 
 
 @dataclass(slots=True)
 class VoiceTurn:
     """One spoken question's audio and generation, independent of any one
-    WebSocket connection — the audio analogue of `askwell.ask._Turn`."""
+    WebSocket connection — the audio analogue of `askwell.ask._Turn`.
+
+    `audio_in` is 16 kHz mono PCM16 little-endian, fixed by
+    `askwell.voice.transcribe`'s own docstring. `audio_out` (`M6-TTS-BE-130`)
+    is PCM16 mono little-endian too, at whatever rate Kokoro itself produced
+    — 24 kHz for the bundled model — chosen for the identical reason: no
+    resampling dependency either side has any other reason to carry. One
+    queued chunk is one synthesized sentence, sent as one binary WebSocket
+    frame; nothing on the wire states the rate, so a client assumes 24 kHz
+    unless a future model changes it, at which point this comment is wrong
+    and should be fixed alongside the model.
+    """
 
     turn_id: uuid.UUID
     audio_in: asyncio.Queue[bytes | None]
@@ -156,6 +173,12 @@ class VoiceTurn:
         self.language_supported = False
         self.detected_language = language
         self.events.append(_Event("language", {"language": language, "supported": False}))
+
+    def emit_citation(self, fields: dict[str, Any]) -> None:
+        self.events.append(_Event("citation", fields))
+
+    def emit_fact_citation(self, fields: dict[str, Any]) -> None:
+        self.events.append(_Event("fact_citation", fields))
 
 
 TurnDriver = Callable[[VoiceTurn], Awaitable[None]]

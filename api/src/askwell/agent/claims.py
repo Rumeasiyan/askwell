@@ -67,6 +67,39 @@ def segment_claims(text: str) -> list[Claim]:
     return claims
 
 
+@dataclass(frozen=True, slots=True)
+class Sentence:
+    """One complete sentence from a streamed answer, marked or not — the
+    superset `segment_claims` draws its cited subset from. `askwell.voice_tts`
+    (`M6-TTS-BE-130`) needs every sentence, not just claims: a transition or
+    lead-in ("Here is what I found:") carries no marker and is still spoken.
+    """
+
+    ordinal: int  # 1-based, counts every sentence
+    text: str  # markers and terminating punctuation stripped
+    indices: tuple[int, ...]  # this sentence's own citation markers, if any
+    end: int  # offset into the source text where this sentence's match ends
+
+
+def segment_sentences(text: str) -> list[Sentence]:
+    """Every complete sentence in `text`, in order, whether or not it carries
+    a citation marker — see `Sentence`. Pure and re-run against the whole
+    growing prefix, same convention as `segment_claims`."""
+    sentences: list[Sentence] = []
+    ordinal = 0
+    for match in _CLAIM_RE.finditer(text):
+        body = match.group("body").strip()
+        if not body:
+            continue
+        markers = match.group("markers")
+        indices = (
+            tuple(dict.fromkeys(int(i) for i in _MARKER_RE.findall(markers))) if markers else ()
+        )
+        ordinal += 1
+        sentences.append(Sentence(ordinal=ordinal, text=body, indices=indices, end=match.end()))
+    return sentences
+
+
 def locate_quoted_span(claim_text: str, chunk_content: str) -> str | None:
     """The exact substring of `chunk_content` the claim's own words came
     from, if it is there verbatim (case-insensitive). `None` — never a
