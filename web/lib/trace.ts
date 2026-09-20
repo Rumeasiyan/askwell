@@ -32,6 +32,12 @@ export interface TraceStep {
 export interface TraceBackend {
   mode: string;
   model: string;
+  /** What was sent to the online backend, plain text (`docs/ux/trace.md`
+   * §5's "Online backend" state: "Marked, with what was sent"). Unreachable
+   * before M8 — nothing writes `mode: "online"` yet — this field exists so
+   * the panel is ready for it rather than needing a second change once M8
+   * lands. */
+  sent?: string;
 }
 
 /** One call `run_tool_loop` (`M5-LOOP-BE-116`) was about to make when the
@@ -47,11 +53,18 @@ export interface TraceData {
   steps_truncated: boolean;
   trace_rotated: boolean;
   status?: string;
+  reason?: string | null;
   backend?: TraceBackend;
   loop_stopped_reason?: string | null;
   loop_pending_calls?: PendingToolCall[];
   injection_flagged?: boolean;
   injection_patterns?: string[];
+  /** `_run_generation`'s own `partial_coverage`/`uncovered_aspects` —
+   * duplicated onto the trace itself (`docs/ux/trace.md` §5's "Partial"
+   * state) alongside the `compose` step that already carries them, so the
+   * panel can tell partial apart from normal without reading into `steps`. */
+  partial_coverage?: boolean;
+  uncovered_aspects?: string[];
   [key: string]: unknown;
 }
 
@@ -299,6 +312,36 @@ export function sqlStepInfo(step: TraceStep): SqlStepInfo | null {
     };
   }
   return null;
+}
+
+/** The failed-mid-answer state (`docs/ux/trace.md` §5) — `_run_generation`
+ * writes `status: "failed"` plus a human `reason` onto the trace exactly
+ * once generation raises, after whatever steps had already run. `false` for
+ * `running`/`completed`/`stopped`, never guessed from an empty step list. */
+export function isFailedTrace(trace: TraceData): boolean {
+  return trace.status === "failed";
+}
+
+export function failureReason(trace: TraceData): string | null {
+  return typeof trace.reason === "string" ? trace.reason : null;
+}
+
+/** The partial state (`docs/ux/trace.md` §5: "which claims were grounded
+ * and which were not") — `trace.partial_coverage`, the same flag
+ * `M2-PARTIAL-BE-057` already writes for the answer body's own
+ * `UncoveredBlock`, read here rather than re-parsed from `turn.answer`. */
+export function isPartialTrace(trace: TraceData): boolean {
+  return trace.partial_coverage === true;
+}
+
+export function partialUncoveredAspects(trace: TraceData): string[] {
+  return Array.isArray(trace.uncovered_aspects) ? (trace.uncovered_aspects as string[]) : [];
+}
+
+/** The online-backend state (`docs/ux/trace.md` §5) — unreachable before
+ * M8, since nothing yet writes `backend.mode` as anything but `"local"`. */
+export function isOnlineBackend(trace: TraceData): boolean {
+  return trace.backend?.mode === "online";
 }
 
 /** A tool call's own injection flag (`M5-TOOLS-BE-114`'s `ToolStep`) —

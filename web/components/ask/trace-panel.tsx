@@ -23,9 +23,14 @@ import { fetchFactDetail, type FactDetail } from "@/lib/memory-chips";
 import { nearMiss as findNearMiss } from "@/lib/retrieval-threshold";
 import {
   buildTraceCopyText,
+  failureReason,
   fetchTrace,
   hitCitation,
+  isFailedTrace,
+  isOnlineBackend,
+  isPartialTrace,
   memoryFactRefs,
+  partialUncoveredAspects,
   recordTraceCopy,
   recordTraceOpened,
   retrievalThreshold,
@@ -267,6 +272,8 @@ function TraceBody({
   const rows = traceRows(trace.steps);
   const pendingCalls = toolCeilingPendingCalls(trace);
   const nearMiss = findNearMiss(trace);
+  const failed = isFailedTrace(trace);
+  const partial = isPartialTrace(trace);
 
   return (
     <div className="flex flex-col gap-3">
@@ -283,6 +290,17 @@ function TraceBody({
           ) : null}
         </ol>
       )}
+      {/* Failed mid-answer (`docs/ux/trace.md` §5): the steps recorded
+          before generation raised, then the error — never in place of the
+          steps, since what happened before the failure is exactly what a
+          reader debugging it needs. */}
+      {failed ? <FailedNote reason={failureReason(trace)} /> : null}
+      {/* Partial (`docs/ux/trace.md` §5): which claims were grounded and
+          which were not, read from the same `partial_coverage`/
+          `uncovered_aspects` the answer body's own `UncoveredBlock`
+          (`ask-screen.tsx`) already renders — restated here so the trace
+          reads as complete without sending someone back to the answer. */}
+      {partial ? <PartialNote uncoveredAspects={partialUncoveredAspects(trace)} /> : null}
       {pendingCalls !== null ? <ToolCeilingNote pendingCalls={pendingCalls} /> : null}
       {/* `M5-TRACE-FE-122`: offered only from an abstention trace showing a
           near-miss — `findNearMiss` is `null` for every other case,
@@ -300,13 +318,72 @@ function TraceBody({
 
 /** Backend and model, named once per turn (`docs/ux/trace.md` §3's own
  * "Backend" row) — never per step, since one turn has exactly one. Absent
- * rather than a placeholder when the stored trace predates this field. */
+ * rather than a placeholder when the stored trace predates this field.
+ *
+ * The online-backend state (`docs/ux/trace.md` §5) is this same line once
+ * `backend.mode` reads `"online"` — unreachable before M8, since nothing
+ * yet writes that mode, but the "what was sent" disclosure is built now so
+ * landing the backend field is the only change M8 needs. */
 function BackendLine({ trace }: { trace: TraceData }) {
   if (trace.backend === undefined) return null;
   return (
-    <p className="ask-micro" style={{ textTransform: "none" }}>
-      {trace.backend.mode} · {trace.backend.model}
-    </p>
+    <div className="flex flex-col gap-1">
+      <p className="ask-micro" style={{ textTransform: "none" }}>
+        {trace.backend.mode} · {trace.backend.model}
+      </p>
+      {isOnlineBackend(trace) && trace.backend.sent !== undefined ? (
+        <details>
+          <summary className="ask-micro" style={{ cursor: "pointer" }}>
+            show what was sent
+          </summary>
+          <pre
+            className="ask-micro"
+            style={{ textTransform: "none", whiteSpace: "pre-wrap", wordBreak: "break-word", marginTop: "0.25rem" }}
+          >
+            {trace.backend.sent}
+          </pre>
+        </details>
+      ) : null}
+    </div>
+  );
+}
+
+/** Failed mid-answer (`docs/ux/trace.md` §5) — `--alarm`, `design-
+ * system.md`'s own token for "Failures only", not `--muted`: unlike
+ * abstention (which is correct behaviour and deliberately never `--alarm`,
+ * `design-system.md` §3), a genuine mid-answer failure is exactly what that
+ * token exists for. Tracker issue 436 notes that `ask-screen.tsx`'s own
+ * failed-turn line renders in `--muted` instead — inconsistent with the
+ * token table, out of this ticket's scope to fix. */
+function FailedNote({ reason }: { reason: string | null }) {
+  if (reason === null) return null;
+  return (
+    <div className="flex flex-col gap-1" style={{ borderTop: "1px solid var(--rule)", paddingTop: "0.5rem" }}>
+      <p className="ask-prose" style={{ margin: 0, color: "var(--alarm)" }}>
+        {reason}
+      </p>
+    </div>
+  );
+}
+
+/** Partial (`docs/ux/trace.md` §5: "which claims were grounded and which
+ * were not") — the same "Not covered by your files" copy and `--rule-
+ * strong` left border `ask-screen.tsx`'s `UncoveredBlock` already uses for
+ * the answer body, so the trace's own partial marker reads as the same
+ * fact stated twice, not two different claims about the same turn. */
+function PartialNote({ uncoveredAspects }: { uncoveredAspects: string[] }) {
+  return (
+    <div
+      className="flex flex-col gap-1 py-1"
+      style={{ borderLeft: "2px solid var(--rule-strong)", paddingLeft: "0.75rem" }}
+    >
+      <p className="ask-micro">Not covered by your files</p>
+      {uncoveredAspects.map((aspect, index) => (
+        <p key={index} className="ask-prose" style={{ color: "var(--muted)" }}>
+          {aspect}
+        </p>
+      ))}
+    </div>
   );
 }
 

@@ -4,6 +4,19 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.5.0 - 2026-09-20
+
+**M5 — it handles harder questions — is complete, 14 of 14.** `M5-TRACE-FE-123` — the trace panel's remaining states: normal, abstention, partial, tool ceiling, failed mid-answer, online backend, and trace unavailable after rotation — was the last ticket in the `TRACE` epic and in the milestone. A question needing both a document lookup and a database query now answers correctly in one turn, with a readable trace of how it happened, in every state that turn can land in.
+
+`web/lib/trace.ts` gains `isFailedTrace`/`failureReason` (`trace.status === "failed"` plus the stored `reason`, already written by `_run_generation` but previously unread on the FE), `isPartialTrace`/`partialUncoveredAspects` (the same `partial_coverage`/`uncovered_aspects` fields `M2-PARTIAL-BE-057` writes onto the trace itself, alongside the `compose` step that already carried them), and `isOnlineBackend` plus an optional `TraceBackend.sent` field — unreachable before M8, since nothing writes `backend.mode: "online"` yet, but the panel is ready for it. `trace-panel.tsx`'s `TraceBody` renders a failed trace's steps followed by the error (`--alarm`, per `design-system.md`'s own token table — not `--muted`, which `ask-screen.tsx` uses inconsistently; filed as issue #436, out of this ticket's scope), and a partial trace's uncovered aspects in the same "Not covered by your files" block the answer body's own `UncoveredBlock` already uses. The trace-unavailable state (`trace_rotated`) was already built by `M5-TRACE-FE-119`; this ticket adds a test asserting the edge case that citations cannot rotate with it, since `hitCitation`'s signature never takes a `TraceData` at all — a rotated trace has nothing to lose a citation from.
+
+**Verified**: `scripts/dev.sh check` clean (842 passed, 1 skipped, no backend change); `scripts/dev.sh web-check` clean (299 tests, 13 new in `web/lib/trace.test.ts` covering all seven states plus the citation/rotation invariant). No browser available in this session — the new failed/partial/online-backend branches are verified at the unit level and by reading the render wiring, not by an interactive click-through; the online-backend state remains unreachable until M8 regardless.
+
+### Added
+
+- `web/lib/trace.ts` — `isFailedTrace`, `failureReason`, `isPartialTrace`, `partialUncoveredAspects`, `isOnlineBackend`, `TraceBackend.sent`.
+- `web/components/ask/trace-panel.tsx` — `FailedNote`, `PartialNote`; `BackendLine` gains a "what was sent" disclosure for the online backend.
+
 ## 0.4.39 - 2026-09-20
 
 `M5-TRACE-FE-122` — threshold adjustment from an abstention trace, with the consequence stated. The last ticket in the `TRACE` epic.
