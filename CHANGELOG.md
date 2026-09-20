@@ -4,7 +4,14 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
-## 0.4.34 - 2026-09-20
+## 0.4.35 - 2026-09-20
+
+`M5-TRACE-BE-125` — `GET /ask/{message_id}/trace` serves `messages.trace` to the browser for the first time; nothing did before this, which is why `M5-TRACE-FE-119` (issue #415) was blocked. Returns the stored trace verbatim (C4: never recomputed) — the step sequence plus `trace_rotated`/`steps_truncated`. An unknown `message_id` is a 404; a message that exists with `trace IS NULL` (a turn that failed before `_run_generation` ever wrote one) is a valid empty-step trace instead. A turn still `running` is served from the new `_Turn.trace_steps` — the same list `_run_generation` builds `messages.trace` from, shared by reference so a step is visible the moment it is appended, before the row that will eventually hold it is written at all.
+
+### Added
+
+- `GET /ask/{message_id}/trace` (`api/src/askwell/ask.py`).
+- `_Turn.trace_steps` — a running turn's steps, readable before the final database write.
 
 `M5-LOOP-FE-118` — a live tool call's `step` events now carry `call_id` and `phase`, and `askwell.ask._emit_tool_call_step` forwards both `"start"` and `"end"` instead of only `"end"` (the `M5-LOOP-BE-117a` stopgap issue #420 named, closed here). `_tool_call_step` names each phase for its real operation — "Searching your files." / "Searched your files.", "Querying your database." / "Queried your database.", and so on per tool — rather than the raw `"Called {tool}."` placeholder, and a failed call's `"end"` says so ("That didn't work — trying another way.") instead of freezing on the label its `"start"` used. `web/lib/ask.ts::applyAskEvent` keys a step on `call_id` when present: an `"end"` updates its own `"start"`'s entry in place rather than appending a second line for the same call, and two calls dispatched in the same batch keep separate entries the whole time — which is what renders them concurrently rather than as a queue, since both are visible at once. A generic step with no `call_id` (retrieval, SQL) is unaffected and still always appends.
 

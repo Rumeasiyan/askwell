@@ -2021,6 +2021,179 @@ def test_reconnecting_to_an_unknown_turn_is_a_client_error(
         assert response.status_code == 404
 
 
+# --- `GET /ask/{message_id}/trace`, `M5-TRACE-BE-125` -------------------------
+
+
+def test_the_trace_route_returns_the_stored_trace_unchanged_for_a_finished_turn(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """The ticket's own acceptance criterion: served exactly as stored, not
+    recomputed — scores, threshold and durations all identical to the row."""
+    _truncate(database_url)
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "Notice is ninety days.", vector)
+    fake = _FakeInferenceClient(
+        settings, tokens=["The notice period ", "is ninety days [1]."], vector=vector
+    )
+    _patch_client(monkeypatch, fake)
+
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "How long is the notice period?"})
+        message_id = uuid.UUID(
+            next(data for kind, data in _events(response.text) if kind == "done")["message_id"]
+        )
+
+        trace_response = client.get(f"/ask/{message_id}/trace")
+
+    assert trace_response.status_code == 200
+    stored = _trace(database_url, message_id)
+    body = trace_response.json()
+    assert body["steps"] == stored["steps"]
+    assert body["status"] == stored["status"] == "completed"
+    assert body["steps_truncated"] is False
+    assert body["trace_rotated"] is False
+    assert body["backend"] == stored["backend"]
+
+
+def test_the_trace_route_round_trips_threshold_and_near_miss_scores_for_an_abstained_turn(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    _truncate(database_url)
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "The weather was mild.", vector)
+    fake = _FakeInferenceClient(
+        settings, tokens=["should never be sent"], vector=vector, rerank_score=-5.0
+    )
+    _patch_client(monkeypatch, fake)
+
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "How long is the notice period?"})
+        message_id = uuid.UUID(
+            next(data for kind, data in _events(response.text) if kind == "done")["message_id"]
+        )
+
+        trace_response = client.get(f"/ask/{message_id}/trace")
+
+    stored = _trace(database_url, message_id)
+    body = trace_response.json()
+    assert body["steps"] == stored["steps"]
+    retrieve_step = next(step for step in body["steps"] if step["kind"] == "retrieve")
+    assert retrieve_step["threshold"] == 0.65
+    (hit,) = retrieve_step["hits"]
+    assert hit["score"] < retrieve_step["threshold"]
+    abstain_step = next(step for step in body["steps"] if step["kind"] == "abstain")
+    assert abstain_step["reason_code"] == "below_threshold"
+
+
+def test_the_trace_route_reports_no_such_turn_for_an_unknown_id(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    _truncate(database_url)
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.get(f"/ask/{uuid.uuid4()}/trace")
+        assert response.status_code == 404
+
+
+def test_the_trace_route_returns_an_empty_trace_for_a_message_with_no_trace_yet(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """A message can exist with `trace IS NULL` — a turn that failed before
+    `_run_generation` ever wrote one. A valid empty-step trace, not a 404:
+    the ticket's own named edge case."""
+    _truncate(database_url)
+    conversation_id, message_id = uuid.uuid4(), uuid.uuid4()
+    with psycopg.connect(database_url, autocommit=True) as db:
+        db.execute("INSERT INTO conversations (id) VALUES (%s)", (conversation_id,))
+        db.execute(
+            "INSERT INTO messages (id, conversation_id, role, content) "
+            "VALUES (%s, %s, 'assistant', '')",
+            (message_id, conversation_id),
+        )
+
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.get(f"/ask/{message_id}/trace")
+
+    assert response.status_code == 200
+    assert response.json() == {"steps": [], "steps_truncated": False, "trace_rotated": False}
+
+
+def test_the_trace_route_surfaces_a_rotated_trace(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """`trace_rotated` rather than a 404 or an empty object once the file
+    ring buffer has dropped this turn's detail (`docs/architecture.md`
+    §7.1)."""
+    _truncate(database_url)
+    conversation_id, message_id = uuid.uuid4(), uuid.uuid4()
+    with psycopg.connect(database_url, autocommit=True) as db:
+        db.execute("INSERT INTO conversations (id) VALUES (%s)", (conversation_id,))
+        db.execute(
+            "INSERT INTO messages (id, conversation_id, role, content, trace) "
+            "VALUES (%s, %s, 'assistant', 'Ninety days.', %s::jsonb)",
+            (
+                message_id,
+                conversation_id,
+                json.dumps(
+                    {
+                        "steps": [],
+                        "steps_truncated": False,
+                        "trace_rotated": True,
+                        "status": "completed",
+                        "backend": {"mode": "local", "model": "qwen3-8b-q4km"},
+                    }
+                ),
+            ),
+        )
+
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.get(f"/ask/{message_id}/trace")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["trace_rotated"] is True
+    assert body["steps"] == []
+    assert body["status"] == "completed"
+
+
+def test_the_trace_route_serves_a_running_turns_steps_so_far(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """No `messages.trace` write has happened yet for a turn still in
+    progress — `_Turn.trace_steps` is the only place to read its steps from,
+    which is what this ticket adds an accessor for."""
+    _truncate(database_url)
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    message_id = uuid.uuid4()
+    turn = ask_module._Turn(message_id=message_id, conversation_id=uuid.uuid4())
+    turn.trace_steps.append(
+        {"kind": "retrieve", "ms": 12.0, "query": "…", "threshold": 0.65, "hits": []}
+    )
+    ask_module._turns[message_id] = turn
+    try:
+        with client:
+            _with_session(client)
+            response = client.get(f"/ask/{message_id}/trace")
+    finally:
+        ask_module._turns.pop(message_id, None)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "running"
+    assert body["steps"] == turn.trace_steps
+    assert body["steps_truncated"] is False
+    assert body["trace_rotated"] is False
+
+
 # --- crash recovery and bounded concurrency, `M1-ASK-BE-040` -----------------
 
 
