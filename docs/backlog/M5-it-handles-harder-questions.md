@@ -374,6 +374,60 @@ The observer is optional and the loop's behaviour without one is unchanged — a
 
 ---
 
+### M5-TRACE-BE-125 — Serve a stored trace to the browser
+
+**Type:** Task
+
+**User Story**
+- **Actor:** the trace panel, which has nothing to render until something serves it.
+- **User Need:** the stored trace for a message, returned as stored, for a turn still running and for one finished months ago.
+- **Business Value:** the trace is the product's answer to "why did it say that" — and M5-LOOP-BE-117 writes one that nothing can currently read.
+- *As the panel that explains an answer, I want the trace over HTTP, so that I can show what actually happened instead of a placeholder.*
+
+**Context / Background**
+**Detailed Description:** No route serves `messages.trace`. `POST /ask`'s SSE `done` event and the `/ask/{message_id}/stream` replay path both read `trace` server-side to derive `sql_query` and then discard it. Add `GET /ask/{message_id}/trace` returning the stored trace JSON verbatim — the ordered step sequence with durations and per-kind detail, plus the `trace_rotated` and `steps_truncated` flags of `docs/architecture.md` §7.1.
+
+The route must answer for a turn that is still running, returning the steps recorded so far, which means `_Turn` has to expose its in-progress steps before the row is written. A dedicated route rather than widening the `done` payload: a trace must be openable after a page reload, and openable mid-stream before any `done` has fired.
+
+**Scope**
+- `GET /ask/{message_id}/trace`.
+- A live turn's partial steps readable before `trace` is persisted.
+- `trace_rotated` and `steps_truncated` surfaced in the response.
+- The stored values returned as stored.
+
+**Out of Scope**
+- Rendering (M5-TRACE-FE-119 and onward).
+- Changing what M5-LOOP-BE-117 records.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** The route returns the stored trace for a finished turn unchanged from what was written — scores, threshold, durations, SQL and its validation outcome all identical to the row. For a running turn it returns the steps recorded so far. A rotated trace returns with `trace_rotated` true rather than a 404 or an empty object, and the answer's citations still resolve.
+- **Edge Cases:** An unknown `message_id` — 404. A message that exists with no trace (a turn that failed before any step) — a valid empty-step trace, not a 404. A truncated trace — returned with `steps_truncated` true and the truncation visible inside. An abstained turn — the near-miss scores and the threshold round-trip intact.
+- **Permissions / Roles:** Single user — no roles. No authorisation dimension.
+- **UI States:** None in this ticket; consumed by `../ux/trace.md` §2 and §3.
+- **Validation Rules:** Values are returned as stored and never recomputed — a trace that disagrees with the answer it explains is worse than no trace (C4).
+- **Audit / Logging Requirements:** Reading a trace is a read; it does not write to the audit chain and must not mutate the trace (C6 — the app never rewrites history).
+- **Analytics Events:** Local counters only — nothing transmitted (C1).
+
+**Real-World Example Scenarios**
+- The user reopens an abstention from six weeks ago and sees the scores that produced it, with the threshold as it was then, not as it is now.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M5-LOOP-BE-117, M5-LOOP-BE-117a.
+- **API / Data Touchpoints:** `api/src/askwell/ask.py` — new route plus `_Turn`'s in-progress steps; `messages.trace`; the trace ring buffer.
+- **Assumptions:** The trace shape written by M5-LOOP-BE-117 is the contract; this ticket serves it and does not reshape it.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** Cold start, ask a multi-step question, and call the route mid-turn and again after it completes. Confirm the mid-turn response carries the steps so far and the final one matches the stored row.
+- **Other scenarios:** A test that an abstained turn's trace round-trips with `threshold` and near-miss scores intact. A test that a rotated trace returns with its flag set while the answer's citations still resolve. A test for the unknown-id 404 and for the no-trace-yet empty case.
+- **Known gaps:** Nothing renders it yet — M5-TRACE-FE-119 does.
+
+**Effort & Granularity Check**
+- **Estimate:** 3–4 hours · **Priority:** Critical
+- **Labels / Component:** `phase:5`, backend, observability
+- **Granularity:** One route and one accessor on the live turn.
+
+---
+
 ### M5-TRACE-FE-119 — Trace panel: a readable narrative over expandable raw detail
 
 **Type:** Story
@@ -409,7 +463,7 @@ The observer is optional and the loop's behaviour without one is unchanged — a
 - A user opens the trace once, understands that retrieval was instant and the model was slow, and stops assuming the product is broken.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M5-LOOP-BE-117a, M1-ASK-FE-039.
+- **Dependencies:** M5-TRACE-BE-125, M5-LOOP-BE-117a, M1-ASK-FE-039.
 - **API / Data Touchpoints:** `messages.trace`.
 - **Assumptions:** A panel over Ask is right rather than a route, because the user is investigating one answer and must not lose their place.
 
