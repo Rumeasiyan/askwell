@@ -20,9 +20,9 @@ from askwell.config import Settings
 from askwell.voice_channel import VoiceTurn, register_voice_channel
 
 
-def _app(settings: Settings, driver=None) -> FastAPI:
+def _app(settings: Settings, driver=None, turn_detector=None) -> FastAPI:
     app = FastAPI()
-    register_voice_channel(app, settings, driver=driver)
+    register_voice_channel(app, settings, driver=driver, turn_detector=turn_detector)
     return app
 
 
@@ -107,6 +107,62 @@ def test_long_input_streams_as_separate_chunks_not_one_buffered_blob(
         ws.receive_json()  # status
 
     assert seen == frames
+
+
+def test_a_detected_pause_closes_the_turn_without_an_explicit_end(settings: Settings) -> None:
+    """`M6-STT-BE-128`: a `TurnDetector` reporting a pause closes `audio_in`
+    itself, the same as the client's own `end` — no `end`/`stop` message is
+    ever sent here."""
+
+    class _CloseAfterTwo:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def feed(self, _chunk: bytes) -> bool:
+            self.calls += 1
+            return self.calls >= 2
+
+        async def aclose(self) -> None:
+            return None
+
+    detector = _CloseAfterTwo()
+    with TestClient(
+        _app(settings, driver=_echo_driver, turn_detector=lambda: detector)
+    ).websocket_connect("/voice/ws") as ws:
+        ws.receive_json()  # turn
+        ws.send_bytes(b"frame-1")
+        ws.send_bytes(b"frame-2")
+        ws.send_bytes(b"frame-3")  # dropped: the turn already closed after frame-2
+
+        transcript = ws.receive_json()
+        ws.receive_json()  # text
+        ws.receive_bytes()
+        ws.receive_bytes()
+        status = ws.receive_json()
+
+    assert transcript == {"type": "transcript", "text": "heard 2 chunks"}
+    assert status == {"type": "status", "status": "completed"}
+
+
+def test_no_turn_detector_given_behaves_exactly_as_before_this_ticket(
+    settings: Settings,
+) -> None:
+    """`register_voice_channel`'s default (`turn_detector=None`) must not
+    close a turn on its own — only `end`/`stop` do, unchanged."""
+    with TestClient(_app(settings, driver=_echo_driver)).websocket_connect("/voice/ws") as ws:
+        ws.receive_json()  # turn
+        ws.send_bytes(b"frame-1")
+        ws.send_bytes(b"frame-2")
+        ws.send_text(json.dumps({"type": "end"}))
+
+        transcript = ws.receive_json()
+        ws.receive_json()  # text
+        ws.receive_bytes()
+        ws.receive_bytes()
+        status = ws.receive_json()
+
+    assert transcript == {"type": "transcript", "text": "heard 2 chunks"}
+    assert status == {"type": "status", "status": "completed"}
 
 
 def test_stop_control_ends_the_turn_as_failed(settings: Settings) -> None:

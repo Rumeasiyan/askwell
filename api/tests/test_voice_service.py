@@ -9,6 +9,7 @@ not a status report, so it is the one surface here that does answer with a
 non-200 when it cannot do what was asked.
 """
 
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
@@ -144,6 +145,56 @@ def test_transcribe_without_a_loaded_model_answers_503_not_200(
     )
     with TestClient(service.create_app(settings)) as client:
         response = client.post("/transcribe", content=b"\x01\x00" * 8000)
+
+    assert response.status_code == 503
+    assert "reason" in response.json()
+
+
+class _FakeVadSession:
+    """Stands in for the onnxruntime session `askwell.voice.vad.score_frames`
+    calls — a fixed probability per frame, no real model needed."""
+
+    def __init__(self, probability: float = 0.9) -> None:
+        self.probability = probability
+        self.calls = 0
+
+    def run(self, _output_names, _inputs):
+        self.calls += 1
+        return [np.array([[self.probability]], dtype="float32")]
+
+
+def _models_with_vad(vad_session: object) -> VoiceModels:
+    return VoiceModels(
+        whisper=object(),
+        whisper_health=ModelHealth(name="whisper", state=ModelState.LOADED, path="/models/x"),
+        vad_session=vad_session,
+        vad_health=ModelHealth(name="vad", state=ModelState.LOADED, path="/models/vad"),
+        kokoro=object(),
+        kokoro_health=ModelHealth(name="kokoro", state=ModelState.LOADED, path="/models/kokoro"),
+    )
+
+
+def test_vad_scores_each_frame_in_the_body(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _FakeVadSession(probability=0.9)
+    monkeypatch.setattr(service, "load_models", lambda _settings: _models_with_vad(fake))
+    with TestClient(service.create_app(settings)) as client:
+        # Two complete 512-sample frames, PCM16.
+        response = client.post("/vad", content=b"\x00\x01" * 512 * 2)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["speech_probabilities"] == pytest.approx([0.9, 0.9], abs=1e-6)
+    assert fake.calls == 2
+
+
+def test_vad_without_a_loaded_model_answers_503_not_200(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(service, "load_models", lambda _settings: _models(vad=ModelState.MISSING))
+    with TestClient(service.create_app(settings)) as client:
+        response = client.post("/vad", content=b"\x00\x01" * 512 * 2)
 
     assert response.status_code == 503
     assert "reason" in response.json()
