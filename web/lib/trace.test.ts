@@ -12,10 +12,15 @@ import { test } from "node:test";
 import type { CitationCard } from "./citations.ts";
 import {
   buildTraceCopyText,
+  failureReason,
   formatDuration,
   hasExpandableDetail,
   hitCitation,
+  isFailedTrace,
+  isOnlineBackend,
+  isPartialTrace,
   memoryFactRefs,
+  partialUncoveredAspects,
   retrievalThreshold,
   retrievedHits,
   sqlStepInfo,
@@ -336,4 +341,99 @@ test("buildTraceCopyText truncates a very long trace and says so in the copied t
   const text = buildTraceCopyText(trace, "A question");
   assert.match(text, /\[Trace truncated for length\.\]$/);
   assert.ok(text.length < 21_000);
+});
+
+// --- Trace states (M5-TRACE-FE-123, docs/ux/trace.md §5) ----------------------
+
+test("isFailedTrace reads status, true only when it is exactly \"failed\"", () => {
+  assert.equal(isFailedTrace({ steps: [], steps_truncated: false, trace_rotated: false, status: "failed" }), true);
+  assert.equal(
+    isFailedTrace({ steps: [], steps_truncated: false, trace_rotated: false, status: "completed" }),
+    false,
+  );
+  assert.equal(isFailedTrace({ steps: [], steps_truncated: false, trace_rotated: false }), false);
+});
+
+test("failureReason reads the stored reason, null when absent", () => {
+  assert.equal(
+    failureReason({
+      steps: [],
+      steps_truncated: false,
+      trace_rotated: false,
+      status: "failed",
+      reason: "Askwell hit an error it did not expect while answering.",
+    }),
+    "Askwell hit an error it did not expect while answering.",
+  );
+  assert.equal(failureReason({ steps: [], steps_truncated: false, trace_rotated: false }), null);
+});
+
+test("a failed trace still carries the steps recorded before the failure — nothing here drops them", () => {
+  const trace: TraceData = {
+    steps: [{ kind: "retrieve", ms: 340, hits: [{ chunk_id: "c1", score: 0.81 }] }],
+    steps_truncated: false,
+    trace_rotated: false,
+    status: "failed",
+    reason: "Askwell hit an error it did not expect while answering.",
+  };
+  assert.equal(traceRows(trace.steps).length, 1);
+  assert.equal(isFailedTrace(trace), true);
+  assert.equal(failureReason(trace), "Askwell hit an error it did not expect while answering.");
+});
+
+test("isPartialTrace and partialUncoveredAspects read the same fields the answer body's own UncoveredBlock uses", () => {
+  const trace: TraceData = {
+    steps: [],
+    steps_truncated: false,
+    trace_rotated: false,
+    partial_coverage: true,
+    uncovered_aspects: ["the cancellation notice period"],
+  };
+  assert.equal(isPartialTrace(trace), true);
+  assert.deepEqual(partialUncoveredAspects(trace), ["the cancellation notice period"]);
+});
+
+test("a normal answer is neither partial nor failed", () => {
+  const trace: TraceData = { steps: [], steps_truncated: false, trace_rotated: false, status: "completed" };
+  assert.equal(isPartialTrace(trace), false);
+  assert.equal(isFailedTrace(trace), false);
+});
+
+test("isOnlineBackend is false for the local backend that is all M8 leaves reachable today", () => {
+  const trace: TraceData = {
+    steps: [],
+    steps_truncated: false,
+    trace_rotated: false,
+    backend: { mode: "local", model: "qwen2.5-7b" },
+  };
+  assert.equal(isOnlineBackend(trace), false);
+});
+
+test("isOnlineBackend is true once backend.mode reads \"online\" — the state M8 will reach", () => {
+  const trace: TraceData = {
+    steps: [],
+    steps_truncated: false,
+    trace_rotated: false,
+    backend: { mode: "online", model: "claude-sonnet-5", sent: "3 passages, 1 question" },
+  };
+  assert.equal(isOnlineBackend(trace), true);
+  assert.equal(trace.backend?.sent, "3 passages, 1 question");
+});
+
+// --- Citations never rotate (docs/ux/trace.md §5's own edge case) -------------
+
+test("a citation is found by chunk id alone, with no dependency on the trace's own rotation state — citations are a separate table (`citations`) and do not rotate with the trace ring buffer", () => {
+  const cards = [card({ chunkId: "c1" })];
+  // `hitCitation`'s signature takes a hit and a citation list, never a
+  // `TraceData` — a rotated trace has nothing to pass here at all, which is
+  // exactly why losing a citation to rotation is impossible by design: the
+  // citation lookup has no rotation state to lose.
+  assert.equal(hitCitation({ chunkId: "c1", score: 0.9 }, cards), cards[0]);
+});
+
+test("buildTraceCopyText's rotated branch never reads or needs citations — the answer's own citations survive independently of the trace", () => {
+  const trace: TraceData = { steps: [], steps_truncated: false, trace_rotated: true };
+  const text = buildTraceCopyText(trace, "What is the notice period?");
+  assert.doesNotMatch(text, /citation/i);
+  assert.match(text, /cleared/);
 });
