@@ -4,6 +4,22 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.5.1 - 2026-09-20
+
+`M6-AUDIO-DEPLOY-125` — the voice container, first ticket of Phase 5's second half. A new `voice` service (`api/src/askwell/voice/`, same image as `api`/`worker`, `askwell-voice` entrypoint) loads Whisper `small` (CTranslate2, via `faster-whisper`), Silero VAD (ONNX, via `onnxruntime` directly) and Kokoro-82M (ONNX, via `kokoro-onnx`) from local files at startup and reports transcription and synthesis health separately on `GET /health` — always `200`, matching `api/src/askwell/health.py`'s own no-aggregate-boolean rule. All three sources, licences and registry-verification dates are recorded in `api/src/askwell/voice/catalog.py`.
+
+Every model path is a local file the container only ever opens; none is fetched at runtime (C1). A missing file does not crash the process — it becomes a `missing` state naming the exact path, mirroring `deploy/inference/askwell-inference`'s own `MODEL_MISSING` handling. `transcription` folds Whisper and VAD into one reported line, since Whisper cannot usefully run without VAD gating the stream ahead of it; `synthesis` is Kokoro alone. Sits on the `internal` network only — no `egress` membership at all, unlike `api` and `worker` — because voice has nothing to reach: `docs/decisions.md` already records that voice never escalates to the web. Model files arrive via a new `ASKWELL_MODELS_DIR` bind mount onto `/models`, read-only, defaulting to the same host directory the native inference supervisor already reads its own three models from.
+
+The WebSocket audio path (`M6-AUDIO-API-126`) and the interface are out of this ticket's scope — nothing can be spoken or transcribed yet, only reported on.
+
+**Verified**: `scripts/dev.sh check` clean (852 passed, 1 skipped, 8 new in `test_voice_models.py`/`test_voice_service.py`). **Cold-start walkthrough against the real, rebuilt, running stack**: `podman compose up -d voice` with no model files present started cleanly and logged `voice_startup` naming both missing models by path; `GET /health` on the running container returned `200` with `transcription`/`synthesis` each `"missing"` and a reason naming the exact path; a socket probe from inside the `voice` container to a public address failed with "Network is unreachable" (`internal` has no route out, so there is nothing for the egress proxy's refusal counter to count); stopping and restarting the `voice` container left the API's own `/health` at `200` throughout, confirming text asking is unaffected by voice being down. Loading real model weights was not exercised — that requires the actual files, which C1 forbids downloading as part of this verification.
+
+### Added
+
+- `api/src/askwell/voice/` — `models.py` (`ModelState`, `ModelHealth`, `VoiceModels`, `load_models`), `service.py` (`create_app`, `askwell-voice` entrypoint), `catalog.py` (verified model sources and licences).
+- `askwell.config.Settings` — `voice_whisper_model_path`, `voice_vad_model_path`, `voice_kokoro_model_path`, `voice_kokoro_voices_path`, `voice_host`, `voice_port`.
+- `compose.yaml` — `voice` service, `ASKWELL_MODELS_DIR` bind mount.
+
 ## 0.5.0 - 2026-09-20
 
 **M5 — it handles harder questions — is complete, 14 of 14.** `M5-TRACE-FE-123` — the trace panel's remaining states: normal, abstention, partial, tool ceiling, failed mid-answer, online backend, and trace unavailable after rotation — was the last ticket in the `TRACE` epic and in the milestone. A question needing both a document lookup and a database query now answers correctly in one turn, with a readable trace of how it happened, in every state that turn can land in.

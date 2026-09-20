@@ -119,6 +119,24 @@ class Settings(BaseSettings):
     egress_proxy_host: str = "egress-proxy"
     egress_proxy_port: Port = 3128
 
+    # The voice container (M6-AUDIO-DEPLOY-125): Whisper `small` for
+    # transcription, Silero VAD ahead of it, Kokoro-82M for synthesis — all
+    # CPU, all read from local files, never fetched at runtime (C1). Paths are
+    # container-side; compose bind-mounts the host directory named by
+    # ASKWELL_MODELS_DIR onto /models read-only, the same directory the
+    # host-side inference supervisor already reads its own three models from.
+    #
+    # Whisper is a CTranslate2 model *directory* (model.bin, config.json,
+    # tokenizer.json, vocabulary.json), not a single file — unlike the GGUF
+    # paths above, so it is checked with `is_dir()` rather than `is_file()` in
+    # `askwell.voice.models`.
+    voice_whisper_model_path: Path = Path("/models/whisper-small")
+    voice_vad_model_path: Path = Path("/models/silero_vad.onnx")
+    voice_kokoro_model_path: Path = Path("/models/kokoro-v1.0.onnx")
+    voice_kokoro_voices_path: Path = Path("/models/voices-v1.0.bin")
+    voice_host: str = "0.0.0.0"
+    voice_port: Port = 8090
+
     # A separate Postgres instance, not a second database in the first one:
     # C3's whole guarantee is that a hostile dump destroys only its own
     # database, which a shared instance cannot promise regardless of how its
@@ -355,7 +373,15 @@ class Settings(BaseSettings):
         return expanded
 
     @field_validator(
-        "inference_model_path", "inference_socket", "trace_dir", "install_secret_path", mode="after"
+        "inference_model_path",
+        "inference_socket",
+        "trace_dir",
+        "install_secret_path",
+        "voice_whisper_model_path",
+        "voice_vad_model_path",
+        "voice_kokoro_model_path",
+        "voice_kokoro_voices_path",
+        mode="after",
     )
     @classmethod
     def _expand(cls, value: Path) -> Path:

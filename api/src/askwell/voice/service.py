@@ -1,0 +1,103 @@
+"""The voice service: a `/health` surface over the three loaded models.
+
+M6-AUDIO-DEPLOY-125's whole scope. There is no audio endpoint yet — sending
+and receiving audio is `M6-AUDIO-API-126`'s WebSocket transport — so today
+this process does exactly one useful thing: it loads what it can from local
+files at startup and says, per model, whether it is usable and why not.
+
+Runs on `internal` only (`compose.yaml`) — no egress network membership at
+all, unlike `api` and `worker`. It has nothing to reach: every model is a
+local file, and there is no online-AI or web-search path through voice mode
+(`docs/decisions.md` — no escalation to the web from voice).
+"""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+
+from askwell import __version__
+from askwell.config import Environment, Settings, load_settings
+from askwell.logging import configure_logging, get_logger
+from askwell.voice.models import VoiceModels, load_models
+
+log = get_logger(__name__)
+
+# In-memory only, and deliberately so: a local counter, per AGENTS.md §3 C1's
+# "local counter only — nothing transmitted" analytics requirement. It is not
+# persisted, because persisting it would be the first byte of a usage log this
+# ticket has no audit requirement to keep, and the number resets on every
+# restart, which is honest about what it measures — this process's own
+# lifetime, not the product's history.
+_service_starts = 0
+
+
+def _health_payload(models: VoiceModels) -> dict[str, object]:
+    return {
+        "transcription": models.transcription.as_dict(),
+        "synthesis": models.synthesis.as_dict(),
+        "service_starts": _service_starts,
+    }
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Load what is there, log what happened, never crash over what is not.
+
+    A missing model is exactly as likely on a fresh install as a present one —
+    it is the state before the user has put the files there — so startup
+    always succeeds. What `/health` reports afterwards is what tells the
+    difference (AGENTS.md §3 C1's "clear refusal naming the path").
+    """
+    global _service_starts
+    settings: Settings = app.state.settings
+    models = load_models(settings)
+    app.state.models = models
+    _service_starts += 1
+    log.info(
+        "voice_startup",
+        version=__version__,
+        transcription=models.transcription.as_dict(),
+        synthesis=models.synthesis.as_dict(),
+        service_starts=_service_starts,
+    )
+    yield
+    log.info("voice_shutdown")
+
+
+def create_app(settings: Settings | None = None) -> FastAPI:
+    settings = settings if settings is not None else load_settings()
+    app = FastAPI(title="askwell-voice", lifespan=lifespan)
+    app.state.settings = settings
+
+    @app.get("/health")
+    async def health() -> JSONResponse:
+        # Always 200. `api/src/askwell/app.py`'s own health surface answers
+        # 200 with every component unreachable, precisely so a caller cannot
+        # collapse "the process answered and says X" into "the process is
+        # down" — an HTTP status is one bit, and this payload already carries
+        # two independent states plus a reason each. Mixing a 503 back in
+        # here would reintroduce the aggregate boolean the rest of the
+        # codebase deliberately has nowhere.
+        return JSONResponse(_health_payload(app.state.models))
+
+    return app
+
+
+def main() -> None:
+    import uvicorn
+
+    try:
+        settings = load_settings()
+    except Exception as error:
+        raise SystemExit(str(error)) from None
+
+    configure_logging(
+        level=settings.log_level,
+        json_output=settings.environment is not Environment.DEVELOPMENT,
+    )
+    app = create_app(settings)
+    uvicorn.run(app, host=settings.voice_host, port=settings.voice_port, log_config=None)

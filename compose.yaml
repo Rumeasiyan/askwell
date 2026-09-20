@@ -11,8 +11,8 @@
 #   podman compose down           stop, keeping data
 #   podman compose down -v        stop and destroy the data. There is no undo.
 #
-# Not here yet, deliberately: voice (M6), and native inference, which runs as a
-# host process rather than a container because it needs the GPU.
+# Not here yet, deliberately: native inference, which runs as a host process
+# rather than a container because it needs the GPU.
 #
 # C1 is enforced by the network topology, not by asking nicely. Every service
 # except the proxy sits on an `internal` network, which has no route off this
@@ -184,6 +184,61 @@ services:
     # Everything that touches the user's material — api, worker, postgres,
     # redis — stays internal with no route out.
     network_mode: host
+    restart: unless-stopped
+
+  voice:
+    # Same image as api/worker, different command (`askwell-voice`) — the
+    # pattern egress-proxy and inference-bridge already use. Whisper `small`,
+    # Silero VAD and Kokoro-82M add real weight to the image, but a second
+    # Dockerfile and a second lockfile would be two things to keep in sync for
+    # no isolation benefit worth the cost: nothing about this container's job
+    # needs a different Python or a different base image (`api/src/askwell/voice/`).
+    image: localhost/askwell-api:dev
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    command: ["askwell-voice"]
+    environment:
+      # Required by the shared `Settings` model even though this process
+      # never opens a database connection — same as egress-proxy and
+      # inference-bridge, which carry the same unused requirement today.
+      # `docs/decisions.md` records this as a known gap in `Settings` rather
+      # than something this ticket should quietly work around.
+      ASKWELL_DATABASE_URL: postgresql://askwell_app:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-askwell}
+      ASKWELL_SANDBOX_DATABASE_URL: postgresql://${SANDBOX_POSTGRES_USER:-askwell_sandbox}:${SANDBOX_POSTGRES_PASSWORD:?set SANDBOX_POSTGRES_PASSWORD in .env}@sandbox:5432/postgres
+      ASKWELL_SANDBOX_OWNER_PASSWORD: ${SANDBOX_OWNER_PASSWORD:?set SANDBOX_OWNER_PASSWORD in .env}
+      ASKWELL_SANDBOX_READONLY_PASSWORD: ${SANDBOX_READONLY_PASSWORD:?set SANDBOX_READONLY_PASSWORD in .env}
+      ASKWELL_REDIS_HOST: redis
+      ASKWELL_ENVIRONMENT: ${ASKWELL_ENVIRONMENT:-development}
+      ASKWELL_LOG_LEVEL: ${ASKWELL_LOG_LEVEL:-INFO}
+      ASKWELL_VOICE_HOST: 0.0.0.0
+      ASKWELL_VOICE_PORT: "8090"
+      ASKWELL_VOICE_WHISPER_MODEL_PATH: /models/whisper-small
+      ASKWELL_VOICE_VAD_MODEL_PATH: /models/silero_vad.onnx
+      ASKWELL_VOICE_KOKORO_MODEL_PATH: /models/kokoro-v1.0.onnx
+      ASKWELL_VOICE_KOKORO_VOICES_PATH: /models/voices-v1.0.bin
+    volumes:
+      # Read-only: this container only ever opens these files, and a
+      # corrupted-in-place model is a class of bug this mount rules out.
+      - ${ASKWELL_MODELS_DIR:-~/.local/share/askwell/models}:/models:ro,z
+    healthcheck:
+      # No curl or wget in the base image (api/Dockerfile installs neither);
+      # python is guaranteed, since it is what runs the service.
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=2)",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    # No `egress` membership at all — voice has nothing to reach. Every model
+    # is a local file, and there is no online-AI or web-search path through
+    # voice mode (`docs/decisions.md` — no escalation to the web from voice).
+    networks: [internal]
     restart: unless-stopped
 
   api:
