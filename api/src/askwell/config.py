@@ -137,6 +137,17 @@ class Settings(BaseSettings):
     voice_host: str = "0.0.0.0"
     voice_port: Port = 8090
 
+    # Bounds how many audio chunks may sit unconsumed on either side of the
+    # voice WebSocket (`M6-AUDIO-API-126`) before the other end is made to
+    # wait. This is the ticket's backpressure requirement given a concrete
+    # number: a slow client not reading synthesised audio, or a slow
+    # consumer not draining incoming audio, stalls the producer rather than
+    # growing memory without limit. 32 is generous for the small frames real
+    # microphone or TTS audio arrives in — a turn that needs more than that
+    # queued is one where the other side is stuck, not one moving unusually
+    # fast audio.
+    voice_audio_queue_size: int = Field(default=32, ge=1, le=1024)
+
     # A separate Postgres instance, not a second database in the first one:
     # C3's whole guarantee is that a hostile dump destroys only its own
     # database, which a shared instance cannot promise regardless of how its
