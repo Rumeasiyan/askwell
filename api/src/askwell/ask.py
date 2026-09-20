@@ -86,7 +86,7 @@ from askwell import crypto
 from askwell.agent.abstain import AbstainReason, compose_abstention
 from askwell.agent.claims import Claim, locate_quoted_span, segment_claims
 from askwell.agent.conflict import compose_conflict, split_conflict_answer
-from askwell.agent.loop import LoopContinuation, LoopResult, run_tool_loop
+from askwell.agent.loop import LoopContinuation, LoopResult, ToolCallEvent, run_tool_loop
 from askwell.agent.partial import split_partial_answer
 from askwell.agent.sql_generate import (
     GenerationReason,
@@ -1402,6 +1402,20 @@ async def _run_generation(
     # `[index]` markers reach `messages.content` as the model wrote them,
     # uncited in `citations`, same as `_run_sql_turn`'s canned text already
     # is for the SQL epic.
+    def _emit_tool_call_step(event: ToolCallEvent) -> None:
+        # `M5-LOOP-BE-117a`: live per-call events replace the post-loop
+        # burst — a `"Called {tool}."` step now lands the moment that call
+        # actually returns, not all at once after every call in the turn
+        # has. `"start"` is deliberately not surfaced here too (issue
+        # #420): the frontend has no phase discriminator yet to collapse a
+        # start/end pair into one label — that lands with `M5-LOOP-FE-118`
+        # — so emitting both today would double every visible label. The
+        # pre-loop label above still covers "something is happening" until
+        # the first call actually finishes.
+        if event.phase != "end":
+            return
+        turn.emit("step", {"label": f"Called {event.tool}.", "kind": "tool", "tool": event.tool})
+
     loop_answer: LoopResult | None = None
     if resume_state is not None:
         # `M5-LOOP-BE-116`: a `Continue` turn is already known to be a loop
@@ -1419,6 +1433,7 @@ async def _run_generation(
                     source_id=source_id,
                     resume=resume_state,
                     continuation_count=continuation_count,
+                    on_tool_call=_emit_tool_call_step,
                 )
         except Exception:
             loop_answer = None
@@ -1431,7 +1446,12 @@ async def _run_generation(
                 turn.emit("step", {"label": "Working through this in steps.", "kind": "tool"})
                 async with session_scope(factory) as db:
                     loop_answer = await run_tool_loop(
-                        db, settings, client, question=question, source_id=source_id
+                        db,
+                        settings,
+                        client,
+                        question=question,
+                        source_id=source_id,
+                        on_tool_call=_emit_tool_call_step,
                     )
         except Exception:
             loop_answer = None
@@ -1439,12 +1459,6 @@ async def _run_generation(
 
     if loop_answer is not None and loop_answer.tool_names_called:
         tool_ceiling = loop_answer.stopped_reason == "tool_ceiling"
-        for step in loop_answer.steps:
-            if not step.deduplicated:
-                turn.emit(
-                    "step",
-                    {"label": f"Called {step.tool}.", "kind": "tool", "tool": step.tool},
-                )
         if tool_ceiling:
             # `M5-LOOP-BE-116`: named plainly as its own step, not left to be
             # inferred from the answer text — `docs/ux/ask.md` §5's own

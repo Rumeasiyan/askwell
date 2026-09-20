@@ -4,6 +4,20 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.33 - 2026-09-20
+
+`M5-LOOP-BE-117a` — `run_tool_loop` (`api/src/askwell/agent/loop.py`) takes an optional `on_tool_call` observer that fires once per call actually dispatched: a `"start"` event immediately before it runs, an `"end"` event immediately after, including inside a concurrent `asyncio.gather` batch, where every `"start"` in the batch fires before any of that batch's `"end"`s — proven in `api/tests/test_loop.py` with two staggered fake tools that finish in the opposite order they were dispatched. A deduplicated call, never actually run, fires no event; a failed call still fires its `"end"`, marked with the real outcome. An observer that raises is swallowed and logged (`_notify`), same posture as `askwell.traces.TraceRing.write` — a caller's own bug in a callback watching the turn is not a reason to fail it. With no observer given, `run_tool_loop`'s behaviour is unchanged.
+
+`askwell.ask`'s two `run_tool_loop` call sites now emit their `"Called {tool}."` step live from this observer instead of bursting one per tool after the whole loop finished — the label lands when that call actually returns. Only the `"end"` phase reaches `turn.emit` for now (issue #420): the shipped frontend has no phase/call-id discriminator yet to collapse a `"start"`/`"end"` pair into one visible label, so surfacing both today would double every step the Ask screen renders. `M5-LOOP-FE-118` owns that discriminator and switches this to both phases once it lands. The pre-loop generic label ("Working through this in steps." / "Continuing where it left off.") is kept as the only signal until a call actually finishes, rather than dropped outright — removing it would have reopened the "working for twenty seconds looks hung" problem for a turn's first call, which is this ticket's whole reason to exist.
+
+### Added
+
+- `askwell.agent.loop.ToolCallEvent` / `ToolCallObserver`, and `run_tool_loop(..., on_tool_call=...)`.
+
+### Changed
+
+- `askwell.ask`'s loop call sites emit `step` events live per call instead of in a post-loop burst.
+
 ## 0.4.32 - 2026-09-20
 
 `M5-EVAL-TEST-124` — the quality gate's "Tool selection incl. parallel" category (`docs/build-plan.md`'s 25-task, ≥0.85 row) gets its suite. `eval/tool_selection.py` drives the real `askwell.agent.loop.run_tool_loop` — not a mock of it — over both the fixture document corpus and the fixture sandbox database seeded together, so a task can genuinely need either, both, or neither. Every task is scored on two things kept separate rather than folded into one number: `tool_choice_score` checks the distinct tools the loop actually called against a task's `expected_tool_routes` (more than one accepted route is scored correct — the "two acceptable tool routes" edge case; an empty route covers "the correct behaviour is no tool at all"), and the ordinary `eval.scoring.score` grades the final answer text — so a right answer reached by the wrong tool, or a wrong answer despite the right tool, is visible rather than averaged away.
