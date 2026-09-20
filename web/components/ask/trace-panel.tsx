@@ -12,12 +12,23 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { QueryDisclosure } from "@/components/ask/sql-result-table";
+import { fetchFactDetail, type FactDetail } from "@/lib/memory-chips";
 import {
   fetchTrace,
+  memoryFactRefs,
   recordTraceOpened,
+  retrievalThreshold,
+  retrievedHits,
+  sqlStepInfo,
+  toolCeilingPendingCalls,
+  toolInjectionPatterns,
   traceRows,
+  type MemoryFactRef,
+  type PendingToolCall,
   type TraceData,
   type TraceRow,
+  type TraceStep,
 } from "@/lib/trace";
 
 /** How often an open panel re-polls while its own turn is still streaming
@@ -180,19 +191,62 @@ function TraceBody({ trace }: { trace: TraceData }) {
   }
 
   const rows = traceRows(trace.steps);
-  if (rows.length === 0) {
-    return <p className="ask-prose">Nothing was recorded for this turn yet.</p>;
-  }
+  const pendingCalls = toolCeilingPendingCalls(trace);
 
   return (
-    <ol className="flex flex-col gap-3" style={{ listStyle: "none", margin: 0, padding: 0 }}>
-      {rows.map((row) => (
-        <TraceStepRow key={row.index} row={row} />
-      ))}
-      {trace.steps_truncated ? (
-        <li className="ask-micro">Some steps from this turn were left out to keep the trace short.</li>
+    <div className="flex flex-col gap-3">
+      <BackendLine trace={trace} />
+      {rows.length === 0 ? (
+        <p className="ask-prose">Nothing was recorded for this turn yet.</p>
+      ) : (
+        <ol className="flex flex-col gap-3" style={{ listStyle: "none", margin: 0, padding: 0 }}>
+          {rows.map((row) => (
+            <TraceStepRow key={row.index} row={row} />
+          ))}
+          {trace.steps_truncated ? (
+            <li className="ask-micro">Some steps from this turn were left out to keep the trace short.</li>
+          ) : null}
+        </ol>
+      )}
+      {pendingCalls !== null ? <ToolCeilingNote pendingCalls={pendingCalls} /> : null}
+    </div>
+  );
+}
+
+/** Backend and model, named once per turn (`docs/ux/trace.md` §3's own
+ * "Backend" row) — never per step, since one turn has exactly one. Absent
+ * rather than a placeholder when the stored trace predates this field. */
+function BackendLine({ trace }: { trace: TraceData }) {
+  if (trace.backend === undefined) return null;
+  return (
+    <p className="ask-micro" style={{ textTransform: "none" }}>
+      {trace.backend.mode} · {trace.backend.model}
+    </p>
+  );
+}
+
+/** The tool-ceiling stop (`docs/ux/trace.md` §3, `M5-LOOP-BE-116`) — what
+ * the turn was about to do when the 8-call budget ran out. Informational,
+ * not an error: the turn still answered with what it had. */
+function ToolCeilingNote({ pendingCalls }: { pendingCalls: PendingToolCall[] }) {
+  return (
+    <div className="flex flex-col gap-1" style={{ borderTop: "1px solid var(--rule)", paddingTop: "0.5rem" }}>
+      <p className="ask-prose" style={{ margin: 0 }}>
+        Stopped after 8 steps for this question.
+      </p>
+      {pendingCalls.length > 0 ? (
+        <ul className="ask-micro" style={{ textTransform: "none", margin: 0, paddingLeft: "1rem" }}>
+          {pendingCalls.map((call, index) => (
+            <li key={index}>
+              About to call {call.tool}
+              {Object.keys(call.arguments).length > 0
+                ? ` (${JSON.stringify(call.arguments)})`
+                : ""}
+            </li>
+          ))}
+        </ul>
       ) : null}
-    </ol>
+    </div>
   );
 }
 
@@ -218,19 +272,216 @@ function TraceStepRow({ row }: { row: TraceRow }) {
           <summary className="ask-micro" style={{ cursor: "pointer" }}>
             show detail
           </summary>
-          <pre
-            className="ask-micro"
-            style={{
-              textTransform: "none",
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-word",
-              marginTop: "0.25rem",
-            }}
-          >
-            {JSON.stringify(row.step, null, 2)}
-          </pre>
+          <div style={{ marginTop: "0.25rem" }}>
+            <StepDetail step={row.step} />
+          </div>
         </details>
       ) : null}
     </li>
+  );
+}
+
+/** What is inside a step's raw detail, formatted for the item it is
+ * (`docs/ux/trace.md` §3) rather than the raw JSON `M5-TRACE-FE-119` left
+ * here. A kind this module does not specifically know how to render falls
+ * back to the raw dump — the same "never a blank row" rule `stepSummary`
+ * already follows for an unfamiliar `kind`. */
+function StepDetail({ step }: { step: TraceStep }) {
+  if (step.kind === "retrieve") return <RetrieveStepDetail step={step} />;
+  if (step.kind === "memory_retrieve") return <MemoryRetrieveStepDetail step={step} />;
+  const sql = sqlStepInfo(step);
+  if (sql !== null) return <SqlStepDetail sql={sql} />;
+  if (step.kind === "tool") return <ToolStepDetail step={step} />;
+  return <RawStepDetail step={step} />;
+}
+
+function RawStepDetail({ step }: { step: TraceStep }) {
+  return (
+    <pre
+      className="ask-micro"
+      style={{ textTransform: "none", whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+    >
+      {JSON.stringify(step, null, 2)}
+    </pre>
+  );
+}
+
+/** Every candidate with its score and the threshold beside it
+ * (`docs/ux/trace.md` §3's Validation Rule) — the only way a near-miss
+ * abstention ("the right passage at 0.61 under a 0.65 threshold") reads as
+ * explained rather than broken. Sorted highest first so the near-miss is
+ * the first thing shown, not something to scan for. A score at or above
+ * the threshold is what actually cleared it (`--provenance`); below is
+ * shown the same way an unconfirmed value is (`--muted`), matching
+ * `design-system.md` §2 rather than inventing a third colour. */
+function RetrieveStepDetail({ step }: { step: TraceStep }) {
+  const threshold = retrievalThreshold(step);
+  const hits = retrievedHits(step);
+  return (
+    <div className="flex flex-col gap-1">
+      {threshold !== null ? (
+        <p className="ask-micro" style={{ textTransform: "none" }}>
+          Threshold {threshold.toFixed(2)}
+        </p>
+      ) : null}
+      {hits.length === 0 ? (
+        <p className="ask-micro" style={{ textTransform: "none" }}>
+          Nothing came back.
+        </p>
+      ) : (
+        <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
+          {hits.map((hit) => (
+            <li
+              key={hit.chunkId}
+              className="ask-micro"
+              style={{
+                textTransform: "none",
+                color: threshold !== null && hit.score >= threshold ? "var(--provenance)" : "var(--muted)",
+              }}
+            >
+              {hit.score.toFixed(2)}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** Memory facts and schema notes used by this turn, with their origin
+ * markers (`docs/ux/trace.md` §3's "Memory facts used", the Edge Case "a
+ * turn using memory heavily — facts listed with their origin markers"). The
+ * step itself carries only ids (`askwell.ask`'s `memory_fact_ids`/
+ * `schema_note_ids`) — this fetches each one's current subject/value/origin
+ * the same way a chip's popover already does
+ * (`lib/memory-chips.ts::fetchFactDetail`), rather than a second read path.
+ *
+ * `data-supplied={origin !== "inferred"}`, not `=== "user"` — a memory
+ * fact's own origins are `clarification`/`correction`/`manual`/`inferred`
+ * (`MEMORY_ORIGINS`), never literally `"user"`; only a schema note's are.
+ * `!== "inferred"` is the check every other marker in this codebase already
+ * uses (`ask-screen.tsx`, `memory-screen.tsx`) — tracker issue 428.
+ */
+function MemoryRetrieveStepDetail({ step }: { step: TraceStep }) {
+  const refs = memoryFactRefs(step);
+  const [details, setDetails] = useState<Record<string, FactDetail | null>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all(
+      refs.map(async (ref) => {
+        try {
+          const detail = await fetchFactDetail(ref.factKind, ref.factId);
+          return [refKey(ref), detail] as const;
+        } catch {
+          return [refKey(ref), null] as const;
+        }
+      }),
+    ).then((entries) => {
+      if (!cancelled) setDetails(Object.fromEntries(entries));
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `refs` is derived fresh from `step` every render
+  }, [step]);
+
+  if (refs.length === 0) return null;
+
+  return (
+    <ul className="flex flex-col gap-1" style={{ listStyle: "none", margin: 0, padding: 0 }}>
+      {refs.map((ref) => {
+        const fact = details[refKey(ref)];
+        return (
+          <li key={refKey(ref)} className="flex items-center gap-2">
+            {fact === undefined ? (
+              <span className="ask-micro" style={{ textTransform: "none" }}>
+                Loading…
+              </span>
+            ) : fact === null ? (
+              <span className="ask-micro" style={{ textTransform: "none" }}>
+                This fact is no longer available.
+              </span>
+            ) : (
+              <>
+                <span
+                  className="ask-confidence-marker"
+                  data-supplied={fact.origin !== "inferred"}
+                  aria-hidden="true"
+                />
+                <span className="ask-micro" style={{ textTransform: "none" }}>
+                  {fact.subject} = {fact.value}
+                </span>
+              </>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function refKey(ref: MemoryFactRef): string {
+  return `${ref.factKind}:${ref.factId}`;
+}
+
+/** A database turn — the generated query, whether validation accepted it,
+ * and the injected `LIMIT` (`docs/ux/trace.md` §3). Rejected SQL is shown,
+ * not hidden: "the signal that generation has degraded" is invisible
+ * unless surfaced here (`../audit-log.md` §7, this ticket's own Detailed
+ * Description). `QueryDisclosure` is the same component a completed
+ * database answer already renders the query with — its `LIMIT ... /*
+ * Added by Askwell *\/` highlighting is what makes the injected limit
+ * visible without a second field to keep in sync. */
+function SqlStepDetail({ sql }: { sql: ReturnType<typeof sqlStepInfo> }) {
+  if (sql === null) return null;
+  const failed = sql.outcome !== "ok" && sql.outcome !== "executed";
+  return (
+    <div className="flex flex-col gap-1">
+      <p className="ask-micro" style={{ textTransform: "none" }}>
+        {sql.outcome}
+        {sql.rows !== null ? ` — ${sql.rows} row${sql.rows === 1 ? "" : "s"}` : ""}
+        {sql.truncated === true ? ", truncated" : ""}
+      </p>
+      {failed && sql.reason !== null ? (
+        // Rendered fully, never truncated — the ticket's own edge case
+        // ("a rejected query with a long reason") and the reason this
+        // whole step exists to show.
+        <p className="ask-micro" style={{ textTransform: "none", whiteSpace: "pre-wrap" }}>
+          Reason: {sql.reason}
+        </p>
+      ) : null}
+      {sql.query !== null ? <QueryDisclosure query={sql.query} /> : null}
+    </div>
+  );
+}
+
+/** A tool call's own arguments and, when C7 flagged it, the patterns found
+ * (`docs/ux/trace.md` §3's "Injection flags" — "flagged here, per step for
+ * a tool call, not as an alarm in the answer"). Rendered as information: no
+ * warning colour, no icon, `--muted` text like any other metadata. */
+function ToolStepDetail({ step }: { step: TraceStep }) {
+  const patterns = toolInjectionPatterns(step);
+  const args =
+    step.arguments && typeof step.arguments === "object"
+      ? (step.arguments as Record<string, unknown>)
+      : {};
+  return (
+    <div className="flex flex-col gap-1">
+      {Object.keys(args).length > 0 ? (
+        <pre
+          className="ask-micro"
+          style={{ textTransform: "none", whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0 }}
+        >
+          {JSON.stringify(args, null, 2)}
+        </pre>
+      ) : null}
+      {patterns !== null ? (
+        <p className="ask-micro" style={{ textTransform: "none", color: "var(--muted)" }}>
+          May contain instruction-like text
+          {patterns.length > 0 ? `: ${patterns.join(", ")}` : ""}
+        </p>
+      ) : null}
+    </div>
   );
 }

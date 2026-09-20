@@ -8,10 +8,11 @@
  * this module's job is turning that raw, differently-shaped-per-`kind`
  * object into the summary line a non-technical reader needs — the deeper
  * formatting of what is *inside* a step (scores, passages, a query's own
- * syntax highlighting) is `M5-TRACE-FE-120`'s scope, Out of Scope here. The
- * fallback for a step this module does not specifically know how to phrase
- * is its raw `kind`, never a blank line — an unfamiliar step kind is still a
- * row in the sequence.
+ * syntax highlighting) is `M5-TRACE-FE-120`'s own scope, added below the
+ * `M5-TRACE-FE-119` reading functions this docstring originally described.
+ * The fallback for a step this module does not specifically know how to
+ * phrase is its raw `kind`, never a blank line — an unfamiliar step kind is
+ * still a row in the sequence.
  */
 
 export interface TraceStep {
@@ -19,11 +20,32 @@ export interface TraceStep {
   [key: string]: unknown;
 }
 
+/** The turn's own backend, named once rather than per step (`docs/ux/
+ * trace.md` §3's "Backend" row) — `askwell.ask` writes exactly this shape
+ * onto every `trace`, local or (once M8 lands) online. */
+export interface TraceBackend {
+  mode: string;
+  model: string;
+}
+
+/** One call `run_tool_loop` (`M5-LOOP-BE-116`) was about to make when the
+ * 8-call ceiling cut it off — `LoopResult.pending_calls`, carried onto
+ * `trace.loop_pending_calls` verbatim. */
+export interface PendingToolCall {
+  tool: string;
+  arguments: Record<string, unknown>;
+}
+
 export interface TraceData {
   steps: TraceStep[];
   steps_truncated: boolean;
   trace_rotated: boolean;
   status?: string;
+  backend?: TraceBackend;
+  loop_stopped_reason?: string | null;
+  loop_pending_calls?: PendingToolCall[];
+  injection_flagged?: boolean;
+  injection_patterns?: string[];
   [key: string]: unknown;
 }
 
@@ -173,6 +195,105 @@ export function traceRows(steps: TraceStep[]): TraceRow[] {
     expandable: hasExpandableDetail(step),
     step,
   }));
+}
+
+/** One retrieved passage's id and comparable score — `retrieve`'s own
+ * `hits`, sorted highest first so the near-miss the abstention trace exists
+ * to show (`docs/ux/trace.md` §3) reads as the top of the list, not
+ * something to hunt for. */
+export interface RetrievedHit {
+  chunkId: string;
+  score: number;
+}
+
+export function retrievedHits(step: TraceStep): RetrievedHit[] {
+  const hits = Array.isArray(step.hits) ? (step.hits as { chunk_id: string; score: number }[]) : [];
+  return hits
+    .map((hit) => ({ chunkId: hit.chunk_id, score: hit.score }))
+    .sort((a, b) => b.score - a.score);
+}
+
+export function retrievalThreshold(step: TraceStep): number | null {
+  return typeof step.threshold === "number" ? step.threshold : null;
+}
+
+/** A `memory_retrieve` step carries only ids (`askwell.ask`'s own
+ * `memory_fact_ids`/`schema_note_ids`) — the origin, subject and value a
+ * reader needs come from `GET /memory/facts/{kind}/{id}`
+ * (`lib/memory-chips.ts::fetchFactDetail`), fetched per id by the panel. */
+export interface MemoryFactRef {
+  factKind: "memory" | "schema_note";
+  factId: string;
+}
+
+export function memoryFactRefs(step: TraceStep): MemoryFactRef[] {
+  const facts = Array.isArray(step.memory_fact_ids) ? (step.memory_fact_ids as string[]) : [];
+  const notes = Array.isArray(step.schema_note_ids) ? (step.schema_note_ids as string[]) : [];
+  return [
+    ...facts.map((factId): MemoryFactRef => ({ factKind: "memory", factId })),
+    ...notes.map((factId): MemoryFactRef => ({ factKind: "schema_note", factId })),
+  ];
+}
+
+/** A database turn's query, validation outcome and rejection/failure
+ * reason, read the same way whether it came from the single-shot SQL turn
+ * (`kind: "sql"`) or a `database_query` tool call inside the loop
+ * (`kind: "tool"`, `tool: "database_query"`) — `docs/ux/trace.md` §3 draws
+ * no distinction between the two, and a reader should not have to know
+ * which path answered. `null` when a step carries neither shape. */
+export interface SqlStepInfo {
+  query: string | null;
+  outcome: string;
+  reason: string | null;
+  rows: number | null;
+  truncated: boolean | null;
+}
+
+export function sqlStepInfo(step: TraceStep): SqlStepInfo | null {
+  if (step.kind === "sql") {
+    return {
+      query: typeof step.query === "string" ? step.query : null,
+      outcome: typeof step.outcome === "string" ? step.outcome : "unknown",
+      reason: typeof step.reason === "string" ? step.reason : null,
+      rows: typeof step.rows === "number" ? step.rows : null,
+      truncated: typeof step.truncated === "boolean" ? step.truncated : null,
+    };
+  }
+  if (step.kind === "tool" && step.tool === "database_query") {
+    const detail = (step.detail && typeof step.detail === "object" ? step.detail : {}) as Record<
+      string,
+      unknown
+    >;
+    const outcome = typeof step.outcome === "string" ? step.outcome : "unknown";
+    return {
+      query: typeof detail.query === "string" ? detail.query : null,
+      outcome,
+      // `askwell.agent.tools._err`'s own `**detail` kwargs — the same
+      // `reason` code `kind: "sql"` carries for the single-shot path, not
+      // a second, differently-shaped message.
+      reason: typeof detail.reason === "string" ? detail.reason : null,
+      rows: typeof detail.row_count === "number" ? detail.row_count : null,
+      truncated: null,
+    };
+  }
+  return null;
+}
+
+/** A tool call's own injection flag (`M5-TOOLS-BE-114`'s `ToolStep`) —
+ * information, never an alarm (`docs/ux/trace.md` §3, this ticket's own
+ * Scope). */
+export function toolInjectionPatterns(step: TraceStep): string[] | null {
+  if (step.kind !== "tool" || step.injection_flagged !== true) return null;
+  return Array.isArray(step.injection_patterns) ? (step.injection_patterns as string[]) : [];
+}
+
+/** What the tool loop was about to do when the 8-call ceiling stopped it —
+ * `trace.loop_pending_calls`, only meaningful when `loop_stopped_reason`
+ * says the ceiling is why the turn stopped (`docs/ux/trace.md` §3's
+ * "Tool-ceiling stop"). */
+export function toolCeilingPendingCalls(trace: TraceData): PendingToolCall[] | null {
+  if (trace.loop_stopped_reason !== "tool_ceiling") return null;
+  return trace.loop_pending_calls ?? [];
 }
 
 // A local counter of trace opens (this ticket's own Analytics Events line) —
