@@ -526,3 +526,241 @@ async def test_a_second_ceiling_stop_in_the_same_chain_narrows_instead_of_contin
     assert result.stopped_reason == "tool_ceiling"
     assert result.continuation is None
     assert result.text.endswith(loop_module._NARROW_AGAIN_NOTE)
+
+
+class _StaggeredCallTool:
+    """Like `_FakeCallTool`, but each call sleeps its own configured delay
+    before returning — so a batch's calls can finish in a different order
+    than they were dispatched, letting `test_a_batchs_starts_all_arrive_
+    before_any_of_its_ends` actually exercise interleaving rather than
+    trusting that dispatch order and completion order happen to match.
+    """
+
+    def __init__(self, outcomes: dict[str, tuple[ToolResult, ToolStep, float]]) -> None:
+        self.outcomes = outcomes
+
+    async def __call__(
+        self, name: str, arguments: dict[str, Any], *, session: Any, settings: Any, client: Any
+    ) -> tuple[ToolResult, ToolStep]:
+        key = f"{name}:{json.dumps(arguments, sort_keys=True)}"
+        result, step, delay = self.outcomes[key]
+        await asyncio.sleep(delay)
+        return result, step
+
+
+@pytest.mark.asyncio
+async def test_a_batchs_starts_all_arrive_before_any_of_its_ends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_tool = _StaggeredCallTool(
+        {
+            'document_search:{"query": "contract"}': (
+                *_ok_outcome("document_search", {"passages": ["net 30"]}, {"query": "contract"}),
+                0.02,
+            ),
+            'database_query:{"question": "payments"}': (
+                *_ok_outcome("database_query", {"rows": []}, {"question": "payments"}),
+                0.0,
+            ),
+        }
+    )
+    monkeypatch.setattr(loop_module, "call_tool", fake_tool)
+    client = _FakeClient(
+        responses=[
+            json.dumps(
+                {
+                    "type": "tool_calls",
+                    "calls": [
+                        {"tool": "document_search", "arguments": {"query": "contract"}},
+                        {"tool": "database_query", "arguments": {"question": "payments"}},
+                    ],
+                }
+            ),
+            json.dumps({"type": "answer", "text": "Acme is paid late [1][2]."}),
+        ]
+    )
+    events: list[tuple[str, str, str | None]] = []
+
+    def observer(event: loop_module.ToolCallEvent) -> None:
+        events.append((event.phase, event.tool, event.outcome))
+
+    result = await run_tool_loop(
+        cast(Any, None),
+        cast(Any, None),
+        cast(Any, client),
+        question="Which suppliers are paid late?",
+        on_tool_call=observer,
+    )
+
+    assert result.stopped_reason == "answered"
+    phases = [phase for phase, _, _ in events]
+    # Both starts land before either end, even though `database_query`
+    # (dispatched second) actually finishes first (`delay=0.0`) — proving
+    # this is observed per call, not reconstructed from the batch finishing.
+    assert phases == ["start", "start", "end", "end"]
+    starts = {tool for phase, tool, _ in events if phase == "start"}
+    ends = {tool for phase, tool, _ in events if phase == "end"}
+    assert starts == ends == {"document_search", "database_query"}
+    assert {outcome for phase, _, outcome in events if phase == "end"} == {"ok"}
+
+
+@pytest.mark.asyncio
+async def test_a_deduplicated_call_fires_no_observer_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_tool = _FakeCallTool(
+        {
+            'document_search:{"query": "contract"}': _ok_outcome(
+                "document_search", {"passages": ["net 30"]}, {"query": "contract"}
+            ),
+        }
+    )
+    _install_call_tool(monkeypatch, fake_tool)
+    client = _FakeClient(
+        responses=[
+            json.dumps(
+                {
+                    "type": "tool_calls",
+                    "calls": [{"tool": "document_search", "arguments": {"query": "contract"}}],
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "tool_calls",
+                    "calls": [{"tool": "document_search", "arguments": {"query": "contract"}}],
+                }
+            ),
+            json.dumps({"type": "answer", "text": "Net 30 [1]."}),
+        ]
+    )
+    events: list[str] = []
+
+    def observer(event: loop_module.ToolCallEvent) -> None:
+        events.append(event.phase)
+
+    result = await run_tool_loop(
+        cast(Any, None),
+        cast(Any, None),
+        cast(Any, client),
+        question="What are the terms?",
+        on_tool_call=observer,
+    )
+
+    assert result.stopped_reason == "answered"
+    # One real dispatch → one start, one end. The second (deduplicated) ask
+    # never runs the tool again, so it fires no observer events at all.
+    assert events == ["start", "end"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_call_still_fires_an_end_event_marked_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    error_result = ToolResult(
+        content=None,
+        truncated=False,
+        error=ToolError(ToolErrorCode.NO_CONNECTION, "No connected database."),
+    )
+    error_step = _tool_step("database_query", outcome="no_connection", arguments={"question": "x"})
+    fake_tool = _FakeCallTool({'database_query:{"question": "x"}': (error_result, error_step)})
+    _install_call_tool(monkeypatch, fake_tool)
+    client = _FakeClient(
+        responses=[
+            json.dumps(
+                {
+                    "type": "tool_calls",
+                    "calls": [{"tool": "database_query", "arguments": {"question": "x"}}],
+                }
+            ),
+            json.dumps({"type": "answer", "text": "Could not check that."}),
+        ]
+    )
+    events: list[tuple[str, str | None]] = []
+
+    def observer(event: loop_module.ToolCallEvent) -> None:
+        events.append((event.phase, event.outcome))
+
+    result = await run_tool_loop(
+        cast(Any, None),
+        cast(Any, None),
+        cast(Any, client),
+        question="Is the database up to date?",
+        on_tool_call=observer,
+    )
+
+    assert result.stopped_reason == "answered"
+    assert events == [("start", None), ("end", "no_connection")]
+
+
+@pytest.mark.asyncio
+async def test_with_no_observer_the_loop_result_is_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_tool = _FakeCallTool(
+        {
+            'document_search:{"query": "contract terms"}': _ok_outcome(
+                "document_search", {"passages": ["net 30"]}, {"query": "contract terms"}
+            )
+        }
+    )
+    _install_call_tool(monkeypatch, fake_tool)
+    client = _FakeClient(
+        responses=[
+            json.dumps(
+                {
+                    "type": "tool_calls",
+                    "calls": [
+                        {"tool": "document_search", "arguments": {"query": "contract terms"}}
+                    ],
+                }
+            ),
+            json.dumps({"type": "answer", "text": "Payment terms are net 30 [1]."}),
+        ]
+    )
+
+    result = await run_tool_loop(
+        cast(Any, None), cast(Any, None), cast(Any, client), question="What are the payment terms?"
+    )
+
+    assert result.stopped_reason == "answered"
+    assert result.text == "Payment terms are net 30 [1]."
+    assert len(fake_tool.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_observer_that_raises_is_swallowed_and_the_turn_completes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_tool = _FakeCallTool(
+        {
+            'document_search:{"query": "contract"}': _ok_outcome(
+                "document_search", {"passages": ["net 30"]}, {"query": "contract"}
+            ),
+        }
+    )
+    _install_call_tool(monkeypatch, fake_tool)
+    client = _FakeClient(
+        responses=[
+            json.dumps(
+                {
+                    "type": "tool_calls",
+                    "calls": [{"tool": "document_search", "arguments": {"query": "contract"}}],
+                }
+            ),
+            json.dumps({"type": "answer", "text": "Net 30 [1]."}),
+        ]
+    )
+
+    def bad_observer(event: loop_module.ToolCallEvent) -> None:
+        raise RuntimeError("boom")
+
+    result = await run_tool_loop(
+        cast(Any, None),
+        cast(Any, None),
+        cast(Any, client),
+        question="What are the terms?",
+        on_tool_call=bad_observer,
+    )
+
+    assert result.stopped_reason == "answered"
+    assert result.text == "Net 30 [1]."

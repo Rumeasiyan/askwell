@@ -49,10 +49,11 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -131,6 +132,46 @@ def _describe_tool(name: str) -> str:
 def _tool_catalogue() -> str:
     lines = "\n".join(_describe_tool(name) for name in TOOLS)
     return f"<tools>\n{lines}\n</tools>"
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCallEvent:
+    """One call's start or end, `M5-LOOP-BE-117a`. `call_id` is the same
+    dedup key `_call_key` already computes — stable per distinct
+    `(tool, arguments)` pair within a turn, which is what "identify which
+    call it belongs to" (this ticket's own Validation Rule) needs; nothing
+    new is invented to name it. `outcome` is `None` on `start` (nothing has
+    run yet) and the tool's real outcome (`"ok"` or an error code) on `end`.
+    """
+
+    phase: Literal["start", "end"]
+    tool: str
+    call_id: str
+    arguments: dict[str, Any]
+    outcome: str | None = None
+
+
+ToolCallObserver = Callable[[ToolCallEvent], None]
+
+
+def _notify(observer: ToolCallObserver | None, event: ToolCallEvent) -> None:
+    """Fire the observer, if one was given, isolated from the loop it is
+    watching — same posture as `askwell.traces.TraceRing.write`: an
+    observer is a caller's own concern, and a broken one is not a reason to
+    fail the turn it is merely watching.
+    """
+    if observer is None:
+        return
+    try:
+        observer(event)
+    except Exception as error:
+        log.warning(
+            "tool_call_observer_failed",
+            phase=event.phase,
+            tool=event.tool,
+            call_id=event.call_id,
+            error=str(error),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -377,6 +418,7 @@ async def run_tool_loop(
     source_id: UUID | None = None,
     resume: LoopContinuation | None = None,
     continuation_count: int = 0,
+    on_tool_call: ToolCallObserver | None = None,
 ) -> LoopResult:
     """Call tools, read results, decide whether more is needed, then answer.
 
@@ -393,6 +435,15 @@ async def run_tool_loop(
     stopped turn's count; the point of a new turn is a fresh budget, not a
     shared one. `continuation_count` is how many stops already led to this
     turn, `0` for an original question.
+
+    `on_tool_call` (`M5-LOOP-BE-117a`) fires once per call actually
+    dispatched — never for a deduplicated one, which never runs — with a
+    `"start"` event immediately before it and a `"end"` event immediately
+    after. A parallel batch's `"start"` events are all fired, synchronously,
+    before any of that batch is awaited, so they are always seen before any
+    of the batch's `"end"` events — observed per call, not reconstructed
+    from the batch finishing. `None` (the default) changes nothing about
+    the loop's own behaviour.
     """
     loop_started = time.monotonic()
     system_prompt = _load_system_prompt()
@@ -492,11 +543,22 @@ async def run_tool_loop(
         ]
 
         async def _run_one(
-            tool_name: str, tool_arguments: dict[str, Any]
+            tool_name: str, tool_arguments: dict[str, Any], call_id: str
         ) -> tuple[ToolResult, ToolStep]:
-            return await call_tool(
+            result, tool_step = await call_tool(
                 tool_name, tool_arguments, session=session, settings=settings, client=client
             )
+            _notify(
+                on_tool_call,
+                ToolCallEvent(
+                    phase="end",
+                    tool=tool_name,
+                    call_id=call_id,
+                    arguments=tool_arguments,
+                    outcome=tool_step.outcome,
+                ),
+            )
+            return result, tool_step
 
         # Only the first occurrence of each distinct key this iteration is
         # actually dispatched — a key already in `records` (an earlier
@@ -521,10 +583,18 @@ async def run_tool_loop(
 
         results: dict[str, tuple[ToolResult, ToolStep]] = {}
         if run_now:
+            # Every `"start"` fired synchronously, before any call is
+            # awaited, so a parallel batch's starts are always seen before
+            # any of that batch's ends (`on_tool_call`'s own contract).
+            for tool_name, arguments, key in run_now:
+                _notify(
+                    on_tool_call,
+                    ToolCallEvent(phase="start", tool=tool_name, call_id=key, arguments=arguments),
+                )
             # Concurrent, not sequential: none of the five tools write
             # anything, so two independently emitted calls have no reason
             # to wait on each other (the module docstring).
-            outcomes = await asyncio.gather(*(_run_one(n, a) for n, a, _ in run_now))
+            outcomes = await asyncio.gather(*(_run_one(n, a, k) for n, a, k in run_now))
             results = {key: outcome for (_, _, key), outcome in zip(run_now, outcomes, strict=True)}
 
         pending_calls: list[dict[str, Any]] = []
