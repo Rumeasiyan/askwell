@@ -137,6 +137,13 @@ class Settings(BaseSettings):
     voice_host: str = "0.0.0.0"
     voice_port: Port = 8090
 
+    # Where `api` dials the `voice` container from, for the transcription
+    # call `M6-STT-BE-127` adds (`askwell.voice_stt`). Same dual-purpose
+    # shape as `egress_proxy_host`/`egress_proxy_port` above: `voice_port` is
+    # both the service's own bind port and the port every other service
+    # reaches it on, since `compose.yaml` maps the same number both ways.
+    voice_service_host: str = "voice"
+
     # Bounds how many audio chunks may sit unconsumed on either side of the
     # voice WebSocket (`M6-AUDIO-API-126`) before the other end is made to
     # wait. This is the ticket's backpressure requirement given a concrete

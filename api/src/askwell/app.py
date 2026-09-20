@@ -32,6 +32,7 @@ from askwell.setup import register_setup
 from askwell.sources import register_sources
 from askwell.suggestions import register_suggestions
 from askwell.voice_channel import register_voice_channel
+from askwell.voice_stt import build_stt_driver
 
 log = get_logger(__name__)
 
@@ -114,7 +115,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_review(app, resolved, app.state.sessions)
     register_memory(app, resolved, app.state.sessions)
     register_setup(app, resolved, app.state.sessions)
-    register_voice_channel(app, resolved)
+    register_voice_channel(app, resolved, driver=build_stt_driver(resolved, app.state.sessions))
 
     @app.get("/health")
     async def health(request: Request) -> JSONResponse:

@@ -1,14 +1,20 @@
-"""The voice service: a `/health` surface over the three loaded models.
+"""The voice service: a `/health` surface over the three loaded models, plus
+`/transcribe` since `M6-STT-BE-127`.
 
-M6-AUDIO-DEPLOY-125's whole scope. There is no audio endpoint yet — sending
-and receiving audio is `M6-AUDIO-API-126`'s WebSocket transport — so today
-this process does exactly one useful thing: it loads what it can from local
-files at startup and says, per model, whether it is usable and why not.
+`M6-AUDIO-DEPLOY-125` built the health surface: this process loads what it can
+from local files at startup and says, per model, whether it is usable and why
+not. `M6-STT-BE-127` adds the one thing worth doing with a loaded Whisper —
+`api`'s voice WebSocket channel (`askwell.voice_channel`, `askwell.voice_stt`)
+calls `/transcribe` with one complete spoken turn's audio and gets a
+transcript, a confidence measure, or an unsupported-language / no-speech
+verdict back. Synthesis (`M6-TTS-BE-130`) has no endpoint yet.
 
 Runs on `internal` only (`compose.yaml`) — no egress network membership at
 all, unlike `api` and `worker`. It has nothing to reach: every model is a
 local file, and there is no online-AI or web-search path through voice mode
-(`docs/decisions.md` — no escalation to the web from voice).
+(`docs/decisions.md` — no escalation to the web from voice). `/transcribe` is
+only ever called from `api`, over that same `internal` network — never from
+the browser, which has no route to this container at all.
 """
 
 from __future__ import annotations
@@ -16,13 +22,14 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from askwell import __version__
 from askwell.config import Environment, Settings, load_settings
 from askwell.logging import configure_logging, get_logger
 from askwell.voice.models import VoiceModels, load_models
+from askwell.voice.transcribe import transcribe
 
 log = get_logger(__name__)
 
@@ -83,6 +90,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # here would reintroduce the aggregate boolean the rest of the
         # codebase deliberately has nowhere.
         return JSONResponse(_health_payload(app.state.models))
+
+    @app.post("/transcribe")
+    async def transcribe_endpoint(request: Request) -> JSONResponse:
+        models: VoiceModels = app.state.models
+        if models.whisper is None:
+            # Unlike `/health`, this is an action, not a status report — a
+            # caller that cannot transcribe needs to fail the turn rather
+            # than receive 200 with a body it has to inspect to learn that.
+            # `askwell.voice_stt.TranscriptionUnavailable` is the other half.
+            return JSONResponse(
+                {"reason": models.whisper_health.reason or "Transcription model not loaded."},
+                status_code=503,
+            )
+        audio = await request.body()
+        result = transcribe(models.whisper, audio)
+        return JSONResponse(
+            {
+                "status": result.status,
+                "transcript": result.transcript,
+                "confidence": result.confidence,
+                "language": result.language,
+                "language_probability": result.language_probability,
+            }
+        )
 
     return app
 

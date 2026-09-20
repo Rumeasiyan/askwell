@@ -261,6 +261,11 @@ services:
       ASKWELL_LOG_LEVEL: ${ASKWELL_LOG_LEVEL:-INFO}
       ASKWELL_WEB_ASSETS_DIR: /app/web/out
       ASKWELL_INFERENCE_SOCKET: /run/askwell/inference.sock
+      # `M6-STT-BE-127`: where the voice WebSocket channel (mounted here, not
+      # on `voice`) calls `/transcribe`. Same value as `voice`'s own
+      # `ASKWELL_VOICE_PORT` below — one number, two roles, same shape as
+      # `egress_proxy_host`/`egress_proxy_port`.
+      ASKWELL_VOICE_SERVICE_HOST: voice
       # The sandbox's own superuser, over its own network. Used only by
       # `askwell.sandbox`'s control plane to create and drop per-source
       # databases (C3) — never by anything that runs dump content. See
@@ -290,8 +295,8 @@ services:
       HTTPS_PROXY: http://egress-proxy:3128
       http_proxy: http://egress-proxy:3128
       https_proxy: http://egress-proxy:3128
-      NO_PROXY: localhost,127.0.0.1,postgres,redis,worker
-      no_proxy: localhost,127.0.0.1,postgres,redis,worker
+      NO_PROXY: localhost,127.0.0.1,postgres,redis,worker,voice
+      no_proxy: localhost,127.0.0.1,postgres,redis,worker,voice
     volumes:
       # The socket the host-side inference supervisor listens on. Inference is
       # native so GPU acceleration works, and this network has no route off the
