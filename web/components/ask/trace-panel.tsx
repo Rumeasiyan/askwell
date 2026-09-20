@@ -10,13 +10,21 @@
  * pattern `rail-drawer.tsx` already established, not a navigation.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { useEffect, useRef, useState } from "react";
 
+import { useAsk } from "@/components/ask/ask-state";
+import { MemoryChip } from "@/components/ask/memory-chip";
+import { useDeletion } from "@/components/ask/provenance-margin";
 import { QueryDisclosure } from "@/components/ask/sql-result-table";
+import { documentHref, pageLabel, type CitationCard } from "@/lib/citations";
 import { fetchFactDetail, type FactDetail } from "@/lib/memory-chips";
 import {
+  buildTraceCopyText,
   fetchTrace,
+  hitCitation,
   memoryFactRefs,
+  recordTraceCopy,
   recordTraceOpened,
   retrievalThreshold,
   retrievedHits,
@@ -26,6 +34,7 @@ import {
   traceRows,
   type MemoryFactRef,
   type PendingToolCall,
+  type RetrievedHit,
   type TraceData,
   type TraceRow,
   type TraceStep,
@@ -41,18 +50,37 @@ const POLL_MS = 1000;
 
 /** The toggle under an answer (`docs/ux/trace.md`'s own Entry point) and the
  * panel it opens. One component so the open/closed state and the fetch it
- * drives cannot drift apart — the toggle is the only way in or out. */
-export function TraceToggle({ messageId, running }: { messageId: string | null; running: boolean }) {
-  const [open, setOpen] = useState(false);
+ * drives cannot drift apart — the toggle is the only way in or out.
+ *
+ * Open/closed state lives on `AskProvider` (`openTraceTurnId`), not as a
+ * local `useState`, since `M5-TRACE-FE-121`'s own assumption is that
+ * "returning from the viewer restores the trace panel" — a passage clicked
+ * inside the panel navigates away to the source viewer, which unmounts this
+ * component's own page entirely, and only state held above the router
+ * survives that round trip (`ask-state.tsx`'s own `AskApi` doc on
+ * `openTraceTurnId`). At most one turn's trace is ever open at a time, which
+ * matches this being a full-screen modal panel regardless of how many
+ * `TraceToggle`s exist on screen. */
+export function TraceToggle({
+  turnId,
+  messageId,
+  running,
+}: {
+  turnId: string;
+  messageId: string | null;
+  running: boolean;
+}) {
+  const { openTraceTurnId, openTrace, closeTrace } = useAsk();
   const control = useRef<HTMLButtonElement>(null);
+  const open = openTraceTurnId === turnId;
 
-  const close = useCallback(() => {
-    setOpen(false);
+  const close = (): void => {
+    closeTrace();
     // Closing returns to the conversation unchanged (the ticket's own
     // Acceptance Criteria) — including keyboard focus, which otherwise
     // drops to the top of the document.
     control.current?.focus();
-  }, []);
+  };
 
   if (messageId === null) return null;
 
@@ -63,7 +91,7 @@ export function TraceToggle({ messageId, running }: { messageId: string | null; 
         type="button"
         onClick={() => {
           recordTraceOpened();
-          setOpen(true);
+          openTrace(turnId);
         }}
         className="ask-navigates px-2 py-1"
         style={{ border: "1px solid var(--rule)", color: "var(--muted)", fontSize: "var(--t-ui)" }}
@@ -71,20 +99,26 @@ export function TraceToggle({ messageId, running }: { messageId: string | null; 
       >
         How did you get this?
       </button>
-      {open ? <TracePanel messageId={messageId} running={running} onClose={close} /> : null}
+      {open ? <TracePanel turnId={turnId} messageId={messageId} running={running} onClose={close} /> : null}
     </>
   );
 }
 
 function TracePanel({
+  turnId,
   messageId,
   running,
   onClose,
 }: {
+  turnId: string;
   messageId: string;
   running: boolean;
   onClose: () => void;
 }) {
+  const { turns } = useAsk();
+  const turn = turns.find((candidate) => candidate.id === turnId);
+  const citations = turn?.citations ?? [];
+  const question = turn?.question ?? "";
   const panel = useRef<HTMLDivElement>(null);
   const [trace, setTrace] = useState<TraceData | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -156,27 +190,65 @@ function TracePanel({
           <h2 className="ask-prose" style={{ margin: 0 }}>
             How did you get this?
           </h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="ask-navigates px-2 py-1"
-            style={{ border: "1px solid var(--rule)" }}
-          >
-            Close
-          </button>
+          <div className="flex items-center gap-2">
+            {trace !== null ? <CopyTraceButton trace={trace} question={question} /> : null}
+            <button
+              type="button"
+              onClick={onClose}
+              className="ask-navigates px-2 py-1"
+              style={{ border: "1px solid var(--rule)" }}
+            >
+              Close
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto px-4 py-3">
           {error !== null ? <p className="ask-prose">{error}</p> : null}
           {trace === null && error === null ? <p className="ask-micro">Loading.</p> : null}
-          {trace !== null ? <TraceBody trace={trace} /> : null}
+          {trace !== null ? <TraceBody trace={trace} turnId={turnId} citations={citations} /> : null}
         </div>
       </div>
     </>
   );
 }
 
-function TraceBody({ trace }: { trace: TraceData }) {
+/** "Copy trace" (`docs/ux/trace.md` §4, this ticket's own Scope) — plain
+ * text, via `buildTraceCopyText`, with the same copy-then-flash-"Copied"
+ * feedback `context-rail.tsx`'s `CopyPassage` already established for a
+ * clipboard action in this app. */
+function CopyTraceButton({ trace, question }: { trace: TraceData; question: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const copy = (): void => {
+    void navigator.clipboard.writeText(buildTraceCopyText(trace, question)).then(() => {
+      recordTraceCopy();
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      className="ask-navigates px-2 py-1"
+      style={{ border: "1px solid var(--rule)" }}
+    >
+      {copied ? "Copied" : "Copy trace"}
+    </button>
+  );
+}
+
+function TraceBody({
+  trace,
+  turnId,
+  citations,
+}: {
+  trace: TraceData;
+  turnId: string;
+  citations: CitationCard[];
+}) {
   // `docs/ux/trace.md` §5: traces are a capped ring buffer — an old one is
   // gone, and the important records (the answer and its sources) survive
   // regardless. This state takes priority over an empty step list, which
@@ -201,7 +273,7 @@ function TraceBody({ trace }: { trace: TraceData }) {
       ) : (
         <ol className="flex flex-col gap-3" style={{ listStyle: "none", margin: 0, padding: 0 }}>
           {rows.map((row) => (
-            <TraceStepRow key={row.index} row={row} />
+            <TraceStepRow key={row.index} row={row} turnId={turnId} citations={citations} />
           ))}
           {trace.steps_truncated ? (
             <li className="ask-micro">Some steps from this turn were left out to keep the trace short.</li>
@@ -250,7 +322,15 @@ function ToolCeilingNote({ pendingCalls }: { pendingCalls: PendingToolCall[] }) 
   );
 }
 
-function TraceStepRow({ row }: { row: TraceRow }) {
+function TraceStepRow({
+  row,
+  turnId,
+  citations,
+}: {
+  row: TraceRow;
+  turnId: string;
+  citations: CitationCard[];
+}) {
   return (
     <li className="flex flex-col gap-1">
       <div className="flex items-baseline justify-between gap-3">
@@ -273,7 +353,7 @@ function TraceStepRow({ row }: { row: TraceRow }) {
             show detail
           </summary>
           <div style={{ marginTop: "0.25rem" }}>
-            <StepDetail step={row.step} />
+            <StepDetail step={row.step} turnId={turnId} citations={citations} />
           </div>
         </details>
       ) : null}
@@ -286,8 +366,16 @@ function TraceStepRow({ row }: { row: TraceRow }) {
  * here. A kind this module does not specifically know how to render falls
  * back to the raw dump — the same "never a blank row" rule `stepSummary`
  * already follows for an unfamiliar `kind`. */
-function StepDetail({ step }: { step: TraceStep }) {
-  if (step.kind === "retrieve") return <RetrieveStepDetail step={step} />;
+function StepDetail({
+  step,
+  turnId,
+  citations,
+}: {
+  step: TraceStep;
+  turnId: string;
+  citations: CitationCard[];
+}) {
+  if (step.kind === "retrieve") return <RetrieveStepDetail step={step} turnId={turnId} citations={citations} />;
   if (step.kind === "memory_retrieve") return <MemoryRetrieveStepDetail step={step} />;
   const sql = sqlStepInfo(step);
   if (sql !== null) return <SqlStepDetail sql={sql} />;
@@ -313,8 +401,23 @@ function RawStepDetail({ step }: { step: TraceStep }) {
  * the first thing shown, not something to scan for. A score at or above
  * the threshold is what actually cleared it (`--provenance`); below is
  * shown the same way an unconfirmed value is (`--muted`), matching
- * `design-system.md` §2 rather than inventing a third colour. */
-function RetrieveStepDetail({ step }: { step: TraceStep }) {
+ * `design-system.md` §2 rather than inventing a third colour.
+ *
+ * `M5-TRACE-FE-121` adds full passage text and a click-through, but only
+ * for a hit that matches one of the answer's own citation cards
+ * (`hitCitation`) — the raw `{chunk_id, score}` pair a retrieval candidate
+ * carries has no filename or passage text of its own, and a candidate the
+ * answer never actually cited (a near-miss, or one outscored for its own
+ * claim) has nowhere for a click to go. */
+function RetrieveStepDetail({
+  step,
+  turnId,
+  citations,
+}: {
+  step: TraceStep;
+  turnId: string;
+  citations: CitationCard[];
+}) {
   const threshold = retrievalThreshold(step);
   const hits = retrievedHits(step);
   return (
@@ -329,22 +432,88 @@ function RetrieveStepDetail({ step }: { step: TraceStep }) {
           Nothing came back.
         </p>
       ) : (
-        <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
+        <ul className="flex flex-col gap-1" style={{ listStyle: "none", margin: 0, padding: 0 }}>
           {hits.map((hit) => (
-            <li
+            <PassageRow
               key={hit.chunkId}
-              className="ask-micro"
-              style={{
-                textTransform: "none",
-                color: threshold !== null && hit.score >= threshold ? "var(--provenance)" : "var(--muted)",
-              }}
-            >
-              {hit.score.toFixed(2)}
-            </li>
+              hit={hit}
+              threshold={threshold}
+              card={hitCitation(hit, citations)}
+              turnId={turnId}
+            />
           ))}
         </ul>
       )}
     </div>
+  );
+}
+
+function PassageRow({
+  hit,
+  threshold,
+  card,
+  turnId,
+}: {
+  hit: RetrievedHit;
+  threshold: number | null;
+  card: CitationCard | null;
+  turnId: string;
+}) {
+  const scoreColor = threshold !== null && hit.score >= threshold ? "var(--provenance)" : "var(--muted)";
+  // Not cited in the answer at all — nothing but the score to show, same as
+  // before this ticket.
+  if (card === null) {
+    return (
+      <li className="ask-micro" style={{ textTransform: "none", color: scoreColor }}>
+        {hit.score.toFixed(2)}
+      </li>
+    );
+  }
+  return <CitedPassageRow hit={hit} scoreColor={scoreColor} card={card} turnId={turnId} />;
+}
+
+/** A retrieved hit the answer actually cited: full passage text, and a
+ * click-through to the source viewer at that position (this ticket's own
+ * Scope) — unless the document it came from has since been deleted, in
+ * which case it renders the same way a deleted source already does in the
+ * answer's own cards (`useDeletion`, `provenance-margin.tsx`): greyed, not
+ * clickable (the ticket's own Edge Case). `card.claimOrdinals[0]` is enough
+ * for the viewer's "back to answer" origin — a citation card always has at
+ * least one claim, and the trace itself does not know which one sent
+ * someone looking at this particular candidate. */
+function CitedPassageRow({
+  hit,
+  scoreColor,
+  card,
+  turnId,
+}: {
+  hit: RetrievedHit;
+  scoreColor: string;
+  card: CitationCard;
+  turnId: string;
+}) {
+  const deletion = useDeletion(card.documentId);
+  const label = pageLabel(card);
+  return (
+    <li className="flex flex-col gap-0.5">
+      <span className="ask-micro" style={{ textTransform: "none", color: scoreColor }}>
+        {hit.score.toFixed(2)} · {card.filename}
+        {label !== null ? ` · ${label}` : ""}
+        {deletion.deleted ? " · deleted" : ""}
+      </span>
+      {deletion.deleted ? (
+        <span className="ask-prose" style={{ color: "var(--muted)" }}>
+          {card.passage}
+        </span>
+      ) : (
+        <Link
+          href={documentHref(card, { turnId, claimOrdinal: card.claimOrdinals[0]! })}
+          className="ask-navigates ask-prose"
+        >
+          {card.passage}
+        </Link>
+      )}
+    </li>
   );
 }
 
@@ -361,6 +530,15 @@ function RetrieveStepDetail({ step }: { step: TraceStep }) {
  * (`MEMORY_ORIGINS`), never literally `"user"`; only a schema note's are.
  * `!== "inferred"` is the check every other marker in this codebase already
  * uses (`ask-screen.tsx`, `memory-screen.tsx`) — tracker issue 428.
+ *
+ * `M5-TRACE-FE-121`: each fact renders as the same `MemoryChip` an answer's
+ * own claim uses — "clicking a memory fact opens the same popover as in an
+ * answer, with correct and delete" is only true reusing that component, not
+ * a lookalike. `claimOrdinal: 0` is a placeholder the popover never reads
+ * (`MemoryFactPopover` only ever uses `chip.factKind`/`chip.factId`/
+ * `chip.fact` as an initial-load fallback); nothing here has an actual claim
+ * to attach to, since a trace's retrieval step is not scoped to one claim
+ * the way an answer's own citation is.
  */
 function MemoryRetrieveStepDetail({ step }: { step: TraceStep }) {
   const refs = memoryFactRefs(step);
@@ -403,16 +581,18 @@ function MemoryRetrieveStepDetail({ step }: { step: TraceStep }) {
                 This fact is no longer available.
               </span>
             ) : (
-              <>
-                <span
-                  className="ask-confidence-marker"
-                  data-supplied={fact.origin !== "inferred"}
-                  aria-hidden="true"
-                />
-                <span className="ask-micro" style={{ textTransform: "none" }}>
-                  {fact.subject} = {fact.value}
-                </span>
-              </>
+              <MemoryChip
+                chip={{
+                  claimOrdinal: 0,
+                  factKind: ref.factKind,
+                  factId: ref.factId,
+                  subject: fact.subject,
+                  fact: fact.value,
+                  origin: fact.origin,
+                  confidence: null,
+                  suppliedAt: fact.createdAt,
+                }}
+              />
             )}
           </li>
         );

@@ -268,7 +268,10 @@ function SourceCard({
  * correct thing to show until proven otherwise, and on a local machine the
  * answer arrives before anyone would notice the difference.
  */
-function useDeletion(documentId: string): { deleted: boolean; deletedAt: string | null } {
+/** Exported for `trace-panel.tsx`'s own passage cards (`M5-TRACE-FE-121`),
+ * which need the identical "deleted, not clickable" rendering the answer's
+ * own cards already use rather than a second copy of the same fetch. */
+export function useDeletion(documentId: string): { deleted: boolean; deletedAt: string | null } {
   const [state, setState] = useState<{ deleted: boolean; deletedAt: string | null }>({
     deleted: false,
     deletedAt: null,
