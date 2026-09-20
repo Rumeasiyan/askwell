@@ -17,8 +17,10 @@ import { useAsk } from "@/components/ask/ask-state";
 import { MemoryChip } from "@/components/ask/memory-chip";
 import { useDeletion } from "@/components/ask/provenance-margin";
 import { QueryDisclosure } from "@/components/ask/sql-result-table";
+import { RetrievalThresholdControl } from "@/components/settings/retrieval-threshold";
 import { documentHref, pageLabel, type CitationCard } from "@/lib/citations";
 import { fetchFactDetail, type FactDetail } from "@/lib/memory-chips";
+import { nearMiss as findNearMiss } from "@/lib/retrieval-threshold";
 import {
   buildTraceCopyText,
   fetchTrace,
@@ -264,6 +266,7 @@ function TraceBody({
 
   const rows = traceRows(trace.steps);
   const pendingCalls = toolCeilingPendingCalls(trace);
+  const nearMiss = findNearMiss(trace);
 
   return (
     <div className="flex flex-col gap-3">
@@ -281,6 +284,16 @@ function TraceBody({
         </ol>
       )}
       {pendingCalls !== null ? <ToolCeilingNote pendingCalls={pendingCalls} /> : null}
+      {/* `M5-TRACE-FE-122`: offered only from an abstention trace showing a
+          near-miss — `findNearMiss` is `null` for every other case,
+          including an abstention with nothing retrieved at all
+          (`empty_corpus`/`source_indexing`), where loosening the threshold
+          would not have helped (the ticket's own Edge Case). */}
+      {nearMiss !== null ? (
+        <div style={{ borderTop: "1px solid var(--rule)", paddingTop: "0.75rem" }}>
+          <RetrievalThresholdControl nearMiss={nearMiss} />
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -25,7 +25,7 @@ from askwell.logging import configure_logging, get_logger
 from askwell.memory import register_memory
 from askwell.middleware import register_session
 from askwell.network import read_activity
-from askwell.retrieve import register_search
+from askwell.retrieve import register_retrieval_threshold, register_search
 from askwell.review import register_review
 from askwell.roots import register_roots
 from askwell.setup import register_setup
@@ -107,6 +107,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_ingest(app, resolved, app.state.sessions)
     register_ask(app, resolved, app.state.sessions)
     register_search(app, resolved, app.state.sessions)
+    register_retrieval_threshold(app, resolved, app.state.sessions)
     register_suggestions(app, app.state.sessions)
     register_documents(app, resolved, app.state.sessions)
     register_review(app, resolved, app.state.sessions)
