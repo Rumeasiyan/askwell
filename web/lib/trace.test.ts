@@ -9,9 +9,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import type { CitationCard } from "./citations.ts";
 import {
+  buildTraceCopyText,
   formatDuration,
   hasExpandableDetail,
+  hitCitation,
   memoryFactRefs,
   retrievalThreshold,
   retrievedHits,
@@ -258,4 +261,79 @@ test("toolCeilingPendingCalls names what the loop was about to do when the ceili
   assert.deepEqual(toolCeilingPendingCalls(trace), [
     { tool: "database_query", arguments: { question: "and then?" } },
   ]);
+});
+
+// --- hitCitation (M5-TRACE-FE-121) --------------------------------------------
+
+function card(over: Partial<CitationCard> = {}): CitationCard {
+  return {
+    chunkId: "c1",
+    documentId: "d1",
+    filename: "contract.pdf",
+    anchorKind: null,
+    heading: null,
+    pageFrom: 3,
+    pageTo: 3,
+    passage: "Notice is ninety days.",
+    quotedSpan: "ninety days",
+    claimOrdinals: [1],
+    ...over,
+  };
+}
+
+test("hitCitation finds the citation card the answer actually used for a hit", () => {
+  const cards = [card({ chunkId: "c1" }), card({ chunkId: "c2", documentId: "d2" })];
+  assert.equal(hitCitation({ chunkId: "c2", score: 0.7 }, cards), cards[1]);
+});
+
+test("hitCitation is null for a candidate the answer never cited", () => {
+  assert.equal(hitCitation({ chunkId: "unused", score: 0.5 }, [card()]), null);
+});
+
+// --- buildTraceCopyText (M5-TRACE-FE-121) -------------------------------------
+
+test("buildTraceCopyText includes the question, backend, steps, scores and threshold", () => {
+  const trace: TraceData = {
+    steps: [
+      { kind: "retrieve", ms: 340, threshold: 0.65, hits: [{ chunk_id: "c1", score: 0.81 }] },
+      { kind: "compose", ms: 8200, claims: 1, citations: 1 },
+    ],
+    steps_truncated: false,
+    trace_rotated: false,
+    backend: { mode: "local", model: "qwen2.5-7b" },
+  };
+  const text = buildTraceCopyText(trace, "What are the payment terms?");
+  assert.match(text, /Question: What are the payment terms\?/);
+  assert.match(text, /Backend: local · qwen2\.5-7b/);
+  assert.match(text, /Threshold 0\.65/);
+  assert.match(text, /Score 0\.81/);
+  assert.match(text, /Wrote the answer/);
+});
+
+test("buildTraceCopyText states a rotated trace rather than copying nothing", () => {
+  const trace: TraceData = { steps: [], steps_truncated: false, trace_rotated: true };
+  const text = buildTraceCopyText(trace, "A question");
+  assert.match(text, /cleared/);
+});
+
+test("buildTraceCopyText states truncation from the ring buffer, not just steps left out", () => {
+  const trace: TraceData = {
+    steps: [{ kind: "retrieve", ms: 1, threshold: 0.65, hits: [] }],
+    steps_truncated: true,
+    trace_rotated: false,
+  };
+  const text = buildTraceCopyText(trace, "A question");
+  assert.match(text, /Some steps from this turn were left out/);
+});
+
+test("buildTraceCopyText truncates a very long trace and says so in the copied text", () => {
+  const hits = Array.from({ length: 5000 }, (_, index) => ({ chunk_id: `c${index}`, score: 0.5 }));
+  const trace: TraceData = {
+    steps: [{ kind: "retrieve", ms: 1, threshold: 0.65, hits }],
+    steps_truncated: false,
+    trace_rotated: false,
+  };
+  const text = buildTraceCopyText(trace, "A question");
+  assert.match(text, /\[Trace truncated for length\.\]$/);
+  assert.ok(text.length < 21_000);
 });

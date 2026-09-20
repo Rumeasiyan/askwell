@@ -121,6 +121,17 @@ export interface AskApi {
   running: AskTurn | null;
   ask: (question: string, sourceId?: string | null) => void;
   stop: () => void;
+  /** Which turn's trace panel is open, `null` when none is (`trace-panel.tsx`'s
+   * `TraceToggle`). Held here rather than as that component's own local
+   * state because it must survive the round trip through the source viewer
+   * (`M5-TRACE-FE-121`'s own assumption: "returning from the viewer restores
+   * the trace panel rather than closing it") — a page component, including
+   * the one this toggle lives in, unmounts on every route change, and
+   * `AskProvider` is the one thing here that does not (same reason `turns`
+   * itself lives here, above). */
+  openTraceTurnId: string | null;
+  openTrace: (turnId: string) => void;
+  closeTrace: () => void;
 }
 
 const AskContext = createContext<AskApi | null>(null);
@@ -314,7 +325,14 @@ export function AskProvider({ children }: { children: ReactNode }) {
 
   const running = turns.find((turn) => turn.status === "running") ?? null;
 
-  const api = useMemo<AskApi>(() => ({ turns, running, ask, stop }), [turns, running, ask, stop]);
+  const [openTraceTurnId, setOpenTraceTurnId] = useState<string | null>(null);
+  const openTrace = useCallback((turnId: string): void => setOpenTraceTurnId(turnId), []);
+  const closeTrace = useCallback((): void => setOpenTraceTurnId(null), []);
+
+  const api = useMemo<AskApi>(
+    () => ({ turns, running, ask, stop, openTraceTurnId, openTrace, closeTrace }),
+    [turns, running, ask, stop, openTraceTurnId, openTrace, closeTrace],
+  );
 
   return <AskContext.Provider value={api}>{children}</AskContext.Provider>;
 }

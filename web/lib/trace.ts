@@ -13,7 +13,13 @@
  * The fallback for a step this module does not specifically know how to
  * phrase is its raw `kind`, never a blank line — an unfamiliar step kind is
  * still a row in the sequence.
+ *
+ * Click-through to a passage's source and the plain-text "copy trace"
+ * output (`M5-TRACE-FE-121`) are added at the bottom, past the tool-ceiling
+ * helpers `M5-TRACE-FE-119` left here last.
  */
+
+import type { CitationCard } from "@/lib/citations";
 
 export interface TraceStep {
   kind: string;
@@ -217,6 +223,22 @@ export function retrievalThreshold(step: TraceStep): number | null {
   return typeof step.threshold === "number" ? step.threshold : null;
 }
 
+/** Which of the answer's own citation cards a retrieved hit is — `null` for
+ * a candidate that was retrieved but never actually cited (scored below
+ * threshold, or outscored by another passage for the same claim). Only a
+ * matched hit carries a document to open: a citation card is the one place
+ * this trace's raw `{chunk_id, score}` pair gains a filename, a page and
+ * full passage text, and the one place a since-deleted document is already
+ * known (`provenance-margin.tsx`'s own `useDeletion`) — matching by
+ * `chunkId` reuses that rather than teaching the trace panel to fetch
+ * chunk metadata a second way. */
+export function hitCitation(
+  hit: RetrievedHit,
+  citations: readonly CitationCard[],
+): CitationCard | null {
+  return citations.find((card) => card.chunkId === hit.chunkId) ?? null;
+}
+
 /** A `memory_retrieve` step carries only ids (`askwell.ask`'s own
  * `memory_fact_ids`/`schema_note_ids`) — the origin, subject and value a
  * reader needs come from `GET /memory/facts/{kind}/{id}`
@@ -307,4 +329,90 @@ export function recordTraceOpened(): void {
 
 export function getTraceOpensCount(): number {
   return traceOpensCount;
+}
+
+/** "Copy trace produces plain text suitable for a bug report" (this
+ * ticket's own Detailed Description) — capped so a pathological trace
+ * (a long-running loop against a wide table) does not hand a bug report a
+ * multi-megabyte paste; the ticket's own edge case ("copying a very long
+ * trace") asks for the truncation to be *stated*, not merely applied. The
+ * cap is generous rather than tuned — this is a paste target, not a stored
+ * artifact with a byte budget to defend. */
+const TRACE_COPY_MAX_CHARS = 20_000;
+
+/** One step's own scores, threshold, reason and query — the detail
+ * `stepSummary`'s single line necessarily drops, and exactly the fields
+ * `docs/ux/trace.md` §3 and this ticket's own Acceptance Criteria name:
+ * "readable plain text containing the steps, scores, threshold and query."
+ * Generated SQL is copied verbatim from `sqlStepInfo`, which is itself never
+ * given credentials to carry (C2's validated, credential-free query text) —
+ * this function adds no field of its own that could. */
+function traceCopyDetailLines(step: TraceStep): string[] {
+  const lines: string[] = [];
+  if (step.kind === "retrieve") {
+    const threshold = retrievalThreshold(step);
+    if (threshold !== null) lines.push(`   Threshold ${threshold.toFixed(2)}`);
+    for (const hit of retrievedHits(step)) lines.push(`   Score ${hit.score.toFixed(2)}`);
+  }
+  const sql = sqlStepInfo(step);
+  if (sql !== null) {
+    const rows = sql.rows !== null ? ` — ${sql.rows} row${sql.rows === 1 ? "" : "s"}` : "";
+    lines.push(`   ${sql.outcome}${rows}${sql.truncated === true ? ", truncated" : ""}`);
+    if (sql.reason !== null) lines.push(`   Reason: ${sql.reason}`);
+    if (sql.query !== null) lines.push(`   Query: ${sql.query}`);
+  }
+  return lines;
+}
+
+/** The full plain-text export a "Copy trace" control produces — every
+ * step's summary and duration, its scores/threshold/query where it has
+ * them, the tool-ceiling note, and the question this turn actually asked
+ * (`question`, since a turn with no `retrieve` step at all — a database
+ * turn, an abstention before retrieval ran — still has one). Truncated at
+ * `TRACE_COPY_MAX_CHARS` with the truncation stated in the text itself,
+ * never silently. */
+export function buildTraceCopyText(trace: TraceData, question: string): string {
+  const lines: string[] = [`Question: ${question}`];
+  if (trace.backend !== undefined) {
+    lines.push(`Backend: ${trace.backend.mode} · ${trace.backend.model}`);
+  }
+  if (trace.trace_rotated) {
+    lines.push("", "The detailed trace for this answer has been cleared.");
+    return lines.join("\n");
+  }
+
+  const rows = traceRows(trace.steps);
+  if (rows.length === 0) {
+    lines.push("", "Nothing was recorded for this turn yet.");
+  }
+  for (const row of rows) {
+    lines.push("", `${row.index}. ${row.summary}${row.duration !== null ? ` (${row.duration})` : ""}`);
+    lines.push(...traceCopyDetailLines(row.step));
+  }
+  if (trace.steps_truncated) {
+    lines.push("", "Some steps from this turn were left out to keep the trace short.");
+  }
+
+  const pending = toolCeilingPendingCalls(trace);
+  if (pending !== null) {
+    lines.push("", "Stopped after 8 steps for this question.");
+    for (const call of pending) lines.push(`About to call ${call.tool}`);
+  }
+
+  const text = lines.join("\n");
+  if (text.length <= TRACE_COPY_MAX_CHARS) return text;
+  return `${text.slice(0, TRACE_COPY_MAX_CHARS)}\n\n[Trace truncated for length.]`;
+}
+
+// A local counter of trace copies (this ticket's own Analytics Events line) —
+// in-memory only, never persisted or transmitted (C1), same shape as
+// `recordTraceOpened` above.
+let traceCopiesCount = 0;
+
+export function recordTraceCopy(): void {
+  traceCopiesCount += 1;
+}
+
+export function getTraceCopiesCount(): number {
+  return traceCopiesCount;
 }

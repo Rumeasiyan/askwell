@@ -4,6 +4,27 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.4.38 - 2026-09-20
+
+`M5-TRACE-FE-121` — trace interactions: expand, click through, copy. The last ticket in the `TRACE` chain (`M5-TRACE-FE-119`/`-120`/`-BE-125`).
+
+A retrieved passage that the answer actually cited now shows its full text and a click-through to the source viewer at that position, reusing `documentHref`/`useDeletion`/`pageLabel` from the answer's own citation cards rather than a second read path — `web/lib/trace.ts`'s new `hitCitation` matches a trace hit's `chunk_id` against the turn's own `citations` (both sides stringify the same `candidate.chunk_id`, confirmed in `askwell.ask`). A hit the answer never actually cited (a near-miss, or one outscored for its claim) still renders only its score, since nothing else was ever sent to the browser for it. A passage from a since-deleted document renders greyed and not clickable, exactly like the answer's own cards. A memory fact in the trace is now the same `MemoryChip` an answer's claim renders — "the same popover... with correct and delete" is only true reusing that component, so it moved out of `ask-screen.tsx` into its own `web/components/ask/memory-chip.tsx` (avoiding a circular import back from `trace-panel.tsx`). "Copy trace" (`web/lib/trace.ts`'s new `buildTraceCopyText`) produces plain text with the question, backend, every step's summary/duration/scores/threshold/query, the tool-ceiling note, and a stated truncation past 20,000 characters.
+
+The trace panel's open/closed state moved from a local `useState` to `AskProvider` (`ask-state.tsx`'s new `openTraceTurnId`/`openTrace`/`closeTrace`) — clicking a passage navigates away to the source viewer, which unmounts the panel's own page, and only state held above the router survives that round trip. Returning via the viewer's existing "Back to answer" link (`ContextRail`) lands back on `/` with the same turn's trace panel still open, satisfying the ticket's own assumption without any new query-param plumbing.
+
+**Verified**: `scripts/dev.sh web-check` clean (lint, typecheck, 285 tests including 6 new ones for `hitCitation`/`buildTraceCopyText`, production build, token hygiene, contrast, offline check). Confirmed by reading `askwell.ask` that a `citation` event's `chunk_id` and a `retrieve` trace step's `hits[].chunk_id` are both `str(candidate.chunk_id)` of the same value, so the join `hitCitation` relies on is sound. **No browser available in this session, and the development database currently has no ingested documents or citations to click through** — the interactive round trip (click a passage, land in the viewer, return to a still-open trace; click a fact, correct it) was not exercised end-to-end against a real corpus. Re-verify visually once a corpus exists, or in the cold-start walkthrough this ticket's own Testing Notes describe.
+
+### Added
+
+- `web/lib/trace.ts` — `hitCitation`, `buildTraceCopyText`, `recordTraceCopy`/`getTraceCopiesCount`.
+- `web/components/ask/memory-chip.tsx` — `MemoryChip`, split out of `ask-screen.tsx` for reuse by the trace panel.
+- `web/components/ask/ask-state.tsx` — `AskApi.openTraceTurnId`/`openTrace`/`closeTrace`.
+
+### Changed
+
+- `web/components/ask/trace-panel.tsx` — `RetrieveStepDetail` renders a clickable, full-text passage for any cited hit; `MemoryRetrieveStepDetail` renders `MemoryChip` instead of static text; the panel header gained a "Copy trace" button.
+- `web/components/ask/provenance-margin.tsx` — `useDeletion` exported for reuse.
+
 ## 0.4.37 - 2026-09-20
 
 `M5-TRACE-FE-120` — what is inside a trace step's raw detail, formatted per `docs/ux/trace.md` §3 rather than the raw JSON `M5-TRACE-FE-119` left as every step's expander. A `retrieve` step now shows every candidate's score against the threshold, sorted highest first, so the near-miss that explains an abstention ("the right passage at 0.61 under a 0.65 threshold") reads as the top of the list rather than something to hunt for in JSON. A `memory_retrieve` step's ids are resolved to the fact's own subject, value and origin marker (`GET /memory/facts/{kind}/{id}`, the same read a chip's popover already uses) rather than left as bare UUIDs. A database turn — whether the single-shot `sql` path or a `database_query` tool call inside the loop — shows its query (`QueryDisclosure`, reused from `sql-result-table.tsx`, whose existing `LIMIT ... /* Added by Askwell */` highlighting is what surfaces the injected limit without a second field), its outcome, and, when rejected or failed, the full reason — never truncated, since it is the diagnostic `../audit-log.md` §7 exists to keep visible. A flagged tool call's C7 injection patterns render as plain metadata, no warning colour. Backend and model are now named once per turn, above the step list, from `trace.backend`; a tool-ceiling stop shows "Stopped after 8 steps for this question." and what it was about to do (`trace.loop_pending_calls`), below the step list.
