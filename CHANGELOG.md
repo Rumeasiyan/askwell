@@ -4,6 +4,19 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.5.2 - 2026-09-20
+
+`M6-AUDIO-API-126` — the bidirectional voice WebSocket transport, mounted on `api` (`/voice/ws`) rather than the `voice` container, since `api` is the only component reachable at all (`docs/architecture.md` §2). `api/src/askwell/voice_channel.py` adds `VoiceTurn`, the audio analogue of `askwell.ask`'s `_Turn`/`_turns`: a turn lives independently of any one connection, keyed by a server-minted `turn_id`, so a dropped connection can reconnect (`?turn_id=...`) and resume rather than restart. `transcript` and `text` are kept as running strings and resent in full on reattach ("the text is complete regardless" — `docs/ux/voice.md` §5); `audio_out` is a bounded queue with no history at all, so a reconnect just keeps draining the same queue from wherever it is — the mechanism that makes "the remaining audio, not from the start" true without any bookkeeping. Backpressure on both directions is a bounded `asyncio.Queue` (`Settings.voice_audio_queue_size`, default 32): a slow client stalls the producer rather than growing memory, and a long spoken question is forwarded chunk by chunk into `audio_in` rather than buffered whole.
+
+**There is no transcription or synthesis behind this channel yet** — `M6-STT-BE-127` and `M6-TTS-BE-130` are what will produce a real transcript and real speech, and `M6-STT-BE-127`'s own acceptance criteria already owns storing the transcript on `messages` and the audit record, so this ticket does neither. `register_voice_channel` takes an injectable `driver`; production runs `_default_driver`, which drains incoming audio and ends the turn the moment the client signals the end of speech, without inventing content — proving the transport rather than the pipeline.
+
+**Verified**: `scripts/dev.sh check` clean (861 passed, 1 skipped, 9 new in `test_voice_channel.py` covering the four event kinds on one connection, reconnect after completion, reconnect mid-synthesis without replaying already-delivered audio, and backpressure on both queues directly). **Cold-start walkthrough against the real, rebuilt, running stack**: connected a real `websockets` client from inside the running `api` container to `ws://127.0.0.1:8000/voice/ws`, sent audio frames and an `end` control message, and received the `turn` id followed by `status: completed`; reconnecting with the same `turn_id` after the first connection closed resumed the same turn and completed identically. `scripts/verify-localhost-binding.sh` still passes — the channel adds no new bound port, riding entirely on `api`'s existing loopback-only listener.
+
+### Added
+
+- `api/src/askwell/voice_channel.py` — `VoiceTurn`, `register_voice_channel`, the `/voice/ws` endpoint.
+- `askwell.config.Settings.voice_audio_queue_size` (default `32`).
+
 ## 0.5.1 - 2026-09-20
 
 `M6-AUDIO-DEPLOY-125` — the voice container, first ticket of Phase 5's second half. A new `voice` service (`api/src/askwell/voice/`, same image as `api`/`worker`, `askwell-voice` entrypoint) loads Whisper `small` (CTranslate2, via `faster-whisper`), Silero VAD (ONNX, via `onnxruntime` directly) and Kokoro-82M (ONNX, via `kokoro-onnx`) from local files at startup and reports transcription and synthesis health separately on `GET /health` — always `200`, matching `api/src/askwell/health.py`'s own no-aggregate-boolean rule. All three sources, licences and registry-verification dates are recorded in `api/src/askwell/voice/catalog.py`.
