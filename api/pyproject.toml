@@ -14,7 +14,10 @@ dependencies = [
     "beautifulsoup4>=4.12",
     "cryptography>=44.0",
     "fastapi>=0.115",
+    "faster-whisper>=1.2",
     "httpx>=0.27",
+    "kokoro-onnx>=0.4",
+    "onnxruntime>=1.19",
     "openpyxl>=3.1",
     "pgvector>=0.3",
     "psycopg[binary,pool]>=3.2",
@@ -38,6 +41,7 @@ askwell-worker = "askwell.worker:main"
 askwell-verify = "askwell.audit:main"
 askwell-egress-proxy = "askwell.egress:main"
 askwell-inference-bridge = "askwell.inference.bridge:main"
+askwell-voice = "askwell.voice.service:main"
 
 [dependency-groups]
 # Toolchain only. Runtime dependencies arrive with the code that needs them.
@@ -120,6 +124,15 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 # No py.typed marker and no stub package exists (checked 2026-09-18).
 module = ["pytds", "pytds.*"]
+ignore_missing_imports = true
+
+# Same reasoning again, for M6-AUDIO-DEPLOY-125: faster-whisper and
+# onnxruntime ship no stubs and no py.typed marker (checked 2026-09-20), and
+# each is touched at exactly one module boundary, `askwell/voice/models.py`,
+# which returns `Any` from both loaders rather than propagating the untyped
+# surface anywhere else.
+[[tool.mypy.overrides]]
+module = ["faster_whisper", "faster_whisper.*", "onnxruntime", "onnxruntime.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
