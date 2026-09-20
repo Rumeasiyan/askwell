@@ -372,6 +372,61 @@ test("steps accumulate rather than replacing one another", () => {
   );
 });
 
+test("a tool call's end updates its own start in place rather than doubling the line", () => {
+  // `M5-LOOP-FE-118`: `askwell.ask._tool_call_step` now forwards both
+  // phases of the same call sharing one `call_id` — the frontend has to
+  // collapse them back into one visible step, or every call would show
+  // twice.
+  let turn = turnState();
+  turn = {
+    ...turn,
+    ...applyAskEvent(turn, {
+      event: "step",
+      data: { label: "Searching your files.", kind: "tool", call_id: "c1", phase: "start", message_id: "m1" },
+    }),
+  };
+  assert.deepEqual(turn.steps.map((step) => step.label), ["Searching your files."]);
+  turn = {
+    ...turn,
+    ...applyAskEvent(turn, {
+      event: "step",
+      data: { label: "Searched your files.", kind: "tool", call_id: "c1", phase: "end", message_id: "m1" },
+    }),
+  };
+  assert.deepEqual(turn.steps.map((step) => step.label), ["Searched your files."]);
+});
+
+test("two calls dispatched together render as two concurrent entries, not a queue", () => {
+  let turn = turnState();
+  for (const [callId, label] of [
+    ["c1", "Searching your files."],
+    ["c2", "Querying your database."],
+  ] as const) {
+    turn = {
+      ...turn,
+      ...applyAskEvent(turn, {
+        event: "step",
+        data: { label, kind: "tool", call_id: callId, phase: "start", message_id: "m1" },
+      }),
+    };
+  }
+  assert.deepEqual(turn.steps.map((step) => step.label), [
+    "Searching your files.",
+    "Querying your database.",
+  ]);
+});
+
+test("a generic step with no call_id still always appends", () => {
+  let turn = turnState();
+  for (const label of ["Searching your files.", "Reading 2 sources."]) {
+    turn = {
+      ...turn,
+      ...applyAskEvent(turn, { event: "step", data: { label, kind: "retrieve", message_id: "m1" } }),
+    };
+  }
+  assert.deepEqual(turn.steps.map((step) => step.label), ["Searching your files.", "Reading 2 sources."]);
+});
+
 test("the server's message id is captured once and not overwritten", () => {
   let turn = turnState();
   turn = {

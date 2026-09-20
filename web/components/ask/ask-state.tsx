@@ -65,7 +65,7 @@ export interface AskTurn {
    * one place a question is deliberately scoped before it is even typed. */
   sourceId: string | null;
   status: TurnStatus;
-  steps: { label: string; kind: string }[];
+  steps: { label: string; kind: string; callId?: string }[];
   answer: string;
   /** One card per cited chunk, grouped by `applyCitation` (`lib/citations.ts`)
    * as `citation` events arrive — the provenance margin's own data, not
