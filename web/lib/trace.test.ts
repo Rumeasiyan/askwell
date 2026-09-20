@@ -9,7 +9,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { formatDuration, hasExpandableDetail, stepSummary, traceRows } from "./trace.ts";
+import {
+  formatDuration,
+  hasExpandableDetail,
+  memoryFactRefs,
+  retrievalThreshold,
+  retrievedHits,
+  sqlStepInfo,
+  stepSummary,
+  toolCeilingPendingCalls,
+  toolInjectionPatterns,
+  traceRows,
+  type TraceData,
+} from "./trace.ts";
 
 // --- formatDuration ----------------------------------------------------------
 
@@ -115,4 +127,135 @@ test("traceRows numbers steps from 1 in the order they were given", () => {
   assert.equal(rows[0]!.duration, "40 ms");
   assert.equal(rows[1]!.duration, "8.2 s");
   assert.equal(rows[1]!.summary, "Wrote the answer — 3 claims, 3 cited");
+});
+
+// --- retrievedHits / retrievalThreshold (M5-TRACE-FE-120) -----------------
+
+test("retrievedHits sorts highest score first, so a near-miss reads as the top of the list", () => {
+  const hits = retrievedHits({
+    kind: "retrieve",
+    hits: [
+      { chunk_id: "a", score: 0.4 },
+      { chunk_id: "b", score: 0.61 },
+      { chunk_id: "c", score: 0.2 },
+    ],
+  });
+  assert.deepEqual(
+    hits.map((hit) => hit.chunkId),
+    ["b", "a", "c"],
+  );
+});
+
+test("retrievalThreshold reads the stored threshold, null when absent", () => {
+  assert.equal(retrievalThreshold({ kind: "retrieve", threshold: 0.65 }), 0.65);
+  assert.equal(retrievalThreshold({ kind: "retrieve" }), null);
+});
+
+// --- memoryFactRefs ----------------------------------------------------------
+
+test("memoryFactRefs lists facts before schema notes, each tagged with its own kind", () => {
+  const refs = memoryFactRefs({
+    kind: "memory_retrieve",
+    memory_fact_ids: ["f1"],
+    schema_note_ids: ["n1", "n2"],
+  });
+  assert.deepEqual(refs, [
+    { factKind: "memory", factId: "f1" },
+    { factKind: "schema_note", factId: "n1" },
+    { factKind: "schema_note", factId: "n2" },
+  ]);
+});
+
+// --- sqlStepInfo -------------------------------------------------------------
+
+test("sqlStepInfo reads a single-shot SQL step's rejection in full", () => {
+  const info = sqlStepInfo({
+    kind: "sql",
+    outcome: "rejected",
+    reason: "not_a_single_read",
+    query: "DELETE FROM invoices",
+  });
+  assert.deepEqual(info, {
+    query: "DELETE FROM invoices",
+    outcome: "rejected",
+    reason: "not_a_single_read",
+    rows: null,
+    truncated: null,
+  });
+});
+
+test("sqlStepInfo reads a database_query tool step's rejection the same way as the single-shot path", () => {
+  const info = sqlStepInfo({
+    kind: "tool",
+    tool: "database_query",
+    outcome: "rejected",
+    detail: { reason: "write_detected", query: "UPDATE invoices SET paid = true" },
+  });
+  assert.deepEqual(info, {
+    query: "UPDATE invoices SET paid = true",
+    outcome: "rejected",
+    reason: "write_detected",
+    rows: null,
+    truncated: null,
+  });
+});
+
+test("sqlStepInfo reads an executed database_query tool step's row count", () => {
+  const info = sqlStepInfo({
+    kind: "tool",
+    tool: "database_query",
+    outcome: "ok",
+    detail: { query: "SELECT 1", row_count: 7 },
+  });
+  assert.deepEqual(info, { query: "SELECT 1", outcome: "ok", reason: null, rows: 7, truncated: null });
+});
+
+test("sqlStepInfo is null for a step that is neither SQL shape", () => {
+  assert.equal(sqlStepInfo({ kind: "retrieve" }), null);
+  assert.equal(sqlStepInfo({ kind: "tool", tool: "document_search" }), null);
+});
+
+// --- toolInjectionPatterns ----------------------------------------------------
+
+test("toolInjectionPatterns is null for an unflagged tool step", () => {
+  assert.equal(
+    toolInjectionPatterns({ kind: "tool", tool: "database_query", injection_flagged: false }),
+    null,
+  );
+});
+
+test("toolInjectionPatterns names the patterns found on a flagged tool step", () => {
+  assert.deepEqual(
+    toolInjectionPatterns({
+      kind: "tool",
+      tool: "database_query",
+      injection_flagged: true,
+      injection_patterns: ["ignore previous instructions"],
+    }),
+    ["ignore previous instructions"],
+  );
+});
+
+test("toolInjectionPatterns is null for a non-tool step even if it happens to carry the flag", () => {
+  assert.equal(toolInjectionPatterns({ kind: "sql", injection_flagged: true }), null);
+});
+
+// --- toolCeilingPendingCalls --------------------------------------------------
+
+test("toolCeilingPendingCalls is null when the turn did not stop at the ceiling", () => {
+  const trace: TraceData = { steps: [], steps_truncated: false, trace_rotated: false };
+  assert.equal(toolCeilingPendingCalls(trace), null);
+});
+
+test("toolCeilingPendingCalls names what the loop was about to do when the ceiling stopped it", () => {
+  const trace: TraceData = {
+    steps: [],
+    steps_truncated: false,
+    trace_rotated: false,
+    loop_stopped_reason: "tool_ceiling",
+    loop_pending_calls: [{ tool: "database_query", arguments: { question: "and then?" } }],
+  };
+  assert.deepEqual(toolCeilingPendingCalls(trace), [
+    { tool: "database_query", arguments: { question: "and then?" } },
+  ]);
 });
