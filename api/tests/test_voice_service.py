@@ -1,9 +1,12 @@
-"""The voice service's `/health` surface.
+"""The voice service's `/health` surface, and `/transcribe` since
+`M6-STT-BE-127`.
 
-Same rule as `test_app.py`: always 200, never an aggregate boolean. The two
-things this ticket's acceptance criteria actually ask for are that
-transcription and synthesis are reported *separately*, and that either can be
-missing without hiding the other.
+Same rule as `test_app.py`: always 200, never an aggregate boolean, for
+`/health`. The two things this ticket's acceptance criteria actually ask for
+are that transcription and synthesis are reported *separately*, and that
+either can be missing without hiding the other. `/transcribe` is an action,
+not a status report, so it is the one surface here that does answer with a
+non-200 when it cannot do what was asked.
 """
 
 import pytest
@@ -12,6 +15,8 @@ from fastapi.testclient import TestClient
 from askwell.config import Settings
 from askwell.voice import service
 from askwell.voice.models import ModelHealth, ModelState, VoiceModels
+
+from .test_voice_transcribe import _FakeWhisper, _Info, _Segment
 
 
 def _models(
@@ -95,3 +100,50 @@ def test_service_starts_counter_survives_across_health_calls_within_one_run(
         second = client.get("/health").json()["service_starts"]
     assert first == second
     assert first >= 1
+
+
+def _models_with_whisper(whisper: object) -> VoiceModels:
+    return VoiceModels(
+        whisper=whisper,
+        whisper_health=ModelHealth(name="whisper", state=ModelState.LOADED, path="/models/x"),
+        vad_session=object(),
+        vad_health=ModelHealth(name="vad", state=ModelState.LOADED, path="/models/vad"),
+        kokoro=object(),
+        kokoro_health=ModelHealth(name="kokoro", state=ModelState.LOADED, path="/models/kokoro"),
+    )
+
+
+def test_transcribe_returns_the_transcript_and_confidence(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _FakeWhisper(
+        segments=[_Segment(text=" hello there", start=0.0, end=1.0, avg_logprob=-0.1)],
+        info=_Info("en", 0.99),
+    )
+    monkeypatch.setattr(service, "load_models", lambda _settings: _models_with_whisper(fake))
+    with TestClient(service.create_app(settings)) as client:
+        response = client.post("/transcribe", content=b"\x01\x00" * 8000)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["transcript"] == "hello there"
+    assert payload["language"] == "en"
+    assert payload["confidence"] is not None
+
+
+def test_transcribe_without_a_loaded_model_answers_503_not_200(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unlike `/health`, this is an action a caller acts on — a 200 body the
+    caller has to inspect to learn transcription is unavailable would make
+    `askwell.voice_stt.TranscriptionUnavailable` indistinguishable from a
+    zero-length answer."""
+    monkeypatch.setattr(
+        service, "load_models", lambda _settings: _models(whisper=ModelState.MISSING)
+    )
+    with TestClient(service.create_app(settings)) as client:
+        response = client.post("/transcribe", content=b"\x01\x00" * 8000)
+
+    assert response.status_code == 503
+    assert "reason" in response.json()
