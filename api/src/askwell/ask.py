@@ -179,6 +179,11 @@ class _Turn:
     clarify_id: uuid.UUID | None = None
     clarify_event: asyncio.Event = field(default_factory=asyncio.Event)
     clarify_result: dict[str, Any] | None = None
+    # `M5-TRACE-BE-125`: the same list `_run_generation` builds `messages.trace`
+    # from, shared by reference rather than copied — so `GET
+    # /ask/{message_id}/trace` can read a running turn's steps as they are
+    # appended, before the row that will eventually hold them exists at all.
+    trace_steps: list[dict[str, Any]] = field(default_factory=list)
 
     def emit(
         self,
@@ -1227,7 +1232,6 @@ async def _run_generation(
     abstained = False
     retrieval_threshold: float | None = None
     scored_candidates: list[tuple[Candidate, float]] = []
-    trace_steps: list[dict[str, Any]] = []
     injection_flagged = False
     injection_patterns: tuple[str, ...] = ()
     truncated = False
@@ -1238,6 +1242,11 @@ async def _run_generation(
     memory_fact_ids: list[uuid.UUID] = []
     schema_note_ids: list[uuid.UUID] = []
     sql_result: dict[str, Any] | None = None
+    # Aliased, not copied: every `trace_steps.append`/`.extend` below is
+    # also an append to `turn.trace_steps`, which is what makes a running
+    # turn's steps readable (`M5-TRACE-BE-125`) before this function ever
+    # writes `messages.trace`.
+    trace_steps = turn.trace_steps
     # `M4-RESULT-FE-111`: which of the database-routing states, if any,
     # overrode this turn's abstention text — `None` for every ordinary
     # document abstention. Carried onto the `done` event and the trace so
@@ -2340,6 +2349,60 @@ def register_ask(
             )
 
         return StreamingResponse(replay(), media_type="text/event-stream", headers=SSE_HEADERS)
+
+    @app.get("/ask/{message_id}/trace")
+    async def ask_trace(message_id: uuid.UUID) -> JSONResponse:
+        """The stored trace for one turn (`M5-TRACE-BE-125`) — the step
+        sequence `docs/ux/trace.md` renders, returned exactly as stored (C4:
+        a trace that disagrees with the answer it explains is worse than no
+        trace, so nothing here is recomputed).
+
+        A turn still in `_turns` and still `running` has no trustworthy row
+        yet — `_run_generation` writes `messages.trace` only once the turn
+        ends — so it is served from `_Turn.trace_steps` instead, the same
+        list that write will eventually persist. Everything else reads the
+        database, which is authoritative the moment a turn is no longer
+        `running` in the registry, matching the order `_run_generation`
+        itself writes in: the database row lands before `turn.status` stops
+        being `"running"`.
+        """
+        turn = _turns.get(message_id)
+        if turn is not None and turn.status == "running":
+            bounded_steps, steps_truncated = _bound_trace_steps(turn.trace_steps)
+            return JSONResponse(
+                {
+                    "steps": bounded_steps,
+                    "steps_truncated": steps_truncated,
+                    "trace_rotated": False,
+                    "status": "running",
+                }
+            )
+
+        async with session_scope(factory) as db:
+            row = (
+                await db.execute(
+                    text("SELECT trace FROM messages WHERE id = :id AND role = 'assistant'"),
+                    {"id": message_id},
+                )
+            ).first()
+        if row is None:
+            return JSONResponse({"error": "Askwell has no turn with that id."}, status_code=404)
+
+        trace = row[0]
+        if not isinstance(trace, dict):
+            # A turn that failed before `_run_generation` ever wrote a trace
+            # — the ticket's own edge case. A valid empty-step trace, not a
+            # 404: the message exists, it simply has nothing to show yet.
+            return JSONResponse({"steps": [], "steps_truncated": False, "trace_rotated": False})
+
+        return JSONResponse(
+            {
+                **trace,
+                "steps": trace.get("steps", []),
+                "steps_truncated": trace.get("steps_truncated", False),
+                "trace_rotated": trace.get("trace_rotated", False),
+            }
+        )
 
     @app.post("/ask/{message_id}/stop")
     async def ask_stop(message_id: uuid.UUID) -> JSONResponse:
