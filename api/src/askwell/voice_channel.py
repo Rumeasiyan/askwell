@@ -113,9 +113,17 @@ class _Event:
     events of that name do — forwarded verbatim by
     `askwell.voice_tts.build_tts_driver` so the screen can render source
     cards in voice mode exactly as it does in text mode: citations are
-    satisfied by the screen, never spoken aloud."""
+    satisfied by the screen, never spoken aloud.
 
-    kind: Literal["transcript", "text", "confidence", "language", "citation", "fact_citation"]
+    `voice` (`M6-TTS-BE-131`) carries `{"available": False, "reason": str}`,
+    emitted once — the first time a turn's synthesis fails — so the screen
+    can show the note `docs/ux/voice.md` §5 requires. There is no
+    `available: True` counterpart on recovery: recovery is simply the next
+    turn synthesizing normally, with nothing to announce."""
+
+    kind: Literal[
+        "transcript", "text", "confidence", "language", "citation", "fact_citation", "voice"
+    ]
     fields: dict[str, Any]
 
 
@@ -156,6 +164,12 @@ class VoiceTurn:
     stop_requested: bool = False
     audio_in_closed: bool = False
     audio_out_closed: bool = False
+    # Set once by `askwell.voice_tts` (`M6-TTS-BE-131`) the first time this
+    # turn's synthesis fails — never reset within a turn, since there is no
+    # in-turn repair (the ticket's own known gap). A fresh turn always starts
+    # `True`: recovery is a property of the next turn, not this one.
+    synthesis_available: bool = True
+    synthesis_unavailable_reason: str | None = None
 
     def emit_transcript(self, delta: str) -> None:
         self.transcript += delta
@@ -179,6 +193,11 @@ class VoiceTurn:
 
     def emit_fact_citation(self, fields: dict[str, Any]) -> None:
         self.events.append(_Event("fact_citation", fields))
+
+    def emit_synthesis_unavailable(self, reason: str) -> None:
+        self.synthesis_available = False
+        self.synthesis_unavailable_reason = reason
+        self.events.append(_Event("voice", {"available": False, "reason": reason}))
 
 
 TurnDriver = Callable[[VoiceTurn], Awaitable[None]]
@@ -383,6 +402,14 @@ def register_voice_channel(
         if not turn.language_supported:
             await websocket.send_json(
                 {"type": "language", "language": turn.detected_language, "supported": False}
+            )
+        if not turn.synthesis_available:
+            await websocket.send_json(
+                {
+                    "type": "voice",
+                    "available": False,
+                    "reason": turn.synthesis_unavailable_reason,
+                }
             )
 
         sender = asyncio.create_task(_send_loop(websocket, turn, len(turn.events)))
