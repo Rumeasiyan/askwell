@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from askwell import __version__, ask
 from askwell.ask import register_ask
 from askwell.assistant import read as read_assistant
+from askwell.backup import register_backup
 from askwell.config import ConfigurationError, Environment, Settings, load_settings
 from askwell.db.engine import build_engine, session_factory
 from askwell.documents import register_documents
@@ -123,6 +124,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_probe(app, resolved, app.state.sessions)
     register_log_budget(app, resolved, app.state.sessions)
     register_log_export(app, resolved, app.state.sessions)
+    register_backup(app, resolved, app.state.sessions)
     register_passphrase(app, resolved, app.state.sessions)
     register_voice_channel(
         app,
