@@ -45,6 +45,13 @@ REFUSED_RECENT_KEY = "askwell:egress:recent"
 # in a counter and mean opposite things.
 REPORTING_SINCE_KEY = "askwell:egress:since"
 
+# The one destination this proxy may ever forward to, and only while this key
+# holds it. `M7-UPDATE-BE-161` is the first caller — issue #345 tracks the
+# general per-connection version of this, deliberately not built here. Redis,
+# not a config file: the API and the proxy are separate processes, and this
+# has to change the instant a setting does, not on the proxy's next restart.
+PERMITTED_HOST_KEY = "askwell:egress:permitted_host"
+
 RECENT_LIMIT = 50
 
 # Long enough for a real request line and headers, short enough that a client
@@ -118,12 +125,75 @@ async def _resolve_service(host: str) -> str:
     return name or host
 
 
+async def permit_destination(settings: Settings, destination: str) -> None:
+    """Open the one permitted destination. `destination` is `host:port`.
+
+    Called by the API, never by the proxy on itself — the proxy only ever
+    reads this key, so a bug here cannot let the proxy grant itself anything.
+    """
+    import redis.asyncio as redis
+
+    client = redis.Redis(
+        host=settings.redis_host,
+        port=settings.redis_port,
+        socket_connect_timeout=2.0,
+        socket_timeout=2.0,
+    )
+    try:
+        await client.set(PERMITTED_HOST_KEY, destination)
+    finally:
+        with contextlib.suppress(Exception):
+            await client.aclose()
+
+
+async def revoke_destination(settings: Settings) -> None:
+    """Close whatever destination was permitted. A no-op if none was."""
+    import redis.asyncio as redis
+
+    client = redis.Redis(
+        host=settings.redis_host,
+        port=settings.redis_port,
+        socket_connect_timeout=2.0,
+        socket_timeout=2.0,
+    )
+    try:
+        await client.delete(PERMITTED_HOST_KEY)
+    finally:
+        with contextlib.suppress(Exception):
+            await client.aclose()
+
+
 class EgressProxy:
-    """Refuses every outbound request, and counts what it refused."""
+    """Refuses every outbound request except the one destination, if any,
+    that has been explicitly permitted — and counts both."""
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.refused = 0
+        self.permitted = 0
+
+    async def _permitted_destination(self) -> str | None:
+        """Read fresh on every connection — a setting flipped off must close
+        this the instant the API acts, not on the proxy's next restart."""
+        import redis.asyncio as redis
+
+        client = redis.Redis(
+            host=self.settings.redis_host,
+            port=self.settings.redis_port,
+            socket_connect_timeout=1.0,
+            socket_timeout=1.0,
+        )
+        try:
+            value = await client.get(PERMITTED_HOST_KEY)
+        except Exception as error:
+            log.warning("egress_permit_unreadable", error=f"{type(error).__name__}: {error}")
+            return None
+        finally:
+            with contextlib.suppress(Exception):
+                await client.aclose()
+        if value is None:
+            return None
+        return value.decode("utf-8") if isinstance(value, bytes) else value
 
     async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         peer = writer.get_extra_info("peername")
@@ -158,8 +228,17 @@ class EgressProxy:
         except UnicodeDecodeError:
             request_line = ""
         destination = parse_destination(request_line)
+        method = request_line.split(" ", 1)[0].upper() if request_line else ""
 
         service = await _resolve_service(client)
+
+        if method == "CONNECT" and destination is not None:
+            permitted = await self._permitted_destination()
+            if permitted is not None and destination == permitted:
+                await self._consume_header_block(reader)
+                await self._forward(reader, writer, destination, service)
+                return
+
         self.refused += 1
 
         log.warning(
@@ -205,6 +284,124 @@ class EgressProxy:
         finally:
             with contextlib.suppress(Exception):
                 await client.aclose()
+
+    @staticmethod
+    async def _consume_header_block(reader: asyncio.StreamReader) -> None:
+        """Discard whatever header lines followed the `CONNECT` request line,
+        up to the blank line that ends them (`Host:`, at minimum, from any
+        real client — the request line alone is only what a bare test sends).
+        Left unread, this would be forwarded as the tunnel's first bytes,
+        which is not what either side of a `CONNECT` expects.
+        """
+        try:
+            async with asyncio.timeout(5.0):
+                while True:
+                    header_line = await reader.readline()
+                    if header_line in (b"", b"\r\n", b"\n"):
+                        return
+        except (TimeoutError, OSError):
+            return
+
+    async def _forward(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        destination: str,
+        service: str,
+    ) -> None:
+        """Tunnel a `CONNECT` to the one permitted destination.
+
+        Only `CONNECT` is handled — the one caller this exists for
+        (`askwell.update_check`) speaks HTTPS, and a plain-HTTP absolute-URI
+        request is refused even for the permitted host rather than adding a
+        second forwarding path nothing needs yet.
+        """
+        host, _, port_text = destination.rpartition(":")
+        try:
+            port = int(port_text)
+        except ValueError:
+            port = 0
+        upstream_reader: asyncio.StreamReader | None = None
+        upstream_writer: asyncio.StreamWriter | None = None
+        if host and port:
+            try:
+                async with asyncio.timeout(10.0):
+                    upstream_reader, upstream_writer = await asyncio.open_connection(host, port)
+            except (OSError, TimeoutError) as error:
+                log.warning(
+                    "egress_permitted_unreachable", destination=destination, error=str(error)
+                )
+
+        if upstream_reader is None or upstream_writer is None:
+            with contextlib.suppress(OSError):
+                writer.write(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
+                await writer.drain()
+            writer.close()
+            with contextlib.suppress(OSError, asyncio.CancelledError):
+                await writer.wait_closed()
+            return
+
+        self.permitted += 1
+        log.info(
+            "egress_permitted",
+            service=service,
+            destination=destination,
+            permitted_total=self.permitted,
+        )
+        await self._record_permitted(service, destination)
+
+        with contextlib.suppress(OSError):
+            writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            await writer.drain()
+
+        await asyncio.gather(
+            self._pipe(reader, upstream_writer),
+            self._pipe(upstream_reader, writer),
+        )
+        with contextlib.suppress(OSError, asyncio.CancelledError):
+            upstream_writer.close()
+            await upstream_writer.wait_closed()
+        with contextlib.suppress(OSError, asyncio.CancelledError):
+            writer.close()
+            await writer.wait_closed()
+
+    @staticmethod
+    async def _pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter) -> None:
+        """One direction of the tunnel. Ends quietly when either side closes —
+        that is what an ordinary end of a TLS session looks like here."""
+        try:
+            while True:
+                chunk = await src.read(65536)
+                if not chunk:
+                    break
+                dst.write(chunk)
+                await dst.drain()
+        except (OSError, asyncio.CancelledError):
+            pass
+        finally:
+            with contextlib.suppress(OSError, RuntimeError):
+                dst.write_eof()
+
+    async def _record_permitted(self, service: str, destination: str) -> None:
+        """Count a forwarded connection, the same honest-counter shape `_record`
+        gives refusals — a number the settings screen can show without
+        inventing anything."""
+        import redis.asyncio as redis
+
+        client = redis.Redis(
+            host=self.settings.redis_host,
+            port=self.settings.redis_port,
+            socket_connect_timeout=1.0,
+            socket_timeout=1.0,
+        )
+        try:
+            await client.incr(PERMITTED_COUNTER_KEY)
+        except Exception as error:
+            log.warning("egress_permitted_count_failed", error=f"{type(error).__name__}: {error}")
+        finally:
+            with contextlib.suppress(Exception):
+                await client.aclose()
+            log.debug("egress_permitted_recorded", service=service, destination=destination)
 
 
 async def _register(settings: Settings) -> None:

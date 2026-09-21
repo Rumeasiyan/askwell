@@ -272,6 +272,17 @@ async def check_connections_health(ctx: dict[str, Any]) -> int:
     return checked
 
 
+async def run_update_check(ctx: dict[str, Any]) -> bool:
+    """The weekly half of `M7-UPDATE-BE-161`. A no-op unless the stored
+    answer is `yes` and a week has actually passed — `askwell.update_check`
+    decides both, this is only the timer that asks it to."""
+    from askwell.db.engine import session_scope
+    from askwell.update_check import maybe_run_scheduled_check
+
+    async with session_scope(ctx["sessions"]) as session:
+        return await maybe_run_scheduled_check(session, ctx["settings"])
+
+
 async def startup(ctx: dict[str, Any]) -> None:
     from askwell import backup, embed, ingest, log_export, reapply, sandbox
 
@@ -512,6 +523,28 @@ def main() -> None:
                 second=(
                     set(range(0, 60, settings.connection_health_check_seconds))
                     if settings.connection_health_check_seconds < 60
+                    else 0
+                ),
+                run_at_startup=False,
+                max_tries=1,
+            ),
+            cron(
+                run_update_check,
+                # Same shape as `check_missing`/`check_connections_health`
+                # above. This timer only decides how often to *ask* whether a
+                # week has passed (`update_check_poll_seconds`, default an
+                # hour) — the weekly cadence itself is enforced inside
+                # `askwell.update_check.maybe_run_scheduled_check`, which is
+                # also what refuses to run at all unless the stored answer is
+                # `yes`.
+                minute=(
+                    None
+                    if settings.update_check_poll_seconds < 60
+                    else set(range(0, 60, max(1, settings.update_check_poll_seconds // 60)))
+                ),
+                second=(
+                    set(range(0, 60, settings.update_check_poll_seconds))
+                    if settings.update_check_poll_seconds < 60
                     else 0
                 ),
                 run_at_startup=False,

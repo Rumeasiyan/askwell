@@ -133,6 +133,76 @@ async def test_counting_failure_never_prevents_refusing(
     assert proxy.refused == 1
 
 
+async def test_a_permitted_connect_is_forwarded_end_to_end(
+    proxy_port: tuple[int, EgressProxy],
+) -> None:
+    """`M7-UPDATE-BE-161`: the one destination the update check needs, and
+    only once something has actually permitted it — `_permitted_destination`
+    itself is exercised for real in `test_update_check.py`; here a fixed
+    value stands in so this test needs no live Redis, the same convention
+    every other test in this file already follows.
+    """
+
+    async def echo(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        data = await reader.read(1024)
+        writer.write(data.upper())
+        await writer.drain()
+        writer.close()
+
+    upstream = await asyncio.start_server(echo, "127.0.0.1", 0)
+    upstream_port = upstream.sockets[0].getsockname()[1]
+    destination = f"127.0.0.1:{upstream_port}"
+
+    port, proxy = proxy_port
+
+    async def _fixed_destination() -> str:
+        return destination
+
+    proxy._permitted_destination = _fixed_destination  # type: ignore[method-assign]
+
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(f"CONNECT {destination} HTTP/1.1\r\nHost: {destination}\r\n\r\n".encode())
+        await writer.drain()
+        established = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=5)
+        assert b"200 Connection Established" in established
+
+        writer.write(b"hello")
+        await writer.drain()
+        echoed = await asyncio.wait_for(reader.read(1024), timeout=5)
+        writer.close()
+
+        assert echoed == b"HELLO"
+        assert proxy.permitted == 1
+        assert proxy.refused == 0
+    finally:
+        upstream.close()
+        await upstream.wait_closed()
+
+
+async def test_a_connect_to_anything_else_is_refused_even_with_a_permit_set(
+    proxy_port: tuple[int, EgressProxy],
+) -> None:
+    """A permit is exactly one destination. Everything else is still 403,
+    permit or no permit."""
+    port, proxy = proxy_port
+
+    async def _fixed_destination() -> str:
+        return "raw.githubusercontent.com:443"
+
+    proxy._permitted_destination = _fixed_destination  # type: ignore[method-assign]
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    writer.write(b"CONNECT some-other-host.example:443 HTTP/1.1\r\n\r\n")
+    await writer.drain()
+    response = await asyncio.wait_for(reader.read(2048), timeout=5)
+    writer.close()
+
+    assert b"403 Forbidden" in response
+    assert proxy.refused == 1
+    assert proxy.permitted == 0
+
+
 def test_there_is_no_allowlist_to_configure(settings: Settings) -> None:
     """No destination may be configured statically.
 

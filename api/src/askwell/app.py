@@ -36,6 +36,7 @@ from askwell.roots import register_roots
 from askwell.setup import register_setup
 from askwell.sources import register_sources
 from askwell.suggestions import register_suggestions
+from askwell.update_check import register_update_check
 from askwell.voice_channel import register_voice_channel
 from askwell.voice_tts import build_tts_driver
 from askwell.voice_turn_detection import build_vad_turn_detector
@@ -126,6 +127,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_log_export(app, resolved, app.state.sessions)
     register_backup(app, resolved, app.state.sessions)
     register_passphrase(app, resolved, app.state.sessions)
+    register_update_check(app, resolved, app.state.sessions)
     register_voice_channel(
         app,
         resolved,
