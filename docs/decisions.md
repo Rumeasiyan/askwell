@@ -22,6 +22,20 @@ Template:
 
 ---
 
+## 2026-09-21 — `M6-STT-FE-129`: confirmation is a backend hold with a real gate, not a client-side stub over an eager answer
+
+**Decision:** Below `Settings.stt_confirmation_confidence_threshold` (default `0.6`), `askwell.voice_stt.build_stt_driver` stores nothing and calls no `on_transcript` hook until a client resolves a new server-side confirmation future — via `confirm` (proceed with the transcript as heard) or `edit` (proceed with a replacement) control messages `askwell.voice_channel._receive_loop` now understands. A turn that gets neither within `Settings.stt_confirmation_timeout_seconds` (default 120s) ends unanswered, with nothing written to `messages`/`audit_interactions` at all.
+
+**Why:** Issue #468, filed while scoping this ticket, found that `build_stt_driver` called `on_transcript` unconditionally right after storing a transcript — there was no pause point between "transcript stored" and "generation begins," and no message type for a client to submit a correction. Two ways to close that gap were on the table. The rejected one: keep generation eager, and if a client-submitted edit arrives before the spoken answer finishes, generate a second time from it — cheaper to build, but the user hears or reads an answer to the wrong question at least once even when they do edit, which is exactly the "confident answer to a question I did not ask" this ticket exists to prevent (its own User Story, almost verbatim). The alternative, taken here, holds the turn before generation ever starts, so an unconfirmed low-confidence transcript is never answered at all. That also settles a question `AGENTS.md` §3 C6 raises but doesn't answer on its own — "the confirmed or edited transcript is what is recorded" reads two ways (store the raw transcript immediately and correct it later, or store nothing until confirmed) — resolved here as the latter: storing an unconfirmed guess and silently overwriting it if the user chooses to edit would mean a wrong transcript briefly existed in an append-only-in-spirit audit trail for no reason grounded in anything real.
+
+The timeout (rather than holding indefinitely) exists because a WebSocket driver task deliberately outlives its connection for reconnection support (`voice_channel`'s own module docstring) — without a timeout, a user who closes the tab mid-confirmation would leave a driver task parked forever, waiting on a future nothing will ever resolve.
+
+**Consequences:** A confidence-threshold change is a configuration change, not a code change — same shape as `retrieval_score_threshold` and `voice_vad_pause_ms` already are, both still unmeasured starting points for the same reason this one is (no transcribed-speech or retrieval-relevance corpus exists in this environment yet). If a future ticket wants a client-initiated "cancel" distinct from a silent timeout, it has to add a new control message rather than reuse `edit`/`confirm` — neither is safe to send with a false or empty payload, by design (`_receive_loop`'s blank-edit guard).
+
+**Refs:** issue #468 (resolved, closed); `docs/ux/voice.md` §5 "Low confidence"; `docs/states-and-edge-cases.md` §5; `api/src/askwell/voice_channel.py` (`VoiceTurn.request_confirmation`/`resolve_confirmation`, `_receive_loop`); `api/src/askwell/voice_stt.py` (`build_stt_driver`); `api/src/askwell/config.py` (`stt_confirmation_confidence_threshold`, `stt_confirmation_timeout_seconds`); `web/lib/voice.ts`, `web/components/ask/voice-control.tsx` (the `confirming` state); issue #460 (re-owned, unchanged scope).
+
+---
+
 ## 2026-09-21 — `M6-VUI-FE-135`: permission read proactively via the Permissions API, non-English handled as a real channel fact, and a naturally-completed answer stays shown rather than only a stopped one
 
 **Decision:** Three independent fixes, all in `web/lib/voice.ts` and `web/components/ask/voice-control.tsx`, none touching the backend.

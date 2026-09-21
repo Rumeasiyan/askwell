@@ -14,6 +14,7 @@ import {
   nextVoiceStatus,
   parseVoiceEvent,
   pcm16ToFloat32,
+  recordVoiceConfirmation,
   recordVoiceLatencyBudgetMiss,
   rmsLevel,
   voiceLatencyBudgetMs,
@@ -147,6 +148,16 @@ export function MicControl() {
   useEffect(() => {
     statusRef.current = status;
   }, [status]);
+  const transcriptRef = useRef(transcript);
+  useEffect(() => {
+    transcriptRef.current = transcript;
+  }, [transcript]);
+  // Set the moment a `confirmation` event arrives (`handleChannelMessage`)
+  // to whatever the transcript was at that instant — the text `confirm`
+  // means "proceed with", as distinct from whatever the user may then type
+  // into the same field (`M6-STT-FE-129`). `handleConfirm` compares its
+  // current value against this to decide `confirm` vs `edit`.
+  const confirmOriginalRef = useRef("");
 
   // Latency indicator (`docs/ux/voice.md` §4 #15, `M6-VUI-FE-134`). The
   // hardware tier voice.md's budget is keyed on (`light`/`standard`/
@@ -357,6 +368,12 @@ export function MicControl() {
       if (parsed === null) return;
       if (parsed.type === "transcript") setTranscript((current) => current + parsed.text);
       if (parsed.type === "text") setAnswer((current) => current + parsed.text);
+      if (parsed.type === "confirmation" && parsed.required) {
+        // The transcript as heard, before any edit — captured here rather
+        // than read back out of `transcript` state later, since that state
+        // is exactly what the edit box goes on to mutate.
+        confirmOriginalRef.current = transcriptRef.current;
+      }
       setStatus((current) => nextVoiceStatus(current, { kind: "channel_event", event: parsed }));
       if (parsed.type === "status") {
         // A failure past budget replaces the indicator with the failure
@@ -520,6 +537,51 @@ export function MicControl() {
     setStatus((current) => nextVoiceStatus(current, { kind: "stop_pressed" }));
   }, [teardownPlayback, stopLatencyWatch, closeSocket]);
 
+  /**
+   * Low-confidence confirmation (`docs/ux/voice.md` §5, `M6-STT-FE-129`):
+   * `askwell.voice_stt` is holding the turn open, waiting on `confirm` or
+   * `edit` over the same socket, so generation only starts once one of
+   * these actually sends something (`nextFromChannelEvent`'s own comment —
+   * the first `text` event is what leaves `confirming`, same as any other
+   * state generation begins from). Sending `edit` whenever the field no
+   * longer matches what was heard, `confirm` otherwise, is what makes
+   * "tap Confirm with nothing changed" and "change it first, then tap
+   * Confirm" the same one button for the user while staying two distinct,
+   * honest messages on the wire (`voice_channel._receive_loop`).
+   */
+  const handleConfirm = useCallback((): void => {
+    if (statusRef.current.state !== "confirming") return;
+    const socket = socketRef.current;
+    if (socket === null || socket.readyState !== WebSocket.OPEN) return;
+    const edited = transcript.trim();
+    if (edited === "") return;
+    if (edited === confirmOriginalRef.current.trim()) {
+      socket.send(JSON.stringify({ type: "confirm" }));
+    } else {
+      socket.send(JSON.stringify({ type: "edit", text: edited }));
+    }
+    recordVoiceConfirmation();
+  }, [transcript]);
+
+  /**
+   * "Speak again" (`docs/ux/voice.md` §5, this ticket's own Scope): abandons
+   * the held turn rather than resolving it — `askwell.voice_stt` gives up on
+   * its own after `stt_confirmation_timeout_seconds` (the same path as a
+   * user who walks away without pressing anything), which is honest here
+   * too: nothing was confirmed, so nothing gets answered or stored for it.
+   * Push-to-talk stays the only way to start capturing again (`voice.md`
+   * §7, settled for v1) — this returns to idle so the mic control is ready
+   * to be pressed, rather than starting a second capture on its own.
+   */
+  const handleSpeakAgain = useCallback((): void => {
+    if (statusRef.current.state !== "confirming") return;
+    stopLatencyWatch();
+    closeSocket();
+    setTranscript("");
+    setAnswer("");
+    setStatus(VOICE_IDLE);
+  }, [stopLatencyWatch, closeSocket]);
+
   // `permissionReason` wins over a bare idle prompt — a known denial is
   // known before any turn ever runs — but never overrides a real, more
   // specific idle reason a turn just produced (a failure, a stop, a
@@ -532,6 +594,7 @@ export function MicControl() {
   const busy = status.state === "transcribing" || status.state === "answering";
   const listening = status.state === "listening";
   const stoppable = canStop(status);
+  const confirming = status.state === "confirming";
   const permissionBlocked = permissionReason !== null;
 
   return (
@@ -564,6 +627,37 @@ export function MicControl() {
         >
           Stop
         </button>
+      ) : null}
+      {confirming ? (
+        <span className="ask-mic-confirm flex flex-col gap-2">
+          <textarea
+            aria-label="Transcript — edit before confirming"
+            value={transcript}
+            onChange={(event) => setTranscript(event.target.value)}
+            className="ask-mic-confirm-text"
+            style={{ border: "1px solid var(--rule-strong)", fontSize: "var(--t-ui)" }}
+            rows={2}
+          />
+          <span className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleConfirm}
+              disabled={transcript.trim() === ""}
+              className="ask-navigates px-3 py-1"
+              style={{ border: "1px solid var(--rule-strong)", fontSize: "var(--t-ui)" }}
+            >
+              Confirm
+            </button>
+            <button
+              type="button"
+              onClick={handleSpeakAgain}
+              className="ask-navigates px-3 py-1"
+              style={{ border: "1px solid var(--rule-strong)", fontSize: "var(--t-ui)" }}
+            >
+              Speak again
+            </button>
+          </span>
+        </span>
       ) : null}
       <span role="tooltip" id="ask-mic-reason" className="ask-mic-reason" aria-live="polite">
         {listening ? (
@@ -604,6 +698,11 @@ function statusLabel(
       return appearsSilent ? MIC_SILENT_REASON : "Listening…";
     case "transcribing":
       return transcript.trim() === "" ? "Transcribing…" : transcript;
+    case "confirming":
+      // The transcript itself is shown in the editable field this state
+      // renders, not here — this is only the surrounding prompt
+      // (`M6-STT-FE-129`, `docs/ux/voice.md` §5 "Low confidence").
+      return "Not sure that's right — check the transcript before Askwell answers.";
     case "answering":
       return answer.trim() === "" ? "Answering…" : answer;
     case "idle":
@@ -622,6 +721,15 @@ function statusLabel(
       // only when a fresh capture starts (`startCapture`'s `setAnswer("")`).
       if (status.reason === null && answer.trim() !== "") {
         return answer.trim();
+      }
+      // A confirmation the user ignored and walked away from
+      // (`stt_confirmation_timeout_seconds` running out server-side,
+      // `M6-STT-FE-129`'s own edge case): no answer was ever produced, but
+      // the transcript stays visible rather than vanishing back to the bare
+      // prompt — "retained in the composer" applies to the idle state this
+      // lands in just as much as to `confirming` itself.
+      if (status.reason === null && transcript.trim() !== "") {
+        return transcript.trim();
       }
       return status.reason ?? "Press and hold to speak";
   }

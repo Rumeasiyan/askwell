@@ -127,7 +127,16 @@ class _Event:
     emitted once, by `askwell.voice_tts._speak_answer`, right before the
     turn's closing audio sentinel, so `voice_latency`'s harness (or any other
     client) reads it the same way it reads every other event, with nothing
-    voice-specific about the transport."""
+    voice-specific about the transport.
+
+    `confirmation` (`M6-STT-FE-129`) carries `{"required": True}`, emitted
+    once by `VoiceTurn.request_confirmation` when `askwell.voice_stt` holds a
+    low-confidence transcript rather than answering it — the client's signal
+    to show the transcript and wait for `confirm`/`edit` instead of a plain
+    `transcribing` state. There is no `required: False` counterpart: the
+    turn simply continues (a `text` event, or the closing `status`) once a
+    client resolves it, or ends unanswered on its own timeout — either way
+    nothing about *this* turn is left still asking."""
 
     kind: Literal[
         "transcript",
@@ -138,6 +147,7 @@ class _Event:
         "fact_citation",
         "voice",
         "timing",
+        "confirmation",
     ]
     fields: dict[str, Any]
 
@@ -193,6 +203,14 @@ class VoiceTurn:
     # meaningless outside this turn's own process; only the deltas between
     # two marks (`stage_breakdown_ms`) mean anything.
     stage_timings: dict[str, float] = field(default_factory=dict)
+    # Set by `request_confirmation`, cleared by `resolve_confirmation` — the
+    # one outstanding "waiting on the client" gate a turn can have at a time
+    # (`M6-STT-FE-129`). `confirmation_pending` is the flag a reattaching
+    # connection reads to resend the `confirmation` event (see
+    # `register_voice_channel`); the future itself never crosses that
+    # boundary, since only the driver task that created it ever awaits it.
+    confirmation_pending: bool = False
+    confirmation_future: asyncio.Future[str] | None = field(default=None, repr=False)
 
     def mark(self, name: str) -> None:
         self.stage_timings.setdefault(name, time.monotonic())
@@ -227,6 +245,34 @@ class VoiceTurn:
 
     def emit_timing(self, fields: dict[str, Any]) -> None:
         self.events.append(_Event("timing", fields))
+
+    def request_confirmation(self) -> asyncio.Future[str]:
+        """Hold this turn for confirmation — `askwell.voice_stt` awaits the
+        returned future instead of continuing straight into generation.
+        Resolved by `resolve_confirmation` on a `confirm`/`edit` control
+        message, or left to the caller's own timeout on `stt_confirmation_
+        timeout_seconds` if the client never answers (the ticket's "walks
+        away" edge case)."""
+        self.confirmation_pending = True
+        future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        self.confirmation_future = future
+        self.events.append(_Event("confirmation", {"required": True}))
+        return future
+
+    def resolve_confirmation(self, text: str) -> bool:
+        """Release a pending confirmation with the text to proceed with —
+        the transcript as-is for `confirm`, the replacement for `edit`.
+        Returns whether a confirmation was actually pending: a stray
+        `confirm`/`edit` for a turn that never asked, or one that already
+        timed out, changes nothing rather than resolving a future no one is
+        waiting on."""
+        future = self.confirmation_future
+        if future is None or future.done():
+            return False
+        self.confirmation_pending = False
+        self.confirmation_future = None
+        future.set_result(text)
+        return True
 
 
 # `(label, from_mark, to_mark)` — the named intervals `M6-PERF-TEST-136`'s
@@ -380,6 +426,25 @@ async def _receive_loop(websocket: WebSocket, turn: VoiceTurn, detector: TurnDet
                 turn.audio_in_closed = True
                 turn.mark("speech_ended")
                 await turn.audio_in.put(None)
+        elif kind == "confirm":
+            # Proceed with the transcript exactly as transcribed
+            # (`M6-STT-FE-129`) — a stray `confirm` for a turn that never
+            # asked, or one that already timed out, is inert
+            # (`resolve_confirmation`'s own return, unused here for the same
+            # reason `end`/`stop` above never check theirs: nothing left to
+            # report back over a channel this loop does not own the send
+            # side of).
+            turn.resolve_confirmation(turn.transcript)
+        elif kind == "edit":
+            # Proceed with the client's replacement text instead — the
+            # ticket's own escape hatch for a transcript low confidence got
+            # right but genuinely wrong (a misheard reference number). An
+            # empty or whitespace-only edit is not a real replacement, so it
+            # is dropped rather than resolving the turn with nothing to
+            # answer.
+            edited = control.get("text")
+            if isinstance(edited, str) and edited.strip():
+                turn.resolve_confirmation(edited.strip())
 
 
 async def _send_loop(websocket: WebSocket, turn: VoiceTurn, cursor: int) -> None:
@@ -478,6 +543,8 @@ def register_voice_channel(
                     "reason": turn.synthesis_unavailable_reason,
                 }
             )
+        if turn.confirmation_pending:
+            await websocket.send_json({"type": "confirmation", "required": True})
 
         sender = asyncio.create_task(_send_loop(websocket, turn, len(turn.events)))
         detector = detector_factory()

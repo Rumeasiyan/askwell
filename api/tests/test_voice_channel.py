@@ -165,6 +165,99 @@ def test_no_turn_detector_given_behaves_exactly_as_before_this_ticket(
     assert status == {"type": "status", "status": "completed"}
 
 
+async def _confirm_driver(turn: VoiceTurn) -> None:
+    """Stands in for `askwell.voice_stt`'s low-confidence gate: drains audio,
+    asks for confirmation, then answers with whatever text it was released
+    with — proving the channel's `confirmation`/`confirm`/`edit` wiring
+    (`M6-STT-FE-129`) independent of real transcription."""
+    while True:
+        chunk = await turn.audio_in.get()
+        if chunk is None:
+            break
+    turn.emit_transcript("heard something unclear")
+    final = await turn.request_confirmation()
+    turn.emit_text(f"answering: {final}")
+    turn.status = "completed"
+    await turn.audio_out.put(None)
+
+
+def test_confirm_releases_the_held_turn_with_the_transcript_as_is(settings: Settings) -> None:
+    with TestClient(_app(settings, driver=_confirm_driver)).websocket_connect("/voice/ws") as ws:
+        ws.receive_json()  # turn
+        ws.send_text(json.dumps({"type": "end"}))
+
+        transcript = ws.receive_json()
+        confirmation = ws.receive_json()
+        ws.send_text(json.dumps({"type": "confirm"}))
+        text = ws.receive_json()
+        status = ws.receive_json()
+
+    assert transcript == {"type": "transcript", "text": "heard something unclear"}
+    assert confirmation == {"type": "confirmation", "required": True}
+    assert text == {"type": "text", "text": "answering: heard something unclear"}
+    assert status == {"type": "status", "status": "completed"}
+
+
+def test_edit_releases_the_held_turn_with_the_replacement_text(settings: Settings) -> None:
+    with TestClient(_app(settings, driver=_confirm_driver)).websocket_connect("/voice/ws") as ws:
+        ws.receive_json()  # turn
+        ws.send_text(json.dumps({"type": "end"}))
+
+        ws.receive_json()  # transcript
+        ws.receive_json()  # confirmation
+        ws.send_text(json.dumps({"type": "edit", "text": "invoice INV-2024-0917"}))
+        text = ws.receive_json()
+        status = ws.receive_json()
+
+    assert text == {"type": "text", "text": "answering: invoice INV-2024-0917"}
+    assert status == {"type": "status", "status": "completed"}
+
+
+def test_edit_with_blank_text_is_ignored_rather_than_resolving_with_nothing(
+    settings: Settings,
+) -> None:
+    with TestClient(_app(settings, driver=_confirm_driver)).websocket_connect("/voice/ws") as ws:
+        ws.receive_json()  # turn
+        ws.send_text(json.dumps({"type": "end"}))
+
+        ws.receive_json()  # transcript
+        ws.receive_json()  # confirmation
+        ws.send_text(json.dumps({"type": "edit", "text": "   "}))
+        # The blank edit changed nothing — a real `confirm` still releases it.
+        ws.send_text(json.dumps({"type": "confirm"}))
+        text = ws.receive_json()
+        status = ws.receive_json()
+
+    assert text == {"type": "text", "text": "answering: heard something unclear"}
+    assert status == {"type": "status", "status": "completed"}
+
+
+def test_reconnect_while_confirmation_pending_resends_the_confirmation_event(
+    settings: Settings,
+) -> None:
+    app = _app(settings, driver=_confirm_driver)
+    with TestClient(app) as client:
+        with client.websocket_connect("/voice/ws") as ws:
+            turn_id = ws.receive_json()["turn_id"]
+            ws.send_text(json.dumps({"type": "end"}))
+            ws.receive_json()  # transcript
+            ws.receive_json()  # confirmation
+
+        with client.websocket_connect(f"/voice/ws?turn_id={turn_id}") as ws:
+            first = ws.receive_json()
+            assert first["type"] == "turn"
+            transcript = ws.receive_json()
+            confirmation = ws.receive_json()
+            ws.send_text(json.dumps({"type": "confirm"}))
+            text = ws.receive_json()
+            status = ws.receive_json()
+
+    assert transcript == {"type": "transcript", "text": "heard something unclear"}
+    assert confirmation == {"type": "confirmation", "required": True}
+    assert text == {"type": "text", "text": "answering: heard something unclear"}
+    assert status == {"type": "status", "status": "completed"}
+
+
 def test_stop_control_ends_the_turn_as_failed(settings: Settings) -> None:
     with TestClient(_app(settings)).websocket_connect("/voice/ws") as ws:
         ws.receive_json()  # turn

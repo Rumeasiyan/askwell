@@ -10,13 +10,13 @@
  * SSE parsing and the browser `fetch` that feeds it.
  */
 
-export type VoiceState = "idle" | "listening" | "transcribing" | "answering";
+export type VoiceState = "idle" | "listening" | "transcribing" | "confirming" | "answering";
 
 export interface VoiceStatus {
   state: VoiceState;
   /** Set only on `idle` — why voice stopped, or why it never started. Never
-   * set on the other three states: they are only ever reached because
-   * something is actually happening, so there is nothing to explain. */
+   * set on the other states: they are only ever reached because something
+   * is actually happening, so there is nothing to explain. */
   reason: string | null;
 }
 
@@ -72,6 +72,7 @@ export type VoiceChannelEvent =
   | { type: "citation"; [key: string]: unknown }
   | { type: "fact_citation"; [key: string]: unknown }
   | { type: "voice"; available: boolean; reason: string | null }
+  | { type: "confirmation"; required: boolean }
   | { type: "status"; status: "listening" | "completed" | "failed" };
 
 export function parseVoiceEvent(raw: string): VoiceChannelEvent | null {
@@ -157,8 +158,18 @@ function nextFromChannelEvent(current: VoiceStatus, event: VoiceChannelEvent): V
   if (event.type === "text") {
     // The first answer token is the real signal that generation started —
     // `transcript` deltas never mean this on their own, a turn can emit
-    // several before the answer begins.
+    // several before the answer begins. This also covers leaving
+    // `confirming`: generation only ever starts server-side once
+    // `askwell.voice_stt` has a confirmed or edited transcript to answer,
+    // so the first `text` event is as real a signal there as anywhere else.
     return current.state === "answering" ? current : { state: "answering", reason: null };
+  }
+  if (event.type === "confirmation" && event.required) {
+    // `askwell.voice_stt` is holding this turn below the confidence
+    // threshold (`M6-STT-FE-129`, `docs/ux/voice.md` §5 "Low confidence") —
+    // shown instead of a plain `transcribing` state, with generation not
+    // yet asked for.
+    return { state: "confirming", reason: null };
   }
   if (event.type === "language" && !event.supported) {
     // `askwell.voice_stt`'s `unsupported_language` outcome: no transcript,
@@ -215,6 +226,30 @@ export function getVoiceLatencyBudgetMissCount(): number {
 
 export function resetVoiceLatencyBudgetMissCountForTests(): void {
   voiceLatencyBudgetMissCount = 0;
+}
+
+/**
+ * Local-only tally of confirmations (`M6-STT-FE-129`'s own Analytics
+ * Events requirement, C1: nothing transmitted) — how often the low-
+ * confidence gate actually fires, kept for later measurement of whether
+ * `stt_confirmation_confidence_threshold` is tuned right (the ticket's own
+ * Assumption: "if it fires on most turns, the threshold is wrong"). Counts
+ * every resolution — a plain `confirm` and an `edit` both mean the gate
+ * did its job, so both count. Module-level for the same reason the latency
+ * counter above is: it must survive `MicControl` remounting mid-session.
+ */
+let voiceConfirmationCount = 0;
+
+export function recordVoiceConfirmation(): void {
+  voiceConfirmationCount += 1;
+}
+
+export function getVoiceConfirmationCount(): number {
+  return voiceConfirmationCount;
+}
+
+export function resetVoiceConfirmationCountForTests(): void {
+  voiceConfirmationCount = 0;
 }
 
 /**

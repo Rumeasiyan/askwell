@@ -114,6 +114,126 @@ async def test_a_transcribed_turn_stores_the_message_and_the_audit_record(
         assert payload["transcript_length"] == len("what is the notice period")
 
 
+async def test_low_confidence_holds_for_confirmation_then_stores_the_transcript_as_confirmed(
+    settings: Settings, database_url: str, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """`M6-STT-FE-129`: below `stt_confirmation_confidence_threshold`, the
+    driver waits rather than answering — nothing is stored until `confirm`
+    releases it, and what is stored is the transcript as-is."""
+    _truncate(database_url)
+    turn = _turn([b"\x00\x01" * 8000])
+    driver = build_stt_driver(
+        settings,
+        factory,
+        client_factory=_client_factory(
+            {
+                "status": "ok",
+                "transcript": "notice period for INV dash 2024",
+                "confidence": 0.3,
+                "language": "en",
+                "language_probability": 0.9,
+            }
+        ),
+    )
+
+    task = asyncio.ensure_future(driver(turn))
+    await asyncio.sleep(0)
+    assert turn.confirmation_pending is True
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        # Nothing recorded while the turn is still waiting — a held
+        # transcript is not yet a confirmed one (`AGENTS.md` §3 C6).
+        count = db.execute("SELECT count(*) FROM messages").fetchone()
+        assert count == (0,)
+
+    assert turn.resolve_confirmation(turn.transcript) is True
+    await task
+
+    assert turn.status == "completed"
+    assert turn.confirmation_pending is False
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        message = db.execute(
+            "SELECT content FROM messages WHERE conversation_id = %s",
+            (turn.conversation_id,),
+        ).fetchone()
+        assert message == ("notice period for INV dash 2024",)
+
+
+async def test_low_confidence_edit_stores_the_replacement_not_the_transcript(
+    settings: Settings, database_url: str, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """The escape hatch for the edge case `docs/ux/voice.md` names directly:
+    confidence low because the question was genuinely unusual, such as a
+    reference number — editing is what is recorded, not the misheard
+    original."""
+    _truncate(database_url)
+    turn = _turn([b"\x00\x01" * 8000])
+    driver = build_stt_driver(
+        settings,
+        factory,
+        client_factory=_client_factory(
+            {
+                "status": "ok",
+                "transcript": "invoice inv dash twenty something",
+                "confidence": 0.2,
+                "language": "en",
+                "language_probability": 0.9,
+            }
+        ),
+    )
+
+    task = asyncio.ensure_future(driver(turn))
+    await asyncio.sleep(0)
+    assert turn.resolve_confirmation("invoice INV-2024-0917") is True
+    await task
+
+    assert turn.status == "completed"
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        message = db.execute(
+            "SELECT content FROM messages WHERE conversation_id = %s",
+            (turn.conversation_id,),
+        ).fetchone()
+        assert message == ("invoice INV-2024-0917",)
+
+
+async def test_low_confidence_confirmation_timeout_stores_nothing_and_completes(
+    settings: Settings, database_url: str, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """The user walks away without confirming: the turn does not answer, and
+    it does not sit forever — it ends, with nothing stored, matching
+    `no_speech`'s own shape rather than inventing an answer to an
+    unconfirmed question."""
+    _truncate(database_url)
+    fast_timeout = settings.model_copy(update={"stt_confirmation_timeout_seconds": 1.0})
+    turn = _turn([b"\x00\x01" * 8000])
+    driver = build_stt_driver(
+        fast_timeout,
+        factory,
+        client_factory=_client_factory(
+            {
+                "status": "ok",
+                "transcript": "what is the notice period",
+                "confidence": 0.1,
+                "language": "en",
+                "language_probability": 0.9,
+            }
+        ),
+    )
+
+    await driver(turn)
+
+    assert turn.status == "completed"
+    assert turn.confirmation_pending is False
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        count = db.execute("SELECT count(*) FROM messages").fetchone()
+        assert count == (0,)
+        count = db.execute("SELECT count(*) FROM audit_interactions").fetchone()
+        assert count == (0,)
+
+
 async def test_no_speech_stores_nothing_and_completes_the_turn(
     settings: Settings, database_url: str, factory: async_sessionmaker[AsyncSession]
 ) -> None:
@@ -240,7 +360,10 @@ async def test_an_existing_conversation_id_is_reused_rather_than_creating_a_new_
             {
                 "status": "ok",
                 "transcript": "hello",
-                "confidence": 0.5,
+                # Above `stt_confirmation_confidence_threshold` — this test
+                # is about conversation-id reuse, not confirmation gating
+                # (`test_low_confidence_...` below covers that).
+                "confidence": 0.9,
                 "language": "en",
                 "language_probability": 0.9,
             }

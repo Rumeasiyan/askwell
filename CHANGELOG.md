@@ -4,6 +4,29 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.5.13 - 2026-09-21
+
+`M6-STT-FE-129` — low-confidence transcripts are shown and confirmed before Askwell answers
+(`docs/ux/voice.md` §5). Issue #468 found the real gap first: nothing between "transcript stored"
+and "generation begins" existed to hold a turn for confirmation, so the confirmation had to be
+real plumbing, not a client-side stub. `askwell.voice_stt.build_stt_driver` now compares every
+`ok` transcript's confidence against the new `stt_confirmation_confidence_threshold` (default
+`0.6`); below it, `VoiceTurn.request_confirmation` emits a `confirmation` event and the driver
+awaits the future it returns rather than storing anything or calling `on_transcript` — a
+confirmed or edited transcript is what gets written to `messages`/`audit_interactions` (`AGENTS.md`
+§3 C6), never the unconfirmed one. `askwell.voice_channel._receive_loop` gained `confirm` (proceed
+with the transcript as heard) and `edit` (proceed with the client's replacement text, blank edits
+ignored) control messages to release it, and a reattaching connection resends the pending
+`confirmation` event exactly as it already does for `transcript`/`text`/`confidence`. A held turn
+that gets no answer within `stt_confirmation_timeout_seconds` (default 120s) ends unanswered with
+nothing stored — the "user walks away" edge case, same shape as `no_speech`. A confident transcript
+is untouched: no gate, no added latency. `MicControl` (`web/components/ask/voice-control.tsx`) adds
+the `confirming` state: the transcript shown in an editable field with Confirm and Speak again
+actions, a local-only confirmation counter (C1), and the transcript staying visible after a
+walked-away timeout returns the composer to idle. Resolves issue #468. Commented on issue #460,
+re-owning it as still open and unaffected by this ticket — the same in-place `MicControl` tooltip
+pattern every prior voice-UI ticket used, not `AskProvider`'s conversation transcript.
+
 ## 0.5.12 - 2026-09-21
 
 `M6-VUI-FE-135` — the composer's remaining voice states: microphone permission denied,
