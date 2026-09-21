@@ -726,6 +726,62 @@ The shell is the natural supervisor because it is the thing the user launches. M
 
 ---
 
+### M7-SET-BE-145a — A user-supplied model, and which model answered
+
+**Type:** Task
+
+**User Story**
+- **Actor:** someone who has placed a model file of their own next to the bundled one.
+- **User Need:** Askwell able to point at it, and every answer able to say which model produced it.
+- **Business Value:** the settings section that swaps models, and the marker that warns an answer came from an unverified one, both describe a capability that does not exist yet.
+- *As the settings screen, I want a real swap to perform and a real model identity to read, so that what I show is a fact rather than a mock-up.*
+
+**Context / Background**
+**Detailed Description:** `Settings` (`api/src/askwell/config.py`) carries only `profile: Profile`, which selects a shipped model from `CATALOG` in `models_catalog.py`. There is no configuration path, environment variable or settings-store key for a model the user supplied, and `Message` (`api/src/askwell/db/models.py`) has no column recording which model produced a turn. Build both: a persisted user-supplied model selection that overrides the profile's default, the swap itself against the inference client, and a model-identity field written onto every message at answer time.
+
+`M7-SET-FE-146` declares `M7-SET-FE-146a` as a dependency while `146a` needs what `146` renders — a cycle, corrected in the same change as this ticket. The real order is this ticket, then `146`, then `146a`.
+
+**Scope**
+- A persisted user-supplied model selection overriding the profile default, validated as a readable model file before it is accepted.
+- The swap performed against the inference client: unload, load, and report the outcome.
+- Restoring the previous model when a swap fails, and naming the failure.
+- A model-identity field on `messages`, written for every turn, with an Alembic migration.
+- Whether a model is shipped or user-supplied, knowable from configuration without a registry lookup at answer time (C9's check happens at selection, not per answer).
+
+**Out of Scope**
+- The settings UI and its copy (`M7-SET-FE-146`).
+- The persistent marker on an answer (`M7-SET-FE-146a`).
+- Downloading a model — models are bundled or placed by hand (C1).
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** A user-supplied model path can be selected, persists across a restart, and is the model actually used for the next answer. Every message records which model produced it and whether that model was shipped or user-supplied. A failed swap leaves the previous model loaded and serving, and reports why.
+- **Edge Cases:** A path that is not a readable model — rejected at selection with the reason, not at the next question. A model too large for the probed hardware — permitted with the consequence stated, never silently refused (this product states consequences rather than blocking). A swap requested mid-answer — queued until the turn finishes rather than pulling the model out from under it. A message written while no model is loaded — the field records that, rather than a null nobody can interpret.
+- **Permissions / Roles:** Single user — no roles.
+- **UI States:** None in this ticket.
+- **Validation Rules:** A user-supplied model is never marked validated. The shipped/user-supplied distinction is derived from configuration, never guessed from the file name.
+- **Audit / Logging Requirements:** A model swap is a decisions record (`docs/audit-log.md`).
+- **Analytics Events:** Local counters only — nothing transmitted. Selecting a model performs no network call of any kind (C1).
+
+**Real-World Example Scenarios**
+- The user drops a smaller GGUF beside the bundled one, selects it, and every answer from then on is attributable to it months later.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M0-MODEL-BE-019, M7-PROBE-DEPLOY-137.
+- **API / Data Touchpoints:** `api/src/askwell/config.py`; `api/src/askwell/models_catalog.py`; `Message` in `api/src/askwell/db/models.py` plus its migration; the inference client.
+- **Assumptions:** The inference bridge can unload and load a model without restarting the stack; if it cannot, the swap states the restart it needs rather than pretending otherwise.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** Cold start, select a second model file, ask a question, restart the stack, and confirm the same model is still in use and both answers record which model produced them.
+- **Other scenarios:** Select a path that is not a model and confirm the rejection names the reason. Make the swap fail and confirm the previous model still answers.
+- **Known gaps:** No UI — `M7-SET-FE-146` builds it.
+
+**Effort & Granularity Check**
+- **Estimate:** 4 hours · **Priority:** High
+- **Labels / Component:** `phase:7`, backend
+- **Granularity:** One setting, one swap path, one column.
+
+---
+
 ### M7-SET-FE-146 — Settings: model and speed
 
 **Type:** Story
@@ -764,7 +820,7 @@ The shell is the natural supervisor because it is the thing the user launches. M
 - A user sees fourteen tokens per second, places a smaller model, swaps to it, and finds answers acceptable at twice the speed.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M7-PROBE-FE-138, M5-TRACE-FE-122, M7-OFFLINE-DEPLOY-144, M7-SET-FE-146a.
+- **Dependencies:** M7-SET-BE-145a, M7-PROBE-FE-138, M5-TRACE-FE-122, M7-OFFLINE-DEPLOY-144.
 - **API / Data Touchpoints:** `settings`; the inference client.
 - **Assumptions:** Throughput can be measured from real turns rather than a synthetic benchmark.
 
@@ -1188,6 +1244,59 @@ The shell is the natural supervisor because it is the thing the user launches. M
 - **Estimate:** 2–3 hours · **Priority:** High
 - **Labels / Component:** `phase:6`, backend, `constraint:audit`
 - **Granularity:** One window and one prune.
+
+---
+
+### M7-OPS-DEPLOY-154a — One shared state volume for `/var/lib/askwell`
+
+**Type:** Task
+
+**User Story**
+- **Actor:** anyone who exports their log or opens the storage-budget screen against the real stack.
+- **User Need:** the file the worker wrote to be the file the API can serve.
+- **Business Value:** two features pass their tests and fail on a real machine, because the tests have no container boundary and the stack has one.
+- *As the deployed stack, I want one place on disk both containers can see, so that work done in one is visible in the other.*
+
+**Context / Background**
+**Detailed Description:** `compose.yaml` mounts nothing at `/var/lib/askwell` on either the `api` or the `worker` service, and there is no shared volume between them. Two things already depend on there being one: `Settings.export_dir` (`/var/lib/askwell/exports`), written by `run_export` on the worker and read by `GET /log-export/{id}/download` on the API, which therefore returns 410 for every export against the real stack (#489); and `Settings.trace_dir`, which 500s `/log-budget` (#486). In-process tests never catch either, because they run both halves in one Python process against one `Settings`.
+
+Add one named volume mounted at `/var/lib/askwell` on both services, covering both subdirectories at once rather than patching each path separately. The alternative — streaming export bytes through Redis or Postgres — was rejected: it is a much larger change for something that deliberately stays off-heap and streamed to disk.
+
+**Scope**
+- A named volume mounted at `/var/lib/askwell` on `api` and on `worker`.
+- Confirmation that `export_dir` and `trace_dir` both resolve inside it.
+- A test that survives the container boundary rather than sharing one process — exercised against the running stack, not in-process.
+
+**Out of Scope**
+- Rebuilding `M7-LOG-BE-155` itself, which is parked on this and rebuilds afterwards.
+- Any change to how exports or traces are produced.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** An export produced by the worker downloads through the API against the running stack. `/log-budget` answers without a 500. Both survive `podman compose down && up` — the volume is named, not anonymous, so the data is still there.
+- **Edge Cases:** The volume empty on first boot — both paths self-create, as they already do. A stale `.tmp` from a killed export — swept rather than served. Disk full — the existing budget degradation handles it; this ticket must not bypass it.
+- **Permissions / Roles:** Single user — no roles. The volume is owned by the container user both services run as.
+- **UI States:** None.
+- **Validation Rules:** The mount is shared state between two local containers; it is not egress and does not touch C1.
+- **Audit / Logging Requirements:** The audit stores are unaffected; this ticket must not move them (C6).
+- **Analytics Events:** None.
+
+**Real-World Example Scenarios**
+- The user exports twelve months of interaction log, the download works first time, and the bundled verifier confirms the chain on another machine — which is what `M7-LOG-BE-155` promised and could not deliver.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M0-STACK-DEPLOY-009.
+- **API / Data Touchpoints:** `compose.yaml` — the `api` and `worker` services; `Settings.export_dir` and `Settings.trace_dir` in `api/src/askwell/config.py`.
+- **Assumptions:** A named volume is the right shape on a single machine; a bind mount to the user's home would work too but ties the stack to one path layout.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** Bring the stack up, start an export, wait for it, and download it through the API. Then `podman compose down && podman compose up -d` and download it again.
+- **Other scenarios:** Hit `/log-budget` and confirm no 500. Confirm the volume is named in `podman volume ls` rather than a dangling anonymous one.
+- **Known gaps:** None — this is the whole fix for #486 and #489.
+
+**Effort & Granularity Check**
+- **Estimate:** 2 hours · **Priority:** Critical
+- **Labels / Component:** `phase:7`, deploy
+- **Granularity:** One volume, two mounts, one round-trip test.
 
 ---
 
@@ -1633,7 +1742,7 @@ The shell is the natural supervisor because it is the thing the user launches. M
 - A user swaps in a small local model to save memory, forgets, and two months later notices an answer with no citations. The marker is what tells them why, instead of the product looking broken.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M1-ASK-FE-039, M0-MODEL-BE-019.
+- **Dependencies:** M7-SET-FE-146, M7-SET-BE-145a, M1-ASK-FE-039, M0-MODEL-BE-019.
 - **API / Data Touchpoints:** The interaction record's backend field; the answer surface.
 - **Assumptions:** Whether a model is a shipped default is knowable from configuration rather than requiring a registry lookup at answer time.
 
