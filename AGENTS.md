@@ -136,6 +136,7 @@ Everything runs through one entry point:
 | What the egress proxy refused | `curl -s localhost:8000/network` | **Verified** |
 | Prove it is not on the network | `scripts/verify-localhost-binding.sh` | **Verified** |
 | Native inference, **on the host** | `scripts/dev.sh inference` | **Verified** |
+| Hardware probe, **on the host** | `scripts/dev.sh probe` (`--watch` to keep polling for settings-triggered reruns) | **Verified** |
 | Rebuild the image | `scripts/dev.sh build` | **Verified** |
 | Anything else inside the image | `scripts/dev.sh run <cmd>` / `scripts/dev.sh shell` | **Verified** |
 | Regenerate the lockfile | `scripts/dev.sh lock` | **Verified** |

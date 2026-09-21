@@ -397,6 +397,13 @@ class Settings(BaseSettings):
     # between `api` and `worker`, both of which need this key.
     install_secret_path: Path = Path("/run/askwell/install.key")
 
+    # The host-side hardware probe (`deploy/probe/askwell-probe`, `M7-PROBE-
+    # DEPLOY-137`) writes here for the same reason the inference socket lives
+    # on this mount: a container sees the cgroup's or the VM's view of memory
+    # rather than the machine's, so the probe has to run on the host and hand
+    # its result across the same bind mount.
+    probe_result_path: Path = Path("/run/askwell/probe.json")
+
     @field_validator("roots_mount", mode="before")
     @classmethod
     def _optional_path(cls, value: object) -> object:
@@ -436,6 +443,7 @@ class Settings(BaseSettings):
         "inference_socket",
         "trace_dir",
         "install_secret_path",
+        "probe_result_path",
         "voice_whisper_model_path",
         "voice_vad_model_path",
         "voice_kokoro_model_path",

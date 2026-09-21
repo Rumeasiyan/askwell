@@ -4,6 +4,30 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.6.0 - 2026-09-21
+
+M6 ("I can speak to it") completed with `0.5.13`; `docs/BRAIN.md` deferred that milestone's own
+`MINOR` bump to the next ticket to land rather than taking it in the same change, so this release
+carries it.
+
+`M7-PROBE-DEPLOY-137` — a real host-side hardware probe, replacing the M1 in-container reading as
+
+`M7-PROBE-DEPLOY-137` — a real host-side hardware probe, replacing the M1 in-container reading as
+the source of truth. `deploy/probe/askwell-probe` runs on the host, never in a container (a
+container reports the cgroup's or the VM's view of memory, not the machine's), measures RAM, CPU,
+accelerator and free disk, and selects one of the four `docs/architecture.md` §6 profiles per the
+documented thresholds — falling back to `standard` with a stated reason when memory cannot be read
+at all, distinct from a genuine reading under the `light` floor, which stays `light` and warns.
+Its result crosses to the API over the same host bind mount the inference socket and install key
+already use; `askwell.probe.sync_probe_result` records the selection as a `settings` value and a
+hash-chained `audit_decisions` record (`profile_probed`) whenever the host has genuinely re-probed,
+never on every settings-screen poll. `GET /probe` and `POST /probe/rerun` expose this — reruns are
+requested by touching a flag file `askwell-probe --watch` polls for, since a container cannot start
+a host process itself. Unrecognised accelerators are reported absent rather than guessed at, Apple
+Silicon's unified memory is reported as its own VRAM ceiling, and a VM's memory figure is used as
+given with its source stated rather than second-guessed. `askwell.hardware.probe()` (M1) remains
+the fallback for a machine the real probe has never run on, exactly as it always promised to be.
+
 ## 0.5.13 - 2026-09-21
 
 `M6-STT-FE-129` — low-confidence transcripts are shown and confirmed before Askwell answers
