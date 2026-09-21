@@ -390,13 +390,17 @@ class IngestJob(Base):
 class Chunk(Base):
     """A retrievable passage.
 
-    `content_tsv` is a generated column rather than something the application
-    maintains: a trigger or an application write can be forgotten, and a stale
-    search index is invisible until someone cannot find a document they know
-    they added. Its expression (`c7e2f814a5b3`) replaces hyphens with spaces
-    before tokenising, so a reference number like `INV-2024-0917` indexes as
-    three independent, signless lexemes rather than the parser reading each
-    `-<digits>` run as a negative number and burying the sign in the lexeme.
+    `content_tsv` was a generated column through `c7e2f814a5b3`; since
+    `b7e91a4c3f65` (`M7-SEC-BE-152`) it is an application-maintained one,
+    because `content` may hold a Fernet token rather than plaintext once a
+    passphrase is set (`content_encrypted` says which) and a database cannot
+    usefully tokenise ciphertext. `askwell.chunk.run` computes it from
+    plaintext, before encryption, with the same hyphen-to-space expression
+    the generated column used to apply. This is the accepted leak
+    `docs/architecture.md` §7 names: the search index and the embedding
+    column both stay derived from plaintext and are therefore readable by
+    anyone with database access, encryption or not — only `content` itself
+    is protected.
     """
 
     __tablename__ = "chunks"
@@ -415,7 +419,13 @@ class Chunk(Base):
     heading: Mapped[str | None] = mapped_column(Text)
 
     # Nullable because deletion clears it. The row stays for citations.
+    # Holds plaintext, or a Fernet token when `content_encrypted` is true —
+    # never both at once, and never partially: `askwell.content_encryption`
+    # flips both columns together, per row, in the same statement.
     content: Mapped[str | None] = mapped_column(Text)
+    content_encrypted: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
     content_tsv: Mapped[str | None] = mapped_column(TSVECTOR)
 
     # Dimension comes from configuration, never a literal here. Changing the

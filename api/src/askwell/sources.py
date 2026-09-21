@@ -816,6 +816,14 @@ async def _tombstone_document(
     enforces, cancel any queued or running ingestion for it, and tombstone
     the row. Never touches the user's file on disk — Askwell only ever read
     it, and this clears what Askwell kept, not what they have.
+
+    `content_tsv` and `content_encrypted` clear alongside `content` —
+    `content_tsv` was a generated column through `c7e2f814a5b3` and cleared
+    itself; since `b7e91a4c3f65` (`M7-SEC-BE-152`) nothing recomputes it
+    automatically, so this statement is the one place besides
+    `askwell.chunk.run` that writes it, and the two must stay paired the
+    same way `askwell.chunk.run` always writes `content`/`content_tsv`
+    together.
     """
     await session.execute(
         text(
@@ -825,7 +833,10 @@ async def _tombstone_document(
         {"id": document_id, "reason": reason},
     )
     await session.execute(
-        text("UPDATE chunks SET content = NULL, embedding = NULL WHERE document_id = :id"),
+        text(
+            "UPDATE chunks SET content = NULL, content_tsv = NULL, "
+            "content_encrypted = false, embedding = NULL WHERE document_id = :id"
+        ),
         {"id": document_id},
     )
     # A queued job is simply gone — there is nothing left to index. A running
@@ -843,6 +854,7 @@ async def delete_document(
     document_id: uuid.UUID,
     reason: str | None,
     ocr_confidence_threshold: float,
+    settings: Settings,
 ) -> bool:
     """Delete one document. Returns `False` if it was already gone or never
     existed — deleting twice is not an error, it is nothing happening twice.
@@ -869,7 +881,7 @@ async def delete_document(
     # source's own status inside `refresh_source`, so deleting the last
     # document of an already-deleted source is a no-op rather than reviving
     # a tombstoned source's status column.
-    await ingest.refresh_source(session, source_id, ocr_confidence_threshold)
+    await ingest.refresh_source(session, source_id, ocr_confidence_threshold, settings)
     return True
 
 
@@ -1440,7 +1452,7 @@ def register_sources(
     ) -> JSONResponse:
         async with session_scope(factory) as db:
             deleted = await delete_document(
-                db, document_id, reason, settings.ocr_confidence_threshold
+                db, document_id, reason, settings.ocr_confidence_threshold, settings
             )
         if not deleted:
             return JSONResponse({"error": "No such document."}, status_code=404)

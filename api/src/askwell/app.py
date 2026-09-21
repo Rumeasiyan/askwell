@@ -114,7 +114,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_ask(app, resolved, app.state.sessions)
     register_search(app, resolved, app.state.sessions)
     register_retrieval_threshold(app, resolved, app.state.sessions)
-    register_suggestions(app, app.state.sessions)
+    register_suggestions(app, resolved, app.state.sessions)
     register_documents(app, resolved, app.state.sessions)
     register_review(app, resolved, app.state.sessions)
     register_memory(app, resolved, app.state.sessions)

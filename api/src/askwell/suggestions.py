@@ -31,6 +31,8 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from askwell import crypto, passphrase
+from askwell.config import Settings
 from askwell.db.engine import session_scope
 
 MAX_SUGGESTIONS = 3
@@ -76,7 +78,7 @@ def _question_for(filename: str, heading: str | None, content: str | None) -> st
     return f"What is in {filename}?"
 
 
-async def suggested_questions(session: AsyncSession) -> list[dict[str, Any]]:
+async def suggested_questions(session: AsyncSession, settings: Settings) -> list[dict[str, Any]]:
     """Up to `MAX_SUGGESTIONS`, one per document, most recently added first.
 
     Two bounded queries rather than one per document: the same "cheap even
@@ -104,14 +106,21 @@ async def suggested_questions(session: AsyncSession) -> list[dict[str, Any]]:
     first_chunks = (
         await session.execute(
             text(
-                "SELECT DISTINCT ON (document_id) document_id, heading, content "
-                "FROM chunks WHERE document_id = ANY(:ids) "
+                "SELECT DISTINCT ON (document_id) document_id, heading, content, "
+                "content_encrypted FROM chunks WHERE document_id = ANY(:ids) "
                 "ORDER BY document_id, ordinal"
             ),
             {"ids": document_ids},
         )
     ).all()
-    by_document = {row[0]: (row[1], row[2]) for row in first_chunks}
+    by_document: dict[Any, tuple[str | None, str | None]] = {}
+    key: bytes | None = None
+    for document_id, heading, content, content_encrypted in first_chunks:
+        if content is not None and content_encrypted:
+            if key is None:
+                key = await passphrase.current_key(session, settings)
+            content = crypto.decrypt(content.encode("ascii"), key).decode("utf-8")
+        by_document[document_id] = (heading, content)
 
     suggestions = []
     for document_id in document_ids:
@@ -125,8 +134,10 @@ async def suggested_questions(session: AsyncSession) -> list[dict[str, Any]]:
     return suggestions
 
 
-def register_suggestions(app: FastAPI, sessions: async_sessionmaker[AsyncSession]) -> None:
+def register_suggestions(
+    app: FastAPI, settings: Settings, sessions: async_sessionmaker[AsyncSession]
+) -> None:
     @app.get("/suggestions")
     async def suggestions() -> JSONResponse:
         async with session_scope(sessions) as db:
-            return JSONResponse({"suggestions": await suggested_questions(db)})
+            return JSONResponse({"suggestions": await suggested_questions(db, settings)})

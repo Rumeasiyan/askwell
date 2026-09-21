@@ -366,7 +366,7 @@ async def _park(
             text("UPDATE documents SET status = 'queued' WHERE id = :id AND deleted_at IS NULL"),
             {"id": work.document_id},
         )
-        await refresh_source(session, work.source_id, settings.ocr_confidence_threshold)
+        await refresh_source(session, work.source_id, settings.ocr_confidence_threshold, settings)
 
     log.info(
         "ingest_parked",
@@ -392,7 +392,7 @@ async def _finish(
             text("UPDATE documents SET status = 'ready' WHERE id = :id AND deleted_at IS NULL"),
             {"id": work.document_id},
         )
-        await refresh_source(session, work.source_id, settings.ocr_confidence_threshold)
+        await refresh_source(session, work.source_id, settings.ocr_confidence_threshold, settings)
     log.info("ingest_completed", document_id=str(work.document_id), filename=work.filename)
 
 
@@ -448,7 +448,7 @@ async def _fail(
                 ),
                 {"id": work.document_id},
             )
-        await refresh_source(session, work.source_id, settings.ocr_confidence_threshold)
+        await refresh_source(session, work.source_id, settings.ocr_confidence_threshold, settings)
 
     log.warning(
         "ingest_failed",
@@ -552,7 +552,9 @@ async def process(
                     ),
                     {"id": document_id},
                 )
-                await refresh_source(session, work.source_id, settings.ocr_confidence_threshold)
+                await refresh_source(
+                    session, work.source_id, settings.ocr_confidence_threshold, settings
+                )
 
         try:
             await stage.run(work, report, factory, settings)
@@ -732,7 +734,7 @@ def _attention_reason(*, failed: int, flagged: int, missing: int, total: int) ->
 
 
 async def refresh_source(
-    session: AsyncSession, source_id: uuid.UUID, ocr_confidence_threshold: float
+    session: AsyncSession, source_id: uuid.UUID, ocr_confidence_threshold: float, settings: Settings
 ) -> str | None:
     """Recompute a source's status, and record it if it moved.
 
@@ -816,7 +818,7 @@ async def refresh_source(
     # document at a time. `raise_candidates` is itself idempotent per source,
     # so a later, unrelated status change here never re-scans it.
     if wanted in ("ready", "attention") and counts.outstanding == 0 and counts.running == 0:
-        await clarify.raise_candidates(session, source_id, ocr_confidence_threshold)
+        await clarify.raise_candidates(session, source_id, ocr_confidence_threshold, settings)
 
     return wanted
 
@@ -878,7 +880,7 @@ async def sweep_missing(session: AsyncSession, settings: Settings) -> int:
             touched += 1
 
     for source_id in changed_sources:
-        await refresh_source(session, source_id, settings.ocr_confidence_threshold)
+        await refresh_source(session, source_id, settings.ocr_confidence_threshold, settings)
 
     return touched
 
@@ -1286,7 +1288,7 @@ async def retry(session: AsyncSession, document_id: uuid.UUID, settings: Setting
     await session.execute(
         text("UPDATE documents SET status = 'queued' WHERE id = :id"), {"id": document_id}
     )
-    await refresh_source(session, row[0], settings.ocr_confidence_threshold)
+    await refresh_source(session, row[0], settings.ocr_confidence_threshold, settings)
     log.info("ingest_retry_requested", document_id=str(document_id))
     return Retried(retried=True, state="queued", source_id=row[0])
 
@@ -1342,7 +1344,7 @@ async def reindex_source(
         text("UPDATE documents SET status = 'queued', ocr_confidence = NULL WHERE id = ANY(:ids)"),
         {"ids": document_ids},
     )
-    await refresh_source(session, source_id, settings.ocr_confidence_threshold)
+    await refresh_source(session, source_id, settings.ocr_confidence_threshold, settings)
     await record(
         session,
         Store.DECISIONS,

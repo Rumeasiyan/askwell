@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from askwell import crypto, passphrase
 from askwell.config import Settings
 from askwell.db.engine import session_scope
 from askwell.inference.client import InferenceClient, InferenceFailed, InferenceUnavailable
@@ -174,7 +175,7 @@ async def run(
         rows = (
             await session.execute(
                 text(
-                    "SELECT id, content FROM chunks WHERE document_id = :id "
+                    "SELECT id, content, content_encrypted FROM chunks WHERE document_id = :id "
                     "AND embedding IS NULL ORDER BY ordinal"
                 ),
                 {"id": work.document_id},
@@ -188,7 +189,22 @@ async def run(
         # point. Either way, there is no batch to send.
         return
 
-    pending = [(row[0], row[1]) for row in rows]
+    # `embedding` must stay derived from plaintext even when `content` is
+    # ciphertext (`M7-SEC-BE-152`, `docs/architecture.md` §7): the embedding
+    # model was never trained to make sense of a Fernet token, and an
+    # embedding computed from one would just be wrong, not merely
+    # unencrypted.
+    key: bytes | None = None
+    if any(content_encrypted for _id, _content, content_encrypted in rows):
+        async with session_scope(factory) as session:
+            key = await passphrase.current_key(session, settings)
+
+    pending: list[tuple[uuid.UUID, str]] = []
+    for chunk_id, content, content_encrypted in rows:
+        if content is not None and content_encrypted:
+            assert key is not None
+            content = crypto.decrypt(content.encode("ascii"), key).decode("utf-8")
+        pending.append((chunk_id, content))
     for chunk_id, content in pending:
         if content is None or not content.strip():
             raise EmptyChunk(

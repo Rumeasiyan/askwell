@@ -45,7 +45,9 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from askwell import crypto, passphrase
 from askwell.audit import Store, record
+from askwell.config import Settings
 from askwell.logging import get_logger
 from askwell.settings_store import get_setting, set_setting
 
@@ -291,10 +293,12 @@ def _normalize_filename(filename: str) -> str:
     return re.sub(r"[\s_\-]+", " ", stem).strip().lower()
 
 
-async def _detect_abbreviations(session: AsyncSession, source_id: uuid.UUID) -> list[Candidate]:
+async def _detect_abbreviations(
+    session: AsyncSession, source_id: uuid.UUID, settings: Settings
+) -> list[Candidate]:
     rows = await session.execute(
         text(
-            "SELECT c.content, d.filename, c.page_from FROM chunks c "
+            "SELECT c.content, c.content_encrypted, d.filename, c.page_from FROM chunks c "
             "JOIN documents d ON d.id = c.document_id "
             "WHERE d.source_id = :source_id AND d.deleted_at IS NULL "
             "AND d.superseded_by IS NULL AND d.status = 'ready'"
@@ -303,9 +307,14 @@ async def _detect_abbreviations(session: AsyncSession, source_id: uuid.UUID) -> 
     )
     counts: Counter[str] = Counter()
     samples: dict[str, list[tuple[str, int | None, str]]] = defaultdict(list)
-    for content, filename, page_from in rows:
+    key: bytes | None = None
+    for content, content_encrypted, filename, page_from in rows:
         if not content:
             continue
+        if content_encrypted:
+            if key is None:
+                key = await passphrase.current_key(session, settings)
+            content = crypto.decrypt(content.encode("ascii"), key).decode("utf-8")
         found = _ABBREVIATION.findall(content)
         counts.update(found)
         for abbreviation in dict.fromkeys(found):
@@ -630,7 +639,7 @@ async def _known_facts(session: AsyncSession, subjects: list[str]) -> dict[str, 
 
 
 async def raise_candidates(
-    session: AsyncSession, source_id: uuid.UUID, ocr_confidence_threshold: float
+    session: AsyncSession, source_id: uuid.UUID, ocr_confidence_threshold: float, settings: Settings
 ) -> RaiseResult:
     """Run every M3 trigger for one source, once.
 
@@ -652,7 +661,7 @@ async def raise_candidates(
         return RaiseResult(raised=0, inferred=0, dropped=0)
 
     all_candidates = [
-        *await _detect_abbreviations(session, source_id),
+        *await _detect_abbreviations(session, source_id, settings),
         *await _detect_unreadable_scans(session, source_id, ocr_confidence_threshold),
         *await _detect_document_identity(session, source_id),
         *await _detect_contradictions(session, source_id),

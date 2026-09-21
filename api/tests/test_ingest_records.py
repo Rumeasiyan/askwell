@@ -970,7 +970,9 @@ async def test_a_flagged_document_is_recognised_before_it_ever_reaches_ready(
                 text("SELECT source_id FROM documents WHERE id = :id"), {"id": documents[0]}
             )
         ).scalar_one()
-        await ingest.refresh_source(inner, source_id, unreachable_queue.ocr_confidence_threshold)
+        await ingest.refresh_source(
+            inner, source_id, unreachable_queue.ocr_confidence_threshold, unreachable_queue
+        )
 
     row = (
         await session.execute(
@@ -1363,7 +1365,9 @@ async def test_reindexing_a_source_requeues_every_live_document_regardless_of_st
         )
     ).one()
     source_id = source_row[0]
-    await ingest.refresh_source(session, source_id, unreachable_queue.ocr_confidence_threshold)
+    await ingest.refresh_source(
+        session, source_id, unreachable_queue.ocr_confidence_threshold, unreachable_queue
+    )
     await session.commit()
 
     outcome = await ingest.reindex_source(session, source_id, unreachable_queue)

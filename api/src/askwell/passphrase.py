@@ -61,7 +61,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from askwell import crypto
+from askwell import content_encryption, crypto
 from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
@@ -290,6 +290,7 @@ async def set_passphrase(
         )
     if await is_enabled(session):
         raise PassphraseAlreadySet("A passphrase is already set. Use change instead.")
+    await content_encryption.assert_not_migrating(session)
     strength = assess_strength(passphrase)
     if not strength.meets_minimum:
         raise WeakPassphrase(f"Passphrase must be at least {MIN_LENGTH} characters.")
@@ -297,6 +298,14 @@ async def set_passphrase(
     install_secret = crypto.load_or_create_install_secret(settings.install_secret_path)
     old_key = crypto.derive_key(install_secret)
     new_key = crypto.derive_key(install_secret, passphrase)
+
+    # Chunk content first, in its own resumable batches: an interrupted run
+    # leaves `is_enabled` false and every unmigrated row still readable with
+    # `old_key`, so retrying this same call is a safe, ordinary resume
+    # rather than a special path (`askwell.content_encryption`'s own
+    # docstring). Credentials (`sources`, few rows) stay a single atomic
+    # re-encrypt, unchanged from `M7-SEC-BE-151`.
+    await content_encryption.migrate_chunk_content(session, old_key, new_key, target_encrypted=True)
 
     await _reencrypt_sources(session, old_key, new_key)
     verifier = crypto.encrypt(_CANARY, new_key)
@@ -323,12 +332,17 @@ async def change_passphrase(
     old_key = crypto.derive_key(install_secret, current_passphrase)
     if not _verify(old_key, verifier_b64):
         raise IncorrectPassphrase("Incorrect passphrase.")
+    await content_encryption.assert_not_migrating(session)
 
     strength = assess_strength(new_passphrase)
     if not strength.meets_minimum:
         raise WeakPassphrase(f"Passphrase must be at least {MIN_LENGTH} characters.")
 
     new_key = crypto.derive_key(install_secret, new_passphrase)
+    # The verifier on file is still `old_key`'s, so a crash here and a retry
+    # with the same two passphrases re-derives identical `old_key`/`new_key`
+    # values and resumes from whatever `content_encrypted` left behind.
+    await content_encryption.migrate_chunk_content(session, old_key, new_key, target_encrypted=True)
     await _reencrypt_sources(session, old_key, new_key)
     verifier = crypto.encrypt(_CANARY, new_key)
     await set_setting(session, VERIFIER_KEY, base64.urlsafe_b64encode(verifier).decode("ascii"))
@@ -355,8 +369,12 @@ async def remove_passphrase(
     old_key = crypto.derive_key(install_secret, current_passphrase)
     if not _verify(old_key, verifier_b64):
         raise IncorrectPassphrase("Incorrect passphrase.")
+    await content_encryption.assert_not_migrating(session)
 
     new_key = crypto.derive_key(install_secret)
+    await content_encryption.migrate_chunk_content(
+        session, old_key, new_key, target_encrypted=False
+    )
     await _reencrypt_sources(session, old_key, new_key)
     await session.execute(text("DELETE FROM settings WHERE key = :key"), {"key": VERIFIER_KEY})
     await record(session, Store.DECISIONS, PASSPHRASE_REMOVED, {})
@@ -419,6 +437,13 @@ def register_passphrase(
         async with session_scope(factory) as db:
             return JSONResponse(await status(db))
 
+    @app.get("/settings/passphrase/migration")
+    async def migration_status() -> JSONResponse:
+        """`docs/ux/settings.md` §4's progress bar polls this while a
+        passphrase set/change/remove is migrating chunk content."""
+        async with session_scope(factory) as db:
+            return JSONResponse(await content_encryption.migration_progress(db))
+
     @app.post("/settings/passphrase/strength")
     async def strength(body: StrengthRequest) -> JSONResponse:
         return JSONResponse(assess_strength(body.passphrase).as_dict())
@@ -435,6 +460,8 @@ def register_passphrase(
                 )
             except (NoRecoveryNotAcknowledged, PassphraseAlreadySet, WeakPassphrase) as error:
                 return JSONResponse({"error": str(error)}, status_code=400)
+            except content_encryption.MigrationInProgress as error:
+                return JSONResponse({"error": str(error)}, status_code=409)
             return JSONResponse({"enabled": True})
 
     @app.post("/settings/passphrase/change")
@@ -448,6 +475,8 @@ def register_passphrase(
                 return JSONResponse({"error": str(error)}, status_code=401)
             except WeakPassphrase as error:
                 return JSONResponse({"error": str(error)}, status_code=400)
+            except content_encryption.MigrationInProgress as error:
+                return JSONResponse({"error": str(error)}, status_code=409)
             return JSONResponse({"enabled": True})
 
     @app.post("/settings/passphrase/remove")
@@ -459,6 +488,8 @@ def register_passphrase(
                 return JSONResponse({"error": str(error)}, status_code=400)
             except IncorrectPassphrase as error:
                 return JSONResponse({"error": str(error)}, status_code=401)
+            except content_encryption.MigrationInProgress as error:
+                return JSONResponse({"error": str(error)}, status_code=409)
             return JSONResponse(
                 {
                     "enabled": False,

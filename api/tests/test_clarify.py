@@ -29,10 +29,20 @@ from askwell.clarify import (
     raise_candidates,
     set_clarification_cap,
 )
+from askwell.config import Settings
 
 pytestmark = pytest.mark.requires_db
 
 _THRESHOLD = 0.60
+# No test in this module ever sets `content_encrypted` on a chunk, so
+# `raise_candidates` never has to resolve a real key from this — it exists
+# only because the parameter is required.
+_SETTINGS = Settings(
+    database_url="postgresql://askwell:pw@127.0.0.1:1/askwell",  # type: ignore[arg-type]
+    sandbox_database_url="postgresql://x:x@127.0.0.1:1/postgres",  # type: ignore[arg-type]
+    sandbox_owner_password="pw",  # type: ignore[arg-type]
+    sandbox_readonly_password="pw",  # type: ignore[arg-type]
+)
 _TABLES = (
     "sources, documents, document_pages, chunks, memory, schema_notes, "
     "clarifications, audit_decisions, settings"
@@ -168,7 +178,7 @@ async def test_a_repeated_abbreviation_raises_a_candidate(session: AsyncSession)
     await _chunk(session, document_id, "The RFQ closes Friday.")
     await _chunk(session, document_id, "Submit the RFQ to procurement.")
 
-    result = await raise_candidates(session, source_id, _THRESHOLD)
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     assert result == RaiseResult(raised=1, inferred=0, dropped=0)
     rows = (await session.execute(text("SELECT question, status FROM clarifications"))).all()
@@ -185,7 +195,7 @@ async def test_an_abbreviation_appearing_once_is_filtered_by_materiality(
     document_id = await _document(session, source_id, "tender.pdf")
     await _chunk(session, document_id, "The RFQ closes Friday.")
 
-    result = await raise_candidates(session, source_id, _THRESHOLD)
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     assert result == RaiseResult(raised=0, inferred=0, dropped=1)
     assert (await session.execute(text("SELECT 1 FROM clarifications"))).first() is None
@@ -210,7 +220,7 @@ async def test_an_abbreviation_already_in_memory_is_never_asked_twice(
         {"id": uuid.uuid4()},
     )
 
-    result = await raise_candidates(session, source_id, _THRESHOLD)
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     assert result == RaiseResult(raised=0, inferred=0, dropped=0, suppressed=1)
     assert (await session.execute(text("SELECT 1 FROM clarifications"))).first() is None
@@ -223,7 +233,7 @@ async def test_a_second_source_with_the_same_abbreviation_asks_nothing(
     first_source = await _source(session)
     first_document = await _document(session, first_source, "tender.pdf")
     await _chunk(session, first_document, "The RFQ closes Friday. Another RFQ follows.")
-    await raise_candidates(session, first_source, _THRESHOLD)
+    await raise_candidates(session, first_source, _THRESHOLD, _SETTINGS)
     await session.execute(
         text("UPDATE clarifications SET status = 'answered', answer = 'Request for Quotation'")
     )
@@ -239,7 +249,7 @@ async def test_a_second_source_with_the_same_abbreviation_asks_nothing(
     second_document = await _document(session, second_source, "another-tender.pdf")
     await _chunk(session, second_document, "Please review the RFQ. The RFQ is attached.")
 
-    result = await raise_candidates(session, second_source, _THRESHOLD)
+    result = await raise_candidates(session, second_source, _THRESHOLD, _SETTINGS)
 
     assert result == RaiseResult(raised=0, inferred=0, dropped=0, suppressed=1)
     count = (
@@ -266,7 +276,7 @@ async def test_a_low_confidence_inferred_fact_still_suppresses_the_question(
         {"id": uuid.uuid4()},
     )
 
-    result = await raise_candidates(session, source_id, _THRESHOLD)
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     assert result == RaiseResult(raised=0, inferred=0, dropped=0, suppressed=1)
     assert (await session.execute(text("SELECT 1 FROM clarifications"))).first() is None
@@ -294,7 +304,7 @@ async def test_a_superseded_fact_does_not_resurrect_the_question(session: AsyncS
         {"id": old_id, "new_id": new_id},
     )
 
-    result = await raise_candidates(session, source_id, _THRESHOLD)
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     assert result == RaiseResult(raised=0, inferred=0, dropped=0, suppressed=1)
     payload = (
@@ -324,7 +334,7 @@ async def test_a_subject_known_only_in_schema_notes_still_suppresses(
         {"id": uuid.uuid4(), "source_id": other_source},
     )
 
-    result = await raise_candidates(session, source_id, _THRESHOLD)
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     assert result == RaiseResult(raised=0, inferred=0, dropped=0, suppressed=1)
     assert (await session.execute(text("SELECT 1 FROM clarifications"))).first() is None
@@ -343,7 +353,7 @@ async def test_suppression_is_logged_with_the_applied_fact(session: AsyncSession
         {"id": uuid.uuid4()},
     )
 
-    await raise_candidates(session, source_id, _THRESHOLD)
+    await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     row = (
         await session.execute(
@@ -364,12 +374,12 @@ async def test_a_skipped_question_is_not_raised_again_for_that_source(
     document_id = await _document(session, source_id, "tender.pdf")
     await _chunk(session, document_id, "The RFQ closes Friday. Another RFQ follows.")
 
-    await raise_candidates(session, source_id, _THRESHOLD)
+    await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
     await session.execute(text("UPDATE clarifications SET status = 'skipped'"))
     # New chunks land as if the source were re-indexed.
     await _chunk(session, document_id, "The RFQ deadline moved. RFQ RFQ.")
 
-    result = await raise_candidates(session, source_id, _THRESHOLD)
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     assert result == RaiseResult(raised=0, inferred=0, dropped=0)
     count = (
@@ -387,7 +397,7 @@ async def test_a_common_abbreviation_is_never_asked_about(session: AsyncSession)
     document_id = await _document(session, source_id, "notes.pdf")
     await _chunk(session, document_id, "Exported as PDF. The PDF opens fine.")
 
-    result = await raise_candidates(session, source_id, _THRESHOLD)
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     assert result == RaiseResult(raised=0, inferred=0, dropped=0)
 
@@ -405,7 +415,7 @@ async def test_a_materially_poor_scan_raises_a_candidate_naming_its_pages(
     await _page(session, document_id, 2, "garbled", ocr_confidence=0.10)
     await _page(session, document_id, 3, "garbled", ocr_confidence=0.10)
 
-    result = await raise_candidates(session, source_id, _THRESHOLD)
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     assert result == RaiseResult(raised=1, inferred=0, dropped=0)
     question = (await session.execute(text("SELECT question FROM clarifications"))).scalar_one()
@@ -423,7 +433,7 @@ async def test_one_poor_page_in_a_large_document_is_inferred_not_asked(
     for page_number in range(2, 42):
         await _page(session, document_id, page_number, "clean text", ocr_confidence=0.95)
 
-    result = await raise_candidates(session, source_id, _THRESHOLD)
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     assert result == RaiseResult(raised=0, inferred=1, dropped=0)
     fact = await session.execute(text("SELECT fact, origin, confidence FROM memory"))
@@ -439,7 +449,7 @@ async def test_a_document_with_a_good_scan_raises_nothing(session: AsyncSession)
     document_id = await _document(session, source_id, "clean.pdf")
     await _page(session, document_id, 1, "clean text", ocr_confidence=0.95)
 
-    result = await raise_candidates(session, source_id, _THRESHOLD)
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     assert result == RaiseResult(raised=0, inferred=0, dropped=0)
 
@@ -456,7 +466,7 @@ async def test_version_like_filenames_raise_a_candidate_naming_the_newest(
     await _document(session, source_id, "contract-v1.pdf", added_at=now - timedelta(days=2))
     await _document(session, source_id, "contract-v2-FINAL.pdf", added_at=now)
 
-    result = await raise_candidates(session, source_id, _THRESHOLD)
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     assert result == RaiseResult(raised=1, inferred=0, dropped=0)
     question = (await session.execute(text("SELECT question FROM clarifications"))).scalar_one()
@@ -469,7 +479,7 @@ async def test_a_lone_document_is_never_ambiguous(session: AsyncSession) -> None
     source_id = await _source(session)
     await _document(session, source_id, "contract.pdf")
 
-    result = await raise_candidates(session, source_id, _THRESHOLD)
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     assert result == RaiseResult(raised=0, inferred=0, dropped=0)
 
@@ -480,7 +490,7 @@ async def test_a_resolved_version_chain_is_not_re_asked(session: AsyncSession) -
     newest = await _document(session, source_id, "contract-v2.pdf")
     await _document(session, source_id, "contract-v1.pdf", superseded_by=newest)
 
-    result = await raise_candidates(session, source_id, _THRESHOLD)
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     # Only `contract-v2.pdf` is live once the superseded one is excluded —
     # one document per normalised stem is not ambiguous.
@@ -498,7 +508,7 @@ async def test_disagreeing_sources_raise_a_candidate(session: AsyncSession) -> N
     await _page(session, handbook, 1, "The notice period is 30 days for all staff.")
     await _page(session, policy, 1, "The notice period is 45 days for all staff.")
 
-    result = await raise_candidates(session, source_id, _THRESHOLD)
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     assert result == RaiseResult(raised=1, inferred=0, dropped=0)
     question = (await session.execute(text("SELECT question FROM clarifications"))).scalar_one()
@@ -516,7 +526,7 @@ async def test_a_contradiction_against_a_superseded_version_is_not_a_contradicti
     await _page(session, current, 1, "The notice period is 45 days for all staff.")
     await _page(session, old, 1, "The notice period is 30 days for all staff.")
 
-    result = await raise_candidates(session, source_id, _THRESHOLD)
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     assert result == RaiseResult(raised=0, inferred=0, dropped=0)
 
@@ -529,7 +539,7 @@ async def test_a_single_source_stating_a_fact_once_is_not_a_contradiction(
     document_id = await _document(session, source_id, "handbook.pdf")
     await _page(session, document_id, 1, "The notice period is 30 days for all staff.")
 
-    result = await raise_candidates(session, source_id, _THRESHOLD)
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     assert result == RaiseResult(raised=0, inferred=0, dropped=0)
 
@@ -546,7 +556,7 @@ async def test_a_source_with_no_ambiguity_at_all_raises_nothing(
     await _chunk(session, document_id, "This is an ordinary paragraph about staffing.")
     await _page(session, document_id, 1, "This is an ordinary paragraph about staffing.")
 
-    result = await raise_candidates(session, source_id, _THRESHOLD)
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     assert result == RaiseResult(raised=0, inferred=0, dropped=0)
     assert (await session.execute(text("SELECT 1 FROM clarifications"))).first() is None
@@ -565,7 +575,7 @@ async def test_a_source_already_scanned_is_never_re_scanned(session: AsyncSessio
         {"id": uuid.uuid4(), "source_id": source_id},
     )
 
-    result = await raise_candidates(session, source_id, _THRESHOLD)
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     assert result == RaiseResult(raised=0, inferred=0, dropped=0)
     count = (
@@ -586,7 +596,7 @@ async def test_raising_and_dropping_are_both_logged_to_the_decisions_store(
     await _chunk(session, document_id, "The RFQ closes Friday. Another RFQ follows.")
     await _chunk(session, document_id, "A lone abbreviation: XQ.")
 
-    await raise_candidates(session, source_id, _THRESHOLD)
+    await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     kinds = (
         (await session.execute(text("SELECT kind FROM audit_decisions ORDER BY occurred_at")))
@@ -703,7 +713,7 @@ async def test_a_source_producing_ten_candidates_asks_five_and_infers_the_rest(
         for _ in range(index + 2):
             await _chunk(session, document_id, f"The {token} applies here.")
 
-    result = await raise_candidates(session, source_id, _THRESHOLD)
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     assert result == RaiseResult(raised=5, inferred=5, dropped=0, capped=5)
     rows = (
@@ -726,7 +736,7 @@ async def test_exactly_five_candidates_are_all_asked(session: AsyncSession) -> N
         token = chr(65 + index) * 3
         await _chunk(session, document_id, f"{token} and {token} again.")
 
-    result = await raise_candidates(session, source_id, _THRESHOLD)
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     assert result == RaiseResult(raised=5, inferred=0, dropped=0, capped=0)
 
@@ -745,7 +755,7 @@ async def test_a_contradiction_outranks_an_abbreviation_for_the_cap(
         for _ in range(3):
             await _chunk(session, handbook, f"{token} applies.")
 
-    result = await raise_candidates(session, source_id, _THRESHOLD)
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     assert result.raised == 5
     triggers = (
@@ -766,7 +776,7 @@ async def test_raising_the_cap_asks_more_on_the_next_source(session: AsyncSessio
     await set_clarification_cap(session, 7)
     assert await get_clarification_cap(session) == 7
 
-    result = await raise_candidates(session, source_id, _THRESHOLD)
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     assert result == RaiseResult(raised=7, inferred=0, dropped=0, capped=0)
     kinds = (
@@ -794,7 +804,7 @@ async def test_running_the_same_import_twice_chooses_the_same_five(
             token = chr(65 + index) * 3
             for _ in range(index + 2):
                 await _chunk(session, document_id, f"{token} appears here.")
-        await raise_candidates(session, source_id, _THRESHOLD)
+        await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
         rows = (
             (
                 await session.execute(
@@ -833,7 +843,7 @@ async def test_abbreviation_evidence_carries_real_passages_and_no_inference(
     await _chunk(session, document_id, "The RFQ closes Friday.")
     await _chunk(session, document_id, "Submit the RFQ to procurement.")
 
-    await raise_candidates(session, source_id, _THRESHOLD)
+    await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     evidence = await _evidence_for(session, "RFQ")
     assert evidence["kind"] == "passage"
@@ -855,7 +865,7 @@ async def test_poor_scan_evidence_carries_extracted_text_and_names_the_missing_i
     for page in range(1, 21):
         await _page(session, document_id, page, f"garbled text page {page}", ocr_confidence=0.2)
 
-    await raise_candidates(session, source_id, _THRESHOLD)
+    await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     evidence = await _evidence_for(session, "scan.pdf")
     assert evidence["kind"] == "poor_scan"
@@ -883,7 +893,7 @@ async def test_document_identity_evidence_carries_a_real_passage_from_the_newest
     await _page(session, old, 1, "Old terms apply here.")
     await _page(session, new, 1, "New terms apply here, superseding the old.")
 
-    await raise_candidates(session, source_id, _THRESHOLD)
+    await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     evidence = await _evidence_for(session, "contract")
     assert evidence["kind"] == "passage"
@@ -906,7 +916,7 @@ async def test_contradiction_evidence_carries_both_passages_with_their_dates(
     await _page(session, handbook, 3, "The notice period is 30 days for all staff.")
     await _page(session, policy, 7, "The notice period is 45 days for all staff.")
 
-    await raise_candidates(session, source_id, _THRESHOLD)
+    await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     evidence = await _evidence_for(session, "the notice period")
     assert evidence["kind"] == "contradiction"
@@ -932,7 +942,7 @@ async def test_evidence_that_cannot_be_captured_still_raises_the_question(
     for page in range(1, 21):
         await _page(session, document_id, page, "", ocr_confidence=0.1)
 
-    result = await raise_candidates(session, source_id, _THRESHOLD)
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     assert result.raised == 1
     evidence = await _evidence_for(session, "blank-scan.pdf")
