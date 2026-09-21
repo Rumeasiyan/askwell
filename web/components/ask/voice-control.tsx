@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
+  canStartCapture,
+  canStop,
   encodeAudioFrame,
   formatElapsed,
   micAppearsSilent,
@@ -18,6 +20,7 @@ import {
   VOICE_IDLE,
   VOICE_LATENCY_COPY,
   VOICE_PLAYBACK_SAMPLE_RATE,
+  VOICE_STOPPED_REASON,
   type VoiceStatus,
 } from "@/lib/voice";
 import { fetchSetupState } from "@/lib/setup";
@@ -55,6 +58,28 @@ import { fetchSetupState } from "@/lib/setup";
  * server's own VAD pause (`M6-STT-BE-128`) to say so would leave the
  * composer unable to show anything between "still listening" and "here is
  * the transcript" at all.
+ *
+ * **Stop control, deliberately no barge-in** (`docs/ux/voice.md` §4 #13,
+ * `M6-VUI-FE-133`): a "Stop" button renders only while `canStop` is true —
+ * `answering` — and is the *only* way out of a running turn. Speaking over
+ * the answer, or pressing and holding the mic while it is generating or
+ * playing, does nothing (`startCapture`'s `canStartCapture` guard, unit
+ * tested via `web/lib/voice.test.ts` since issue 463 — the guard itself lived
+ * here from `M6-VUI-FE-128a` but had no automated coverage until it moved
+ * into the pure, testable predicate both this ticket and that issue
+ * needed). Pressing stop sends `{"type": "stop"}` (mirrored server-side
+ * onto `_Turn.stop_requested`, the same flag `POST /ask/{id}/stop` sets)
+ * and, locally and immediately, discards whatever audio is queued or
+ * already playing by closing the playback `AudioContext` — waiting for the
+ * server's own `status` event, or for the sentence already playing to
+ * finish, is exactly what "promptly" rules out. The resulting `messages`
+ * row is marked partial correctly either way, by `askwell.ask`'s own
+ * `status == "stopped"` check inside the token loop — this control's own
+ * label after stopping says only "Stopped.", never "partial", because the
+ * voice channel's wire protocol has no event that would let a client tell
+ * "stop cut the answer off" apart from "stop landed after the text was
+ * already complete and only cut off audio" (`lib/voice.ts`'s
+ * `VOICE_STOPPED_REASON` comment; issue 471).
  *
  * **Rendering the transcript and answer into the conversation itself is not
  * this ticket's scope.** `AskProvider` (`ask-state.tsx`) only knows how to
@@ -282,8 +307,10 @@ export function MicControl() {
   const startCapture = useCallback(async (): Promise<void> => {
     // A press while transcribing or answering is ignored, not a second
     // socket (the ticket's own acceptance criterion) — and idle is the only
-    // state this function knows how to leave.
-    if (statusRef.current.state !== "idle") return;
+    // state this function knows how to leave. `canStop`'s stop control is
+    // the only way out of `answering`; speaking over it does nothing
+    // (`docs/ux/voice.md` §5, `M6-VUI-FE-133`).
+    if (!canStartCapture(statusRef.current)) return;
     if (navigator.mediaDevices?.getUserMedia === undefined) {
       setStatus(nextVoiceStatus(statusRef.current, { kind: "mic_error" }));
       return;
@@ -308,7 +335,7 @@ export function MicControl() {
     // A second press could have landed while permission was being asked —
     // still guarded against a stray socket, this time with a stream to
     // release again rather than never having opened one.
-    if (statusRef.current.state !== "idle") {
+    if (!canStartCapture(statusRef.current)) {
       stream.getTracks().forEach((track) => track.stop());
       return;
     }
@@ -379,9 +406,37 @@ export function MicControl() {
     setStatus(nextVoiceStatus(statusRef.current, { kind: "capture_ended" }));
   }, [teardownCapture]);
 
+  /**
+   * The stop control (`docs/ux/voice.md` §4 #13, `M6-VUI-FE-133`). No
+   * barge-in: this is the only way out of a running answer. `canStop`
+   * gates both whether the button renders and whether this does anything,
+   * so a second press — including one that lands after the turn already
+   * finished on its own — is inert rather than needing a separate flag.
+   *
+   * `stop` is sent to the server (mirrored onto `_Turn.stop_requested` the
+   * same way `POST /ask/{id}/stop` would, per `askwell.voice_tts`) so
+   * generation and any further synthesis actually end — but audio already
+   * queued or playing is discarded locally, immediately, rather than
+   * waiting for the server's own `status` event or for the sentence
+   * already playing to finish (`docs/ux/voice.md`'s own Assumption:
+   * "stopping audio promptly means discarding the queued buffer").
+   */
+  const handleStop = useCallback((): void => {
+    if (!canStop(statusRef.current)) return;
+    const socket = socketRef.current;
+    if (socket !== null && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "stop" }));
+    }
+    teardownPlayback();
+    stopLatencyWatch();
+    closeSocket();
+    setStatus((current) => nextVoiceStatus(current, { kind: "stop_pressed" }));
+  }, [teardownPlayback, stopLatencyWatch, closeSocket]);
+
   const label = statusLabel(status, transcript, answer, appearsSilent);
   const busy = status.state === "transcribing" || status.state === "answering";
   const listening = status.state === "listening";
+  const stoppable = canStop(status);
 
   return (
     <span className="ask-mic-wrap">
@@ -403,6 +458,16 @@ export function MicControl() {
         <MicIcon />
         <span className="ask-sr-only">Voice input</span>
       </button>
+      {stoppable ? (
+        <button
+          type="button"
+          onClick={handleStop}
+          className="ask-navigates px-3 py-1"
+          style={{ border: "1px solid var(--rule-strong)", fontSize: "var(--t-ui)" }}
+        >
+          Stop
+        </button>
+      ) : null}
       <span role="tooltip" id="ask-mic-reason" className="ask-mic-reason" aria-live="polite">
         {listening ? (
           <span className="flex items-center gap-2">
@@ -446,6 +511,12 @@ function statusLabel(
       return answer.trim() === "" ? "Answering…" : answer;
     case "idle":
     default:
+      // Stopped mid-answer: the partial answer is kept, not replaced by the
+      // note (`docs/ux/voice.md` §5's "partial answer retained and
+      // marked") — the note is appended rather than shown alone.
+      if (status.reason === VOICE_STOPPED_REASON && answer.trim() !== "") {
+        return `${answer.trim()} ${VOICE_STOPPED_REASON}`;
+      }
       return status.reason ?? "Press and hold to speak";
   }
 }

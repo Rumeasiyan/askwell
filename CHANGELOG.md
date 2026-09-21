@@ -4,6 +4,52 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.5.11 - 2026-09-21
+
+`M6-VUI-FE-133` — a stop control, and deliberately no barge-in (`docs/ux/voice.md` §4 #13). A
+"Stop" button renders in the composer whenever an answer is generating or being spoken
+(`canStop`, true only in the `answering` state) and is the only way out of a running turn —
+pressing and holding the mic while one is running still does nothing, unchanged since
+`M6-VUI-FE-128a`. Pressing Stop sends `{"type": "stop"}` over the voice socket (mirrored
+server-side onto `_Turn.stop_requested`, unchanged since `M6-TTS-BE-130`) and, locally and
+immediately, closes the playback `AudioContext` to discard whatever audio is queued or already
+playing rather than waiting for the sentence in progress to finish. `startCapture`'s own guard
+against speaking over the answer and the new stop guard now share one pure predicate pair
+(`canStartCapture`/`canStop`, `web/lib/voice.ts`), closing issue #463 — that guard existed since
+`M6-VUI-FE-128a` but had no automated test until it moved into pure, `node:test`-covered code. The
+`messages` row is marked partial correctly either way by `askwell.ask`'s existing
+`status == "stopped"` check inside the token loop (unchanged, backend not touched by this
+ticket); the composer's own post-stop label deliberately says only "Stopped.", never "partial",
+because the voice channel's wire protocol has no event letting a client tell "stop cut the
+answer off" apart from "stop landed after the text was already complete and only cut off audio"
+— filed as issue #471 rather than guessed around. Full reasoning in `docs/decisions.md`.
+
+**Verified**: `scripts/dev.sh web-check` clean (345 tests in `web/lib/voice.test.ts`, 8 new;
+typecheck; lint; build; token/contrast/offline guards). `scripts/dev.sh check` clean (891
+passed, 1 skipped — backend untouched by this ticket). Cold-start walkthrough against the real,
+rebuilt, running stack: the built bundle contains the new `stop_pressed` code
+(`grep -o stop_pressed web/out/_next/static/chunks/*.js`); a real `websockets` client against
+the real `/voice/ws` sent audio then an explicit `{"type": "stop"}` frame and received a `turn`
+event followed by `status: failed` from the real `TranscriptionUnavailable` path (no Whisper
+weights in this environment) — the `stop` frame is parsed and handled without the connection
+erroring, the same known wall every voice ticket's own walkthrough has hit before generation is
+reached. No browser tool was available this session, so the actual click/hold interaction is
+verified by `web/lib/voice.test.ts`'s pure-function coverage plus this transport-level exercise,
+not end to end in a real browser. Full detail in `docs/BRAIN.md`.
+
+### Added
+
+- `web/lib/voice.ts` — `canStartCapture`, `canStop`, `VOICE_STOPPED_REASON`, the `stop_pressed`
+  action on `nextVoiceStatus`.
+- `web/lib/voice.test.ts` — 8 new tests for the above.
+- `docs/manual-tests/M6-VUI-FE-133.md`.
+
+### Changed
+
+- `web/components/ask/voice-control.tsx` — the Stop button and `handleStop`; `startCapture`'s
+  guard now calls `canStartCapture`; `statusLabel` appends the "Stopped." note to a retained
+  partial answer rather than replacing it.
+
 ## 0.5.10 - 2026-09-21
 
 `M6-VUI-FE-132` — the live level meter and elapsed-time indicator in the composer's mic control, plus the "microphone appears silent" edge case a muted system mic needs (`docs/ux/voice.md` §2, §5). The level is `rmsLevel` of the same capture buffer `onaudioprocess` already downsamples and sends, so the meter costs one more pass over a buffer that already exists rather than a second signal path — updated via `transform: scaleX()` on every buffer (~11/s) rather than `width`, to keep it off the layout thread. A muted mic still delivers real, on-schedule callbacks at or near zero, so silence cannot be told from "not listening" by absence of events: `micAppearsSilent` instead watches how long it has been since a buffer crossed `MIC_LEVEL_SILENCE_THRESHOLD` and swaps the tooltip copy once that exceeds 1.5s, rather than continuing to claim it is listening. Elapsed time is a plain wall-clock diff from capture start on its own 200ms interval, independent of whether any audio arrives, so it keeps counting through silence rather than resetting. Device-follow on mid-session input switching is not special-cased — `getUserMedia` is called with no `deviceId` constraint, and that is left to the browser's own default-device behaviour rather than reimplemented.
