@@ -353,7 +353,8 @@
   }
 
   .ask-mic-control[data-voice-state="transcribing"],
-  .ask-mic-control[data-voice-state="answering"] {
+  .ask-mic-control[data-voice-state="answering"],
+  .ask-mic-control[aria-disabled="true"] {
     color: var(--muted);
     cursor: not-allowed;
   }

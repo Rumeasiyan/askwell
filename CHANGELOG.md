@@ -4,6 +4,28 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.5.12 - 2026-09-21
+
+`M6-VUI-FE-135` — the composer's remaining voice states: microphone permission denied,
+non-English speech, and abstention spoken in full (`docs/ux/voice.md` §5). Permission denial is
+now read proactively from the Permissions API (`navigator.permissions.query({name:
+"microphone"})`, `web/lib/voice.ts`'s `micPermissionReason`) on mount, so voice is shown disabled
+with the reason and how to enable it before the mic is ever pressed, without a second
+`getUserMedia` prompt — a browser with no Permissions API support for `"microphone"` falls back to
+the existing behaviour, learning the same reason from the first real denial. `PermissionStatus.
+onchange` clears the block once the browser reports the permission granted, so voice becomes
+available again without a reload where the browser supports it. Non-English speech is
+`askwell.voice_stt`'s existing `unsupported_language` outcome, now handled by `nextVoiceStatus`'s
+previously-missing `language` case, ending the turn with a stated English-only reason rather than
+attempting a poor transcription. Abstention needed no backend change — an abstained turn already
+speaks `askwell.agent.abstain.compose_abstention`'s own text sentence by sentence, unmodified, the
+same as any other answer — but a real display bug is fixed: `statusLabel`'s idle case previously
+kept the answer visible only after a *stopped* turn, so any turn that finished normally, an
+abstention included, had its full text replaced by the bare "Press and hold to speak" prompt the
+instant the turn completed. It now stays shown in full. Commented on issue #460, re-owning it as
+still open and unaffected — this ticket renders in `MicControl`'s own tooltip, the same in-place
+pattern every prior voice-UI ticket used, not in `AskProvider`'s conversation transcript.
+
 ## 0.5.11 - 2026-09-21
 
 `M6-VUI-FE-133` — a stop control, and deliberately no barge-in (`docs/ux/voice.md` §4 #13). A

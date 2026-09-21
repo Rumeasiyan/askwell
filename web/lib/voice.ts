@@ -28,6 +28,22 @@ export const MIC_NO_DEVICE_REASON = "No microphone was found on this device.";
 export const MIC_UNAVAILABLE_REASON = "The microphone could not be started.";
 export const VOICE_CONNECTION_LOST_REASON = "The connection to Askwell was lost. Try again.";
 export const VOICE_FAILED_REASON = "Askwell could not answer that.";
+/** `M6-VUI-FE-135`. Matches `askwell.voice_stt`'s own `unsupported_language`
+ * outcome: no transcription is attempted at all for it
+ * (`askwell.voice.transcribe`'s own docstring) — this states the situation
+ * rather than presenting a poor transcript or a generic error. */
+export const VOICE_NON_ENGLISH_REASON =
+  "Askwell handles English in this version. Speak your question in English to use voice.";
+/** `M6-VUI-FE-135`. Read once from the Permissions API (`navigator.
+ * permissions.query`, never a second `getUserMedia` prompt — the ticket's
+ * own Out of Scope: "requesting permission repeatedly, one request, then
+ * the explanation") so a browser that already denied the mic disables voice
+ * with this reason before the control is ever pressed, not only after a
+ * denied attempt. Pure so the mapping is testable without the Permissions
+ * API itself. */
+export function micPermissionReason(state: "granted" | "denied" | "prompt" | null): string | null {
+  return state === "denied" ? MIC_PERMISSION_DENIED_REASON : null;
+}
 /** `M6-VUI-FE-133`. Deliberately does not claim "partial" — the voice
  * channel's own `status` event carries `VoiceTurn.status`
  * (`"completed"`/`"failed"`), never `askwell.ask`'s own `"stopped"` vs
@@ -144,9 +160,23 @@ function nextFromChannelEvent(current: VoiceStatus, event: VoiceChannelEvent): V
     // several before the answer begins.
     return current.state === "answering" ? current : { state: "answering", reason: null };
   }
+  if (event.type === "language" && !event.supported) {
+    // `askwell.voice_stt`'s `unsupported_language` outcome: no transcript,
+    // no answer, the turn just ends. Stated unconditionally — this is a
+    // real fact about *this* turn regardless of what state it interrupts.
+    return { state: "idle", reason: VOICE_NON_ENGLISH_REASON };
+  }
   if (event.type === "status") {
     if (event.status === "failed") return { state: "idle", reason: VOICE_FAILED_REASON };
-    if (event.status === "completed") return VOICE_IDLE;
+    if (event.status === "completed") {
+      // The `language` event above always lands before the closing
+      // `status: "completed"` the server sends for the same turn
+      // (`askwell.voice_stt`'s own ordering) — this only preserves a reason
+      // that was just set for *this* turn's own idle transition, never a
+      // stale one, since every other state this switch can be in carries
+      // `reason: null` by construction (`VoiceStatus`'s own invariant).
+      return current.state === "idle" && current.reason !== null ? current : VOICE_IDLE;
+    }
   }
   return current;
 }

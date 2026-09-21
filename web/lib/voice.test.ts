@@ -16,6 +16,7 @@ import {
   formatElapsed,
   getVoiceLatencyBudgetMissCount,
   micAppearsSilent,
+  micPermissionReason,
   MIC_LEVEL_SILENCE_THRESHOLD,
   MIC_NO_DEVICE_REASON,
   MIC_PERMISSION_DENIED_REASON,
@@ -31,6 +32,7 @@ import {
   VOICE_CONNECTION_LOST_REASON,
   VOICE_FAILED_REASON,
   VOICE_IDLE,
+  VOICE_NON_ENGLISH_REASON,
   voiceSocketUrl,
   VOICE_STOPPED_REASON,
 } from "./voice.ts";
@@ -170,6 +172,56 @@ test("status failed returns to idle with a stated reason", () => {
     { kind: "channel_event", event: { type: "status", status: "failed" } },
   );
   assert.deepEqual(result, { state: "idle", reason: VOICE_FAILED_REASON });
+});
+
+// --- language / non-English speech (`M6-VUI-FE-135`) -------------------------
+
+test("an unsupported-language event ends the turn with the English-only reason", () => {
+  const result = nextVoiceStatus(
+    { state: "transcribing", reason: null },
+    { kind: "channel_event", event: { type: "language", language: "ta", supported: false } },
+  );
+  assert.deepEqual(result, { state: "idle", reason: VOICE_NON_ENGLISH_REASON });
+});
+
+test("the language event overrides listening too — the turn is over regardless of what it interrupts", () => {
+  const result = nextVoiceStatus(
+    { state: "listening", reason: null },
+    { kind: "channel_event", event: { type: "language", language: null, supported: false } },
+  );
+  assert.deepEqual(result, { state: "idle", reason: VOICE_NON_ENGLISH_REASON });
+});
+
+test("status completed after language keeps the English-only reason rather than clearing it", () => {
+  const afterLanguage = nextVoiceStatus(
+    { state: "transcribing", reason: null },
+    { kind: "channel_event", event: { type: "language", language: "ta", supported: false } },
+  );
+  const afterStatus = nextVoiceStatus(afterLanguage, {
+    kind: "channel_event",
+    event: { type: "status", status: "completed" },
+  });
+  assert.deepEqual(afterStatus, { state: "idle", reason: VOICE_NON_ENGLISH_REASON });
+});
+
+test("status completed with no prior reason still resets to plain idle", () => {
+  const result = nextVoiceStatus(
+    { state: "answering", reason: null },
+    { kind: "channel_event", event: { type: "status", status: "completed" } },
+  );
+  assert.deepEqual(result, VOICE_IDLE);
+});
+
+// --- micPermissionReason (`M6-VUI-FE-135`) ------------------------------------
+
+test("a denied permission state maps to the explanation and instructions", () => {
+  assert.equal(micPermissionReason("denied"), MIC_PERMISSION_DENIED_REASON);
+});
+
+test("granted or prompt states have nothing to explain", () => {
+  assert.equal(micPermissionReason("granted"), null);
+  assert.equal(micPermissionReason("prompt"), null);
+  assert.equal(micPermissionReason(null), null);
 });
 
 test("a confidence event passes through unchanged — not this ticket's state to change", () => {

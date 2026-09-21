@@ -8,6 +8,7 @@ import {
   encodeAudioFrame,
   formatElapsed,
   micAppearsSilent,
+  micPermissionReason,
   MIC_LEVEL_SILENCE_THRESHOLD,
   MIC_SILENT_REASON,
   nextVoiceStatus,
@@ -92,6 +93,47 @@ import { fetchSetupState } from "@/lib/setup";
  * https://github.com/Rumeasiyan/askwell/issues/460. This control shows the
  * transcript and answer text itself, in place, which is enough for every
  * state transition in this ticket's acceptance criteria to be observable.
+ * `M6-VUI-FE-135` does not resolve issue 460 either — still commented there
+ * as a dependent, not closed by this ticket.
+ *
+ * **Permission denied, non-English speech, abstention spoken in full**
+ * (`docs/ux/voice.md` §5, `M6-VUI-FE-135`): three remaining states, all
+ * built on facts the channel or the browser already produces rather than
+ * new wire shapes.
+ *
+ * - **Permission denied** is read proactively from `navigator.permissions`
+ *   on mount (`micPermissionReason`, `lib/voice.ts`) — that API only
+ *   reports state, it never itself prompts, so checking it costs nothing
+ *   against the ticket's own Out of Scope ("requesting permission
+ *   repeatedly — one request, then the explanation"). A browser without
+ *   Permissions API support for `"microphone"` falls back to the
+ *   pre-existing behaviour: `getUserMedia`'s own rejection sets the same
+ *   reason on first press. Either way, once known, `permissionReason`
+ *   blocks `startCapture` from ever calling `getUserMedia` again — the
+ *   explanation is shown, not a second browser prompt. `PermissionStatus.
+ *   onchange` (where the browser fires it) is what makes "granted after
+ *   being denied, without a reload" real rather than assumed.
+ * - **Non-English speech** is `askwell.voice_stt`'s own `unsupported_
+ *   language` outcome, already reaching the client as a `language` event
+ *   (`M6-STT-BE-127`) that `nextVoiceStatus` did not yet have a case for —
+ *   it now ends the turn with `VOICE_NON_ENGLISH_REASON` exactly the way a
+ *   real local fact ends any other turn here, never a guess at a poor
+ *   transcription.
+ * - **Abstention spoken in full** needed no new backend behaviour: an
+ *   abstained turn already flows through `askwell.voice_tts`'s ordinary
+ *   `text`/sentence-synthesis path — the same `compose_abstention` string a
+ *   typed turn gets, spoken and streamed exactly as any other answer, never
+ *   specially shortened (`docs/decisions.md` covers the composition side;
+ *   nothing here special-cases it). What this ticket fixes is a real display
+ *   bug that would have broken it either way: `statusLabel`'s idle case only
+ *   ever kept `answer` visible for the *stopped* branch, so a turn that
+ *   finished normally — an abstention very much included — had its answer
+ *   replaced by the bare "Press and hold to speak" prompt the instant
+ *   `status: completed` arrived. Now a `reason: null` idle state keeps
+ *   showing `answer` too, so the full text — abstention or otherwise —
+ *   stays exactly as long as the mic control has anything else to say
+ *   instead of it, matching the ticket's own "shown in full, not softened
+ *   because it is spoken aloud."
  */
 export function MicControl() {
   const [status, setStatus] = useState<VoiceStatus>(VOICE_IDLE);
@@ -139,6 +181,43 @@ export function MicControl() {
   }, []);
   const latencyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const audioStartedRef = useRef(false);
+
+  // Permission-denied state (`docs/ux/voice.md` §5, `M6-VUI-FE-135`): read
+  // via the Permissions API, which — unlike `getUserMedia` — only reports
+  // the current state and never itself prompts, so this can run on mount
+  // without counting as the one request the ticket's own Out of Scope rules
+  // out repeating. A browser without `navigator.permissions` support for
+  // `"microphone"` (queries reject or the API is absent) leaves this `null`
+  // and the control behaves exactly as before: the first press is the one
+  // real request, same as `M6-VUI-FE-128a` always did.
+  const [permissionReason, setPermissionReason] = useState<string | null>(null);
+  useEffect(() => {
+    if (navigator.permissions?.query === undefined) return;
+    let cancelled = false;
+    let status: PermissionStatus | null = null;
+    const applyState = (state: PermissionState): void => {
+      if (!cancelled) setPermissionReason(micPermissionReason(state));
+    };
+    navigator.permissions
+      .query({ name: "microphone" as PermissionName })
+      .then((result) => {
+        if (cancelled) return;
+        status = result;
+        applyState(result.state);
+        // Permission granted (or revoked) after the fact — the browser's
+        // own change event, not a re-request of ours (the edge case: "voice
+        // becomes available without a reload where the browser allows it").
+        status.onchange = () => applyState(result.state);
+      })
+      .catch(() => {
+        // Unsupported in this browser (e.g. Safari's older behaviour) —
+        // left `null`, the same as never having asked.
+      });
+    return () => {
+      cancelled = true;
+      if (status !== null) status.onchange = null;
+    };
+  }, []);
 
   const clearLatencyTimer = useCallback((): void => {
     if (latencyTimerRef.current !== null) {
@@ -309,8 +388,11 @@ export function MicControl() {
     // socket (the ticket's own acceptance criterion) — and idle is the only
     // state this function knows how to leave. `canStop`'s stop control is
     // the only way out of `answering`; speaking over it does nothing
-    // (`docs/ux/voice.md` §5, `M6-VUI-FE-133`).
-    if (!canStartCapture(statusRef.current)) return;
+    // (`docs/ux/voice.md` §5, `M6-VUI-FE-133`). A known denial
+    // (`permissionReason`, `M6-VUI-FE-135`) is a second guard, ahead of
+    // `getUserMedia` itself — the whole point of checking the Permissions
+    // API up front is never asking again once it has already said no.
+    if (!canStartCapture(statusRef.current) || permissionReason !== null) return;
     if (navigator.mediaDevices?.getUserMedia === undefined) {
       setStatus(nextVoiceStatus(statusRef.current, { kind: "mic_error" }));
       return;
@@ -329,6 +411,11 @@ export function MicControl() {
           : name === "NotFoundError" || name === "OverconstrainedError"
             ? "mic_no_device"
             : "mic_error";
+      // A browser with no Permissions API support for `"microphone"`
+      // (`permissionReason` stayed `null`) still gets this from the actual
+      // attempt — the proactive check is an enhancement, not the only path
+      // to the state.
+      if (kind === "mic_denied") setPermissionReason((current) => current ?? micPermissionReason("denied"));
       setStatus(nextVoiceStatus(statusRef.current, { kind }));
       return;
     }
@@ -433,18 +520,28 @@ export function MicControl() {
     setStatus((current) => nextVoiceStatus(current, { kind: "stop_pressed" }));
   }, [teardownPlayback, stopLatencyWatch, closeSocket]);
 
-  const label = statusLabel(status, transcript, answer, appearsSilent);
+  // `permissionReason` wins over a bare idle prompt — a known denial is
+  // known before any turn ever runs — but never overrides a real, more
+  // specific idle reason a turn just produced (a failure, a stop, a
+  // non-English notice, or the answer itself): permission cannot have
+  // changed mid-turn to something a completed turn's own state contradicts.
+  const label =
+    status.state === "idle" && status.reason === null && permissionReason !== null
+      ? permissionReason
+      : statusLabel(status, transcript, answer, appearsSilent);
   const busy = status.state === "transcribing" || status.state === "answering";
   const listening = status.state === "listening";
   const stoppable = canStop(status);
+  const permissionBlocked = permissionReason !== null;
 
   return (
     <span className="ask-mic-wrap">
       <button
         type="button"
         aria-pressed={listening}
+        aria-disabled={permissionBlocked}
         aria-describedby="ask-mic-reason"
-        aria-label={busy ? label : "Voice input — press and hold to speak"}
+        aria-label={busy ? label : permissionBlocked ? label : "Voice input — press and hold to speak"}
         data-voice-state={status.state}
         className="ask-mic-control"
         onPointerDown={(event) => {
@@ -516,6 +613,15 @@ function statusLabel(
       // marked") — the note is appended rather than shown alone.
       if (status.reason === VOICE_STOPPED_REASON && answer.trim() !== "") {
         return `${answer.trim()} ${VOICE_STOPPED_REASON}`;
+      }
+      // A turn that finished on its own (`reason === null`) keeps showing
+      // its answer rather than reverting to the idle prompt — an abstention
+      // is exactly this path, and `M6-VUI-FE-135`'s own requirement is that
+      // it stays "shown in full", matching the screen word for word, not
+      // just spoken and then hidden the moment the turn ends. Reset to ""
+      // only when a fresh capture starts (`startCapture`'s `setAnswer("")`).
+      if (status.reason === null && answer.trim() !== "") {
+        return answer.trim();
       }
       return status.reason ?? "Press and hold to speak";
   }
