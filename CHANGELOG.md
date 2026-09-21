@@ -4,6 +4,41 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.6.7 - 2026-09-21
+
+`M7-LOG-BE-155` — log export as a background job, with the chain and a standalone verifier
+(`docs/audit-log.md` §5). `POST /log-export` (optional `since`/`until`, and
+`acknowledged_decrypted_export` when a passphrase is set — the export is written in the open,
+outside the protection a passphrase gives the library, and refuses with `400` until that is
+acknowledged) enqueues an `export_jobs` row and dispatches it to the worker; `GET
+/log-export/{id}` reports progress across both audit stores; `GET /log-export/{id}/download`
+streams the finished `.zip`. `askwell.log_export.run_job` streams `decisions.jsonl` and
+`interactions.jsonl` in keyset-paginated batches (never assembled in memory), each written to
+`<name>.jsonl.tmp` and renamed into place only once complete, alongside a `manifest.json`
+recording the range and, per store, the `prev_hash` the first exported record actually chains
+to — the universal genesis value for an unfiltered export, something else for a windowed one,
+which is exactly what lets a date-filtered export verify without expecting the impossible. A
+run always deletes and rewrites its working directory from scratch rather than resuming
+mid-file, so a crash leaves nothing that reads as a finished file — restartability without a
+resumable byte offset. `askwell.log_export_verifier.SOURCE` is the standalone `verify.py`
+bundled into every export, a from-scratch reimplementation of `askwell.audit.compute_hash`
+with zero `askwell` imports; `api/tests/test_log_export.py` proves the two agree by running
+this exact string as a real subprocess, including a tamper test that alters one exported record
+and confirms the verifier names the break. Export never calls
+`log_budget.enforce_ingestion_allowed` — it is the way out of the limit, not another thing it
+blocks — confirmed against the real stack at `budget_bytes=1`. `docs/decisions.md`, this date.
+Verified: `pytest -m requires_db` (full suite, including a live subprocess run of the bundled
+verifier against a real export and against a deliberately tampered one), `scripts/dev.sh check`
+(lint, format, typecheck, unmarked tests), and a live round trip against the running compose
+stack — `POST`/`GET /log-export`, download, extract, `verify.py` against the extracted files
+and against the `.zip` directly, tamper-and-reverify, and a date-filtered export — after
+rebuilding the API image and re-running migrations. New `ExportJob` in `api/src/askwell/db/
+models.py` and `ASKWELL_EXPORT_DIR` in `.env.example` (defaults to `/var/lib/askwell/exports`,
+the same `askwell-state` volume `M7-OPS-DEPLOY-154a` mounted). Issue #487 (settings screen
+prominence for the hard-limit state) re-owned, not resolved here — it is a frontend ticket, and
+export existing is only half of what its own Option 1 needs; prune (`M7-LOG-BE-154`) is still
+not built.
+
 ## 0.6.6 - 2026-09-21
 
 `M7-OPS-DEPLOY-154a` — a named `askwell-state` volume mounted at `/var/lib/askwell` on both

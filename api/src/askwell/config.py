@@ -332,6 +332,12 @@ class Settings(BaseSettings):
     trace_dir: Path = Path("/var/lib/askwell/traces")
     trace_max_bytes: int = Field(default=256 * 1024 * 1024, ge=1024)
 
+    # Where a log export is assembled and served from (`M7-LOG-BE-155`). Same
+    # `askwell-state` volume as `trace_dir` (`M7-OPS-DEPLOY-154a`), so `api`
+    # and `worker` — separate containers, separate filesystems — see the same
+    # files: the worker writes the export, the API's download route reads it.
+    export_dir: Path = Path("/var/lib/askwell/exports")
+
     # Where the built frontend lives. The default is the path inside the API
     # image; a source checkout points it at web/out.
     web_assets_dir: Path = Path("/app/web/out")
@@ -442,6 +448,7 @@ class Settings(BaseSettings):
         "inference_model_path",
         "inference_socket",
         "trace_dir",
+        "export_dir",
         "install_secret_path",
         "probe_result_path",
         "voice_whisper_model_path",

@@ -184,6 +184,19 @@ async def reapply_job(ctx: dict[str, Any], job_id: str) -> None:
     await reapply.run_job(ctx["sessions"], ctx["settings"], uuid.UUID(job_id))
 
 
+async def export_job(ctx: dict[str, Any], job_id: str) -> None:
+    """Produce one log export. `M7-LOG-BE-155`.
+
+    Thin, the same reason `ingest_document` is: everything about what
+    exporting the log *is* lives in `askwell.log_export`, so it can be
+    tested without a Redis, a worker process and a job serialiser in the
+    way.
+    """
+    from askwell import log_export
+
+    await log_export.run_job(ctx["sessions"], ctx["settings"], uuid.UUID(job_id))
+
+
 async def reconcile_queue(ctx: dict[str, Any]) -> int:
     """Re-dispatch queued work Redis has forgotten about.
 
@@ -248,7 +261,7 @@ async def check_connections_health(ctx: dict[str, Any]) -> int:
 
 
 async def startup(ctx: dict[str, Any]) -> None:
-    from askwell import embed, ingest, reapply, sandbox
+    from askwell import embed, ingest, log_export, reapply, sandbox
 
     settings: Settings = ctx["settings"]
     engine = build_engine(settings)
@@ -271,6 +284,7 @@ async def startup(ctx: dict[str, Any]) -> None:
             await embed.check_dimension(session, settings)
             resumed = await ingest.resume(session)
             resumed_reapply = await reapply.resume(session)
+            resumed_export = await log_export.resume(session)
         waiting = await ingest.reconcile(ctx["sessions"], settings)
         reclaimed = await _reclaim_sandbox_orphans(ctx["sessions"], settings)
     except embed.EmbeddingDimensionMismatch:
@@ -309,6 +323,7 @@ async def startup(ctx: dict[str, Any]) -> None:
         log.warning("worker_sandbox_role_check_deferred", error=f"{type(error).__name__}: {error}")
 
     reapply_dispatched = await reapply.dispatch(settings, resumed_reapply)
+    export_dispatched = await log_export.dispatch(settings, resumed_export)
 
     log.info(
         "worker_resumed",
@@ -316,6 +331,8 @@ async def startup(ctx: dict[str, Any]) -> None:
         dispatched=waiting,
         reapply_interrupted=len(resumed_reapply),
         reapply_dispatched=reapply_dispatched,
+        export_interrupted=len(resumed_export),
+        export_dispatched=export_dispatched,
         sandbox_orphans_reclaimed=len(reclaimed),
     )
 
@@ -367,6 +384,7 @@ class WorkerSettings:
         ping,
         ingest_document,
         reapply_job,
+        export_job,
         import_dump_job,
         import_table_job,
         introspect_connection_job,
