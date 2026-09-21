@@ -150,6 +150,55 @@ export function resetVoiceLatencyBudgetMissCountForTests(): void {
   voiceLatencyBudgetMissCount = 0;
 }
 
+/**
+ * Live level meter + elapsed time while listening (`docs/ux/voice.md` §2,
+ * §5, `M6-VUI-FE-132`). Kept pure and separate from `voice-control.tsx` for
+ * the same reason the rest of this module is: testable without a browser.
+ */
+
+/** RMS of one capture buffer, 0..1. Cheap enough to run on every
+ * `onaudioprocess` callback (~11/s at the default 4096-sample buffer) —
+ * no windowing or smoothing, a meter does not need broadcast-quality
+ * ballistics. */
+export function rmsLevel(samples: Float32Array): number {
+  if (samples.length === 0) return 0;
+  let sumSquares = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const sample = samples[i] ?? 0;
+    sumSquares += sample * sample;
+  }
+  return Math.min(1, Math.sqrt(sumSquares / samples.length));
+}
+
+/** Below this RMS, a buffer counts as silence — a muted system mic still
+ * delivers real callbacks, just all at or near zero. */
+export const MIC_LEVEL_SILENCE_THRESHOLD = 0.01;
+
+/** How long the mic can stay silent while listening before the interface
+ * says so, rather than continuing to claim it is listening (the ticket's
+ * own edge case: "the interface says the microphone appears silent rather
+ * than pretending to listen"). Long enough that a person taking a breath
+ * mid-sentence never trips it. */
+export const MIC_SILENCE_WARNING_MS = 1500;
+
+export const MIC_SILENT_REASON = "Your microphone appears silent — check that it isn't muted.";
+
+/** Pure: given how long it has been since the last audible buffer, is this
+ * still just "listening", or has it gone silent long enough to say so. */
+export function micAppearsSilent(msSinceAudible: number): boolean {
+  return msSinceAudible >= MIC_SILENCE_WARNING_MS;
+}
+
+/** `m:ss`, unbounded minutes — the ticket's own edge case ("a very long
+ * listening period — elapsed time keeps counting rather than resetting")
+ * ruled out anything that wraps at 60 minutes or rolls over to hours. */
+export function formatElapsed(elapsedMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
 export function voiceSocketUrl(location: { protocol: string; host: string }): string {
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
   return `${scheme}//${location.host}/voice/ws`;
