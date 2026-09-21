@@ -54,6 +54,13 @@ DEFAULT_BUDGET_BYTES = 2 * 1024**3  # 2 GB, `docs/audit-log.md` §8
 FREE_DISK_FRACTION = 0.05
 NOTICE_RATIO = 0.80
 
+# `docs/audit-log.md` §8. Only the *value* lives here — the prune that acts on
+# it is `M7-LOG-BE-154`, not yet built, and this module does not pretend
+# otherwise (`docs/decisions.md`, this date).
+RETENTION_KEY = "interaction_retention_months"
+RETENTION_CHANGED = "interaction_retention_changed"
+DEFAULT_RETENTION_MONTHS = 12
+
 
 class Stage(StrEnum):
     OK = "ok"
@@ -74,6 +81,11 @@ class Usage:
     interactions_bytes: int
     traces_bytes: int
     budget_bytes: int
+    # The cap the user actually set (issue #484). `budget_bytes` above is the
+    # *effective* cap — `min(configured_bytes, 5% of free disk)` — so a caller
+    # can tell "you set this" from "free disk is overriding what you set"
+    # only by comparing the two; neither field alone says which is true.
+    configured_bytes: int
     free_disk_bytes: int
     stage: Stage
 
@@ -87,6 +99,7 @@ class Usage:
             "traces_bytes": self.traces_bytes,
             "used_bytes": self.used_bytes,
             "budget_bytes": self.budget_bytes,
+            "configured_bytes": self.configured_bytes,
             "free_disk_bytes": self.free_disk_bytes,
             "stage": self.stage.value,
         }
@@ -168,9 +181,39 @@ async def measure(session: AsyncSession, settings: Settings) -> Usage:
         interactions_bytes=interactions,
         traces_bytes=traces,
         budget_bytes=effective_budget,
+        configured_bytes=configured,
         free_disk_bytes=free_disk,
         stage=stage,
     )
+
+
+class InvalidRetention(ValueError):
+    """A retention window of zero or fewer months has no meaning."""
+
+
+async def get_retention_months(session: AsyncSession) -> int:
+    """The user's own interaction-retention window, or the shipped default."""
+    stored = await get_setting(session, RETENTION_KEY)
+    return DEFAULT_RETENTION_MONTHS if stored is None else int(stored)
+
+
+async def set_retention_months(session: AsyncSession, months: int) -> int:
+    """The only way the window changes. Always a decisions record, same shape
+    as `set_budget` above — a retention change is exactly the kind of thing
+    `docs/audit-log.md` §7 lists. This does not itself prune anything: the
+    prune that acts on this value is `M7-LOG-BE-154`, not yet built.
+    """
+    if months <= 0:
+        raise InvalidRetention("Retention window must be a positive number of months.")
+    previous = await get_retention_months(session)
+    await set_setting(session, RETENTION_KEY, str(months))
+    await record(
+        session,
+        Store.DECISIONS,
+        RETENTION_CHANGED,
+        {"previous_months": str(previous), "new_months": str(months)},
+    )
+    return months
 
 
 def _human(size: int) -> str:
@@ -204,12 +247,20 @@ class SetBudgetRequest(BaseModel):
     budget_bytes: int = Field(gt=0)
 
 
+class SetRetentionRequest(BaseModel):
+    months: int = Field(gt=0)
+
+
 def register_log_budget(
     app: FastAPI, settings: Settings, factory: async_sessionmaker[AsyncSession]
 ) -> None:
     """`GET`/`POST /log-budget` — read current usage and stage, and change the
     cap. The same read/write-pair shape `register_retrieval_threshold` already
     established for a per-install setting that is also a decisions record.
+
+    `GET`/`POST /log-budget/retention` is the same shape for the interaction
+    retention window (`docs/audit-log.md` §8) — the value only, not the prune
+    that acts on it (`M7-LOG-BE-154`).
     """
 
     @app.get("/log-budget")
@@ -224,3 +275,15 @@ def register_log_budget(
             await set_budget(db, body.budget_bytes)
             usage = await measure(db, settings)
         return JSONResponse(usage.as_dict())
+
+    @app.get("/log-budget/retention")
+    async def get_retention() -> JSONResponse:
+        async with session_scope(factory) as db:
+            months = await get_retention_months(db)
+        return JSONResponse({"months": months})
+
+    @app.post("/log-budget/retention")
+    async def set_retention(body: SetRetentionRequest) -> JSONResponse:
+        async with session_scope(factory) as db:
+            months = await set_retention_months(db, body.months)
+        return JSONResponse({"months": months})

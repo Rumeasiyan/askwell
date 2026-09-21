@@ -4,6 +4,20 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.6.3 - 2026-09-21
+
+`M7-SET-FE-148` — settings gains a storage section (`docs/ux/settings.md` §5,
+`web/components/settings/storage.tsx`). Per-source index size (approximate: chunk content plus
+one embedding vector's worth of float4 lanes per chunk, "unknown" rather than "0" for a
+connection/dump source or one still indexing), the log budget's current use with an adjustable
+cap, and the interaction retention window (a real, recorded setting — `askwell.log_budget`
+gains `get_retention_months`/`set_retention_months`, `GET`/`POST /log-budget/retention` — with no
+prune behind it yet). `Usage` gains `configured_bytes` alongside `budget_bytes` (issue #484), so
+a cap silently overridden by the 5%-of-free-disk ceiling can be explained rather than merely
+observed. Export and prune is a stated, disabled entry point — its backend does not exist yet.
+The at-the-limit statement ("ingestion stops first, asking keeps working") is shown plainly,
+always.
+
 ## 0.6.2 - 2026-09-21
 
 `M7-LOG-BE-153` — log storage budget with staged degradation (`docs/audit-log.md` §3). A new

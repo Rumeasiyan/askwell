@@ -1187,6 +1187,84 @@ async def add_connection(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class SourceStorage:
+    """One source's contribution to the index, for the storage section of
+    settings (`docs/ux/settings.md` §5, `M7-SET-FE-148`).
+
+    `index_bytes` is `None` — "unknown" rather than `0` (the ticket's own
+    Edge Case) — for a `connection` or `dump` source, which is queried in
+    place rather than chunked and embedded, and for a source still `queued`
+    or `indexing`, whose eventual size nothing yet on disk represents.
+    """
+
+    id: uuid.UUID
+    name: str
+    kind: str
+    status: str
+    index_bytes: int | None
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "id": str(self.id),
+            "name": self.name,
+            "kind": self.kind,
+            "status": self.status,
+            "index_bytes": self.index_bytes,
+        }
+
+
+async def storage_by_source(session: AsyncSession, settings: Settings) -> list[SourceStorage]:
+    """Approximate index size per source.
+
+    Measured, not modelled precisely: chunk text (`octet_length`) plus one
+    embedding vector per chunk at `Settings.embedding_dimensions` float4
+    lanes, which is the pgvector column's own on-disk shape
+    (`askwell.embed`). It omits index structures (the HNSW graph, the GIN
+    full-text index) and row/page overhead, so it undercounts what
+    `pg_total_relation_size` would show for the whole table — deliberately:
+    a per-source split of that figure would need a query heavy enough to
+    revisit on every settings load, which the ticket's own Assumption rules
+    out, and `docs/build-plan.md`'s quality gate has nothing that needs the
+    figure to be exact. `docs/states-and-edge-cases.md` carries this as a
+    known gap rather than a silent approximation.
+    """
+    rows = (
+        await session.execute(
+            text(
+                "SELECT s.id, s.name, s.kind, s.status, "
+                "COALESCE(agg.content_bytes, 0), COALESCE(agg.chunk_count, 0) "
+                "FROM sources s "
+                "LEFT JOIN ("
+                "  SELECT d.source_id, "
+                "         SUM(octet_length(c.content)) AS content_bytes, "
+                "         COUNT(c.id) AS chunk_count "
+                "  FROM chunks c JOIN documents d ON d.id = c.document_id "
+                "  WHERE d.deleted_at IS NULL AND c.content IS NOT NULL "
+                "  GROUP BY d.source_id"
+                ") agg ON agg.source_id = s.id "
+                "WHERE s.status != 'deleted' "
+                "ORDER BY s.added_at"
+            )
+        )
+    ).all()
+
+    results: list[SourceStorage] = []
+    for source_id, name, kind, status, content_bytes, chunk_count in rows:
+        unknown = kind in ("connection", "dump") or status in ("queued", "indexing")
+        index_bytes = (
+            None
+            if unknown
+            else int(content_bytes) + int(chunk_count) * settings.embedding_dimensions * 4
+        )
+        results.append(
+            SourceStorage(
+                id=source_id, name=name, kind=kind, status=status, index_bytes=index_bytes
+            )
+        )
+    return results
+
+
 def register_sources(
     app: FastAPI, settings: Settings, factory: async_sessionmaker[AsyncSession]
 ) -> None:
@@ -1265,6 +1343,12 @@ def register_sources(
         # a worker its next opportunity to notice.
         await connections.dispatch_introspection(settings, outcome.source_id)
         return JSONResponse(outcome.as_dict(), status_code=201)
+
+    @app.get("/sources/storage")
+    async def storage_route() -> JSONResponse:
+        async with session_scope(factory) as db:
+            rows = await storage_by_source(db, settings)
+        return JSONResponse([row.as_dict() for row in rows])
 
     @app.post("/sources/{source_id}/reindex")
     async def reindex_source(source_id: uuid.UUID) -> JSONResponse:
