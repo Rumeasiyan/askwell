@@ -9,6 +9,7 @@ import { useClaimRef, useHoverHandlers, useScrollToClaim } from "@/components/as
 import { InlineSourceCards, useRaised } from "@/components/ask/provenance-margin";
 import { SqlQueryCard, SqlResultTable } from "@/components/ask/sql-result-table";
 import { TraceToggle } from "@/components/ask/trace-panel";
+import { MicControl } from "@/components/ask/voice-control";
 import { EvidenceBlock } from "@/components/clarifications/clarifications-screen";
 import {
   isConflict,
@@ -687,54 +688,6 @@ function Composer() {
         </button>
       </div>
     </div>
-  );
-}
-
-const MIC_REASON = "Voice arrives with the voice release. Type for now.";
-
-/**
- * Present from Phase 1, disabled with its reason (`ask.md` §4, `M1-ASK-FE-039a`).
- * No audio work of any kind: no `getUserMedia`, no permission request, no
- * transport. `aria-disabled` (not the `disabled` attribute) keeps the button
- * focusable so a screen reader announces it — disabled with its reason —
- * rather than skipping past an unlabelled dead stop. `voice.md` §2 fixes its
- * final position (in the composer, beside send) so M6 changes state, not
- * geometry.
- */
-function MicControl() {
-  return (
-    <span className="ask-mic-wrap">
-      <button
-        type="button"
-        aria-disabled="true"
-        aria-describedby="ask-mic-reason"
-        className="ask-mic-control"
-      >
-        <MicIcon />
-        <span className="ask-sr-only">Voice input</span>
-      </button>
-      <span role="tooltip" id="ask-mic-reason" className="ask-mic-reason">
-        {MIC_REASON}
-      </span>
-    </span>
-  );
-}
-
-function MicIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.3"
-      aria-hidden="true"
-    >
-      <rect x="5.5" y="1.5" width="5" height="8" rx="2.5" />
-      <path d="M3 8.5a5 5 0 0 0 10 0" strokeLinecap="round" />
-      <path d="M8 13.5v1.5" strokeLinecap="round" />
-    </svg>
   );
 }
 
