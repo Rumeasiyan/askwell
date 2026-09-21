@@ -22,6 +22,7 @@
 #                               (e.g. `db upgrade head`, `db revision --autogenerate -m "..."`)
 #   scripts/dev.sh psql         a psql shell on the stack's database
 #   scripts/dev.sh inference    the native inference supervisor, ON THE HOST
+#   scripts/dev.sh tauri ...    the desktop shell, ON THE HOST (run / build / test)
 #   scripts/dev.sh test-db      the database-backed tests, against the stack
 #   scripts/dev.sh eval ...     the eval harness (e.g. `eval --suite smoke.v1`)
 #   scripts/dev.sh voice-latency ...
@@ -388,6 +389,26 @@ case "$cmd" in
         set +a
         ASKWELL_PROBE_RESULT_PATH="$REPO_ROOT/.run/probe.json" \
             exec python3 "$REPO_ROOT/deploy/probe/askwell-probe" "$@"
+        ;;
+
+    tauri)
+        # Runs on the host, not in a container — Tauri links against the
+        # system's own WebKitGTK/AppKit/WebView2, which a container has no
+        # access to. Same shape of exception as `inference`/`probe` above,
+        # and documented alongside them in AGENTS.md §5.
+        #
+        #   scripts/dev.sh tauri          cargo run (debug), opens the window
+        #   scripts/dev.sh tauri build    cargo build --release
+        #   scripts/dev.sh tauri test     cargo test (the navigation-guard unit tests)
+        command -v cargo >/dev/null 2>&1 || die \
+            "cargo is not on PATH. Install the Rust toolchain (https://rustup.rs) to build the desktop shell."
+
+        case "${1:-run}" in
+            run)   shift || true; ( cd "$REPO_ROOT/web/src-tauri" && exec cargo run "$@" ) ;;
+            build) shift || true; ( cd "$REPO_ROOT/web/src-tauri" && exec cargo build --release "$@" ) ;;
+            test)  shift || true; ( cd "$REPO_ROOT/web/src-tauri" && exec cargo test "$@" ) ;;
+            *) die "unknown tauri subcommand '$1' (use run, build or test)" ;;
+        esac
         ;;
 
     psql)
