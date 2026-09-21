@@ -227,6 +227,61 @@
 
 ---
 
+### M6-VUI-FE-128a — Mic capture, the voice socket client, and the composer's base voice states
+
+**Type:** Task
+
+**User Story**
+- **Actor:** every voice screen in this milestone, none of which can attach to anything yet.
+- **User Need:** a real microphone stream reaching the backend, and a composer that knows whether it is idle, listening, transcribing or answering.
+- **Business Value:** the voice backend landed with nothing on the frontend able to talk to it. Without this, each voice screen invents its own fake state machine and looks finished while being wired to nothing.
+- *As the voice surface, I want one real channel and one real state machine, so that the features hanging off it are describing something that happens.*
+
+**Context / Background**
+**Detailed Description:** `MicControl` (`web/components/ask/ask-screen.tsx:693-720`) is still the Phase 1 stub from `M1-ASK-FE-039a` — `aria-disabled`, no `getUserMedia`, no transport. Nothing under `web/` opens a socket to `voice_channel`. Build the plumbing once: microphone capture via `getUserMedia`, a WebSocket client against `api/src/askwell/voice_channel.py` carrying audio up and transcript/answer/audio events down, and the four base composer states — idle, listening, transcribing, answering — as the single source of truth the dependent tickets read and extend.
+
+Sequenced the way the backend was: channel, then turn detection, then the features. Folding this into the largest dependent ticket was considered and rejected — it makes that ticket unbounded and leaves the other three blocked on something unnamed.
+
+**Scope**
+- Microphone capture with `getUserMedia`, started and stopped by the control rather than held open.
+- A WebSocket client for `voice_channel`: audio frames up, transcript/answer/audio events down, reconnect and close handled.
+- The idle / listening / transcribing / answering state machine in the composer, with `MicControl` driving it instead of being disabled.
+- Permission refusal and no-device surfaced as states rather than thrown.
+
+**Out of Scope**
+- The low-confidence confirmation step (M6-STT-FE-129).
+- The level meter, the stop control, the latency indicator, the remaining voice states (M6-VUI-FE-132 … 135).
+- Any change to the backend, which is already built.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** Pressing the mic prompts for permission once, opens the socket, streams audio, and the composer moves idle → listening → transcribing → answering with each transition observable. Releasing it stops capture and the microphone indicator clears. A refused permission leaves the composer in idle with the reason stated, never in a stuck listening state.
+- **Edge Cases:** Permission denied — idle plus the reason, and text input still works. No input device — the control is unavailable with that said, not silently dead. The socket dropping mid-turn — the state returns to idle and says the connection was lost rather than hanging in listening. A second press while answering — ignored, not a second socket.
+- **Permissions / Roles:** Single user — no roles. Microphone permission is the browser's, asked once and not re-asked per turn.
+- **UI States:** `../ux/voice.md` §2, §3 and §5 — the four base states only; the states those sections list beyond them belong to M6-VUI-FE-135.
+- **Validation Rules:** The state shown is derived from the channel, never optimistic — a composer that says "listening" while no audio is being sent is the failure this ticket exists to prevent.
+- **Audit / Logging Requirements:** None beyond the existing turn record; audio is not retained by this ticket.
+- **Analytics Events:** Local counters only — nothing transmitted (C1). The socket is loopback to the local voice container; it is not egress.
+
+**Real-World Example Scenarios**
+- The user presses the mic, speaks, and watches the composer move from listening to transcribing to answering — with the transcript arriving from the real backend rather than a timer.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M6-AUDIO-API-126, M6-STT-BE-127, M6-STT-BE-128, M1-ASK-FE-039a.
+- **API / Data Touchpoints:** `api/src/askwell/voice_channel.py`; `web/components/ask/ask-screen.tsx` `MicControl` and `MIC_REASON`.
+- **Assumptions:** The backend channel's event shape is the contract; this ticket consumes it and does not change it.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** Cold start, press the mic, grant permission, speak a sentence, and confirm the transcript comes back from the backend and the composer passes through all four states. Deny permission on a fresh profile and confirm idle plus a stated reason.
+- **Other scenarios:** Kill the voice container mid-turn and confirm the composer returns to idle saying the connection was lost. Press the mic twice in quick succession and confirm one socket.
+- **Known gaps:** No level meter, no stop control, no confirmation step — those are the dependent tickets.
+
+**Effort & Granularity Check**
+- **Estimate:** 4 hours · **Priority:** Critical
+- **Labels / Component:** `phase:6`, frontend, voice
+- **Granularity:** One capture path, one socket client, one state machine.
+
+---
+
 ### M6-STT-FE-129 — Low confidence: show the transcript and confirm before answering
 
 **Type:** Story
@@ -261,7 +316,7 @@
 - A user asks about invoice INV-2024-0917, sees a garbled transcript, types the number, and confirms.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M6-STT-BE-128.
+- **Dependencies:** M6-VUI-FE-128a, M6-STT-BE-128.
 - **API / Data Touchpoints:** Transcript confidence; the composer.
 - **Assumptions:** The default threshold makes confirmation uncommon; if it fires on most turns, the threshold is wrong and voice becomes slower than typing.
 
@@ -411,7 +466,7 @@
 - A user speaks and watches the meter move, so they keep going rather than stopping to check.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M6-STT-BE-128, M1-ASK-FE-039.
+- **Dependencies:** M6-VUI-FE-128a, M1-ASK-FE-039.
 - **API / Data Touchpoints:** The voice channel.
 - **Assumptions:** Browser microphone access provides a level signal adequate for a meter.
 
@@ -461,7 +516,7 @@
 - A user hears the answer going the wrong way, presses stop, and asks a better question five seconds later.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M6-TTS-BE-130, M1-ASK-API-038.
+- **Dependencies:** M6-VUI-FE-128a, M6-TTS-BE-130, M1-ASK-API-038.
 - **API / Data Touchpoints:** The voice channel; `messages`.
 - **Assumptions:** Stopping audio promptly means discarding the queued buffer, not waiting for the current sentence.
 
@@ -511,7 +566,7 @@
 - On a light profile the indicator appears at eight seconds and the user waits rather than repeating themselves.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M6-TTS-BE-130.
+- **Dependencies:** M6-VUI-FE-128a, M6-TTS-BE-130.
 - **API / Data Touchpoints:** Profile configuration; the voice channel.
 - **Assumptions:** Elapsed time is measured from end of speech, which is what the user experiences.
 
