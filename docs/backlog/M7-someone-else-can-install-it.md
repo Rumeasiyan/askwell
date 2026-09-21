@@ -963,7 +963,7 @@ The shell is the natural supervisor because it is the thing the user launches. M
 - The update-checking control, off by default, with its payload stated — **the mechanism behind it is blocked.**
 
 **Out of Scope**
-- Update delivery itself — blocked (M7-UPDATE-BLOCKED-161).
+- Update delivery itself — `M7-UPDATE-BE-161`.
 
 **Acceptance Criteria**
 - **Acceptance Criteria:** The version matches the source of truth. Licence and notices are reachable in full. The source link and reporting route are present. The support boundary is stated. Update checking is off by default and its payload is stated plainly.
@@ -1607,9 +1607,9 @@ Add one named volume mounted at `/var/lib/askwell` on both services, covering bo
 
 ---
 
-### M7-UPDATE-BLOCKED-161 — Update delivery mechanism **[UNBLOCKED 2026-08-26]**
+### M7-UPDATE-BE-161 — The update check, agreed to at installation
 
-**Type:** Spike
+**Type:** Task
 
 **User Story**
 - **Actor:** someone running a version with a security fix available.
@@ -1618,19 +1618,24 @@ Add one named volume mounted at `/var/lib/askwell` on both services, covering bo
 - *As someone who installed this for privacy, I want to learn about updates without being tracked, so that staying current is not a trade against the reason I chose it.*
 
 **Context / Background**
-**Detailed Description:** **This ticket is blocked on an open product decision** — how a free local install learns that a new version exists without phoning home by default. The decision is recorded as open in the business case and in the settings specification. Realistic shapes exist — an explicit opt-in check with the payload stated, a manual check the user initiates, an out-of-band notification channel, or installer-managed updates through the platform's own mechanism — but choosing one is a product call, not an engineering default. **Do not start this work. Do not pick a default.**
+**Detailed Description:** The decision is made and recorded (`docs/decisions.md`, 2026-09-21). Installation asks once, in plain words, whether Askwell may check for new versions, stating exactly what is sent — the current version, nothing else. Yes means a weekly check against the published release feed. No, or a dismissed question, means the request is never made; the setting stays visible and off. An upgrade never enables it, and an existing install that was never asked counts as no until it is. A manual "check now" control works regardless of the answer, because a check the user just asked for is a deliberate act by definition.
 
 **Scope**
-- Nothing is implemented until the decision is made.
-- When unblocked: the mechanism, its payload, its frequency, and its interaction with the egress proxy's permitted destinations.
+- The stored answer: yes, no, or not yet asked — the third distinct from the second.
+- The weekly check when the answer is yes, and the manual check regardless.
+- Exactly one host added to the egress proxy's permitted destinations, and only when the answer is yes.
+- The payload: the current version and nothing else, stated before the question is answered.
+- Enabling or disabling the check written as a decisions record.
 
 **Out of Scope**
-- Any implementation while blocked.
+- The installer prompt's own presentation (`M7-PACK-DEPLOY-139`/`140`/`141` each carry it).
+- How a found update is presented or applied (`M7-UPDATE-FE-162`).
+- Downloading or applying anything — this ticket learns that a version exists, nothing more.
 - Any silent check, under any circumstances.
 
 **Acceptance Criteria**
-- **Acceptance Criteria:** This ticket cannot be accepted while blocked. When unblocked, the mechanism must be off by default, must state exactly what is sent before it is enabled, and must be recorded as a decision-log entry with the alternatives that were rejected.
-- **Edge Cases:** All deferred with the decision.
+- **Acceptance Criteria:** An install whose question was answered no, or never answered, makes no request — `/network` reads zero outbound attempts after a week of running. An install answered yes checks weekly and no more often. What is sent is stated before the answer is given and matches what a packet capture shows. The answer is recorded as a decisions record.
+- **Edge Cases:** Answered yes, then turned off — the next check does not happen, and the permitted destination closes with it. Upgrading an install that was never asked — still never asked, still no check; the upgrade does not answer on the user's behalf. The release feed unreachable — silent, retried next week, never an error the user has to dismiss. The machine offline for a month — no backlog of checks, one check when it next runs.
 - **Permissions / Roles:** Single user — no roles. Not applicable.
 - **UI States:** `../ux/settings.md` §7 and §9 — the control exists and is off; the mechanism behind it does not.
 - **Validation Rules:** No update check may be enabled by default or by an upgrade.
@@ -1638,27 +1643,28 @@ Add one named volume mounted at `/var/lib/askwell` on both services, covering bo
 - **Analytics Events:** None — an update check is not analytics and must never carry anything beyond what is stated.
 
 **Real-World Example Scenarios**
-- Deferred with the decision.
+- A user who said no at installation runs for six months, opens the privacy screen, and finds the measured outbound count still reading zero.
 
 **Dependencies & Assumptions**
-- **Dependencies:** **Blocked on the open update-delivery decision.**
-- **API / Data Touchpoints:** Would touch the egress proxy's permitted destinations.
-- **Assumptions:** None may be made. Picking a default here would build a phase of work against the wrong assumption.
+- **Dependencies:** M0-STACK-SEC-010, M7-SET-FE-147.
+- **API / Data Touchpoints:** The egress proxy's permitted destinations; the `settings` store; the decisions record.
+- **Assumptions:** The release feed is a static published document requiring no account and no key. If it turns out to need either, stop and raise it rather than adding one.
 
 **Testing Notes / Scenarios**
-- **Cold-start manual walkthrough:** Not applicable while blocked. When unblocked, the walkthrough must include installing, confirming no check occurs by default, enabling the check, reading exactly what will be sent, and verifying with a network capture that nothing beyond that is sent.
-- **Known gaps:** The entire mechanism. Users currently learn about updates only by looking.
+- **Cold-start manual walkthrough:** Install answering no, run the stack, and confirm with a network capture that nothing is sent and `/network` reads zero. Install again answering yes, read what the question said would be sent, and confirm the capture shows exactly that and nothing more.
+- **Other scenarios:** Turn the setting off after answering yes and confirm the permitted destination closes. Upgrade an install that was never asked and confirm it is still never asked.
+- **Known gaps:** Nothing is downloaded or applied here — `M7-UPDATE-FE-162` presents what was found.
 
 **Effort & Granularity Check**
-- **Estimate:** Not estimable while blocked. A spike to write up the options and a recommendation is 2–3 hours. · **Priority:** High
-- **Labels / Component:** `phase:6`, `blocked:decision`, `constraint:local-first`, deployment
-- **Granularity:** Blocked. Do not start.
+- **Estimate:** 3–4 hours · **Priority:** High
+- **Labels / Component:** `phase:7`, `constraint:local-first`, backend
+- **Granularity:** One stored answer, one scheduled check, one permitted destination.
 
 ---
 
-### M7-UPDATE-BLOCKED-162 — Update notification surface **[UNBLOCKED 2026-08-26]**
+### M7-UPDATE-FE-162 — Telling someone a new version exists, without nagging
 
-**Type:** Spike
+**Type:** Story
 
 **User Story**
 - **Actor:** someone whose install is three versions behind.
@@ -1667,18 +1673,21 @@ Add one named volume mounted at `/var/lib/askwell` on both services, covering bo
 - *As someone running an old version, I want to be told there is a newer one, so that I am not unknowingly running something with a known problem.*
 
 **Context / Background**
-**Detailed Description:** **Blocked on the same open decision as M7-UPDATE-BLOCKED-161.** The surface — how a discovered update is presented, how a user applies it, and what happens to their data across the upgrade — cannot be specified until the delivery mechanism is chosen.
+**Detailed Description:** When `M7-UPDATE-BE-161` finds a newer version, say so quietly and once: a marker in settings, not a modal, not a banner over the answer the user is reading. Applying it is the platform's own install, so this surface links to it and states what happens to the user's material across an upgrade — indexes, memory and audit stores are kept, and that is said before the user leaves rather than discovered afterwards.
 
 **Scope**
-- Nothing while blocked.
-- When unblocked: notification presentation, the apply flow, and the data-safety statement across an upgrade.
+- A quiet marker in settings when a newer version is known, with the version and its date.
+- The data-safety statement shown before the user leaves to upgrade.
+- Dismissal that holds until the next version, not until the next launch.
 
 **Out of Scope**
-- Any implementation while blocked. Any nagging, whatever the mechanism.
+- The check itself (`M7-UPDATE-BE-161`).
+- Downloading or applying the upgrade — the platform's installer does that.
+- Any nagging, under any mechanism.
 
 **Acceptance Criteria**
-- **Acceptance Criteria:** Cannot be accepted while blocked. When unblocked: the notification must never nag, must never block use, and the upgrade must state what happens to the user's data before it runs.
-- **Edge Cases:** Deferred.
+- **Acceptance Criteria:** A known newer version shows as a marker in settings and nowhere else. It never blocks use and never appears over an answer. Dismissing it holds until a further version appears. The data-safety statement is shown before the user leaves to upgrade.
+- **Edge Cases:** Two versions behind — one marker naming the newest, not two. The check turned off after a version was found — the marker stays, since it is already known and hiding it would be pretending otherwise. Never checked — no marker and no empty state implying something failed.
 - **Permissions / Roles:** Single user — no roles. Not applicable.
 - **UI States:** `../ux/settings.md` §7.
 - **Validation Rules:** No modal on launch, ever.
@@ -1686,21 +1695,22 @@ Add one named volume mounted at `/var/lib/askwell` on both services, covering bo
 - **Analytics Events:** None.
 
 **Real-World Example Scenarios**
-- Deferred with the decision.
+- A user opens settings for an unrelated reason, sees that 1.2.0 arrived three weeks ago, and upgrades then — having never once been interrupted about it.
 
 **Dependencies & Assumptions**
-- **Dependencies:** **Blocked on the open update-delivery decision**, and on M7-UPDATE-BLOCKED-161.
-- **API / Data Touchpoints:** Deferred.
-- **Assumptions:** None may be made.
+- **Dependencies:** M7-UPDATE-BE-161, M7-SET-FE-149.
+- **API / Data Touchpoints:** The `settings` store; the version the check recorded.
+- **Assumptions:** Upgrading in place keeps the user's data. If any platform's installer does not, that platform's ticket says so and this surface states it per platform rather than promising uniformly.
 
 **Testing Notes / Scenarios**
-- **Cold-start manual walkthrough:** Not applicable while blocked.
-- **Known gaps:** The entire surface.
+- **Cold-start manual walkthrough:** With a newer version recorded, open settings and confirm the marker, its version and its date. Ask a question and confirm nothing about the update appears anywhere near the answer. Dismiss it, restart, and confirm it stays dismissed.
+- **Other scenarios:** Record a further version and confirm the marker returns.
+- **Known gaps:** Applying the upgrade is the platform installer's job, not this surface's.
 
 **Effort & Granularity Check**
-- **Estimate:** Not estimable while blocked. · **Priority:** Medium
-- **Labels / Component:** `phase:6`, `blocked:decision`, frontend
-- **Granularity:** Blocked. Do not start.
+- **Estimate:** 2–3 hours · **Priority:** Medium
+- **Labels / Component:** `phase:7`, frontend
+- **Granularity:** One marker and one statement.
 
 ---
 

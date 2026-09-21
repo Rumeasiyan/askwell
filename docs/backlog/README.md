@@ -224,7 +224,7 @@ Every ticket, in dependency order within each domain. Full text lives in the mil
 | M7-PACK-DEPLOY-142 | Supervise the container stack and the native process together | Critical | 4–6 h |
 | M7-PACK-FE-143 | A supervision surface: start, stop, repair | High | 3–4 h |
 | M7-OFFLINE-DEPLOY-144 | Offline model bundle and manual model placement | Critical | 4–6 h |
-| M7-UPDATE-BLOCKED-161 | Update delivery mechanism **[BLOCKED]** | High | — |
+| M7-UPDATE-BE-161 | The update check, agreed to at installation | High | — |
 
 ### Security and hardening
 
@@ -405,7 +405,7 @@ Every ticket, in dependency order within each domain. Full text lives in the mil
 | M7-SET-FE-150 | Settings: online AI, visible and disabled | Medium | 1–2 h |
 | M7-LOG-FE-156 | Verification surface reporting where the chain breaks | High | 2–3 h |
 | M7-DATA-FE-160 | Export everything, delete memory, reset Askwell | Critical | 3–4 h |
-| M7-UPDATE-BLOCKED-162 | Update notification surface **[BLOCKED]** | Medium | — |
+| M7-UPDATE-FE-162 | Telling someone a new version exists, without nagging | Medium | — |
 | M8-ONLINE-FE-171 | Conversation marker and pre-send disclosure **[partly blocked]** | Critical | 3–4 h |
 | M8-CREDIT-FE-175 | Credits exhausted falls back to local and keeps working | High | 2–3 h |
 
@@ -455,8 +455,6 @@ Every ticket, in dependency order within each domain. Full text lives in the mil
 
 | ID | Title | Blocked on |
 | -- | ----- | ---------- |
-| M7-UPDATE-BLOCKED-161 | Update delivery mechanism | How a free local install learns a new version exists without phoning home by default |
-| M7-UPDATE-BLOCKED-162 | Update notification surface | The same decision, and 161 |
 | M6.5-WEB-BLOCKED-195 | Search provider and billing model | Which provider, and whether the user supplies a key or it is metered through credits. Metered is consistent with "you never hand Askwell an API key" (`../PRD.md` §6) and sequences search behind M8; a user key is cheaper and breaks that sentence |
 | M8-ONLINE-OBS-172 | Online-mode logging | What online mode transmits |
 | M8-CREDIT-BLOCKED-173 | Credit purchase | Credit pricing — rate, minimum, margin |
@@ -588,7 +586,7 @@ Free and open sets a support expectation a single maintainer cannot meet. The bo
 
 ### Tickets whose id says BLOCKED but are not
 
-`M7-UPDATE-BLOCKED-161/162` and `M8-CREDIT-BLOCKED-173/174` were blocked when they were written and are not any more — their `[BLOCKED]` markers now read `[UNBLOCKED 2026-08-26]`, and the runner builds them.
+`M8-CREDIT-BLOCKED-173/174` were blocked when they were written and are not any more — their `[BLOCKED]` markers now read `[UNBLOCKED 2026-08-26]`, and the runner builds them. `M7-UPDATE-BLOCKED-161/162` were rewritten as `M7-UPDATE-BE-161` and `M7-UPDATE-FE-162` once the update-delivery decision was taken on 2026-09-21 (`docs/decisions.md`).
 
 **The ids were not renamed.** Every dependency field in 198 tickets refers to tickets by id, and renaming four of them to fix a cosmetic inaccuracy would break references across ten files to remove a word. The marker is what the runner reads; the id is only a name.
 

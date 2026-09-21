@@ -1127,7 +1127,6 @@ Questions raised by the rewrite were settled as defaults rather than handed back
 | Waiting on you | Issue |
 | -------------- | ----- |
 | Code signing certificates — Apple and Windows, with lead times | [#42](https://github.com/Rumeasiyan/askwell/issues/42) |
-| Web search provider, and key-vs-credits | [#43](https://github.com/Rumeasiyan/askwell/issues/43) |
 | Update delivery | [#44](https://github.com/Rumeasiyan/askwell/issues/44) |
 | What online mode transmits | [#45](https://github.com/Rumeasiyan/askwell/issues/45) |
 | Credit pricing | [#46](https://github.com/Rumeasiyan/askwell/issues/46) |

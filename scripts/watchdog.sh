@@ -47,7 +47,7 @@ QUEUE_LOG="/tmp/askwell-queue.log"
 # for a deliberate re-run.
 pick_milestone() {
   local m f total done_n
-  for m in M0 M1 M2 M3 M4 M5 M6 M7 M8; do
+  for m in M0 M1 M2 M3 M4 M5 M6 M6.5 M7 M8; do
     f=$(ls docs/backlog/${m}-*.md 2>/dev/null | head -1)
     [ -n "$f" ] || continue
     # `grep -c` exits 1 when it counts zero, so a `|| echo 0` fallback
