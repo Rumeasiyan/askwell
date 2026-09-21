@@ -303,6 +303,16 @@ services:
       # machine — so a socket file is what joins them, with no route involved in
       # either direction. See docs/decisions.md.
       - ${ASKWELL_RUN_DIR:-./.run}:/run/askwell:z
+      # State the worker writes and the api serves back out — trace files
+      # (`Settings.trace_dir`) today, log-export zips once M7-LOG-BE-155 lands.
+      # `api` and `worker` are separate containers with separate filesystems;
+      # without this, a file `run_export` writes on `worker` does not exist
+      # from `api`'s point of view, and `/log-budget` and a download both fail
+      # against the real stack even though every in-process test passes
+      # (#486, #489). One volume covering the whole `/var/lib/askwell` root
+      # rather than a mount per subdirectory, so a third writer added later
+      # does not need its own compose change to be visible on both sides.
+      - askwell-state:/var/lib/askwell
       # The built interface, read-only: the API serves these files and has no
       # reason to be able to change them.
       - ./web/out:/app/web/out:ro,z
@@ -390,6 +400,9 @@ services:
     volumes:
       - ${ASKWELL_RUN_DIR:-./.run}:/run/askwell:z
       - ${ASKWELL_ROOTS_MOUNT:-/tmp/askwell-no-roots-mount}:${ASKWELL_ROOTS_MOUNT:-/tmp/askwell-no-roots-mount}:ro
+      # Same volume as `api`, same reasoning — this is the container that
+      # writes into it.
+      - askwell-state:/var/lib/askwell
     # See the api service.
     networks: [internal, sandbox]
     depends_on:
@@ -426,3 +439,9 @@ volumes:
   # (`docs/data-sources.md` §3's cap, `M4-DUMP-VAL-089`, is what bounds it —
   # this is what makes bounding it possible without touching the main volume).
   sandbox-data:
+  # `/var/lib/askwell` on both `api` and `worker` — the file one container
+  # writes has to be the file the other reads (M7-OPS-DEPLOY-154a). Named, not
+  # anonymous, for the same reason as the two above: it survives
+  # `podman compose down` and `up` without shipping the data back through
+  # Postgres or Redis for something that deliberately stays off-heap.
+  askwell-state:
