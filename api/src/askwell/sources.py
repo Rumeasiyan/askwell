@@ -78,6 +78,7 @@ from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
 from askwell.filetypes import HEAD_BYTES, Detection, Route, Verdict, detect
+from askwell.log_budget import IngestionRefused, enforce_ingestion_allowed
 from askwell.logging import get_logger
 
 log = get_logger(__name__)
@@ -1196,11 +1197,23 @@ def register_sources(
         try:
             async with session_scope(factory) as db:
                 result = await add(db, body.folder, body.files, body.version_decisions)
+                # After validation, before the commit: a request wrong on its
+                # own terms (bad folder, no files) is refused on those terms
+                # without ever needing a database, same as before this ticket
+                # — the hard limit is checked only once there is otherwise
+                # something real to refuse.
+                await enforce_ingestion_allowed(db, settings)
         except (AddRefused, roots.RootRefused) as refusal:
             # 400, not 422: the request is exactly the shape the interface meant
             # to send, and what is wrong is the folder. A validation error would
             # tell the caller their JSON was malformed, which it was not.
             return JSONResponse({"error": str(refusal), "folder": body.folder}, status_code=400)
+        except IngestionRefused as refusal:
+            # 507, not 400: nothing about the request is wrong — the folder and
+            # files are exactly what the interface meant to send. What refuses
+            # is log storage (`docs/audit-log.md` §3), a resource condition
+            # asking a question is deliberately never subject to.
+            return JSONResponse({"error": str(refusal), "folder": body.folder}, status_code=507)
 
         # After the commit, and never able to fail the request. The queue rows
         # are already durable; this only saves the worker waiting for its next
@@ -1214,8 +1227,12 @@ def register_sources(
         try:
             async with session_scope(factory) as db:
                 outcome = await add_dump(db, body.folder, body.file)
+                if outcome.source_id is not None:
+                    await enforce_ingestion_allowed(db, settings)
         except roots.RootRefused as refusal:
             return JSONResponse({"error": str(refusal), "folder": body.folder}, status_code=400)
+        except IngestionRefused as refusal:
+            return JSONResponse({"error": str(refusal), "folder": body.folder}, status_code=507)
 
         if outcome.source_id is not None and outcome.path is not None:
             # After the commit, same reasoning as `add_source` above: the
@@ -1228,8 +1245,13 @@ def register_sources(
 
     @app.post("/sources/connection")
     async def add_connection_route(body: ConnectionRequest) -> JSONResponse:
-        async with session_scope(factory) as db:
-            outcome = await add_connection(db, settings, body)
+        try:
+            async with session_scope(factory) as db:
+                outcome = await add_connection(db, settings, body)
+                if outcome.ok and outcome.source_id is not None:
+                    await enforce_ingestion_allowed(db, settings)
+        except IngestionRefused as refusal:
+            return JSONResponse({"error": str(refusal)}, status_code=507)
 
         if not outcome.ok or outcome.source_id is None:
             # 400, not 422: every field passed Pydantic's own shape check —
