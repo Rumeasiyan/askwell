@@ -4,6 +4,20 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.6.2 - 2026-09-21
+
+`M7-LOG-BE-153` — log storage budget with staged degradation (`docs/audit-log.md` §3). A new
+`askwell.log_budget` measures the interaction store and the trace ring buffer against an
+effective budget (the configured cap, or 5% of current free disk if smaller, recomputed on
+every check), and exposes three stages: `ok`, `notice` at 80%, and `hard_limit` at or over. `GET`/
+`POST /log-budget` read current usage and change the cap — a change is a hash-chained decisions
+record, the same shape `askwell.retrieve`'s threshold setting already established. The three
+add-source routes (`POST /sources`, `/sources/dump`, `/sources/connection`) now refuse new
+ingestion with a 507 once the hard limit is reached, checked after their own validation so a
+malformed request is still refused on its own terms without ever touching the database; asking
+questions is untouched, since retrieval never calls this check. A stage transition is logged.
+Decisions and memory are excluded from the measurement and are never pruned at any budget.
+
 ## 0.6.1 - 2026-09-21
 
 `M7-PROBE-FE-138` — the welcome screen and settings now warn and continue instead of refusing.
