@@ -4,10 +4,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   encodeAudioFrame,
+  formatElapsed,
+  micAppearsSilent,
+  MIC_LEVEL_SILENCE_THRESHOLD,
+  MIC_SILENT_REASON,
   nextVoiceStatus,
   parseVoiceEvent,
   pcm16ToFloat32,
   recordVoiceLatencyBudgetMiss,
+  rmsLevel,
   voiceLatencyBudgetMs,
   voiceSocketUrl,
   VOICE_IDLE,
@@ -30,6 +35,19 @@ import { fetchSetupState } from "@/lib/setup";
  * and extends. All the wire parsing and PCM conversion this needs is pure
  * and lives in `lib/voice.ts`, testable without a browser; this file is only
  * the browser API wiring around it.
+ *
+ * **Level meter and elapsed time** (`docs/ux/voice.md` §2, §5,
+ * `M6-VUI-FE-132`): the level is `rmsLevel` of the same capture buffer
+ * `onaudioprocess` already downsamples and sends, so the meter costs one
+ * more pass over a buffer that already exists rather than a second signal
+ * path. A system-muted mic still delivers real, on-schedule callbacks —
+ * just at or near zero — so silence cannot be told from "not listening" by
+ * absence of events; `micAppearsSilent` instead watches how long it has
+ * been since a buffer crossed `MIC_LEVEL_SILENCE_THRESHOLD` and swaps the
+ * tooltip copy once that exceeds `MIC_SILENCE_WARNING_MS`, rather than
+ * pretending to listen. Elapsed time is a plain wall-clock diff from
+ * capture start, ticked on an interval independent of whether any audio
+ * arrives — it must keep counting through silence, not just through speech.
  *
  * **Push-to-talk** (`voice.md` §7, settled for v1): holding the button is
  * what makes "transcribing" an honest state rather than a guess — releasing
@@ -117,6 +135,41 @@ export function MicControl() {
   const playCursorRef = useRef(0);
   const socketRef = useRef<WebSocket | null>(null);
 
+  // Meter + elapsed time (`M6-VUI-FE-132`). Driven from the same event
+  // handlers that already own capture start/stop (`startCapture`'s
+  // `onopen`, `stopCapture`, `handleConnectionLost`) rather than an effect
+  // keyed on `status` — those are real local events, and it keeps this in
+  // the same style as `latencyTimerRef` just above. `lastAudibleAtRef` is a
+  // ref, not state: it is written on every capture buffer (~11/s) and only
+  // ever read from the ticking interval, so turning it into state would
+  // force a render on every buffer for no one to see.
+  const [level, setLevel] = useState(0);
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const [appearsSilent, setAppearsSilent] = useState(false);
+  const lastAudibleAtRef = useRef(0);
+  const elapsedIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const startMeter = useCallback((): void => {
+    const startedAt = Date.now();
+    lastAudibleAtRef.current = startedAt;
+    setLevel(0);
+    setElapsedMs(0);
+    setAppearsSilent(false);
+    elapsedIntervalRef.current = setInterval(() => {
+      setElapsedMs(Date.now() - startedAt);
+      setAppearsSilent(micAppearsSilent(Date.now() - lastAudibleAtRef.current));
+    }, 200);
+  }, []);
+
+  const stopMeter = useCallback((): void => {
+    if (elapsedIntervalRef.current !== null) {
+      clearInterval(elapsedIntervalRef.current);
+      elapsedIntervalRef.current = null;
+    }
+    setLevel(0);
+    setAppearsSilent(false);
+  }, []);
+
   const teardownCapture = useCallback((): void => {
     processorRef.current?.disconnect();
     processorRef.current = null;
@@ -127,7 +180,11 @@ export function MicControl() {
     const context = captureContextRef.current;
     captureContextRef.current = null;
     if (context !== null && context.state !== "closed") void context.close();
-  }, []);
+    // The meter and elapsed timer only ever mean something while audio is
+    // actually being captured — stopping alongside it, whatever the reason
+    // (release, failure, a server status event, connection loss).
+    stopMeter();
+  }, [stopMeter]);
 
   const teardownPlayback = useCallback((): void => {
     const context = playbackContextRef.current;
@@ -276,8 +333,11 @@ export function MicControl() {
       const processor = captureContext.createScriptProcessor(4096, 1, 1);
       processorRef.current = processor;
       processor.onaudioprocess = (audioEvent): void => {
-        if (socketRef.current?.readyState !== WebSocket.OPEN) return;
         const input = audioEvent.inputBuffer.getChannelData(0);
+        const bufferLevel = rmsLevel(input);
+        setLevel(bufferLevel);
+        if (bufferLevel >= MIC_LEVEL_SILENCE_THRESHOLD) lastAudibleAtRef.current = Date.now();
+        if (socketRef.current?.readyState !== WebSocket.OPEN) return;
         socketRef.current.send(encodeAudioFrame(input, captureContext.sampleRate));
       };
       source.connect(processor);
@@ -289,12 +349,13 @@ export function MicControl() {
       silence.gain.value = 0;
       processor.connect(silence);
       silence.connect(captureContext.destination);
+      startMeter();
       setStatus(nextVoiceStatus(statusRef.current, { kind: "capture_started" }));
     };
     socket.onmessage = handleChannelMessage;
     socket.onerror = handleConnectionLost;
     socket.onclose = handleConnectionLost;
-  }, [handleChannelMessage, handleConnectionLost, stopLatencyWatch]);
+  }, [handleChannelMessage, handleConnectionLost, startMeter, stopLatencyWatch]);
 
   const stopCapture = useCallback((): void => {
     if (statusRef.current.state !== "listening") return;
@@ -318,14 +379,15 @@ export function MicControl() {
     setStatus(nextVoiceStatus(statusRef.current, { kind: "capture_ended" }));
   }, [teardownCapture]);
 
-  const label = statusLabel(status, transcript, answer);
+  const label = statusLabel(status, transcript, answer, appearsSilent);
   const busy = status.state === "transcribing" || status.state === "answering";
+  const listening = status.state === "listening";
 
   return (
     <span className="ask-mic-wrap">
       <button
         type="button"
-        aria-pressed={status.state === "listening"}
+        aria-pressed={listening}
         aria-describedby="ask-mic-reason"
         aria-label={busy ? label : "Voice input — press and hold to speak"}
         data-voice-state={status.state}
@@ -342,7 +404,20 @@ export function MicControl() {
         <span className="ask-sr-only">Voice input</span>
       </button>
       <span role="tooltip" id="ask-mic-reason" className="ask-mic-reason" aria-live="polite">
-        {label}
+        {listening ? (
+          <span className="flex items-center gap-2">
+            <span className="ask-mic-meter" aria-hidden="true">
+              <span
+                className="ask-mic-meter-fill"
+                style={{ transform: `scaleX(${appearsSilent ? 0 : level})` }}
+              />
+            </span>
+            <span>{label}</span>
+            <span className="ask-micro">{formatElapsed(elapsedMs)}</span>
+          </span>
+        ) : (
+          label
+        )}
       </span>
       <span
         className="ask-mic-latency ask-micro"
@@ -356,10 +431,15 @@ export function MicControl() {
   );
 }
 
-function statusLabel(status: VoiceStatus, transcript: string, answer: string): string {
+function statusLabel(
+  status: VoiceStatus,
+  transcript: string,
+  answer: string,
+  appearsSilent: boolean,
+): string {
   switch (status.state) {
     case "listening":
-      return "Listening…";
+      return appearsSilent ? MIC_SILENT_REASON : "Listening…";
     case "transcribing":
       return transcript.trim() === "" ? "Transcribing…" : transcript;
     case "answering":

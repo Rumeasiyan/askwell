@@ -400,6 +400,29 @@
     opacity: 1;
   }
 
+  /* Live level meter (`voice.md` §2, §5, `M6-VUI-FE-132`): a fixed-width
+     track, filled left-to-right by `transform: scaleX()` rather than
+     `width` so updating it on every capture buffer (~11/s) is a compositor
+     transform, not a layout reflow. Scale origin pinned left to grow the
+     right way. */
+  .ask-mic-meter {
+    display: inline-block;
+    width: 40px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--rule);
+    overflow: hidden;
+  }
+
+  .ask-mic-meter-fill {
+    display: block;
+    width: 100%;
+    height: 100%;
+    background: var(--ink);
+    transform-origin: left;
+    transform: scaleX(0);
+  }
+
   .ask-sr-only {
     position: absolute;
     width: 1px;

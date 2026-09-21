@@ -11,15 +11,20 @@ import {
   downsampleTo16k,
   encodeAudioFrame,
   floatTo16BitPCM,
+  formatElapsed,
   getVoiceLatencyBudgetMissCount,
+  micAppearsSilent,
+  MIC_LEVEL_SILENCE_THRESHOLD,
   MIC_NO_DEVICE_REASON,
   MIC_PERMISSION_DENIED_REASON,
+  MIC_SILENCE_WARNING_MS,
   MIC_UNAVAILABLE_REASON,
   nextVoiceStatus,
   parseVoiceEvent,
   pcm16ToFloat32,
   recordVoiceLatencyBudgetMiss,
   resetVoiceLatencyBudgetMissCountForTests,
+  rmsLevel,
   voiceLatencyBudgetMs,
   VOICE_CONNECTION_LOST_REASON,
   VOICE_FAILED_REASON,
@@ -232,4 +237,55 @@ test("pcm16ToFloat32 round-trips floatTo16BitPCM within quantisation error", () 
   for (let i = 0; i < original.length; i++) {
     assert.ok(Math.abs((restored[i] ?? 0) - (original[i] ?? 0)) < 0.001);
   }
+});
+
+// --- rmsLevel (M6-VUI-FE-132 level meter) --------------------------------------
+
+test("rmsLevel of silence is zero", () => {
+  assert.equal(rmsLevel(new Float32Array(256)), 0);
+});
+
+test("rmsLevel of a full-scale constant buffer is 1", () => {
+  assert.equal(rmsLevel(new Float32Array(64).fill(1)), 1);
+});
+
+test("rmsLevel of an empty buffer is zero, not NaN", () => {
+  assert.equal(rmsLevel(new Float32Array(0)), 0);
+});
+
+test("rmsLevel never exceeds 1 even past full scale", () => {
+  assert.equal(rmsLevel(new Float32Array(8).fill(4)), 1);
+});
+
+test("a quiet buffer sits below the silence threshold", () => {
+  assert.ok(rmsLevel(new Float32Array(256).fill(0.0001)) < MIC_LEVEL_SILENCE_THRESHOLD);
+});
+
+// --- micAppearsSilent -----------------------------------------------------------
+
+test("mic does not appear silent before the warning window elapses", () => {
+  assert.equal(micAppearsSilent(MIC_SILENCE_WARNING_MS - 1), false);
+});
+
+test("mic appears silent once the warning window has fully elapsed", () => {
+  assert.equal(micAppearsSilent(MIC_SILENCE_WARNING_MS), true);
+  assert.equal(micAppearsSilent(MIC_SILENCE_WARNING_MS + 5000), true);
+});
+
+// --- formatElapsed ----------------------------------------------------------------
+
+test("formatElapsed renders zero as 0:00", () => {
+  assert.equal(formatElapsed(0), "0:00");
+});
+
+test("formatElapsed pads seconds under ten", () => {
+  assert.equal(formatElapsed(65_000), "1:05");
+});
+
+test("formatElapsed keeps counting past an hour rather than resetting", () => {
+  assert.equal(formatElapsed(3_661_000), "61:01");
+});
+
+test("formatElapsed never goes negative", () => {
+  assert.equal(formatElapsed(-500), "0:00");
 });
