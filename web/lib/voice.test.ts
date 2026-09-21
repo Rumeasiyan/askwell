@@ -8,6 +8,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  canStartCapture,
+  canStop,
   downsampleTo16k,
   encodeAudioFrame,
   floatTo16BitPCM,
@@ -30,6 +32,7 @@ import {
   VOICE_FAILED_REASON,
   VOICE_IDLE,
   voiceSocketUrl,
+  VOICE_STOPPED_REASON,
 } from "./voice.ts";
 
 // --- parseVoiceEvent ---------------------------------------------------------
@@ -176,6 +179,56 @@ test("a confidence event passes through unchanged — not this ticket's state to
     event: { type: "confidence", value: 0.4 },
   });
   assert.equal(result, transcribing);
+});
+
+// --- canStartCapture / canStop / stop_pressed (`M6-VUI-FE-133`) ---------------
+
+test("canStartCapture is true only when idle", () => {
+  assert.equal(canStartCapture(VOICE_IDLE), true);
+  assert.equal(canStartCapture({ state: "listening", reason: null }), false);
+  assert.equal(canStartCapture({ state: "transcribing", reason: null }), false);
+  assert.equal(canStartCapture({ state: "answering", reason: null }), false);
+});
+
+test("canStop is true only while answering", () => {
+  assert.equal(canStop(VOICE_IDLE), false);
+  assert.equal(canStop({ state: "listening", reason: null }), false);
+  assert.equal(canStop({ state: "transcribing", reason: null }), false);
+  assert.equal(canStop({ state: "answering", reason: null }), true);
+});
+
+test("pressing stop while answering returns idle, marked stopped", () => {
+  const result = nextVoiceStatus(
+    { state: "answering", reason: null },
+    { kind: "stop_pressed" },
+  );
+  assert.deepEqual(result, { state: "idle", reason: VOICE_STOPPED_REASON });
+});
+
+test("pressing stop is inert outside answering — speaking over the answer, or a stray press, does nothing", () => {
+  const idle = VOICE_IDLE;
+  assert.equal(nextVoiceStatus(idle, { kind: "stop_pressed" }), idle);
+  const listening = { state: "listening" as const, reason: null };
+  assert.equal(nextVoiceStatus(listening, { kind: "stop_pressed" }), listening);
+  const transcribing = { state: "transcribing" as const, reason: null };
+  assert.equal(nextVoiceStatus(transcribing, { kind: "stop_pressed" }), transcribing);
+});
+
+test("a second stop_pressed once already idle is inert — the second press is a no-op", () => {
+  const stopped = nextVoiceStatus(
+    { state: "answering", reason: null },
+    { kind: "stop_pressed" },
+  );
+  assert.equal(nextVoiceStatus(stopped, { kind: "stop_pressed" }), stopped);
+});
+
+test("speaking over the answer does nothing — canStartCapture blocks a press while answering, matching issue 463", () => {
+  const answering = { state: "answering" as const, reason: null };
+  // `startCapture` itself early-returns on `!canStartCapture(status)` before
+  // ever calling `getUserMedia` — this is that guard's own predicate,
+  // tested directly since `web/` has no `.test.tsx` harness to exercise the
+  // component itself (docs/decisions.md, this date).
+  assert.equal(canStartCapture(answering), false);
 });
 
 // --- voiceLatencyBudgetMs ------------------------------------------------------

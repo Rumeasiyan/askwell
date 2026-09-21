@@ -28,6 +28,19 @@ export const MIC_NO_DEVICE_REASON = "No microphone was found on this device.";
 export const MIC_UNAVAILABLE_REASON = "The microphone could not be started.";
 export const VOICE_CONNECTION_LOST_REASON = "The connection to Askwell was lost. Try again.";
 export const VOICE_FAILED_REASON = "Askwell could not answer that.";
+/** `M6-VUI-FE-133`. Deliberately does not claim "partial" — the voice
+ * channel's own `status` event carries `VoiceTurn.status`
+ * (`"completed"`/`"failed"`), never `askwell.ask`'s own `"stopped"` vs
+ * `"completed"` distinction (`_generate`'s token loop is the only place
+ * that knows whether stop actually landed before generation finished), so
+ * a client here cannot honestly tell "stop cut the answer off" apart from
+ * "stop landed after the text was already complete and only cut off
+ * audio" (`docs/ux/voice.md` §5's own edge case). The `messages`/
+ * `audit_interactions` record is correct either way (`askwell.ask`'s own
+ * `partial = status == "stopped" or truncated`) — this label just never
+ * asserts more than the one real local fact it has: the user pressed stop.
+ * Filed as issue 471 — the wire gap, not a bug in this ticket's own code. */
+export const VOICE_STOPPED_REASON = "Stopped.";
 
 /** Matches `askwell.voice_channel`'s own wire shapes: the `_Event.kind`
  * union plus the one-shot `turn`/`status` messages `voice_ws` sends
@@ -69,7 +82,26 @@ export type VoiceControlAction =
   | { kind: "capture_started" }
   | { kind: "capture_ended" }
   | { kind: "connection_lost" }
+  | { kind: "stop_pressed" }
   | { kind: "channel_event"; event: VoiceChannelEvent };
+
+/** Whether pressing-and-holding the mic may start a new turn right now
+ * (`docs/ux/voice.md` §5 "user speaks over the answer": nothing happens).
+ * Pure so `startCapture`'s guard is covered without a browser —
+ * `M6-VUI-FE-133`, closing issue 463. */
+export function canStartCapture(status: VoiceStatus): boolean {
+  return status.state === "idle";
+}
+
+/** Whether the stop control is live right now (`docs/ux/voice.md` §4 #13:
+ * a visible stop control, no barge-in). Visible, and only meaningful,
+ * while an answer is actually being generated or spoken — before that
+ * there is nothing running to stop, and once a turn has already returned
+ * to idle a second press is inert by construction rather than needing its
+ * own re-entrancy flag. */
+export function canStop(status: VoiceStatus): boolean {
+  return status.state === "answering";
+}
 
 /**
  * The composer's state machine — the four base states this ticket owns.
@@ -93,6 +125,11 @@ export function nextVoiceStatus(current: VoiceStatus, action: VoiceControlAction
       return current.state === "listening" ? { state: "transcribing", reason: null } : current;
     case "connection_lost":
       return current.state === "idle" ? current : { state: "idle", reason: VOICE_CONNECTION_LOST_REASON };
+    case "stop_pressed":
+      // Only a real transition: not visible/live outside `answering`
+      // (`canStop`), so a second press — or a stray one after the turn
+      // already finished on its own — changes nothing.
+      return canStop(current) ? { state: "idle", reason: VOICE_STOPPED_REASON } : current;
     case "channel_event":
       return nextFromChannelEvent(current, action.event);
     default:
