@@ -68,6 +68,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -119,10 +120,24 @@ class _Event:
     emitted once — the first time a turn's synthesis fails — so the screen
     can show the note `docs/ux/voice.md` §5 requires. There is no
     `available: True` counterpart on recovery: recovery is simply the next
-    turn synthesizing normally, with nothing to announce."""
+    turn synthesizing normally, with nothing to announce.
+
+    `timing` (`M6-PERF-TEST-136`) carries the per-stage millisecond
+    breakdown `stage_breakdown_ms` computes from `VoiceTurn.stage_timings` —
+    emitted once, by `askwell.voice_tts._speak_answer`, right before the
+    turn's closing audio sentinel, so `voice_latency`'s harness (or any other
+    client) reads it the same way it reads every other event, with nothing
+    voice-specific about the transport."""
 
     kind: Literal[
-        "transcript", "text", "confidence", "language", "citation", "fact_citation", "voice"
+        "transcript",
+        "text",
+        "confidence",
+        "language",
+        "citation",
+        "fact_citation",
+        "voice",
+        "timing",
     ]
     fields: dict[str, Any]
 
@@ -170,6 +185,17 @@ class VoiceTurn:
     # `True`: recovery is a property of the next turn, not this one.
     synthesis_available: bool = True
     synthesis_unavailable_reason: str | None = None
+    # `time.monotonic()` checkpoints, one per named stage boundary
+    # (`M6-PERF-TEST-136`) — `mark()` is first-write-wins, so a stage a
+    # driver reaches more than once (the first synthesized sentence, the
+    # first queued audio chunk) still records only the *first* time, which
+    # is the only one the latency budget cares about. Absolute values are
+    # meaningless outside this turn's own process; only the deltas between
+    # two marks (`stage_breakdown_ms`) mean anything.
+    stage_timings: dict[str, float] = field(default_factory=dict)
+
+    def mark(self, name: str) -> None:
+        self.stage_timings.setdefault(name, time.monotonic())
 
     def emit_transcript(self, delta: str) -> None:
         self.transcript += delta
@@ -198,6 +224,44 @@ class VoiceTurn:
         self.synthesis_available = False
         self.synthesis_unavailable_reason = reason
         self.events.append(_Event("voice", {"available": False, "reason": reason}))
+
+    def emit_timing(self, fields: dict[str, Any]) -> None:
+        self.events.append(_Event("timing", fields))
+
+
+# `(label, from_mark, to_mark)` — the named intervals `M6-PERF-TEST-136`'s
+# breakdown reports. Not every consecutive pair in `_STAGE_ORDER`: retrieval
+# and generation both start once transcription hands off, so the "generation"
+# interval spans from when generation starts to the first sentence being
+# ready, not from retrieval — the two run in sequence, not overlapping, but
+# labelling them this way is what keeps each interval attributable to one
+# named stage rather than double-counting the gap between marks that fire
+# close together.
+_STAGE_INTERVALS = (
+    ("transcription_ms", "speech_ended", "transcription_done"),
+    ("retrieval_ms", "retrieval_started", "generation_started"),
+    ("generation_ms", "generation_started", "first_sentence_ready"),
+    ("synthesis_ms", "first_sentence_ready", "first_audio_ready"),
+    ("first_audio_ms", "speech_ended", "first_audio_ready"),
+)
+
+
+def stage_breakdown_ms(marks: dict[str, float]) -> dict[str, float | None]:
+    """Turn a `VoiceTurn.stage_timings` snapshot into the named millisecond
+    intervals `M6-PERF-TEST-136`'s harness reports. Pure and DB-free by
+    design — the harness, and every test here, calls it directly against a
+    plain `dict` rather than needing a live turn.
+
+    An interval whose marks were never both reached (a turn that failed
+    before synthesis, or a driver that skips a stage entirely) reports
+    `None` rather than a wrong number built from a missing side."""
+    breakdown: dict[str, float | None] = {}
+    for label, start, end in _STAGE_INTERVALS:
+        if start in marks and end in marks:
+            breakdown[label] = (marks[end] - marks[start]) * 1000
+        else:
+            breakdown[label] = None
+    return breakdown
 
 
 TurnDriver = Callable[[VoiceTurn], Awaitable[None]]
@@ -294,6 +358,7 @@ async def _receive_loop(websocket: WebSocket, turn: VoiceTurn, detector: TurnDet
             await turn.audio_in.put(raw_bytes)
             if await detector.feed(raw_bytes):
                 turn.audio_in_closed = True
+                turn.mark("speech_ended")
                 await turn.audio_in.put(None)
             continue
         raw_text = message.get("text")
@@ -307,11 +372,13 @@ async def _receive_loop(websocket: WebSocket, turn: VoiceTurn, detector: TurnDet
         if kind == "end":
             if not turn.audio_in_closed:
                 turn.audio_in_closed = True
+                turn.mark("speech_ended")
                 await turn.audio_in.put(None)
         elif kind == "stop":
             turn.stop_requested = True
             if not turn.audio_in_closed:
                 turn.audio_in_closed = True
+                turn.mark("speech_ended")
                 await turn.audio_in.put(None)
 
 

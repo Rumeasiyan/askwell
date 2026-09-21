@@ -148,6 +148,7 @@ Everything runs through one entry point:
 | Bring up the stack | `podman compose up -d` | **Verified** |
 | One image only | `scripts/dev.sh build-api` / `build-web` | **Verified** |
 | Eval suite | `scripts/dev.sh eval --suite <name>` | **Verified** |
+| Voice latency harness | `scripts/dev.sh voice-latency --fixture <path> --profile <tier>` | **Verified** |
 | Keep the build alive unattended | `scripts/watchdog.sh` (a systemd **user** timer runs it) | **Verified** |
 
 Two things about `scripts/dev.sh` that are deliberate:

@@ -24,6 +24,9 @@
 #   scripts/dev.sh inference    the native inference supervisor, ON THE HOST
 #   scripts/dev.sh test-db      the database-backed tests, against the stack
 #   scripts/dev.sh eval ...     the eval harness (e.g. `eval --suite smoke.v1`)
+#   scripts/dev.sh voice-latency ...
+#                               the voice latency harness against the running
+#                               stack (e.g. `voice-latency --fixture ... --profile standard`)
 #   scripts/dev.sh build       rebuild both images (build-api / build-web for one)
 #   scripts/dev.sh shell       an interactive shell in the image
 #   scripts/dev.sh run ...     any command inside the image
@@ -323,6 +326,26 @@ case "$cmd" in
             -w /app/api \
             -e PYTHONDONTWRITEBYTECODE=1 \
             "$IMAGE" python /app/eval/bench.py "$@"
+        ;;
+
+    voice-latency)
+        # Against the real `api` service, not a suite fixture: `askwell_internal`
+        # only (never `askwell_sandbox` — this never touches the sandbox), the
+        # local machine's own container talking to its own stack, same C1
+        # reasoning as `eval` above. The `/run/askwell` mount is what lets
+        # `eval/voice_latency.py`'s `_model_name()` read the inference
+        # supervisor's own state file for the report's `model` field, exactly
+        # the way `eval/bench.py` already does.
+        [ "$#" -gt 0 ] || die "voice-latency needs a fixture and a profile, e.g. $SELF voice-latency --fixture path/to/sample.wav --profile standard"
+        image_exists || build_image
+        "$CONTAINER" run --rm "${TTY_FLAGS[@]}" \
+            --network "${ASKWELL_COMPOSE_NETWORK:-askwell_internal}" \
+            -e ASKWELL_DATABASE_URL="postgresql://$(_db_user):$(_db_password)@$(_db_host):5432/$(_db_name)" \
+            -v "$REPO_ROOT":/app:z \
+            -v "${ASKWELL_RUN_DIR:-$REPO_ROOT/.run}":/run/askwell:z \
+            -w /app/api \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            "$IMAGE" python /app/eval/voice_latency.py --host api --port 8000 "$@"
         ;;
 
     inference)
