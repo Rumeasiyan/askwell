@@ -114,6 +114,42 @@ function nextFromChannelEvent(current: VoiceStatus, event: VoiceChannelEvent): V
   return current;
 }
 
+/**
+ * Latency budget from end of speech to first audio (`docs/ux/voice.md` §1,
+ * `M6-VUI-FE-134`): 3.5s on `accelerated`, 8s on every other profile —
+ * `standard`, `light`, `workstation` and unknown alike, since only
+ * `accelerated` and `standard` have a stated figure. An unknown profile
+ * getting the `standard` budget is itself the ticket's own edge case.
+ */
+export const VOICE_LATENCY_BUDGET_ACCELERATED_MS = 3500;
+export const VOICE_LATENCY_BUDGET_STANDARD_MS = 8000;
+
+export function voiceLatencyBudgetMs(tier: string | null): number {
+  return tier === "accelerated" ? VOICE_LATENCY_BUDGET_ACCELERATED_MS : VOICE_LATENCY_BUDGET_STANDARD_MS;
+}
+
+/** Reassures rather than alarms — the ticket's own copy requirement. */
+export const VOICE_LATENCY_COPY = "Taking longer than usual…";
+
+/**
+ * Local-only tally of budget misses (C1: nothing transmitted), kept for
+ * later measurement rather than sent anywhere. Module-level rather than
+ * component state so it survives `MicControl` remounting mid-session.
+ */
+let voiceLatencyBudgetMissCount = 0;
+
+export function recordVoiceLatencyBudgetMiss(): void {
+  voiceLatencyBudgetMissCount += 1;
+}
+
+export function getVoiceLatencyBudgetMissCount(): number {
+  return voiceLatencyBudgetMissCount;
+}
+
+export function resetVoiceLatencyBudgetMissCountForTests(): void {
+  voiceLatencyBudgetMissCount = 0;
+}
+
 export function voiceSocketUrl(location: { protocol: string; host: string }): string {
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
   return `${scheme}//${location.host}/voice/ws`;

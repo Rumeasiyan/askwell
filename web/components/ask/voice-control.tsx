@@ -7,11 +7,15 @@ import {
   nextVoiceStatus,
   parseVoiceEvent,
   pcm16ToFloat32,
+  recordVoiceLatencyBudgetMiss,
+  voiceLatencyBudgetMs,
   voiceSocketUrl,
   VOICE_IDLE,
+  VOICE_LATENCY_COPY,
   VOICE_PLAYBACK_SAMPLE_RATE,
   type VoiceStatus,
 } from "@/lib/voice";
+import { fetchSetupState } from "@/lib/setup";
 
 /**
  * The mic control and the voice composer's base state machine
@@ -59,6 +63,52 @@ export function MicControl() {
     statusRef.current = status;
   }, [status]);
 
+  // Latency indicator (`docs/ux/voice.md` §4 #15, `M6-VUI-FE-134`). The
+  // hardware tier voice.md's budget is keyed on (`light`/`standard`/
+  // `accelerated`/`workstation`, `askwell.hardware.probe`) is a different
+  // axis from `/health`'s `profile` (the deployment `Profile` enum —
+  // `light`/`balanced`/`full` — that selects models,
+  // `askwell.config.Profile`), so this reads `/setup` instead of
+  // `useStatus()`. `GET /setup` is stated safe and cheap to poll
+  // (`askwell/setup.py`'s own docstring) and re-probes hardware fresh on
+  // every call regardless of the `tier` query value, which only affects the
+  // model-download half of the response this ignores. Hardware does not
+  // change mid-session, so one fetch on mount is enough.
+  const [pastBudget, setPastBudget] = useState(false);
+  const [tier, setTier] = useState<string | null>(null);
+  const tierRef = useRef(tier);
+  useEffect(() => {
+    tierRef.current = tier;
+  }, [tier]);
+  useEffect(() => {
+    let cancelled = false;
+    fetchSetupState("standard")
+      .then((state) => {
+        if (!cancelled) setTier(state.profile.tier);
+      })
+      .catch(() => {
+        // Left null — `voiceLatencyBudgetMs` already treats an unread
+        // profile as `standard`, the ticket's own unknown-profile edge case.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const latencyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const audioStartedRef = useRef(false);
+
+  const clearLatencyTimer = useCallback((): void => {
+    if (latencyTimerRef.current !== null) {
+      clearTimeout(latencyTimerRef.current);
+      latencyTimerRef.current = null;
+    }
+  }, []);
+
+  const stopLatencyWatch = useCallback((): void => {
+    clearLatencyTimer();
+    setPastBudget(false);
+  }, [clearLatencyTimer]);
+
   const streamRef = useRef<MediaStream | null>(null);
   const captureContextRef = useRef<AudioContext | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
@@ -100,11 +150,19 @@ export function MicControl() {
       teardownCapture();
       teardownPlayback();
       closeSocket();
+      clearLatencyTimer();
     },
-    [teardownCapture, teardownPlayback, closeSocket],
+    [teardownCapture, teardownPlayback, closeSocket, clearLatencyTimer],
   );
 
   const playAudioChunk = useCallback((chunk: ArrayBuffer): void => {
+    // The real "audio begins" signal (`voice.md` §5's own wording) — clears
+    // the indicator here rather than on the `text` event, since text can
+    // stream well before the first sentence has finished synthesising.
+    if (!audioStartedRef.current) {
+      audioStartedRef.current = true;
+      stopLatencyWatch();
+    }
     if (playbackContextRef.current === null || playbackContextRef.current.state === "closed") {
       const AudioContextCtor: typeof AudioContext =
         window.AudioContext ??
@@ -126,7 +184,7 @@ export function MicControl() {
     const startAt = Math.max(context.currentTime, playCursorRef.current);
     source.start(startAt);
     playCursorRef.current = startAt + buffer.duration;
-  }, []);
+  }, [stopLatencyWatch]);
 
   const handleChannelMessage = useCallback(
     (event: MessageEvent<string | ArrayBuffer>): void => {
@@ -140,15 +198,20 @@ export function MicControl() {
       if (parsed.type === "text") setAnswer((current) => current + parsed.text);
       setStatus((current) => nextVoiceStatus(current, { kind: "channel_event", event: parsed }));
       if (parsed.type === "status") {
+        // A failure past budget replaces the indicator with the failure
+        // reason (`voice.md` §5's own edge case) — `statusLabel` already
+        // reads `status.reason` once `nextVoiceStatus` above returns idle.
+        stopLatencyWatch();
         teardownCapture();
         teardownPlayback();
         closeSocket();
       }
     },
-    [playAudioChunk, teardownCapture, teardownPlayback, closeSocket],
+    [playAudioChunk, teardownCapture, teardownPlayback, closeSocket, stopLatencyWatch],
   );
 
   const handleConnectionLost = useCallback((): void => {
+    stopLatencyWatch();
     teardownCapture();
     teardownPlayback();
     closeSocket();
@@ -157,7 +220,7 @@ export function MicControl() {
     // (`voice.md` §5's "Connection drops mid-turn" is specifically the
     // other case — while a turn is still live).
     setStatus((current) => nextVoiceStatus(current, { kind: "connection_lost" }));
-  }, [teardownCapture, teardownPlayback, closeSocket]);
+  }, [teardownCapture, teardownPlayback, closeSocket, stopLatencyWatch]);
 
   const startCapture = useCallback(async (): Promise<void> => {
     // A press while transcribing or answering is ignored, not a second
@@ -195,6 +258,8 @@ export function MicControl() {
     streamRef.current = stream;
     setTranscript("");
     setAnswer("");
+    audioStartedRef.current = false;
+    stopLatencyWatch();
 
     const socket = new WebSocket(voiceSocketUrl(window.location));
     socket.binaryType = "arraybuffer";
@@ -229,7 +294,7 @@ export function MicControl() {
     socket.onmessage = handleChannelMessage;
     socket.onerror = handleConnectionLost;
     socket.onclose = handleConnectionLost;
-  }, [handleChannelMessage, handleConnectionLost]);
+  }, [handleChannelMessage, handleConnectionLost, stopLatencyWatch]);
 
   const stopCapture = useCallback((): void => {
     if (statusRef.current.state !== "listening") return;
@@ -238,6 +303,18 @@ export function MicControl() {
     if (socket !== null && socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({ type: "end" }));
     }
+    // Elapsed time is measured from end of speech — this release, the moment
+    // the user experiences as "I'm done talking" (ticket's own assumption) —
+    // not from turn start. Cleared the instant audio actually begins or the
+    // turn ends, so a turn that completes within a moment of passing budget
+    // never shows the indicator flickering on and off.
+    latencyTimerRef.current = setTimeout(() => {
+      latencyTimerRef.current = null;
+      if (statusRef.current.state === "transcribing" || statusRef.current.state === "answering") {
+        recordVoiceLatencyBudgetMiss();
+        setPastBudget(true);
+      }
+    }, voiceLatencyBudgetMs(tierRef.current));
     setStatus(nextVoiceStatus(statusRef.current, { kind: "capture_ended" }));
   }, [teardownCapture]);
 
@@ -266,6 +343,14 @@ export function MicControl() {
       </button>
       <span role="tooltip" id="ask-mic-reason" className="ask-mic-reason" aria-live="polite">
         {label}
+      </span>
+      <span
+        className="ask-mic-latency ask-micro"
+        role="status"
+        aria-live="polite"
+        data-visible={pastBudget}
+      >
+        {pastBudget ? VOICE_LATENCY_COPY : ""}
       </span>
     </span>
   );

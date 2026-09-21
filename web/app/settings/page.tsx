@@ -38,6 +38,11 @@ export default function SettingsPage() {
           The rest of the settings that exist today are environment variables. The surface for
           them arrives in M7.
         </p>
+        <p className="ask-prose" style={{ color: "var(--muted)" }}>
+          Voice&apos;s past-latency indicator waits 3.5 seconds on an <code>accelerated</code>{" "}
+          hardware profile and 8 seconds on every other profile, including one that could not be
+          determined.
+        </p>
       </section>
 
       <Folders />
