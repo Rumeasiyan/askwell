@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The window hosts the Askwell web app over plain HTTP, not a Tauri IPC page. No command is granted: the webview has no way to reach a Rust API, which is exactly the shape C7 wants — content in the window stays data, never a route to native capability.",
+  "windows": ["main"],
+  "permissions": []
+}

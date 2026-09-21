@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Askwell</title>
+    <!--
+      Askwell's own starting state, per `docs/states-and-edge-cases.md` §1
+      ("Model still downloading" / first-launch pattern) and this ticket's
+      edge case: the API is not up yet when the window opens, so the window
+      must show Askwell's own message rather than the webview's own
+      connection-refused page, and recover on its own once the API answers.
+
+      This file is bundled into the shell binary (`build.frontendDist`) and
+      loads with no network dependency at all — no font, no CDN, nothing but
+      this document. It never renders retrieved or remote content, so it
+      carries none of the C7 concerns the rest of the app does.
+    -->
+    <style>
+      :root {
+        --paper: #e9ebe7;
+        --ink: #232722;
+        --muted: #5f655e;
+        --provenance: #2f6b62;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --paper: #191c1a;
+          --ink: #e4e7e1;
+          --muted: #9aa096;
+          --provenance: #5fa99b;
+        }
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--paper);
+        color: var(--ink);
+        font-family:
+          ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      main {
+        text-align: center;
+        max-width: 28rem;
+        padding: 0 1.5rem;
+      }
+      .mark {
+        width: 2.5rem;
+        height: 2px;
+        background: var(--provenance);
+        margin: 0 auto 1.25rem;
+        position: relative;
+      }
+      .mark::after {
+        content: "";
+        position: absolute;
+        right: -0.4rem;
+        top: -0.3rem;
+        width: 0.5rem;
+        height: 0.5rem;
+        border-radius: 50%;
+        background: var(--provenance);
+      }
+      h1 {
+        font-size: 1rem;
+        font-weight: 600;
+        margin: 0 0 0.35rem;
+      }
+      p {
+        font-size: 0.875rem;
+        color: var(--muted);
+        margin: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="mark" aria-hidden="true"></div>
+      <h1 id="headline">Starting Askwell</h1>
+      <p id="detail">Waiting for the local application to come up.</p>
+    </main>
+    <script>
+      (function () {
+        var params = new URLSearchParams(window.location.search);
+        var apiOrigin = params.get("api") || "http://127.0.0.1:8000";
+        var headline = document.getElementById("headline");
+        var detail = document.getElementById("detail");
+        var attempt = 0;
+
+        function poll() {
+          attempt += 1;
+          fetch(apiOrigin + "/health", { cache: "no-store" })
+            .then(function (response) {
+              if (!response.ok) throw new Error("not ready");
+              return response.json();
+            })
+            .then(function () {
+              // The health probe answering is what "up" means here; the
+              // window now hands off to the real application entirely —
+              // this page's job is done and it is never seen again until
+              // the next cold start.
+              window.location.replace(apiOrigin + "/");
+            })
+            .catch(function () {
+              if (attempt > 3) {
+                headline.textContent = "Still starting Askwell";
+                detail.textContent =
+                  "This is taking longer than usual. It will open as soon as the application answers.";
+              }
+              window.setTimeout(poll, 750);
+            });
+        }
+
+        poll();
+      })();
+    </script>
+  </body>
+</html>
