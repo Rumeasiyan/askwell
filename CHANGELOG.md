@@ -4,6 +4,22 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.6.6 - 2026-09-21
+
+`M7-OPS-DEPLOY-154a` — a named `askwell-state` volume mounted at `/var/lib/askwell` on both
+`api` and `worker` in `compose.yaml`. Neither container previously had anything mounted there:
+`Settings.trace_dir` (`/var/lib/askwell/traces`) resolved to a path that did not exist at all
+on `api`, so `GET /log-budget` 500'd against the real stack every time (#486); the same missing
+mount meant a file the worker writes under this root is invisible from the api container's own
+filesystem, which is what would have made a log export written by `run_export` undownloadable
+had `M7-LOG-BE-155` landed (#489, filed against that ticket's own not-yet-merged work). One
+volume covering the whole root rather than a mount per subdirectory, so a future writer under
+`/var/lib/askwell` needs no further compose change. Confirmed live against the running,
+rebuilt stack: a file written from inside the `worker` container reads back from inside `api`
+unchanged, `GET /log-budget` answers `401` (no session) rather than `500`, and the file
+survives `podman compose down && up` under the named volume `askwell_askwell-state` (`podman
+volume ls`). `docs/manual-tests/M7-OPS-DEPLOY-154a.md`.
+
 ## 0.6.5 - 2026-09-21
 
 `M7-SET-FE-147` — the settings screen's privacy and security section (`docs/ux/settings.md`

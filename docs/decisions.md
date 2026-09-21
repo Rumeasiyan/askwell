@@ -22,6 +22,18 @@ Template:
 
 ---
 
+## 2026-09-21 — `M7-OPS-DEPLOY-154a`: one volume for all of `/var/lib/askwell`, not one per subdirectory
+
+**Decision:** `compose.yaml` mounts a single named volume, `askwell-state`, at `/var/lib/askwell` on both `api` and `worker`, covering `Settings.trace_dir` and (once `M7-LOG-BE-155` lands) `Settings.export_dir` at once, rather than a separate volume — or a separate bind mount — per subdirectory.
+
+**Why:** the two known consumers of this path (`trace_dir`, `export_dir`) are both written by `worker` and read by `api`, and nothing about either one needs isolation from the other the way `sandbox-data` needs isolation from `postgres-data` (C3) — there is no cap or blast-radius reason to keep them apart. A mount per subdirectory would need a `compose.yaml` change every time a third thing under `/var/lib/askwell` showed up; one mount of the parent means it does not. The alternative in #489's own options list — streaming export bytes through Redis's result backend or a Postgres `bytea`/large-object column instead of a shared filesystem path — was rejected as disproportionate: `run_export` deliberately stays off-heap and streamed to disk for files that can run to a year of interaction history, and routing that through either datastore would mean holding the whole file in memory or in a table built for something else, for no gain over a filesystem both containers can already reach.
+
+**Consequences:** any third writer under `/var/lib/askwell` is visible on both containers automatically, with no compose change — but also means neither `api` nor `worker` can be given a narrower filesystem view of just the subdirectory it actually needs; a bug in one that writes garbage under the other's expected subdirectory is not stopped by the mount boundary. Reversing this would mean splitting the volume per subdirectory, which is a `compose.yaml` and a `podman volume` migration, not a code change.
+
+**Refs:** #486, #489. `compose.yaml` (`api`, `worker`, `volumes:`). `docs/manual-tests/M7-OPS-DEPLOY-154a.md`.
+
+---
+
 ## 2026-09-21 — `M7-SEC-BE-152`: chunk content is encrypted; the search index and the embedding are not, and the documentation says so
 
 **Decision:** `chunks.content` is encrypted with the same passphrase-derived key `M7-SEC-BE-151` already built, per row, with a `content_encrypted` flag saying which of plaintext or a Fernet token the row currently holds. `chunks.content_tsv` (full-text search) and `chunks.embedding` (dense retrieval) stay derived from **plaintext**, always — a generated `GENERATED ALWAYS AS (to_tsvector(content))` column cannot be kept, because Postgres would tokenise a Fernet token's own base64 bytes into a search index full of garbage; `content_tsv` becomes an application-maintained column instead (`ALTER COLUMN ... DROP EXPRESSION`, migration `b7e91a4c3f65`), computed by `askwell.chunk.run` from the plaintext chunk before it is ever encrypted. Migration between plaintext and encrypted corpora (`askwell.content_encryption.migrate_chunk_content`) is per-row and resumable **without persisting a cursor or any key material**: a batch's `WHERE content_encrypted != target` clause already excludes whatever a previous, interrupted run finished, so retrying the same `set_passphrase`/`change_passphrase`/`remove_passphrase` call with the same passphrase is an ordinary resume, not a special path.
