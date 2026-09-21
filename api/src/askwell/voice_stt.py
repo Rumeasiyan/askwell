@@ -201,6 +201,7 @@ def build_stt_driver(
 
         async with make_client() as client:
             result = await _transcribe(client, audio)
+        turn.mark("transcription_done")
 
         status = result["status"]
 

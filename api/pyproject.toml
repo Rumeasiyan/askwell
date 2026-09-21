@@ -54,6 +54,11 @@ dev = [
     "pytest-asyncio>=0.24",
     "ruff>=0.6",
     "types-pymysql>=1.2",
+    # `eval/voice_latency.py`'s own WebSocket client (`M6-PERF-TEST-136`) —
+    # already resolved transitively via `uvicorn[standard]`, listed
+    # explicitly because the harness imports it directly and a future
+    # uvicorn change dropping it should not silently break the harness.
+    "websockets>=13.0",
 ]
 
 # The version is not declared here. It is read from the repository's VERSION

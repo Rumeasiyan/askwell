@@ -105,7 +105,7 @@ from askwell.ask import _Turn as AskTurn
 from askwell.config import Settings
 from askwell.db.engine import session_scope
 from askwell.logging import get_logger
-from askwell.voice_channel import VoiceTurn
+from askwell.voice_channel import VoiceTurn, stage_breakdown_ms
 from askwell.voice_stt import ClientFactory, build_stt_driver
 
 log = get_logger(__name__)
@@ -246,12 +246,26 @@ async def _speak_answer(
                 turn.emit_citation(event.data)
             elif event.kind == "fact_citation":
                 turn.emit_fact_citation(event.data)
+            elif event.kind == "step":
+                # `askwell.ask._generate`'s own step markers, drained here
+                # only for their timing value (`M6-PERF-TEST-136`) — the
+                # screen has no voice-mode step surface, so nothing forwards
+                # these onto `turn` the way `token`/`citation` do above.
+                step_kind = event.data.get("kind")
+                if step_kind == "retrieve":
+                    turn.mark("retrieval_started")
+                elif step_kind == "compose":
+                    turn.mark("generation_started")
         events_cursor = len(ask_turn.events)
 
     async def _speak_sentence(spoken: str) -> None:
         nonlocal synthesis_unavailable_this_turn
         if synthesis_unavailable_this_turn:
             return
+        # First-write-wins (`VoiceTurn.mark`), so only the very first
+        # sentence this turn ever reaches here sets these — a later sentence
+        # calling `_speak_sentence` again is unrelated to first-audio latency.
+        turn.mark("first_sentence_ready")
         try:
             await _synthesize_and_queue(turn, spoken, tts_client_factory)
         except (SynthesisUnavailable, SynthesisFailed) as error:
@@ -263,6 +277,7 @@ async def _speak_answer(
                     "voice_synthesis_unavailable", turn_id=str(turn.turn_id), reason=str(error)
                 )
             return
+        turn.mark("first_audio_ready")
         if not availability["synthesis"]:
             availability["synthesis"] = True
             log.info("voice_synthesis_recovered", turn_id=str(turn.turn_id))
@@ -307,6 +322,15 @@ async def _speak_answer(
             gen_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await gen_task
+
+    # Emitted before the closing sentinel so `_send_loop`'s flush right after
+    # dequeuing it still carries this event — `M6-PERF-TEST-136`'s harness
+    # (or any other client) reads the breakdown the same way it reads every
+    # other event, with nothing voice-specific about the transport. A stage
+    # this turn never reached (stopped early, synthesis unavailable before
+    # any sentence) reports `None` rather than a number built from a mark
+    # that was never set.
+    turn.emit_timing(stage_breakdown_ms(turn.stage_timings))
 
     turn.status = "failed" if ask_turn.status == "failed" else "completed"
     await turn.audio_out.put(None)

@@ -481,3 +481,72 @@ async def test_the_pending_answer_row_is_written_before_generation_starts(
     )
 
     assert seen_message_id is not None
+
+
+async def test_stage_timings_and_a_timing_event_are_recorded_for_a_full_turn(
+    settings: Settings, database_url: str, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """`M6-PERF-TEST-136`: the four attributable stages a full spoken turn
+    passes through — retrieval and generation come from `askwell.ask`'s own
+    `step` events, `synthesis` from the first successful `/synthesize` call —
+    are all captured and reach the wire as one `timing` event before the
+    turn's closing audio sentinel."""
+    _truncate(database_url)
+    conversation_id = _conversation(database_url)
+    turn = _voice_turn(conversation_id)
+    turn.mark("speech_ended")
+    turn.mark("transcription_done")
+
+    async def fake_generate(_settings, _factory, ask_turn, _question, _source_id, _continue_from):
+        ask_turn.emit("step", {"label": "Searching your files.", "kind": "retrieve"})
+        ask_turn.emit("step", {"label": "Writing your answer.", "kind": "compose"})
+        ask_turn.text = "Notice is ninety days."
+        ask_turn.emit("token", {"text": ask_turn.text})
+        ask_turn.status = "completed"
+
+    await _speak_answer(
+        turn,
+        settings=settings,
+        factory=factory,
+        question="what is the notice period",
+        tts_client_factory=_tts_client_factory(),
+        generate=fake_generate,
+    )
+
+    assert turn.status == "completed"
+    marks = turn.stage_timings
+    assert set(marks) >= {
+        "speech_ended",
+        "transcription_done",
+        "retrieval_started",
+        "generation_started",
+        "first_sentence_ready",
+        "first_audio_ready",
+    }
+    # Stages happened in the order a real turn reaches them.
+    assert (
+        marks["speech_ended"]
+        <= marks["transcription_done"]
+        <= marks["retrieval_started"]
+        <= marks["generation_started"]
+        <= marks["first_sentence_ready"]
+        <= marks["first_audio_ready"]
+    )
+
+    timing_events = [e for e in turn.events if e.kind == "timing"]
+    assert len(timing_events) == 1
+    breakdown = timing_events[0].fields
+    for key in (
+        "transcription_ms",
+        "retrieval_ms",
+        "generation_ms",
+        "synthesis_ms",
+        "first_audio_ms",
+    ):
+        assert breakdown[key] is not None
+        assert breakdown[key] >= 0
+
+    # The `timing` event is the last thing queued before the closing
+    # sentinel: `_send_loop`'s own flush-after-dequeue depends on this order
+    # to deliver it at all (`voice_channel.py`'s own comment on that flush).
+    assert turn.events[-1].kind == "timing"
