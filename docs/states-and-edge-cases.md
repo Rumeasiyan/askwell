@@ -161,6 +161,8 @@ There is no administrator. These are the user's own settings.
 | **Log verification finds a broken hash chain** | Reported plainly, naming where the chain breaks | C6 is tamper-*evident*. This is that evidence, and it must be surfaced, not swallowed |
 | **Model swap in progress** | Assistant unavailable with expected duration. Retrieval still works | — |
 | **Hardware below the `light` floor at install** | Warned, with what to expect, and allowed to continue | **Warn, do not refuse.** Refusing made sense for a paid deployment that could be blamed on the vendor; for a free download it is just a lost user |
+| **Hardware probe fails to detect memory at all** | Named as a probe failure, distinct from a below-floor reading, with the `standard` fallback stated. Allowed to continue | `M7-PROBE-FE-138`. Conflating this with the below-floor warning would lose both the concrete GB numbers the below-floor case has and the fact that a re-probe on this machine might land anywhere — it is not known to be small, only unmeasured |
+| **Hardware profile overridden in settings to one the machine cannot support** | Permitted, with the consequence stated before the change; if a model then fails to load, the assistant reports that failure clearly and document search keeps working | `M7-PROBE-FE-138`. Never refuses on hardware grounds — the ticket's own Validation Rule. A genuine re-probe still overwrites the override the next time it runs |
 | **Abstention rate rising** | Surfaced with the unanswered questions driving it | That list is what to add next |
 
 ## 7. Empty states, collected

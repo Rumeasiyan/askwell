@@ -22,6 +22,7 @@ from askwell.db.engine import session_scope
 from askwell.hardware import probe as probe_hardware
 from askwell.logging import get_logger
 from askwell.model_download import DownloadProgress, ModelDownloadManager, NoDiskSpace
+from askwell.probe import PROFILE_SETTING_KEY, PROFILES, ProbeResult, sync_probe_result
 from askwell.settings_store import get_setting, set_setting
 
 log = get_logger(__name__)
@@ -53,11 +54,54 @@ def _model_dict(manager: ModelDownloadManager, progress: DownloadProgress) -> di
     return body
 
 
+def _profile_from_probe_result(result: ProbeResult) -> dict[str, object]:
+    """The real host probe (`M7-PROBE-DEPLOY-137`), reshaped into the
+    `HardwareProfile` fields the welcome screen already reads
+    (`M1-LIB-FE-052`) — `tier`/`floor_met`/`expectation` rather than the
+    probe's own `profile`/`below_floor`/`reason`, so `StepMachineCheck`
+    needed no field-name changes, only the two new ones this ticket adds.
+    """
+    accelerator = result.accelerator or {}
+    vram_gb = accelerator.get("vram_gb")
+    return {
+        "tier": result.profile,
+        "ram_gb": round(result.ram_gb, 1) if result.ram_gb is not None else None,
+        "gpu_detected": bool(accelerator.get("present")),
+        "vram_gb": vram_gb if isinstance(vram_gb, (int, float)) else None,
+        "floor_met": not result.below_floor,
+        "expectation": result.reason,
+        "source": "host-probe",
+        "probe_failed": result.detection_failed,
+    }
+
+
+async def _resolve_profile(session: AsyncSession, settings: Settings) -> dict[str, object]:
+    """The profile the welcome screen shows and the model tier it defaults
+    to: the real host probe when it has ever run, else the interim
+    in-container reading, with any settings override (`askwell.probe`'s
+    `POST /probe/override`, `M7-PROBE-FE-138`) applied on top — the same
+    resolution `askwell.probe._current_state` performs for `GET /probe`, so
+    the two surfaces cannot disagree about which profile is actually live.
+    """
+    result = await sync_probe_result(session, settings.probe_result_path)
+    if result is not None:
+        body = _profile_from_probe_result(result)
+    else:
+        body = probe_hardware().as_dict()
+        body["probe_failed"] = False
+
+    override = await get_setting(session, PROFILE_SETTING_KEY)
+    if override is not None and override in PROFILES:
+        body["tier"] = override
+
+    return body
+
+
 async def _setup_state(
-    session: AsyncSession, manager: ModelDownloadManager, tier: str
+    session: AsyncSession, manager: ModelDownloadManager, tier: str, settings: Settings
 ) -> dict[str, object]:
     return {
-        "profile": probe_hardware().as_dict(),
+        "profile": await _resolve_profile(session, settings),
         "model": _model_dict(manager, manager.snapshot(tier)),
         "welcome_skipped": _true(await get_setting(session, _WELCOME_SKIPPED_KEY)),
         "passphrase_offered": _true(await get_setting(session, _PASSPHRASE_OFFERED_KEY)),
@@ -75,9 +119,12 @@ def register_setup(
 
     @app.get("/setup")
     async def setup_state(request: Request) -> JSONResponse:
-        tier = request.query_params.get("tier") or probe_hardware().tier
         async with factory() as db:
-            return JSONResponse(await _setup_state(db, manager, tier))
+            tier = request.query_params.get("tier")
+            if tier is None:
+                resolved = await _resolve_profile(db, settings)
+                tier = str(resolved["tier"])
+            return JSONResponse(await _setup_state(db, manager, tier, settings))
 
     @app.post("/setup/model/start")
     async def start_model(request: Request, body: StartModelRequest) -> JSONResponse:
@@ -103,18 +150,18 @@ def register_setup(
         # whether they went ahead under the floor after being warned. A year
         # later the question is "why is this slow", and the answer may be that
         # they were told and continued.
-        probed = probe_hardware()
         async with session_scope(factory) as db:
+            probed = await _resolve_profile(db, settings)
             await record(
                 db,
                 Store.DECISIONS,
                 PROFILE_SELECTED,
                 {
                     "tier": body.tier,
-                    "probed_tier": probed.tier,
-                    "chosen_by_user": body.tier != probed.tier,
-                    "floor_met": probed.floor_met,
-                    "probe_source": probed.source,
+                    "probed_tier": probed["tier"],
+                    "chosen_by_user": body.tier != probed["tier"],
+                    "floor_met": probed["floor_met"],
+                    "probe_source": probed["source"],
                 },
             )
 

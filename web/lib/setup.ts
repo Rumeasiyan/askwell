@@ -7,12 +7,17 @@
 
 export interface HardwareProfile {
   tier: "light" | "standard" | "accelerated" | "workstation";
-  ram_gb: number;
+  ram_gb: number | null;
   gpu_detected: boolean;
   vram_gb: number | null;
   floor_met: boolean;
   expectation: string;
-  source: "basic-probe" | "fallback";
+  source: "basic-probe" | "fallback" | "host-probe";
+  /** The real probe (`M7-PROBE-DEPLOY-137`) ran but could not measure this
+   * machine's memory at all — distinct from `!floor_met`, which is a
+   * genuine reading under the floor. Always `false` for the interim
+   * in-container reading, which never reports outright failure. */
+  probe_failed: boolean;
 }
 
 export type ModelDownloadStatus =

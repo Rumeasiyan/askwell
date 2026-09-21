@@ -214,10 +214,18 @@ function StepMachineCheck({
         }}
       >
         <p style={{ fontSize: "var(--t-ui)" }}>{profile.expectation}</p>
-        {!profile.floor_met ? (
+        {profile.probe_failed ? (
+          <p className="ask-micro" style={{ color: "var(--inferred)" }}>
+            Askwell&apos;s hardware probe could not measure this machine, so it is running on the
+            standard profile as a fallback. Nothing is refused — you can change the profile in
+            Settings once Askwell is running.
+          </p>
+        ) : !profile.floor_met ? (
           <p className="ask-micro" style={{ color: "var(--inferred)" }}>
             This is below what Askwell is built for. It will still run — nothing is refused —
-            but expect it to be slow.
+            but expect it to be slow. If the assistant cannot load at all on this machine,
+            document indexing and search will still work; you can change the profile in Settings
+            any time.
           </p>
         ) : null}
         {profile.source === "fallback" ? (
