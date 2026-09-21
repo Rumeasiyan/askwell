@@ -73,7 +73,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from askwell import connections, dump_import, ingest, roots, schema_introspect
+from askwell import connections, crypto, dump_import, ingest, roots, schema_introspect
 from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
@@ -1330,6 +1330,13 @@ def register_sources(
                     await enforce_ingestion_allowed(db, settings)
         except IngestionRefused as refusal:
             return JSONResponse({"error": str(refusal)}, status_code=507)
+        except crypto.CredentialsLocked:
+            # A passphrase is set and this process has not been unlocked —
+            # nothing can be encrypted for storage, let alone decrypted.
+            return JSONResponse(
+                {"error": "Askwell is locked. Unlock with your passphrase first."},
+                status_code=401,
+            )
 
         if not outcome.ok or outcome.source_id is None:
             # 400, not 422: every field passed Pydantic's own shape check —

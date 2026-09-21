@@ -86,7 +86,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from askwell import audit, crypto
+from askwell import audit, crypto, passphrase
 from askwell.audit import Store
 from askwell.logging import get_logger
 
@@ -724,8 +724,8 @@ async def create_connection_source(
             "password": password,
         }
     ).encode("utf-8")
-    install_secret = crypto.load_or_create_install_secret(settings.install_secret_path)
-    config_encrypted = crypto.encrypt(config, crypto.derive_key(install_secret))
+    key = await passphrase.current_key(session, settings)
+    config_encrypted = crypto.encrypt(config, key)
     name = f"{database} on {host}"
 
     result = await session.execute(
@@ -827,10 +827,9 @@ async def _load_connection_config(
     if row is None or row[0] is None:
         raise ValueError(f"No connection configuration for source {source_id}.")
 
-    install_secret = crypto.load_or_create_install_secret(settings.install_secret_path)
-    config: dict[str, Any] = json.loads(
-        crypto.decrypt(bytes(row[0]), crypto.derive_key(install_secret)).decode("utf-8")
-    )
+    async with session_scope(factory) as session:
+        key = await passphrase.current_key(session, settings)
+    config: dict[str, Any] = json.loads(crypto.decrypt(bytes(row[0]), key).decode("utf-8"))
     return config
 
 

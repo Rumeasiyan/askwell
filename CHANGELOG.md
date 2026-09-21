@@ -4,6 +4,21 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.6.4 - 2026-09-21
+
+`M7-SEC-BE-151` — the optional passphrase: set, change, remove and unlock (`docs/ux/settings.md`
+§4 and §8). Off by default. Setting one requires acknowledging there is no recovery path, has
+never had one, and never will; `askwell.passphrase` folds it into the key derivation
+`M4-CONN-SEC-098` already built (`crypto.derive_key(install_secret, passphrase)`), re-encrypting
+every stored connection credential in the same transaction so nobody re-enters a single
+credential just because a passphrase was added. A wrong passphrase refuses with the same message
+regardless of how close it was. Unlock state lives in memory only, for this process alone —
+restarting the API locks it again, which is the point, at the cost of the worker process never
+being able to unlock at all; filed as its own gap rather than patched (`docs/decisions.md`, this
+date). New `GET`/`POST /settings/passphrase*` routes; `askwell.connections` and `askwell.ask`'s
+existing decrypt call sites now go through `passphrase.current_key` and raise `Locked` (a
+`crypto.CredentialsLocked` subclass) instead of silently decrypting with the wrong key.
+
 ## 0.6.3 - 2026-09-21
 
 `M7-SET-FE-148` — settings gains a storage section (`docs/ux/settings.md` §5,

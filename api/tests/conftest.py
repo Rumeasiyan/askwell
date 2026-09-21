@@ -42,6 +42,19 @@ def _no_ambient_askwell_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     yield
 
 
+@pytest.fixture(autouse=True)
+def _reset_passphrase_lock() -> Iterator[None]:
+    """`askwell.passphrase`'s unlock state is process-wide by design (one
+    real process, one machine) — reset it between tests so one test's unlock
+    is not another test's ambient state.
+    """
+    from askwell import passphrase
+
+    passphrase._reset_lock_state_for_tests()
+    yield
+    passphrase._reset_lock_state_for_tests()
+
+
 @pytest.fixture
 def settings() -> Settings:
     """Valid configuration pointing at addresses that refuse connections.
