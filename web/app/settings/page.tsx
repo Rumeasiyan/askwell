@@ -2,9 +2,10 @@ import { Connections } from "@/components/settings/connections";
 import { Folders } from "@/components/settings/folders";
 import { HardwareProfile } from "@/components/settings/hardware-profile";
 import { RetrievalThresholdControl } from "@/components/settings/retrieval-threshold";
+import { Storage } from "@/components/settings/storage";
 
 /**
- * Settings — four real sections so far.
+ * Settings — five real sections so far.
  *
  * The folders Askwell may read arrive here in M1 because that is where the
  * cold-start walkthrough looks for them: nominate a folder while adding a
@@ -17,10 +18,15 @@ import { RetrievalThresholdControl } from "@/components/settings/retrieval-thres
  * (`web/components/settings/retrieval-threshold.tsx`, shared by both). The
  * hardware profile override arrives with `M7-PROBE-FE-138` — the welcome
  * screen's warn-and-continue's other half, so a profile chosen (or fallen
- * back to) at install can be changed afterwards. The rest of the screen is
- * still its empty state, because `docs/states-and-edge-cases.md` requires
- * every surface to have one and a route stub with nothing in it teaches the
- * next person that empty states are optional.
+ * back to) at install can be changed afterwards. Storage arrives with
+ * `M7-SET-FE-148` (`web/components/settings/storage.tsx`) — per-source
+ * index size, the log budget and its current use, the retention window, and
+ * the at-the-limit statement; export and prune is a stated, disabled entry
+ * point because its backend (`M7-LOG-BE-155`) does not exist yet. The rest
+ * of the screen is still its empty state, because
+ * `docs/states-and-edge-cases.md` requires every surface to have one and a
+ * route stub with nothing in it teaches the next person that empty states
+ * are optional.
  */
 export default function SettingsPage() {
   return (
@@ -64,6 +70,8 @@ export default function SettingsPage() {
         </h2>
         <RetrievalThresholdControl />
       </section>
+
+      <Storage />
     </div>
   );
 }

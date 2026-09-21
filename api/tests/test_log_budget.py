@@ -17,13 +17,17 @@ from askwell import session as sessions
 from askwell.app import create_app
 from askwell.config import Settings
 from askwell.log_budget import (
+    DEFAULT_RETENTION_MONTHS,
     IngestionRefused,
     InvalidBudget,
+    InvalidRetention,
     Stage,
     enforce_ingestion_allowed,
     get_configured_budget,
+    get_retention_months,
     measure,
     set_budget,
+    set_retention_months,
     stage_for,
 )
 
@@ -61,14 +65,17 @@ def async_url(database_url: str) -> str:
 async def session(async_url: str) -> AsyncIterator[AsyncSession]:
     engine = create_async_engine(async_url)
     factory = async_sessionmaker(engine, expire_on_commit=False)
+    settings_cleanup = (
+        "DELETE FROM settings WHERE key LIKE 'log_budget%' OR key = 'interaction_retention_months'"
+    )
     async with factory() as opened:
         await opened.execute(text("TRUNCATE audit_decisions, audit_interactions"))
-        await opened.execute(text("DELETE FROM settings WHERE key LIKE 'log_budget%'"))
+        await opened.execute(text(settings_cleanup))
         await opened.commit()
         yield opened
         await opened.rollback()
         await opened.execute(text("TRUNCATE audit_decisions, audit_interactions"))
-        await opened.execute(text("DELETE FROM settings WHERE key LIKE 'log_budget%'"))
+        await opened.execute(text(settings_cleanup))
         await opened.commit()
     await engine.dispose()
 
@@ -114,6 +121,53 @@ async def test_changing_the_budget_writes_a_decision_record(
 async def test_a_non_positive_budget_is_refused(session: AsyncSession) -> None:
     with pytest.raises(InvalidBudget):
         await set_budget(session, 0)
+
+
+@pytestmark_db
+async def test_measurement_carries_the_configured_cap_separately_from_the_effective_one(
+    session: AsyncSession, settings: Settings, tmp_path: Path
+) -> None:
+    """Issue #484: a caller must be able to tell "you set this" from "free
+    disk is overriding what you set" without re-deriving `min()` itself."""
+    huge = 10 * 1024**4  # far larger than 5% of any real free disk
+    await set_budget(session, huge)
+    await session.commit()
+
+    usage = await measure(session, settings)
+
+    assert usage.configured_bytes == huge
+    assert usage.budget_bytes < usage.configured_bytes
+
+
+@pytestmark_db
+async def test_the_default_retention_is_twelve_months(
+    session: AsyncSession, settings: Settings
+) -> None:
+    assert await get_retention_months(session) == DEFAULT_RETENTION_MONTHS == 12
+
+
+@pytestmark_db
+async def test_changing_the_retention_window_writes_a_decision_record(
+    session: AsyncSession, settings: Settings
+) -> None:
+    await set_retention_months(session, 6)
+    await session.commit()
+
+    assert await get_retention_months(session) == 6
+    row = (
+        await session.execute(
+            text("SELECT payload FROM audit_decisions WHERE kind = 'interaction_retention_changed'")
+        )
+    ).first()
+    assert row is not None
+    assert row[0]["previous_months"] == "12"
+    assert row[0]["new_months"] == "6"
+
+
+@pytestmark_db
+async def test_a_non_positive_retention_window_is_refused(session: AsyncSession) -> None:
+    with pytest.raises(InvalidRetention):
+        await set_retention_months(session, 0)
 
 
 @pytestmark_db
