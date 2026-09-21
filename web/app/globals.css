@@ -325,8 +325,9 @@
     min-width: 0;
   }
 
-  /* Mic control (`M1-ASK-FE-039a`): disabled, not hidden. `--muted` reads as
-     "not yet" rather than "broken" — no strikethrough, no red. */
+  /* Mic control (`M1-ASK-FE-039a`, real capture since `M6-VUI-FE-128a`):
+     `--muted` at rest, `--ink` while actually listening — never a state the
+     control cannot back with a real socket and a real stream. */
   .ask-mic-wrap {
     position: relative;
     display: inline-flex;
@@ -342,6 +343,18 @@
     border-radius: var(--radius);
     color: var(--muted);
     background: transparent;
+    cursor: pointer;
+    touch-action: none;
+  }
+
+  .ask-mic-control[data-voice-state="listening"] {
+    color: var(--ink);
+    border-color: var(--ink);
+  }
+
+  .ask-mic-control[data-voice-state="transcribing"],
+  .ask-mic-control[data-voice-state="answering"] {
+    color: var(--muted);
     cursor: not-allowed;
   }
 
@@ -363,7 +376,8 @@
   }
 
   .ask-mic-wrap:hover .ask-mic-reason,
-  .ask-mic-control:focus-visible ~ .ask-mic-reason {
+  .ask-mic-control:focus-visible ~ .ask-mic-reason,
+  .ask-mic-control:not([data-voice-state="idle"]) ~ .ask-mic-reason {
     opacity: 1;
   }
 

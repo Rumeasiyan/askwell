@@ -4,6 +4,22 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.5.7 - 2026-09-21
+
+`M6-VUI-FE-128a` — mic capture, the voice socket client, and the composer's base voice states. Replaces the Phase 1 stub: `MicControl` now opens a real `WebSocket` against `askwell.voice_channel`'s `/voice/ws`, captures the microphone with `getUserMedia`, and drives idle/listening/transcribing/answering — the composer states every dependent voice ticket reads and extends. Push-to-talk: holding the button streams 16 kHz mono PCM16 audio, releasing it stops the stream and closes the turn, so "transcribing" is a real local fact rather than a guess ahead of the backend's own pause detection (`M6-STT-BE-128`). Permission denied, no input device, and a connection dropping mid-turn all surface as stated idle reasons, never a stuck `listening`; a second press while transcribing or answering is ignored, not a second socket. Full detail, including what is deliberately deferred and why, in `docs/BRAIN.md`.
+
+**Verified**: `scripts/dev.sh web-check` clean (324 tests, 25 new; typecheck; lint; build; `check-tokens`; `contrast`; `check-offline`). No live browser/microphone walkthrough in this environment — see `docs/BRAIN.md` for what was verified instead.
+
+### Added
+
+- `web/lib/voice.ts` — `nextVoiceStatus`, `parseVoiceEvent`, `voiceSocketUrl`, `downsampleTo16k`, `floatTo16BitPCM`, `encodeAudioFrame`, `pcm16ToFloat32`.
+- `web/components/ask/voice-control.tsx` — the real `MicControl`, replacing the disabled stub in `ask-screen.tsx`.
+
+### Changed
+
+- `web/components/ask/ask-screen.tsx` — `MicControl`/`MicIcon` moved to `voice-control.tsx`; the composer's mic button is no longer permanently disabled.
+- `web/app/globals.css` — `.ask-mic-control` gained `data-voice-state` styling for listening/transcribing/answering.
+
 ## 0.5.6 - 2026-09-20
 
 `M6-TTS-BE-131` — fall back to text when synthesis is unavailable. `askwell.voice_tts._speak_answer` used to let a `/synthesize` failure propagate out of its poll loop, which `askwell.voice_channel._run_driver`'s own broad exception handler then turned into the whole voice turn failing — an answer that had already generated correctly was thrown away over an unrelated model not being loaded. A synthesis failure (`SynthesisUnavailable`/`SynthesisFailed`) is now caught per sentence: the turn's `synthesis_available` flips off, a new `voice` WebSocket event (`{"available": false, "reason": ...}`) tells the screen to show the note `docs/ux/voice.md` §5 asks for, and no further sentence is sent to `/synthesize` for the rest of that turn — deliberately no in-turn retry, since a model that failed to load will not load again a few hundred milliseconds later. Generation and the on-screen text are untouched: token and citation events keep draining exactly as before, so the answer completes normally as text. Availability is tracked across turns via a mapping `build_tts_driver` closes over once and threads through every call — a turn's first failure logs `voice_synthesis_unavailable`, and the next turn's first successful `/synthesize` call logs `voice_synthesis_recovered`, satisfying both the ticket's "availability transitions are logged" requirement and its C1 local-counter analytics line with the same two log lines. Recovery needs no reload: each turn's first synthesis attempt is independent of the turn before it, so a later turn simply succeeds once the service is back.

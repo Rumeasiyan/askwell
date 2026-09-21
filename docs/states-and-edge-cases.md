@@ -134,6 +134,8 @@ Highest-risk surface. The customer's production database is on the other side.
 | State | What the user sees / hears | Notes |
 | ----- | -------------------------- | ----- |
 | **Microphone permission denied** | Voice mode disabled with an explanation and a path to re-enable in the browser | Browser permission, not something Askwell can fix |
+| **No input device** | Mic control states there is no microphone, rather than being silently unresponsive | `M6-VUI-FE-128a`. Distinct from permission denial: nothing to grant, nothing the browser's site settings can fix |
+| **A second press while transcribing or answering** | Ignored | `M6-VUI-FE-128a`. Not a second socket — the control only knows how to leave idle |
 | **No speech detected** | Silent timeout back to idle. No error sound | Silero VAD (`build-plan.md` Phase 5) |
 | **STT confidence low** | Show the transcription and ask for confirmation before answering | Answering the wrong question confidently is worse than one extra tap |
 | **TTS unavailable** | Answer is delivered as text with a note that the voice is unavailable | Voice is a mode, not a separate product (`build-plan.md` Phase 5) — falling back to text is correct |
