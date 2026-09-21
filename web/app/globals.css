@@ -424,6 +424,31 @@
     transform: scaleX(0);
   }
 
+  /* Low-confidence confirmation (`voice.md` §5, `M6-STT-FE-129`): unlike
+     `.ask-mic-reason` (a hover tooltip) this is a real step the user must
+     read and act on, so it stays visible unconditionally rather than
+     appearing only on hover or focus. */
+  .ask-mic-confirm {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    width: 260px;
+    padding: 8px;
+    background: var(--paper);
+    border: 1px solid var(--rule-strong);
+    border-radius: var(--radius);
+    z-index: 1;
+  }
+
+  .ask-mic-confirm-text {
+    width: 100%;
+    font-family: inherit;
+    font-size: var(--t-ui);
+    color: var(--ink);
+    background: transparent;
+    resize: vertical;
+  }
+
   .ask-sr-only {
     position: absolute;
     width: 1px;

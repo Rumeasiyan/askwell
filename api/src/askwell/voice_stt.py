@@ -33,12 +33,24 @@ Three outcomes, and only two of them touch the database at all:
   written, with empty content — the turn happened and belongs in the log,
   even though nothing intelligible was captured. The exact English-only
   copy shown on screen is `M6-VUI-FE-135`'s job, not this module's.
-- **`ok`** — the transcript and its confidence are emitted over the channel
-  and stored, both in `messages.content` and in the audit payload.
+- **`ok`** — the transcript and its confidence are emitted over the channel.
+  Below `Settings.stt_confirmation_confidence_threshold` (`M6-STT-FE-129`),
+  the turn is held: `VoiceTurn.request_confirmation` emits a `confirmation`
+  event and `driver` awaits the future it returns, released by a `confirm`
+  or `edit` control message over `askwell.voice_channel`, or by
+  `Settings.stt_confirmation_timeout_seconds` running out if the client
+  never answers — a turn a user has genuinely walked away from ends
+  unanswered here, with nothing stored (`AGENTS.md` §3 C6: "the confirmed
+  or edited transcript is what is recorded", so one that was never
+  confirmed is exactly the case that stores nothing). Above the threshold,
+  or once released, the resulting text — the transcript as heard, or the
+  client's edit — is what is stored, both in `messages.content` and in the
+  audit payload, and what `on_transcript` is called with.
 """
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -241,16 +253,41 @@ def build_stt_driver(
         turn.emit_transcript(transcript)
         if confidence is not None:
             turn.emit_confidence(confidence)
+
+        final_transcript = transcript
+        if confidence is not None and confidence < settings.stt_confirmation_confidence_threshold:
+            turn.mark("confirmation_requested")
+            confirmation = turn.request_confirmation()
+            try:
+                final_transcript = await asyncio.wait_for(
+                    confirmation, timeout=settings.stt_confirmation_timeout_seconds
+                )
+            except TimeoutError:
+                # Walked away (`docs/ux/voice.md` §5, this ticket's own edge
+                # case): nothing was confirmed, so nothing is stored (`C6`)
+                # and nothing is answered — the turn simply ends, the same
+                # shape as `no_speech` above. `confirmation_pending` is
+                # cleared here too — a stale `True` would make a later
+                # reattach (`register_voice_channel`'s resend block) claim a
+                # confirmation is still wanted for a turn that already gave
+                # up on one.
+                log.info("voice_confirmation_timed_out", turn_id=str(turn.turn_id))
+                turn.confirmation_pending = False
+                turn.status = "completed"
+                await turn.audio_out.put(None)
+                return
+            turn.mark("confirmation_resolved")
+
         try:
             await _store_turn(
                 factory,
                 turn=turn,
-                content=transcript,
+                content=final_transcript,
                 audit_payload={
                     "status": "ok",
                     "language": result.get("language"),
                     "confidence_pct": _confidence_pct(confidence),
-                    "transcript_length": len(transcript),
+                    "transcript_length": len(final_transcript),
                 },
             )
         except AuditError:
@@ -260,7 +297,7 @@ def build_stt_driver(
             return
 
         if on_transcript is not None:
-            await on_transcript(turn, transcript)
+            await on_transcript(turn, final_transcript)
             return
 
         turn.status = "completed"

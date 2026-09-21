@@ -14,6 +14,7 @@ import {
   encodeAudioFrame,
   floatTo16BitPCM,
   formatElapsed,
+  getVoiceConfirmationCount,
   getVoiceLatencyBudgetMissCount,
   micAppearsSilent,
   micPermissionReason,
@@ -25,7 +26,9 @@ import {
   nextVoiceStatus,
   parseVoiceEvent,
   pcm16ToFloat32,
+  recordVoiceConfirmation,
   recordVoiceLatencyBudgetMiss,
+  resetVoiceConfirmationCountForTests,
   resetVoiceLatencyBudgetMissCountForTests,
   rmsLevel,
   voiceLatencyBudgetMs,
@@ -156,6 +159,33 @@ test("a transcript delta alone does not advance past transcribing", () => {
     event: { type: "transcript", text: "hello" },
   });
   assert.equal(result, transcribing);
+});
+
+test("a confirmation-required event moves transcribing to confirming", () => {
+  const transcribing = { state: "transcribing" as const, reason: null };
+  const result = nextVoiceStatus(transcribing, {
+    kind: "channel_event",
+    event: { type: "confirmation", required: true },
+  });
+  assert.deepEqual(result, { state: "confirming", reason: null });
+});
+
+test("the first text delta moves confirming to answering, same as transcribing", () => {
+  const confirming = { state: "confirming" as const, reason: null };
+  const result = nextVoiceStatus(confirming, {
+    kind: "channel_event",
+    event: { type: "text", text: "The " },
+  });
+  assert.deepEqual(result, { state: "answering", reason: null });
+});
+
+test("status completed while confirming (the walked-away timeout) returns to idle", () => {
+  const confirming = { state: "confirming" as const, reason: null };
+  const result = nextVoiceStatus(confirming, {
+    kind: "channel_event",
+    event: { type: "status", status: "completed" },
+  });
+  assert.deepEqual(result, VOICE_IDLE);
 });
 
 test("status completed returns to idle with no reason", () => {
@@ -308,6 +338,16 @@ test("recordVoiceLatencyBudgetMiss tallies locally only", () => {
   recordVoiceLatencyBudgetMiss();
   assert.equal(getVoiceLatencyBudgetMissCount(), 2);
   resetVoiceLatencyBudgetMissCountForTests();
+});
+
+// --- voice confirmation counter (`M6-STT-FE-129`) ------------------------------
+
+test("recordVoiceConfirmation tallies locally only", () => {
+  resetVoiceConfirmationCountForTests();
+  assert.equal(getVoiceConfirmationCount(), 0);
+  recordVoiceConfirmation();
+  assert.equal(getVoiceConfirmationCount(), 1);
+  resetVoiceConfirmationCountForTests();
 });
 
 // --- PCM conversion -----------------------------------------------------------

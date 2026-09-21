@@ -176,6 +176,26 @@ class Settings(BaseSettings):
     # (`docs/decisions.md`, this date).
     voice_vad_pause_ms: int = Field(default=700, ge=100, le=5000)
 
+    # Below this, `askwell.voice_stt` holds a transcribed turn for
+    # confirmation rather than answering it directly (`M6-STT-FE-129`,
+    # `docs/ux/voice.md` §5 "Low confidence") — the client shows the
+    # transcript and waits for `confirm` or `edit` before generation starts.
+    # A confident transcript (the common case, by the ticket's own
+    # assumption) is untouched: no gate, no added latency. 0.6 is a reasoned
+    # starting point, not a measured one — no transcribed-speech corpus
+    # exists in this environment to tune it against yet, same caveat
+    # `voice_vad_pause_ms` above already carries.
+    stt_confirmation_confidence_threshold: float = Field(default=0.6, ge=0, le=1)
+
+    # How long a held, low-confidence turn waits for `confirm`/`edit` before
+    # giving up on its own (the ticket's own "user ignores the confirmation
+    # and walks away" edge case) — the turn ends unanswered, and nothing is
+    # recorded for it (`AGENTS.md` §3 C6: "the confirmed or edited transcript
+    # is what is recorded" — an unconfirmed one is exactly the case that
+    # never becomes one). Generous because a real confirmation includes
+    # reading, and sometimes retyping, the transcript, not just a reflex tap.
+    stt_confirmation_timeout_seconds: float = Field(default=120.0, ge=1, le=600)
+
     # A separate Postgres instance, not a second database in the first one:
     # C3's whole guarantee is that a hostile dump destroys only its own
     # database, which a shared instance cannot promise regardless of how its
