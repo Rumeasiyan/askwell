@@ -27,6 +27,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Identity,
     Index,
@@ -691,6 +692,52 @@ class ExportJob(Base):
     interactions_done: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=text("0")
     )
+
+    file_path: Mapped[str | None] = mapped_column(Text)
+    file_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    error: Mapped[str | None] = mapped_column(Text)
+
+    created_at_: Mapped[datetime] = mapped_column(
+        "created_at", DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class BackupJob(Base):
+    """One backup: every table except the vector index, the trace ring
+    buffer and model weights, streamed to disk, manifested, zipped.
+    `M7-BACKUP-BE-157`.
+
+    Same reasoning as `ExportJob`: `arq` dispatches, this table records, and
+    `askwell.backup.resume` returns a job a dead worker was holding back to
+    `queued` rather than losing it. One counter pair for tables and one for
+    rows, not one pair per table the way `ExportJob` has one pair per store —
+    a backup covers roughly fifteen tables, and a per-table breakdown belongs
+    in the manifest the artefact itself carries.
+    """
+
+    __tablename__ = "backup_jobs"
+    __table_args__ = (
+        _one_of("status", ("queued", "running", "done", "failed"), "status"),
+        Index(
+            "ix_backup_jobs_pending",
+            "created_at",
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default=text("'queued'"))
+
+    tables_total: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    tables_done: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    rows_total: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    rows_done: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+
+    chunk_count: Mapped[int | None] = mapped_column(BigInteger)
+    estimated_reembed_seconds: Mapped[float | None] = mapped_column(Float)
+    passphrase_protected: Mapped[bool | None] = mapped_column(Boolean)
 
     file_path: Mapped[str | None] = mapped_column(Text)
     file_bytes: Mapped[int | None] = mapped_column(BigInteger)

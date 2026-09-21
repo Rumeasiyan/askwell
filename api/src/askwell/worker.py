@@ -197,6 +197,18 @@ async def export_job(ctx: dict[str, Any], job_id: str) -> None:
     await log_export.run_job(ctx["sessions"], ctx["settings"], uuid.UUID(job_id))
 
 
+async def backup_job(ctx: dict[str, Any], job_id: str) -> None:
+    """Produce one backup. `M7-BACKUP-BE-157`.
+
+    Thin, the same reason `export_job` is: everything about what backing up
+    *is* lives in `askwell.backup`, so it can be tested without a Redis, a
+    worker process and a job serialiser in the way.
+    """
+    from askwell import backup
+
+    await backup.run_job(ctx["sessions"], ctx["settings"], uuid.UUID(job_id))
+
+
 async def reconcile_queue(ctx: dict[str, Any]) -> int:
     """Re-dispatch queued work Redis has forgotten about.
 
@@ -261,7 +273,7 @@ async def check_connections_health(ctx: dict[str, Any]) -> int:
 
 
 async def startup(ctx: dict[str, Any]) -> None:
-    from askwell import embed, ingest, log_export, reapply, sandbox
+    from askwell import backup, embed, ingest, log_export, reapply, sandbox
 
     settings: Settings = ctx["settings"]
     engine = build_engine(settings)
@@ -285,6 +297,7 @@ async def startup(ctx: dict[str, Any]) -> None:
             resumed = await ingest.resume(session)
             resumed_reapply = await reapply.resume(session)
             resumed_export = await log_export.resume(session)
+            resumed_backup = await backup.resume(session)
         waiting = await ingest.reconcile(ctx["sessions"], settings)
         reclaimed = await _reclaim_sandbox_orphans(ctx["sessions"], settings)
     except embed.EmbeddingDimensionMismatch:
@@ -324,6 +337,7 @@ async def startup(ctx: dict[str, Any]) -> None:
 
     reapply_dispatched = await reapply.dispatch(settings, resumed_reapply)
     export_dispatched = await log_export.dispatch(settings, resumed_export)
+    backup_dispatched = await backup.dispatch(settings, resumed_backup)
 
     log.info(
         "worker_resumed",
@@ -333,6 +347,8 @@ async def startup(ctx: dict[str, Any]) -> None:
         reapply_dispatched=reapply_dispatched,
         export_interrupted=len(resumed_export),
         export_dispatched=export_dispatched,
+        backup_interrupted=len(resumed_backup),
+        backup_dispatched=backup_dispatched,
         sandbox_orphans_reclaimed=len(reclaimed),
     )
 
@@ -385,6 +401,7 @@ class WorkerSettings:
         ingest_document,
         reapply_job,
         export_job,
+        backup_job,
         import_dump_job,
         import_table_job,
         introspect_connection_job,

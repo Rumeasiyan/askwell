@@ -4,6 +4,25 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.6.8 - 2026-09-22
+
+`M7-BACKUP-BE-157` — backup as a background job, excluding what can be regenerated
+(`docs/build-plan.md`, `docs/ux/settings.md` §6). `GET /backup/estimate` states the chunk
+count, an estimated re-embed time, an estimated artefact size and whether the corpus is
+passphrase-protected before anyone commits to a backup; `POST /backup` enqueues a
+`backup_jobs` row (refusing with `409` if a content-encryption migration is in progress, or
+with `409` and the bytes needed/free if there is not enough disk space) and dispatches it to
+the worker; `GET /backup/{id}` reports table/row progress and restates the re-embed cost;
+`GET /backup/{id}/download` streams the finished `.zip`. `askwell.backup.run_job` reads
+every included table inside one `REPEATABLE READ` transaction — a snapshot fixed at that
+transaction's first statement, which is a check that no content-encryption migration is
+running, so the whole run is either entirely before or entirely after any migration rather
+than caught mid-flight. `chunks.embedding` and `schema_notes.embedding` (the vector index)
+are excluded column-by-column; the trace ring buffer and model weights are excluded by
+construction, since this module never queries or copies either. The manifest states plainly
+that the user's own files were never copied. New `backup_jobs` table (migration
+`c4a1f8d02e77`) and `BackupJob` ORM model; `ASKWELL_BACKUP_DIR` in `.env.example`.
+
 ## 0.6.7 - 2026-09-21
 
 `M7-LOG-BE-155` — log export as a background job, with the chain and a standalone verifier

@@ -338,6 +338,11 @@ class Settings(BaseSettings):
     # files: the worker writes the export, the API's download route reads it.
     export_dir: Path = Path("/var/lib/askwell/exports")
 
+    # Where a backup is assembled and served from (`M7-BACKUP-BE-157`). Same
+    # `askwell-state` volume as `trace_dir`/`export_dir` — the worker writes
+    # the artefact, the API's download route reads it.
+    backup_dir: Path = Path("/var/lib/askwell/backups")
+
     # Where the built frontend lives. The default is the path inside the API
     # image; a source checkout points it at web/out.
     web_assets_dir: Path = Path("/app/web/out")
@@ -449,6 +454,7 @@ class Settings(BaseSettings):
         "inference_socket",
         "trace_dir",
         "export_dir",
+        "backup_dir",
         "install_secret_path",
         "probe_result_path",
         "voice_whisper_model_path",
