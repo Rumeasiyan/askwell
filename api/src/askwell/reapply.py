@@ -64,6 +64,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from askwell import crypto, passphrase
 from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
@@ -389,14 +390,20 @@ async def _reembed_chunk(session: AsyncSession, settings: Settings, chunk_id: uu
     from askwell.inference.client import InferenceClient
 
     row = (
-        await session.execute(text("SELECT content FROM chunks WHERE id = :id"), {"id": chunk_id})
+        await session.execute(
+            text("SELECT content, content_encrypted FROM chunks WHERE id = :id"), {"id": chunk_id}
+        )
     ).first()
     if row is None or not row[0]:
         # The chunk is gone (document deleted or superseded since this item
         # was queued) or was already cleared — nothing to re-embed.
         return
+    content, content_encrypted = row[0], row[1]
+    if content_encrypted:
+        key = await passphrase.current_key(session, settings)
+        content = crypto.decrypt(content.encode("ascii"), key).decode("utf-8")
     client = InferenceClient(settings)
-    vectors = await client.embed([row[0]])
+    vectors = await client.embed([content])
     await session.execute(
         text("UPDATE chunks SET embedding = :embedding WHERE id = :id"),
         {"embedding": str(vectors[0]), "id": chunk_id},

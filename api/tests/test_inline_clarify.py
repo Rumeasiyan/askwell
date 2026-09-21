@@ -17,12 +17,19 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from askwell.clarify import raise_candidates
+from askwell.config import Settings
 from askwell.inline_clarify import default_assumption, find_blocking
 from askwell.retrieve import Candidate
 
 pytestmark = pytest.mark.requires_db
 
 _THRESHOLD = 0.60
+_SETTINGS = Settings(
+    database_url="postgresql://askwell:pw@127.0.0.1:1/askwell",  # type: ignore[arg-type]
+    sandbox_database_url="postgresql://x:x@127.0.0.1:1/postgres",  # type: ignore[arg-type]
+    sandbox_owner_password="pw",  # type: ignore[arg-type]
+    sandbox_readonly_password="pw",  # type: ignore[arg-type]
+)
 _TABLES = "sources, documents, document_pages, chunks, memory, schema_notes, clarifications"
 
 
@@ -132,7 +139,7 @@ async def test_a_contradiction_relevant_to_the_question_blocks(session: AsyncSes
     )
     await _page(session, handbook, 3, "The notice period is 30 days for all staff.")
     await _page(session, policy, 7, "The notice period is 45 days for all staff.")
-    await raise_candidates(session, source_id, _THRESHOLD)
+    await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     blocking, deferred = await find_blocking(
         session, "How much notice must I give?", [_candidate("handbook-2024.pdf")]
@@ -154,7 +161,7 @@ async def test_subject_named_in_the_question_also_matches(session: AsyncSession)
     )
     await _page(session, handbook, 3, "The notice period is 30 days for all staff.")
     await _page(session, policy, 7, "The notice period is 45 days for all staff.")
-    await raise_candidates(session, source_id, _THRESHOLD)
+    await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     # No overlap with retrieved candidates at all, but the question names the
     # subject directly — either signal is enough (this module's own docstring).
@@ -179,7 +186,7 @@ async def test_document_identity_relevant_to_retrieved_documents_blocks(
     )
     await _page(session, old, 1, "Old terms apply here.")
     await _page(session, new, 1, "New terms apply here, superseding the old.")
-    await raise_candidates(session, source_id, _THRESHOLD)
+    await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     blocking, _deferred = await find_blocking(
         session, "What do the contract terms say?", [_candidate("contract-v2-FINAL.pdf")]
@@ -201,7 +208,7 @@ async def test_an_unrelated_pending_contradiction_does_not_block(session: AsyncS
     )
     await _page(session, handbook, 3, "The notice period is 30 days for all staff.")
     await _page(session, policy, 7, "The notice period is 45 days for all staff.")
-    await raise_candidates(session, source_id, _THRESHOLD)
+    await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     blocking, deferred = await find_blocking(
         session, "What is the office address?", [_candidate("other.pdf")]
@@ -219,7 +226,7 @@ async def test_a_non_blocking_trigger_never_interrupts(session: AsyncSession) ->
     confident answer."""
     source_id = await _source(session)
     await _abbreviation(session, source_id)
-    await raise_candidates(session, source_id, _THRESHOLD)
+    await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
     assert (await session.execute(text("SELECT 1 FROM clarifications"))).first() is not None
 
     blocking, _deferred = await find_blocking(
@@ -242,7 +249,7 @@ async def test_an_answered_clarification_never_blocks_a_later_turn(session: Asyn
     )
     await _page(session, handbook, 3, "The notice period is 30 days for all staff.")
     await _page(session, policy, 7, "The notice period is 45 days for all staff.")
-    await raise_candidates(session, source_id, _THRESHOLD)
+    await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
     await session.execute(
         text("UPDATE clarifications SET status = 'answered', answer = 'handbook-2024.pdf'")
     )
@@ -276,7 +283,7 @@ async def test_two_blocking_ambiguities_defer_the_second(session: AsyncSession) 
     )
     await _page(session, old, 1, "Old terms apply here.")
     await _page(session, new, 1, "New terms apply here, superseding the old.")
-    await raise_candidates(session, source_id, _THRESHOLD)
+    await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     blocking, deferred = await find_blocking(
         session,
@@ -307,7 +314,7 @@ async def test_default_assumption_for_a_contradiction_names_the_newer_passage(
     )
     await _page(session, handbook, 3, "The notice period is 30 days for all staff.")
     await _page(session, policy, 7, "The notice period is 45 days for all staff.")
-    await raise_candidates(session, source_id, _THRESHOLD)
+    await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     blocking, _deferred = await find_blocking(
         session, "How much notice must I give?", [_candidate("handbook-2024.pdf")]
@@ -331,7 +338,7 @@ async def test_default_assumption_for_document_identity_names_the_newest_file(
     )
     await _page(session, old, 1, "Old terms apply here.")
     await _page(session, new, 1, "New terms apply here, superseding the old.")
-    await raise_candidates(session, source_id, _THRESHOLD)
+    await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     blocking, _deferred = await find_blocking(
         session, "What do the contract terms say?", [_candidate("contract-v2-FINAL.pdf")]

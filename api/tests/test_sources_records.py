@@ -27,6 +27,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from askwell.config import Settings
 from askwell.sources import (
     DOCUMENT_ADDED,
     DOCUMENT_DELETED,
@@ -45,6 +46,12 @@ pytestmark = pytest.mark.requires_db
 TABLES = "roots, sources, documents, chunks, ingest_jobs, schema_notes, memory, audit_decisions"
 
 OCR_THRESHOLD = 0.60
+_SETTINGS = Settings(
+    database_url="postgresql://askwell:pw@127.0.0.1:1/askwell",  # type: ignore[arg-type]
+    sandbox_database_url="postgresql://x:x@127.0.0.1:1/postgres",  # type: ignore[arg-type]
+    sandbox_owner_password="pw",  # type: ignore[arg-type]
+    sandbox_readonly_password="pw",  # type: ignore[arg-type]
+)
 
 PDF = b"%PDF-1.7\nEither party may terminate on ninety days written notice.\n"
 OTHER = b"%PDF-1.7\nThe tenant shall pay rent monthly in advance.\n"
@@ -526,7 +533,9 @@ async def test_deleting_a_document_clears_content_and_embedding_and_tombstones_t
     assert document_id is not None
     chunk_id = await _chunk_with_content(session, document_id)
 
-    deleted = await delete_document(session, document_id, "client engagement ended", OCR_THRESHOLD)
+    deleted = await delete_document(
+        session, document_id, "client engagement ended", OCR_THRESHOLD, _SETTINGS
+    )
 
     assert deleted is True
     row = (
@@ -564,7 +573,7 @@ async def test_deleting_a_document_does_not_touch_the_file_on_disk(
     document_id = result.files[0].document_id
     assert document_id is not None
 
-    await delete_document(session, document_id, "no longer a client", OCR_THRESHOLD)
+    await delete_document(session, document_id, "no longer a client", OCR_THRESHOLD, _SETTINGS)
 
     assert (folder / filename).read_bytes() == PDF
 
@@ -589,7 +598,7 @@ async def test_deleting_a_document_cancels_its_pending_ingestion_job(
     ).scalar_one()
     assert queued_before == 1, "the add path is expected to enqueue a job"
 
-    await delete_document(session, document_id, "removed mid-import", OCR_THRESHOLD)
+    await delete_document(session, document_id, "removed mid-import", OCR_THRESHOLD, _SETTINGS)
 
     remaining = (
         await session.execute(
@@ -609,15 +618,15 @@ async def test_deleting_an_already_deleted_document_is_not_an_error(
     result = await add(session, str(folder), ["contract.pdf"])
     document_id = result.files[0].document_id
     assert document_id is not None
-    await delete_document(session, document_id, "first delete", OCR_THRESHOLD)
+    await delete_document(session, document_id, "first delete", OCR_THRESHOLD, _SETTINGS)
 
-    second = await delete_document(session, document_id, "second delete", OCR_THRESHOLD)
+    second = await delete_document(session, document_id, "second delete", OCR_THRESHOLD, _SETTINGS)
 
     assert second is False
 
 
 async def test_deleting_an_unknown_document_returns_false(session: AsyncSession) -> None:
-    assert await delete_document(session, uuid.uuid4(), None, OCR_THRESHOLD) is False
+    assert await delete_document(session, uuid.uuid4(), None, OCR_THRESHOLD, _SETTINGS) is False
 
 
 async def test_deleting_a_document_is_a_decisions_record_naming_the_reason(
@@ -630,7 +639,7 @@ async def test_deleting_a_document_is_a_decisions_record_naming_the_reason(
     document_id = result.files[0].document_id
     assert document_id is not None
 
-    await delete_document(session, document_id, "client engagement ended", OCR_THRESHOLD)
+    await delete_document(session, document_id, "client engagement ended", OCR_THRESHOLD, _SETTINGS)
 
     entries = await decisions(session, DOCUMENT_DELETED)
     assert len(entries) == 1

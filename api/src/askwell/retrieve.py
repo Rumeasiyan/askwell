@@ -63,6 +63,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from askwell import crypto, passphrase
 from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
@@ -211,6 +212,20 @@ class _FusionEntry:
 _Row = tuple[uuid.UUID, uuid.UUID, str, str | None, str, str | None, int | None, int | None, float]
 
 
+async def _decrypt(session: AsyncSession, settings: Settings, content: str, encrypted: bool) -> str:
+    """A candidate's content, as stored may be a Fernet token
+    (`c.content_encrypted`, `M7-SEC-BE-152`) — decrypted here, once per row,
+    so every caller downstream of `_dense_search`/`_lexical_search` (fusion,
+    reranking, citations, composition) sees plaintext exactly as it did
+    before encryption existed. `CredentialsLocked` (no passphrase, or this
+    process not unlocked yet) propagates — a locked retrieval cannot
+    silently return ciphertext as if it were an answer."""
+    if not encrypted:
+        return content
+    key = await passphrase.current_key(session, settings)
+    return crypto.decrypt(content.encode("ascii"), key).decode("utf-8")
+
+
 async def _dense_search(
     session: AsyncSession,
     settings: Settings,
@@ -220,7 +235,8 @@ async def _dense_search(
     rows = (
         await session.execute(
             text(
-                "SELECT c.id, c.document_id, d.filename, d.anchor_kind, c.content, c.heading, "
+                "SELECT c.id, c.document_id, d.filename, d.anchor_kind, c.content, "
+                "c.content_encrypted, c.heading, "
                 "c.page_from, c.page_to, "
                 "1 - (c.embedding <=> CAST(:qvec AS vector)) AS score "
                 "FROM chunks c JOIN documents d ON d.id = c.document_id "
@@ -238,7 +254,17 @@ async def _dense_search(
         )
     ).all()
     return [
-        (row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7], float(row[8]))
+        (
+            row[0],
+            row[1],
+            row[2],
+            row[3],
+            await _decrypt(session, settings, row[4], row[5]),
+            row[6],
+            row[7],
+            row[8],
+            float(row[9]),
+        )
         for row in rows
     ]
 
@@ -252,7 +278,8 @@ async def _lexical_search(
     rows = (
         await session.execute(
             text(
-                "SELECT c.id, c.document_id, d.filename, d.anchor_kind, c.content, c.heading, "
+                "SELECT c.id, c.document_id, d.filename, d.anchor_kind, c.content, "
+                "c.content_encrypted, c.heading, "
                 "c.page_from, c.page_to, "
                 "ts_rank(c.content_tsv, "
                 "plainto_tsquery(:cfg, regexp_replace(:query, '-', ' ', 'g'))) AS score "
@@ -273,7 +300,17 @@ async def _lexical_search(
         )
     ).all()
     return [
-        (row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7], float(row[8]))
+        (
+            row[0],
+            row[1],
+            row[2],
+            row[3],
+            await _decrypt(session, settings, row[4], row[5]),
+            row[6],
+            row[7],
+            row[8],
+            float(row[9]),
+        )
         for row in rows
     ]
 

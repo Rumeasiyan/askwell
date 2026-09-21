@@ -247,7 +247,8 @@ document_pages     id, document_id, page_number, text, has_text,
                    -- beside the text.
 
 chunks             id, document_id, ordinal, page_from, page_to, heading,
-                   content, content_tsv, embedding vector(1024)
+                   content, content_encrypted, content_tsv,               -- content_encrypted NEW
+                   embedding vector(1024)
 
 schema_notes       id, source_id, table_name, column_name, description,
                    origin(user|inferred), confidence, superseded_by, embedding
@@ -327,6 +328,7 @@ Traces rotate — they are a capped file ring buffer, and `messages.trace` is tr
 - User-supplied `schema_notes` and `memory` outrank inferred ones and are never silently overwritten. Correction supersedes; it does not update in place.
 - The two audit tables are separate on purpose, with different retention and different write-failure behaviour (`audit-log.md`). Debug traces are not a table.
 - `config_encrypted` uses a key derived from the optional passphrase plus a per-install secret, so a copied disk is not a credential leak.
+- **`chunks.content` is encrypted under the same key when a passphrase is set (`content_encrypted` says which); `content_tsv` and `embedding` are not, and cannot be.** A copied disk with a passphrase set still leaks document count, approximate document length, and every word any document contains — via the full-text index's lexemes and the embedding vectors, both derived from plaintext because retrieval on a single local machine needs them readable. That is the honest claim: "the content is encrypted," never "the corpus is encrypted." `M7-SEC-BE-152`, `docs/decisions.md` this date.
 
 ### Constraints the ORM will not express
 

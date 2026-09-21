@@ -52,6 +52,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import text
 
+from askwell import crypto, passphrase
 from askwell.db.engine import session_scope
 from askwell.logging import get_logger
 
@@ -91,6 +92,14 @@ _TABLE_CLOSE = "[/TABLE]"
 # freely; a PDF or a prose document is exactly the case that needs several
 # pages folded into one chunk to reach a useful size at all.
 _ISOLATED_ANCHOR_KINDS = frozenset({"slide"})
+
+# Matches `askwell.retrieve.TEXT_SEARCH_CONFIG` and the hyphen-to-space
+# substitution `content_tsv` used as a generated column through
+# `c7e2f814a5b3` — `M7-SEC-BE-152` makes this column application-maintained
+# (`docs/db/migrations/…/b7e91a4c3f65`) since it must be computed from
+# plaintext before `content` is ever encrypted, but the expression itself is
+# unchanged.
+_TEXT_SEARCH_CONFIG = "english"
 
 
 class NoChunkableText(Exception):
@@ -371,7 +380,7 @@ async def run(
     work: "Work",
     report: "Report",
     factory: "async_sessionmaker[AsyncSession]",
-    _settings: "Settings",
+    settings: "Settings",
 ) -> None:
     async with session_scope(factory) as session:
         anchor_kind = (
@@ -407,15 +416,32 @@ async def run(
         )
 
     async with session_scope(factory) as session:
+        # Resolved once per document, not per chunk: a passphrase set mid-loop
+        # (another request, this same process) should not leave one document
+        # half plaintext and half encrypted. `CredentialsLocked` (a passphrase
+        # set, this — the worker — process not unlocked) propagates and fails
+        # this job the way every other stage failure does; the worker's own
+        # unlock gap is `M7-SEC-BE-151`'s, not new here.
+        key = await passphrase.current_key(session, settings)
+        content_encrypted = await passphrase.is_enabled(session)
+
         await session.execute(
             text("DELETE FROM chunks WHERE document_id = :id"), {"id": work.document_id}
         )
         for ordinal, chunk in enumerate(chunks):
+            stored_content = (
+                crypto.encrypt(chunk.content.encode("utf-8"), key).decode("ascii")
+                if content_encrypted
+                else chunk.content
+            )
             await session.execute(
                 text(
                     "INSERT INTO chunks "
-                    "(id, document_id, ordinal, page_from, page_to, heading, content) "
-                    "VALUES (:id, :document_id, :ordinal, :page_from, :page_to, :heading, :content)"
+                    "(id, document_id, ordinal, page_from, page_to, heading, "
+                    "content, content_encrypted, content_tsv) "
+                    "VALUES (:id, :document_id, :ordinal, :page_from, :page_to, :heading, "
+                    ":content, :content_encrypted, "
+                    "to_tsvector(:cfg, regexp_replace(:plain, '-', ' ', 'g')))"
                 ),
                 {
                     "id": uuid.uuid4(),
@@ -424,7 +450,10 @@ async def run(
                     "page_from": chunk.page_from,
                     "page_to": chunk.page_to,
                     "heading": chunk.heading,
-                    "content": chunk.content,
+                    "content": stored_content,
+                    "content_encrypted": content_encrypted,
+                    "cfg": _TEXT_SEARCH_CONFIG,
+                    "plain": chunk.content,
                 },
             )
 

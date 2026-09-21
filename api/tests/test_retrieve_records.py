@@ -4,8 +4,10 @@ Chunks and their embeddings are inserted directly rather than run through the
 whole `extract`/`chunk`/`embed` pipeline — what is under test here is the
 dense-plus-lexical query and its fusion, not ingestion, which
 `test_chunk_records.py`/`test_embed_records.py` already cover. `content_tsv`
-is still the real generated column, and `<=>` is still the real pgvector
-operator; nothing about the search itself is a stand-in.
+is application-maintained since `b7e91a4c3f65` (`M7-SEC-BE-152`) rather than
+a generated column, so `_chunk` below computes it with the same expression
+`askwell.chunk.run` uses; `<=>` is still the real pgvector operator, and
+nothing about the search itself is a stand-in.
 """
 
 import uuid
@@ -138,8 +140,11 @@ async def _chunk(
     chunk_id = uuid.uuid4()
     await session.execute(
         text(
-            "INSERT INTO chunks (id, document_id, ordinal, content, heading, embedding) "
-            "VALUES (:id, :document_id, 0, :content, :heading, :embedding)"
+            "INSERT INTO chunks (id, document_id, ordinal, content, content_tsv, heading, "
+            "embedding) "
+            "VALUES (:id, :document_id, 0, :content, "
+            "to_tsvector('english', regexp_replace(:content, '-', ' ', 'g')), "
+            ":heading, :embedding)"
         ),
         {
             "id": chunk_id,

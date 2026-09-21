@@ -1,15 +1,18 @@
 """Full-text column population and index, against a real Postgres.
 `M1-INDEX-DB-033`.
 
-`content_tsv` is a generated `STORED` column and its GIN index both already
-exist in the schema (`a8208099ef38`) and need no application code to
-populate — Postgres does that on every write. What this ticket owns is
-proving that, proving the index is actually what a lexical query uses at
-scale, and fixing the one real gap: a reference number's tokenising
-(`c7e2f814a5b3`). Chunks are inserted directly by SQL rather than run
-through the full ingest pipeline — nothing here is about extraction or
-chunking, only about what Postgres does with a `content` value once it
-lands in the table.
+`content_tsv` was a generated `STORED` column through `c7e2f814a5b3`; since
+`b7e91a4c3f65` (`M7-SEC-BE-152`) it is application-maintained, because
+`chunks.content` may hold a Fernet token once a passphrase is set and
+Postgres cannot usefully tokenise ciphertext (`askwell.content_encryption`'s
+own module docstring has the full reasoning). Every insert in this file
+computes it explicitly with the same expression `askwell.chunk.run` uses in
+production, so what is under test — the GIN index actually being used at
+scale, and the reference-number tokenising fix (`c7e2f814a5b3`) — is
+unaffected by who populates the column. Chunks are inserted directly by SQL
+rather than run through the full ingest pipeline — nothing here is about
+extraction or chunking, only about what a lexical query does with a
+`content_tsv` value once it lands in the table.
 """
 
 import uuid
@@ -65,8 +68,9 @@ async def _insert_chunk(session: AsyncSession, document_id: uuid.UUID, content: 
     chunk_id = uuid.uuid4()
     await session.execute(
         text(
-            "INSERT INTO chunks (id, document_id, ordinal, content) "
-            "VALUES (:id, :document_id, 0, :content)"
+            "INSERT INTO chunks (id, document_id, ordinal, content, content_tsv) "
+            "VALUES (:id, :document_id, 0, :content, "
+            "to_tsvector('english', regexp_replace(:content, '-', ' ', 'g')))"
         ),
         {"id": chunk_id, "document_id": document_id, "content": content},
     )
@@ -106,14 +110,22 @@ async def test_a_chunk_written_with_content_has_a_populated_full_text_value(
     assert has_tsv is True
 
 
-async def test_a_chunk_with_no_content_is_not_considered_indexed(
+async def test_a_chunk_with_cleared_content_carries_no_stale_tsv(
     session: AsyncSession, tmp_path: Path
 ) -> None:
+    """`sources._tombstone_document` clears `content` (and, per this
+    assertion, must clear `content_tsv` alongside it) when a document is
+    deleted — `askwell.chunk.run` always writes both together, and a
+    tombstone is the one place besides it that touches this column, so this
+    proves the write path stays paired there too rather than leaving a
+    deleted chunk's old vector queryable."""
     document_id = await _a_document(session, tmp_path)
-    chunk_id = uuid.uuid4()
+    chunk_id = await _insert_chunk(session, document_id, "Either party may terminate.")
     await session.execute(
-        text("INSERT INTO chunks (id, document_id, ordinal, content) VALUES (:id, :doc, 0, NULL)"),
-        {"id": chunk_id, "doc": document_id},
+        text(
+            "UPDATE chunks SET content = NULL, content_tsv = NULL, embedding = NULL WHERE id = :id"
+        ),
+        {"id": chunk_id},
     )
     await session.commit()
     tsv = (
@@ -121,10 +133,7 @@ async def test_a_chunk_with_no_content_is_not_considered_indexed(
             text("SELECT content_tsv FROM chunks WHERE id = :id"), {"id": chunk_id}
         )
     ).scalar_one()
-    # `coalesce(content, '')` still produces an empty, non-null vector: a
-    # tombstoned document must not silently vanish from every index scan for
-    # a different reason than "there is nothing here to find".
-    assert str(tsv) == ""
+    assert tsv is None
 
 
 async def test_a_reference_number_is_found_by_its_own_trailing_group(
@@ -196,9 +205,11 @@ async def test_a_lexical_query_at_scale_uses_the_index(
     document_id = await _a_document(session, tmp_path)
     await session.execute(
         text(
-            "INSERT INTO chunks (id, document_id, ordinal, content) "
+            "INSERT INTO chunks (id, document_id, ordinal, content, content_tsv) "
             "SELECT gen_random_uuid(), :document_id, n, "
-            "'Routine filler text about nothing in particular, entry number ' || n::text "
+            "'Routine filler text about nothing in particular, entry number ' || n::text, "
+            "to_tsvector('english', "
+            "'Routine filler text about nothing in particular, entry number ' || n::text) "
             "FROM generate_series(1, 300000) AS n"
         ),
         {"document_id": document_id},

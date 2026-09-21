@@ -9,17 +9,30 @@ anything generic.
 
 import uuid
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from askwell.config import Settings
 from askwell.suggestions import MAX_SUGGESTIONS, suggested_questions
 
 from .test_ingest_records import TABLES
 
 pytestmark = pytest.mark.requires_db
+
+
+@pytest.fixture
+def settings(tmp_path: Path) -> Settings:
+    return Settings(
+        database_url="postgresql://askwell:pw@127.0.0.1:1/askwell",  # type: ignore[arg-type]
+        sandbox_database_url="postgresql://x:x@127.0.0.1:1/postgres",  # type: ignore[arg-type]
+        sandbox_owner_password="pw",  # type: ignore[arg-type]
+        sandbox_readonly_password="pw",  # type: ignore[arg-type]
+        install_secret_path=tmp_path / "install.key",
+    )
 
 
 @pytest_asyncio.fixture
@@ -101,19 +114,19 @@ async def _committed(session: AsyncSession) -> None:
     await session.commit()
 
 
-async def test_an_empty_corpus_suggests_nothing(session: AsyncSession) -> None:
-    assert await suggested_questions(session) == []
+async def test_an_empty_corpus_suggests_nothing(session: AsyncSession, settings: Settings) -> None:
+    assert await suggested_questions(session, settings) == []
 
 
 async def test_a_heading_produces_a_question_naming_it_and_the_file(
-    session: AsyncSession,
+    session: AsyncSession, settings: Settings
 ) -> None:
     source_id = await _source(session)
     document_id = await _document(session, source_id, "supplier-agreement-2024.pdf")
     await _chunk(session, document_id, heading="Payment terms", content="irrelevant prose")
     await _committed(session)
 
-    suggestions = await suggested_questions(session)
+    suggestions = await suggested_questions(session, settings)
 
     assert suggestions == [
         {
@@ -123,7 +136,9 @@ async def test_a_heading_produces_a_question_naming_it_and_the_file(
     ]
 
 
-async def test_no_heading_falls_back_to_a_frequent_term(session: AsyncSession) -> None:
+async def test_no_heading_falls_back_to_a_frequent_term(
+    session: AsyncSession, settings: Settings
+) -> None:
     source_id = await _source(session)
     document_id = await _document(session, source_id, "notes.txt")
     await _chunk(
@@ -133,25 +148,29 @@ async def test_no_heading_falls_back_to_a_frequent_term(session: AsyncSession) -
     )
     await _committed(session)
 
-    suggestions = await suggested_questions(session)
+    suggestions = await suggested_questions(session, settings)
 
     assert suggestions == [
         {"question": "What does notes.txt mention about meridian?", "filename": "notes.txt"}
     ]
 
 
-async def test_no_heading_and_no_content_still_names_the_file(session: AsyncSession) -> None:
+async def test_no_heading_and_no_content_still_names_the_file(
+    session: AsyncSession, settings: Settings
+) -> None:
     source_id = await _source(session)
     document_id = await _document(session, source_id, "ledger.xlsx")
     await _chunk(session, document_id, heading=None, content=None)
     await _committed(session)
 
-    suggestions = await suggested_questions(session)
+    suggestions = await suggested_questions(session, settings)
 
     assert suggestions == [{"question": "What is in ledger.xlsx?", "filename": "ledger.xlsx"}]
 
 
-async def test_a_document_still_indexing_is_never_suggested(session: AsyncSession) -> None:
+async def test_a_document_still_indexing_is_never_suggested(
+    session: AsyncSession, settings: Settings
+) -> None:
     source_id = await _source(session)
     indexing_id = await _document(session, source_id, "in-progress.pdf", status="indexing")
     await _chunk(session, indexing_id, heading="Whatever this turns out to be")
@@ -159,7 +178,7 @@ async def test_a_document_still_indexing_is_never_suggested(session: AsyncSessio
     await _chunk(session, ready_id, heading="Finished")
     await _committed(session)
 
-    suggestions = await suggested_questions(session)
+    suggestions = await suggested_questions(session, settings)
 
     assert suggestions == [
         {"question": "What does done.pdf say about Finished?", "filename": "done.pdf"}
@@ -167,31 +186,33 @@ async def test_a_document_still_indexing_is_never_suggested(session: AsyncSessio
 
 
 async def test_a_corpus_too_small_for_three_returns_fewer_not_padded(
-    session: AsyncSession,
+    session: AsyncSession, settings: Settings
 ) -> None:
     source_id = await _source(session)
     document_id = await _document(session, source_id, "only-one.pdf")
     await _chunk(session, document_id, heading="The only heading there is")
     await _committed(session)
 
-    suggestions = await suggested_questions(session)
+    suggestions = await suggested_questions(session, settings)
 
     assert len(suggestions) == 1
 
 
-async def test_never_more_than_the_maximum(session: AsyncSession) -> None:
+async def test_never_more_than_the_maximum(session: AsyncSession, settings: Settings) -> None:
     source_id = await _source(session)
     for index in range(MAX_SUGGESTIONS + 2):
         document_id = await _document(session, source_id, f"file-{index}.pdf")
         await _chunk(session, document_id, heading=f"Heading {index}")
     await _committed(session)
 
-    suggestions = await suggested_questions(session)
+    suggestions = await suggested_questions(session, settings)
 
     assert len(suggestions) == MAX_SUGGESTIONS
 
 
-async def test_a_deleted_document_is_never_suggested(session: AsyncSession) -> None:
+async def test_a_deleted_document_is_never_suggested(
+    session: AsyncSession, settings: Settings
+) -> None:
     source_id = await _source(session)
     document_id = await _document(session, source_id, "gone.pdf")
     await session.execute(
@@ -200,6 +221,6 @@ async def test_a_deleted_document_is_never_suggested(session: AsyncSession) -> N
     await _chunk(session, document_id, heading="Should never surface")
     await _committed(session)
 
-    suggestions = await suggested_questions(session)
+    suggestions = await suggested_questions(session, settings)
 
     assert suggestions == []

@@ -141,7 +141,10 @@ async def _availability(
                     {"id": found["id"]},
                 )
                 await refresh_source(
-                    db, uuid.UUID(str(found["source_id"])), settings.ocr_confidence_threshold
+                    db,
+                    uuid.UUID(str(found["source_id"])),
+                    settings.ocr_confidence_threshold,
+                    settings,
                 )
         return Availability(
             exists=True, moved=False, missing_since=None, root_unavailable=False, root_reason=None
@@ -182,7 +185,7 @@ async def _availability(
             ).first()
             missing_since = stamped[0] if stamped is not None else None
             await refresh_source(
-                db, uuid.UUID(str(found["source_id"])), settings.ocr_confidence_threshold
+                db, uuid.UUID(str(found["source_id"])), settings.ocr_confidence_threshold, settings
             )
 
     return Availability(
@@ -408,7 +411,7 @@ def register_documents(
                 },
             )
             await refresh_source(
-                db, uuid.UUID(str(found["source_id"])), settings.ocr_confidence_threshold
+                db, uuid.UUID(str(found["source_id"])), settings.ocr_confidence_threshold, settings
             )
 
         return JSONResponse({"relocated": True, "path": str(new_path)})
