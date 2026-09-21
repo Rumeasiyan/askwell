@@ -24,13 +24,18 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from askwell.audit import Store, verify
 from askwell.probe import (
     NOT_PROBED_REASON,
+    PROFILE_OVERRIDDEN,
     PROFILE_PROBED,
+    PROFILE_SETTING_KEY,
     ProbeResult,
+    UnknownProfile,
+    _current_state,
+    apply_override,
     apply_probe_result,
     read_probe_result,
     sync_probe_result,
 )
-from askwell.settings_store import get_setting
+from askwell.settings_store import get_setting, set_setting
 
 TABLES = "settings, audit_decisions"
 
@@ -217,6 +222,146 @@ async def test_sync_only_records_a_genuinely_newer_probe(
             )
         ).scalar_one()
         assert count == 1
+
+
+# --- `M7-PROBE-FE-138`: warn-and-continue, and the settings override -----
+
+
+async def test_current_state_names_the_below_floor_reading_without_an_override(
+    factory: async_sessionmaker[AsyncSession], tmp_path: Path
+) -> None:
+    path = tmp_path / "probe.json"
+    path.write_text(
+        json.dumps(
+            _result(
+                profile="light",
+                below_floor=True,
+                ram_gb=6.0,
+                reason="6.0 GB is below the 8 GB floor. Askwell will run, but slowly.",
+            ).as_dict()
+        ),
+        encoding="utf-8",
+    )
+
+    async with factory() as db:
+        state = await _current_state(db, path)
+        await db.commit()
+
+    probe = state["probe"]
+    assert probe["profile"] == "light"
+    assert probe["below_floor"] is True
+    assert probe["overridden"] is False
+    assert probe["detected_profile"] == "light"
+
+
+async def test_current_state_names_a_detection_failure_distinctly_from_below_floor(
+    factory: async_sessionmaker[AsyncSession], tmp_path: Path
+) -> None:
+    path = tmp_path / "probe.json"
+    path.write_text(
+        json.dumps(
+            _result(
+                profile="standard",
+                ram_gb=None,
+                below_floor=False,
+                detection_failed=True,
+                reason="Memory could not be measured on this machine. Defaulting to the "
+                "standard profile.",
+            ).as_dict()
+        ),
+        encoding="utf-8",
+    )
+
+    async with factory() as db:
+        state = await _current_state(db, path)
+        await db.commit()
+
+    probe = state["probe"]
+    assert probe["detection_failed"] is True
+    assert probe["below_floor"] is False
+    assert "standard" in probe["reason"]
+
+
+async def test_an_override_is_reflected_and_named_as_such(
+    factory: async_sessionmaker[AsyncSession], tmp_path: Path
+) -> None:
+    path = tmp_path / "probe.json"
+    path.write_text(json.dumps(_result(profile="light").as_dict()), encoding="utf-8")
+
+    async with factory() as db:
+        await sync_probe_result(db, path)
+        await set_setting(db, PROFILE_SETTING_KEY, "standard")
+        await db.commit()
+
+    async with factory() as db:
+        state = await _current_state(db, path)
+
+    probe = state["probe"]
+    assert probe["profile"] == "standard"
+    assert probe["overridden"] is True
+    assert probe["detected_profile"] == "light"
+
+
+async def test_no_real_probe_yet_still_reports_a_named_shape(
+    factory: async_sessionmaker[AsyncSession], tmp_path: Path
+) -> None:
+    """Nothing has ever run `askwell-probe` on this machine — `_current_state`
+    falls back to the interim in-container reading, reshaped into the real
+    probe's own field names so a caller does not need two branches."""
+    async with factory() as db:
+        state = await _current_state(db, tmp_path / "never-run.json")
+
+    probe = state["probe"]
+    assert state["recorded"] is False
+    assert probe["profile"] in ("light", "standard", "accelerated", "workstation")
+    assert probe["detection_failed"] is False
+    assert probe["overridden"] is False
+    assert NOT_PROBED_REASON in probe["reason"]
+
+
+async def test_apply_override_records_the_detected_and_chosen_profile(
+    factory: async_sessionmaker[AsyncSession], tmp_path: Path
+) -> None:
+    path = tmp_path / "probe.json"
+    path.write_text(json.dumps(_result(profile="light").as_dict()), encoding="utf-8")
+
+    async with factory() as db:
+        await sync_probe_result(db, path)
+        await db.commit()
+
+    async with factory() as db:
+        state = await apply_override(db, path, "accelerated")
+        await db.commit()
+
+    assert state["probe"]["profile"] == "accelerated"
+    assert state["probe"]["overridden"] is True
+    assert state["probe"]["detected_profile"] == "light"
+
+    async with factory() as db:
+        assert await get_setting(db, PROFILE_SETTING_KEY) == "accelerated"
+
+        row = (
+            await db.execute(
+                text(
+                    "SELECT payload FROM audit_decisions WHERE kind = :kind "
+                    "ORDER BY occurred_at DESC LIMIT 1"
+                ),
+                {"kind": PROFILE_OVERRIDDEN},
+            )
+        ).one()
+        assert row[0]["detected"] == "light"
+        assert row[0]["chosen"] == "accelerated"
+
+        outcome = await verify(db, Store.DECISIONS)
+        assert outcome.intact
+
+
+async def test_apply_override_rejects_an_unknown_profile(
+    factory: async_sessionmaker[AsyncSession], tmp_path: Path
+) -> None:
+    with pytest.raises(UnknownProfile):
+        async with factory() as db:
+            await apply_override(db, tmp_path / "probe.json", "quantum-superposition")
 
 
 async def test_sync_records_again_once_the_host_reprobes(

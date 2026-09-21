@@ -24,6 +24,7 @@ from typing import Any
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from askwell.audit import Store, record
@@ -39,6 +40,7 @@ from askwell.settings_store import get_setting, set_setting
 PROFILES = ("light", "standard", "accelerated", "workstation")
 
 PROFILE_PROBED = "profile_probed"
+PROFILE_OVERRIDDEN = "profile_overridden"
 
 PROFILE_SETTING_KEY = "hardware.profile"
 EVIDENCE_SETTING_KEY = "hardware.probe_evidence"
@@ -195,18 +197,110 @@ async def sync_probe_result(session: AsyncSession, path: Path) -> ProbeResult | 
     return result
 
 
+def _fallback_probe_body() -> dict[str, object]:
+    """The interim in-container reading (`M1-LIB-FE-052`), reshaped into the
+    real probe's own field names so `/probe`'s callers — `M7-PROBE-FE-138`'s
+    settings control among them — see one shape regardless of which probe
+    actually answered. `HardwareProfile.as_dict()` uses `tier`/`floor_met`/
+    `expectation`; the real probe uses `profile`/`below_floor`/`reason`. Never
+    a `detection_failed` case here — `askwell.hardware.probe()` always
+    resolves to some tier, never reports outright failure.
+    """
+    basic = basic_probe().as_dict()
+    return {
+        "profile": basic["tier"],
+        "reason": f"{NOT_PROBED_REASON} ({basic['expectation']})",
+        "detection_failed": False,
+        "below_floor": not basic["floor_met"],
+        "ram_gb": basic["ram_gb"],
+        "ram_source": basic["source"],
+        "cpu": {},
+        "accelerator": {
+            "present": basic["gpu_detected"],
+            "kind": None,
+            "vram_gb": basic["vram_gb"],
+            "source": basic["source"],
+        },
+        "disk_free_gb": 0.0,
+        "disk_path": "",
+        "platform": "",
+        "probed_at": 0.0,
+        "stale": True,
+    }
+
+
 async def _current_state(session: AsyncSession, path: Path) -> dict[str, object]:
+    """The real probe's last result, or the interim fallback — either way,
+    with any manual override (`POST /probe/override`, `M7-PROBE-FE-138`)
+    applied on top and named as such, so the settings screen and the welcome
+    screen never disagree about which profile is actually in effect.
+    """
     result = await sync_probe_result(session, path)
     if result is not None:
-        return {"probe": result.as_dict(), "recorded": True}
+        body = result.as_dict()
+        recorded = True
+    else:
+        # Nothing has ever run the real probe on this machine. Fall back to
+        # the interim in-container reading M1 shipped rather than reporting
+        # nothing — `docs/architecture.md` §6's own fallback rule, one layer
+        # up.
+        body = _fallback_probe_body()
+        recorded = False
 
-    # Nothing has ever run the real probe on this machine. Fall back to the
-    # interim in-container reading M1 shipped rather than reporting nothing —
-    # `docs/architecture.md` §6's own fallback rule, one layer up.
-    fallback = basic_probe()
-    body = fallback.as_dict()
-    body["reason"] = f"{NOT_PROBED_REASON} ({body['expectation']})"
-    return {"probe": body, "recorded": False}
+    detected = body["profile"]
+    override = await get_setting(session, PROFILE_SETTING_KEY)
+    if override is not None and override in PROFILES and override != detected:
+        body["profile"] = override
+        body["overridden"] = True
+        body["detected_profile"] = detected
+    else:
+        body["overridden"] = False
+        body["detected_profile"] = detected
+
+    return {"probe": body, "recorded": recorded}
+
+
+class OverrideRequest(BaseModel):
+    tier: str
+
+
+class UnknownProfile(ValueError):
+    """`body.tier` is not one of `PROFILES`. Never raised for a floor or
+    capability mismatch — an override to a profile the machine cannot
+    support is permitted (the ticket's own edge case); this only rejects a
+    string that is not a profile at all.
+    """
+
+
+async def apply_override(session: AsyncSession, path: Path, tier: str) -> dict[str, object]:
+    """The settings profile override (`M7-PROBE-FE-138`): the machine can
+    always be told to run at a profile it did not measure into. This never
+    refuses on hardware grounds — the consequence (the assistant may fail to
+    load, and reports that failure if it does) is the frontend's to state,
+    not this function's to enforce.
+
+    Written to the same `hardware.profile` setting the real probe writes, so
+    every downstream reader (model selection, voice's latency threshold)
+    sees the override without a separate seam. A genuine reprobe still wins
+    the next time it runs — `sync_probe_result` overwrites this setting the
+    moment a newer probe result lands, which is the "re-run on demand"
+    behaviour naming its own reset.
+    """
+    if tier not in PROFILES:
+        raise UnknownProfile(tier)
+
+    state = await _current_state(session, path)
+    probe = state["probe"]
+    assert isinstance(probe, dict)
+    detected = probe["detected_profile"]
+    await set_setting(session, PROFILE_SETTING_KEY, tier)
+    await record(
+        session,
+        Store.DECISIONS,
+        PROFILE_OVERRIDDEN,
+        {"detected": detected, "chosen": tier},
+    )
+    return await _current_state(session, path)
 
 
 def register_probe(
@@ -221,6 +315,16 @@ def register_probe(
     async def probe_state() -> JSONResponse:
         async with session_scope(factory) as db:
             return JSONResponse(await _current_state(db, result_path))
+
+    @app.post("/probe/override")
+    async def probe_override(body: OverrideRequest) -> JSONResponse:
+        try:
+            async with session_scope(factory) as db:
+                return JSONResponse(await apply_override(db, result_path, body.tier))
+        except UnknownProfile:
+            return JSONResponse(
+                {"error": f"{body.tier!r} is not a profile Askwell knows."}, status_code=400
+            )
 
     @app.post("/probe/rerun")
     async def probe_rerun() -> JSONResponse:

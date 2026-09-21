@@ -4,6 +4,21 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.6.1 - 2026-09-21
+
+`M7-PROBE-FE-138` — the welcome screen and settings now warn and continue instead of refusing.
+`GET /setup`'s hardware profile prefers the real host probe (`M7-PROBE-DEPLOY-137`) over the
+interim in-container reading whenever it has run, and distinguishes a genuine below-floor reading
+(concrete, per-GB expectations, unchanged behaviour) from the probe outright failing to measure
+memory (a new `probe_failed` flag) — the welcome screen states each distinctly, naming the
+`standard` fallback when detection failed. Settings gains a hardware-profile section
+(`web/components/settings/hardware-profile.tsx`) with a manual override: `POST /probe/override`
+writes the same `hardware.profile` setting the probe itself writes, states the consequence before
+every change ("the assistant will report the failure clearly; document search and indexing keep
+working either way"), and records `profile_overridden` as a hash-chained decision alongside the
+existing `profile_probed`. A genuine reprobe still wins over an override the next time it runs.
+Nothing added here refuses to run on hardware grounds — the ticket's own Validation Rule.
+
 ## 0.6.0 - 2026-09-21
 
 M6 ("I can speak to it") completed with `0.5.13`; `docs/BRAIN.md` deferred that milestone's own

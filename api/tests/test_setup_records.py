@@ -8,7 +8,10 @@ records (`docs/decisions.md`'s pattern every other decision-writing ticket
 already follows), so the chain is checked too, not just the settings row.
 """
 
+import json
+import time
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
@@ -16,8 +19,10 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from askwell.audit import Store, verify
+from askwell.config import Settings
+from askwell.probe import apply_override
 from askwell.settings_store import get_setting, set_setting
-from askwell.setup import PASSPHRASE_DECIDED, PROFILE_SELECTED, SKIPPED
+from askwell.setup import PASSPHRASE_DECIDED, PROFILE_SELECTED, SKIPPED, _resolve_profile
 
 TABLES = "settings, audit_decisions"
 
@@ -133,3 +138,113 @@ async def test_choosing_a_profile_is_an_audited_decision(
 
         result = await verify(db, Store.DECISIONS)
         assert result.intact
+
+
+# --- `M7-PROBE-FE-138`: the profile the welcome screen resolves -----------
+
+
+def _probe_payload(**over: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "profile": "standard",
+        "reason": "16.0 GB RAM, no usable accelerator.",
+        "detection_failed": False,
+        "below_floor": False,
+        "ram_gb": 16.0,
+        "ram_source": "/proc/meminfo",
+        "cpu": {"processor": "x86_64", "machine": "x86_64", "cores": 8},
+        "accelerator": {"present": False, "kind": None, "vram_gb": None, "source": "not detected"},
+        "disk_free_gb": 100.0,
+        "disk_path": "/home/user",
+        "platform": "Linux",
+        "probed_at": time.time(),
+    }
+    base.update(over)
+    return base
+
+
+async def test_resolve_profile_prefers_the_real_probe_when_it_has_run(
+    factory: async_sessionmaker[AsyncSession], settings: Settings, tmp_path: Path
+) -> None:
+    path = tmp_path / "probe.json"
+    path.write_text(
+        json.dumps(
+            _probe_payload(
+                profile="light",
+                below_floor=True,
+                ram_gb=6.0,
+                reason="6.0 GB is below the 8 GB floor.",
+            )
+        ),
+        encoding="utf-8",
+    )
+    probed_settings = settings.model_copy(update={"probe_result_path": path})
+
+    async with factory() as db:
+        profile = await _resolve_profile(db, probed_settings)
+        await db.commit()
+
+    assert profile["tier"] == "light"
+    assert profile["floor_met"] is False
+    assert profile["source"] == "host-probe"
+    assert profile["probe_failed"] is False
+    assert "8 GB floor" in profile["expectation"]
+
+
+async def test_resolve_profile_names_a_detection_failure(
+    factory: async_sessionmaker[AsyncSession], settings: Settings, tmp_path: Path
+) -> None:
+    path = tmp_path / "probe.json"
+    path.write_text(
+        json.dumps(
+            _probe_payload(
+                profile="standard",
+                ram_gb=None,
+                detection_failed=True,
+                reason="Memory could not be measured on this machine. Defaulting to the "
+                "standard profile.",
+            )
+        ),
+        encoding="utf-8",
+    )
+    probed_settings = settings.model_copy(update={"probe_result_path": path})
+
+    async with factory() as db:
+        profile = await _resolve_profile(db, probed_settings)
+
+    assert profile["probe_failed"] is True
+    assert profile["tier"] == "standard"
+    assert "standard profile" in profile["expectation"]
+
+
+async def test_resolve_profile_falls_back_when_the_real_probe_has_never_run(
+    factory: async_sessionmaker[AsyncSession], settings: Settings, tmp_path: Path
+) -> None:
+    probed_settings = settings.model_copy(update={"probe_result_path": tmp_path / "never-run.json"})
+
+    async with factory() as db:
+        profile = await _resolve_profile(db, probed_settings)
+
+    assert profile["source"] in ("basic-probe", "fallback")
+    assert profile["probe_failed"] is False
+
+
+async def test_resolve_profile_honours_a_settings_override(
+    factory: async_sessionmaker[AsyncSession], settings: Settings, tmp_path: Path
+) -> None:
+    """The override has to be applied *through* `askwell.probe.apply_override`
+    — it syncs the probe first and only then writes the override on top, so
+    a later `_resolve_profile` call sees the override rather than a same-
+    timestamp resync clobbering it. Writing `hardware.profile` directly, out
+    of that order, is not a path the application ever takes."""
+    path = tmp_path / "probe.json"
+    path.write_text(json.dumps(_probe_payload(profile="light")), encoding="utf-8")
+    probed_settings = settings.model_copy(update={"probe_result_path": path})
+
+    async with factory() as db:
+        await apply_override(db, path, "workstation")
+        await db.commit()
+
+    async with factory() as db:
+        profile = await _resolve_profile(db, probed_settings)
+
+    assert profile["tier"] == "workstation"
