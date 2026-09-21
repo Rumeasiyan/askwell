@@ -82,7 +82,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from askwell import crypto
+from askwell import crypto, passphrase
 from askwell.agent.abstain import AbstainReason, compose_abstention
 from askwell.agent.claims import Claim, locate_quoted_span, segment_claims
 from askwell.agent.conflict import compose_conflict, split_conflict_answer
@@ -720,18 +720,18 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
-async def _connection_credentials(settings: Settings, config_encrypted: bytes) -> dict[str, Any]:
+async def _connection_credentials(
+    session: AsyncSession, settings: Settings, config_encrypted: bytes
+) -> dict[str, Any]:
     """Decrypt a live connection's stored configuration for one query-time
-    call. The same install secret and shape `askwell.connections.
-    _load_connection_config` reads — done inline here, since `_run_sql_turn`
-    already holds an open session and that function insists on opening its
-    own via a `factory` this call site does not have a reason to thread
-    through.
+    call. The same key `askwell.connections._load_connection_config` reads
+    (`askwell.passphrase.current_key`, honouring a set-and-locked passphrase)
+    — done inline here, since `_run_sql_turn` already holds an open session
+    and that function insists on opening its own via a `factory` this call
+    site does not have a reason to thread through.
     """
-    install_secret = crypto.load_or_create_install_secret(settings.install_secret_path)
-    config: dict[str, Any] = json.loads(
-        crypto.decrypt(config_encrypted, crypto.derive_key(install_secret)).decode("utf-8")
-    )
+    key = await passphrase.current_key(session, settings)
+    config: dict[str, Any] = json.loads(crypto.decrypt(config_encrypted, key).decode("utf-8"))
     return config
 
 
@@ -1034,7 +1034,7 @@ async def _run_sql_turn(
     config: dict[str, Any] | None = None
 
     if kind == "connection":
-        config = await _connection_credentials(settings, bytes(config_encrypted))
+        config = await _connection_credentials(db, settings, bytes(config_encrypted))
         dry_run = await dry_run_connection_query(
             db,
             settings,
