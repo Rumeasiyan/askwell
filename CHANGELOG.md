@@ -4,6 +4,29 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.6.9 - 2026-09-22
+
+`M7-UPDATE-BE-161` — the update check, agreed to at installation (`docs/ux/settings.md` §7 and
+§9, `docs/decisions.md` 2026-09-21). The stored answer (`not_asked`/`yes`/`no`) lives in
+`settings`; `GET /settings/update-check` reads it, `POST /settings/update-check` sets it to
+`yes` or `no`, and `POST /settings/update-check/run` is the manual "check now" that works
+regardless of the stored answer. `askwell.egress.EgressProxy` gained its first real
+forwarding capability — a single Redis-backed permitted destination, opened the instant the
+answer becomes `yes` and closed the instant it stops being, or opened and closed around one
+manual check when the standing answer is not `yes`. The release feed is this repository's own
+`VERSION` file, served as a static blob by `raw.githubusercontent.com`; a weekly arq cron
+(`run_update_check`) asks whether a week has passed since the last check and, if the answer is
+`yes`, runs one — a machine offline for a month produces exactly one check, not a backlog. New
+`ASKWELL_UPDATE_FEED_HOST`/`ASKWELL_UPDATE_FEED_URL`/`ASKWELL_UPDATE_CHECK_POLL_SECONDS`/
+`ASKWELL_UPDATE_CHECK_INTERVAL_SECONDS` in `.env.example`.
+
+### Fixed
+
+- `compose.yaml`'s `egress-proxy` service was missing the `ASKWELL_SANDBOX_*` environment
+  variables `Settings` requires with no default — invisible while the container kept running
+  on an older process, and fatal the moment it was recreated. Issue #524 (`inference-bridge`
+  carries the same gap, left open).
+
 ## 0.6.8 - 2026-09-22
 
 `M7-BACKUP-BE-157` — backup as a background job, excluding what can be regenerated

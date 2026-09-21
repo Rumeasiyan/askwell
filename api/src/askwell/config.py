@@ -119,6 +119,24 @@ class Settings(BaseSettings):
     egress_proxy_host: str = "egress-proxy"
     egress_proxy_port: Port = 3128
 
+    # `M7-UPDATE-BE-161`. A raw file, not an API endpoint — `docs/ux/settings.md`
+    # §7's own claim ("a static version file, not an endpoint") is literally
+    # true only because this is this repository's own `VERSION` file, served
+    # as a static blob by `raw.githubusercontent.com` rather than by any
+    # server-side logic that could log a requester. Comparing against it is
+    # comparing against the same single source of truth AGENTS.md §7 already
+    # names — no second registry to keep in sync. See `docs/decisions.md`.
+    update_feed_host: str = "raw.githubusercontent.com"
+    update_feed_url: str = "https://raw.githubusercontent.com/Rumeasiyan/askwell/main/VERSION"
+
+    # How often the weekly check is even *considered* — not the cadence it
+    # runs at. `update_check_interval_seconds` (below) is what enforces "no
+    # more than once a week"; this just bounds how long a missed window can
+    # go unnoticed, the same relationship `missing_check_seconds` above has to
+    # a much longer interval it does not itself define.
+    update_check_poll_seconds: int = Field(default=3600, ge=60, le=86400)
+    update_check_interval_seconds: int = Field(default=604_800, ge=3600, le=2_592_000)
+
     # The voice container (M6-AUDIO-DEPLOY-125): Whisper `small` for
     # transcription, Silero VAD ahead of it, Kokoro-82M for synthesis — all
     # CPU, all read from local files, never fetched at runtime (C1). Paths are

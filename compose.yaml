@@ -143,6 +143,15 @@ services:
     command: ["askwell-egress-proxy"]
     environment:
       ASKWELL_DATABASE_URL: postgresql://askwell_app:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-askwell}
+      # Required by the shared `Settings` model even though this process
+      # never opens a database connection — issue #524, the same latent gap
+      # `voice`'s own environment block below already carries a comment
+      # about. This process was running on an older container that predated
+      # `Settings.sandbox_database_url` becoming required, so the gap only
+      # surfaced once something (`M7-UPDATE-BE-161`) forced a recreate.
+      ASKWELL_SANDBOX_DATABASE_URL: postgresql://${SANDBOX_POSTGRES_USER:-askwell_sandbox}:${SANDBOX_POSTGRES_PASSWORD:?set SANDBOX_POSTGRES_PASSWORD in .env}@sandbox:5432/postgres
+      ASKWELL_SANDBOX_OWNER_PASSWORD: ${SANDBOX_OWNER_PASSWORD:?set SANDBOX_OWNER_PASSWORD in .env}
+      ASKWELL_SANDBOX_READONLY_PASSWORD: ${SANDBOX_READONLY_PASSWORD:?set SANDBOX_READONLY_PASSWORD in .env}
       ASKWELL_REDIS_HOST: redis
       ASKWELL_ENVIRONMENT: ${ASKWELL_ENVIRONMENT:-development}
       ASKWELL_LOG_LEVEL: ${ASKWELL_LOG_LEVEL:-INFO}
