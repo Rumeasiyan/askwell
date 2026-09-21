@@ -4,6 +4,38 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.6.8 - 2026-09-21
+
+`M7-LOG-BE-154` — interaction retention window and prune (`docs/audit-log.md` §8). New
+`api/src/askwell/retention.py`: `POST /log-prune` deletes every `audit_interactions` row older
+than the configured retention window, in the same transaction as a `interaction_prune`
+decisions record naming the cutoff, how many rows were removed, and the hash the interactions
+chain now starts from (`first_remaining_prev_hash`) — the same reasoning `M7-LOG-BE-155`'s
+windowed export already established for "does not chain to genesis" not being tampering by
+itself. `askwell.audit.verify` gained an optional `start_from` parameter for exactly this;
+`askwell-verify` looks up the latest prune's boundary and walks the interactions chain from
+there instead of the universal genesis value. Pruning is refused (`409`, `export_offered: true`)
+unless a **full-history** export (`since` unset) has already covered the range being removed —
+`askwell.log_export.run_job` now calls `askwell.retention.mark_exported_through` the moment such
+a job completes, and a windowed export never advances that marker. Separately,
+`askwell.log_budget.set_retention_months` now refuses (`400`, `confirmation_required: true`) to
+shrink the window below the age of the oldest interaction on record unless the caller passes
+`confirmed: true`. New migration `20260921_c3a91f5e7d02` grants `askwell_app` `DELETE` on
+`audit_interactions` alone — found necessary only by running the finished endpoint against the
+live compose stack, since the v1 schema had revoked `DELETE` on both audit tables uniformly and
+`pytest -m requires_db`'s own fixtures connect as the table owner, never the restricted role;
+`api/tests/test_invariants.py` updated to state the new, narrower boundary explicitly.
+`docs/decisions.md`, this date, has the full reasoning. Verified: `pytest -m requires_db` (full
+suite, including the chain-survives-a-prune and confirmation-required cases), `scripts/dev.sh
+check`-equivalent (lint, format, typecheck, unmarked tests), and a live round trip against the
+running compose stack — refusal without export, a full export, a successful prune, and
+`askwell-verify` passing against the real chain afterward — after rebuilding the API image and
+running the new migration. Issue #512 (`M7-LOG-BE-155`'s missing export-at-budget-limit test)
+closed alongside this ticket with a new test in `api/tests/test_log_export.py`. Issue #487
+(settings screen prominence for the hard-limit state) re-owned again, not resolved here — it
+remains a frontend ticket, and no frontend ticket yet wires either `/log-export` or the new
+`/log-prune` into `web/components/settings/storage.tsx`.
+
 ## 0.6.7 - 2026-09-21
 
 `M7-LOG-BE-155` — log export as a background job, with the chain and a standalone verifier

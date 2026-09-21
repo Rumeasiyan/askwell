@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from askwell import log_export, passphrase
 from askwell.audit import Store, record
 from askwell.config import Settings
+from askwell.log_budget import Stage, measure, set_budget
 from askwell.log_export import (
     ExportNotAcknowledged,
     InvalidRange,
@@ -295,6 +296,44 @@ async def test_an_empty_log_still_produces_a_valid_export(
         await session.commit()
 
     await _run(factory, settings, job_id)
+
+    zip_path = settings.export_dir / f"askwell-log-export-{job_id}.zip"
+    extracted = _extract(zip_path, tmp_path / "extracted")
+    result = _run_verifier(extracted)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+async def test_export_succeeds_even_at_the_log_budget_hard_limit(
+    factory: async_sessionmaker[AsyncSession], settings: Settings, tmp_path: Path
+) -> None:
+    """`askwell.log_budget.enforce_ingestion_allowed` is only ever called from
+    the ingest path — `enqueue`/`run_job` must not go anywhere near it. This
+    held by construction (grep confirms no call site in `log_export.py`), but
+    issue #512 found no test pinning it down; a future change touching both
+    modules (`M7-LOG-BE-154`'s own prune, which shares `log_budget`) could
+    silently break the one export that is genuinely urgent — "I'm at the
+    limit and need this data out" — with nothing in CI to catch it.
+    """
+    async with factory() as session:
+        await _seed(session, Store.INTERACTIONS, 3)
+        await set_budget(session, 1)
+        await session.commit()
+
+    async with factory() as session:
+        usage = await measure(session, settings)
+    assert usage.stage is Stage.HARD_LIMIT
+
+    async with factory() as session:
+        job_id = await enqueue(session, since=None, until=None, acknowledged_decrypted_export=False)
+        await session.commit()
+
+    await _run(factory, settings, job_id)
+
+    async with factory() as session:
+        job = await get_job(session, job_id)
+    assert job is not None
+    assert job.status == "done"
+    assert job.interactions_done == 3
 
     zip_path = settings.export_dir / f"askwell-log-export-{job_id}.zip"
     extracted = _extract(zip_path, tmp_path / "extracted")

@@ -260,7 +260,9 @@ class VerificationResult:
         return f"{self.store.value}: chain breaks{where} ({self.reason}). {self.detail}"
 
 
-async def verify(session: AsyncSession, store: Store) -> VerificationResult:
+async def verify(
+    session: AsyncSession, store: Store, start_from: str = GENESIS
+) -> VerificationResult:
     """Walk a chain and report the first break, by record.
 
     The walk follows the links rather than sorting by anything. A chain defines
@@ -274,6 +276,15 @@ async def verify(session: AsyncSession, store: Store) -> VerificationResult:
     a warning. Reporting the *first* one matters: everything after a break is
     unverifiable rather than wrong, and listing all of it would bury the one
     record the user needs to look at.
+
+    `start_from` is the genesis value by default — every store the decisions
+    chain covers. The interactions chain is the exception once
+    `askwell.retention.prune` has run: pruning removes the oldest records on
+    purpose, so the caller (`main`, below) passes the boundary
+    `askwell.retention.latest_prune_boundary` recorded at prune time instead,
+    the same reasoning `askwell.log_export`'s windowed export already
+    established for "does not chain to genesis" not being tampering by
+    itself.
     """
     result = await session.execute(
         # The table name is interpolated, which would be alarming if it came
@@ -301,17 +312,22 @@ async def verify(session: AsyncSession, store: Store) -> VerificationResult:
     if total == 0:
         return VerificationResult(store, 0)
 
-    if GENESIS not in by_predecessor:
+    if start_from not in by_predecessor:
+        root_description = (
+            "the genesis value"
+            if start_from == GENESIS
+            else "the starting point recorded for it at the last prune"
+        )
         return VerificationResult(
             store,
             0,
             None,
             Break.MISSING_GENESIS,
-            f"{total} records exist but none chains to the genesis value. "
+            f"{total} records exist but none chains to {root_description}. "
             f"The first record has been removed.",
         )
 
-    expected_prev = GENESIS
+    expected_prev = start_from
     checked = 0
 
     while expected_prev in by_predecessor:
@@ -368,13 +384,23 @@ def main() -> None:
         raise SystemExit(str(error)) from None
 
     async def run() -> int:
+        # Local import: `askwell.retention` imports this module, so importing
+        # it at module scope here would be a cycle. `main` is a command entry
+        # point, not something `verify` itself needs to know about.
+        from askwell.retention import latest_prune_boundary
+
         engine = build_engine(settings)
         factory = session_factory(engine)
         broken = 0
         try:
             async with factory() as session:
                 for store in Store:
-                    outcome = await verify(session, store)
+                    start_from = GENESIS
+                    if store is Store.INTERACTIONS:
+                        boundary = await latest_prune_boundary(session)
+                        if boundary is not None:
+                            start_from = boundary
+                    outcome = await verify(session, store, start_from=start_from)
                     print(outcome)  # noqa: T201 - a command, talking to a terminal
                     if not outcome.intact:
                         broken += 1

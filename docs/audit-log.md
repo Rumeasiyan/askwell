@@ -55,7 +55,7 @@ Both database-backed stores use a **hash chain**: each record stores the hash of
 
 This gives an honest guarantee:
 
-- **The application never rewrites history.** No `UPDATE`/`DELETE` grant for the app role, which defends against bugs — the realistic threat.
+- **The application never rewrites history.** No `UPDATE`/`TRUNCATE` grant for the app role on either table, and no `DELETE` grant on decisions at all — which defends against bugs, the realistic threat. Interactions are the one deliberate exception: `M7-LOG-BE-154` grants the app role `DELETE` on `audit_interactions` alone, scoped to the retention prune below, because a rolling window cannot exist without a legitimate way to remove what has rolled out of it. Nothing can rewrite a record in place, and nothing can empty a table outside a targeted, `WHERE`-bounded statement.
 - **Manual tampering is detectable.** Not preventable. The user has root on their own machine and always will.
 
 Which is genuinely useful: a consultant who needs to show a client what was asked of a confidential corpus can produce a log that is verifiable rather than merely asserted.

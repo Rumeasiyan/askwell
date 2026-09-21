@@ -79,9 +79,7 @@ def test_an_audit_record_can_be_written(
 
 
 @pytest.mark.parametrize("table", ["audit_decisions", "audit_interactions"])
-@pytest.mark.parametrize(
-    "statement", ["UPDATE {} SET kind = 'tampered'", "DELETE FROM {}", "TRUNCATE {}"]
-)
+@pytest.mark.parametrize("statement", ["UPDATE {} SET kind = 'tampered'", "TRUNCATE {}"])
 def test_history_cannot_be_rewritten(
     application: psycopg.Connection[tuple[object, ...]], table: str, statement: str
 ) -> None:
@@ -89,10 +87,43 @@ def test_history_cannot_be_rewritten(
 
     Not called immutable: the user owns the machine and can always delete a
     file. The honest guarantee is that the application never rewrites history
-    and that manual tampering is detectable.
+    and that manual tampering is detectable. Neither table's rows can ever be
+    edited in place, and neither can be emptied in one statement — a targeted
+    `DELETE` is the only narrowing either grant has ever received, and only
+    `audit_interactions` has it (below).
     """
     with pytest.raises(psycopg.errors.InsufficientPrivilege):
         application.execute(statement.format(table))
+
+
+def test_decisions_can_never_be_deleted(
+    application: psycopg.Connection[tuple[object, ...]],
+) -> None:
+    """Decisions and memory are never pruned — `M7-LOG-BE-154`'s own Out of
+    Scope, `docs/audit-log.md` §8. Unlike `audit_interactions` below, nothing
+    in this codebase has a legitimate reason to remove a decisions row, and
+    the grant reflects that with no exception."""
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        application.execute("DELETE FROM audit_decisions")
+
+
+def test_interactions_can_be_deleted_for_a_deliberate_prune(
+    application: psycopg.Connection[tuple[object, ...]],
+) -> None:
+    """The one narrow exception to C6's append-only grant.
+
+    `M7-LOG-BE-154` (`docs/decisions.md`, this date) gave `askwell_app`
+    `DELETE` on `audit_interactions` alone, so `askwell.retention.prune` can
+    enforce the retention window — `UPDATE` and `TRUNCATE` stay refused by
+    the test above, so a pruned record can be removed but never rewritten in
+    place, and the table cannot be emptied outside `prune`'s own
+    `WHERE occurred_at < :cutoff`.
+    """
+    application.execute(
+        "INSERT INTO audit_interactions (kind, payload, hash) VALUES (%s, %s, %s)",
+        ("question_asked", "{}", "b" * 64),
+    )
+    application.execute("DELETE FROM audit_interactions")
 
 
 # --- one live version per source and content hash ---------------------------

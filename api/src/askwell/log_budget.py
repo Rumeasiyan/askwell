@@ -28,6 +28,7 @@ never part of what a budget prunes (`docs/audit-log.md` §8).
 
 import shutil
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 
@@ -191,20 +192,54 @@ class InvalidRetention(ValueError):
     """A retention window of zero or fewer months has no meaning."""
 
 
+class RetentionWindowTooShort(ValueError):
+    """The requested window is shorter than the age of the oldest interaction
+    on record, so it would make nearly everything currently stored prunable —
+    `M7-LOG-BE-154`'s own edge case."""
+
+
 async def get_retention_months(session: AsyncSession) -> int:
     """The user's own interaction-retention window, or the shipped default."""
     stored = await get_setting(session, RETENTION_KEY)
     return DEFAULT_RETENTION_MONTHS if stored is None else int(stored)
 
 
-async def set_retention_months(session: AsyncSession, months: int) -> int:
+async def _oldest_interaction_at(session: AsyncSession) -> datetime | None:
+    result = await session.execute(text(f"SELECT MIN(occurred_at) FROM {Store.INTERACTIONS.value}"))
+    return result.scalar_one()  # type: ignore[no-any-return]
+
+
+async def set_retention_months(
+    session: AsyncSession, months: int, *, confirmed: bool = False
+) -> int:
     """The only way the window changes. Always a decisions record, same shape
     as `set_budget` above — a retention change is exactly the kind of thing
     `docs/audit-log.md` §7 lists. This does not itself prune anything: the
-    prune that acts on this value is `M7-LOG-BE-154`, not yet built.
+    prune that acts on this value is `askwell.retention.prune`.
+
+    A window shorter than the age of the oldest interaction already on record
+    means everything older than the new window becomes prunable the moment it
+    is set — `M7-LOG-BE-154`'s own edge case, refused unless the caller passes
+    `confirmed=True`, the same shape `askwell.log_export`'s
+    `acknowledged_decrypted_export` already established for a consequence the
+    caller must actively accept rather than trip over.
     """
     if months <= 0:
         raise InvalidRetention("Retention window must be a positive number of months.")
+    if not confirmed:
+        oldest = await _oldest_interaction_at(session)
+        if oldest is not None:
+            cutoff = (
+                await session.execute(
+                    text("SELECT now() - (:months || ' months')::interval"), {"months": months}
+                )
+            ).scalar_one()
+            if oldest < cutoff:
+                raise RetentionWindowTooShort(
+                    f"A {months}-month window is shorter than the age of the oldest "
+                    f"interaction on record ({oldest.isoformat()}) — it would make "
+                    f"nearly everything currently stored prunable. Confirm to proceed."
+                )
     previous = await get_retention_months(session)
     await set_setting(session, RETENTION_KEY, str(months))
     await record(
@@ -249,6 +284,7 @@ class SetBudgetRequest(BaseModel):
 
 class SetRetentionRequest(BaseModel):
     months: int = Field(gt=0)
+    confirmed: bool = False
 
 
 def register_log_budget(
@@ -284,6 +320,14 @@ def register_log_budget(
 
     @app.post("/log-budget/retention")
     async def set_retention(body: SetRetentionRequest) -> JSONResponse:
-        async with session_scope(factory) as db:
-            months = await set_retention_months(db, body.months)
+        try:
+            async with session_scope(factory) as db:
+                months = await set_retention_months(db, body.months, confirmed=body.confirmed)
+        except RetentionWindowTooShort as error:
+            # 400, not 403: same shape `log_export`'s `ExportNotAcknowledged`
+            # uses — nothing about the request is forbidden, a confirmation
+            # was left unset.
+            return JSONResponse(
+                {"error": str(error), "confirmation_required": True}, status_code=400
+            )
         return JSONResponse({"months": months})

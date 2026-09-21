@@ -29,6 +29,7 @@ from askwell.middleware import register_session
 from askwell.network import read_activity
 from askwell.passphrase import register_passphrase
 from askwell.probe import register_probe
+from askwell.retention import register_retention
 from askwell.retrieve import register_retrieval_threshold, register_search
 from askwell.review import register_review
 from askwell.roots import register_roots
@@ -123,6 +124,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_probe(app, resolved, app.state.sessions)
     register_log_budget(app, resolved, app.state.sessions)
     register_log_export(app, resolved, app.state.sessions)
+    register_retention(app, resolved, app.state.sessions)
     register_passphrase(app, resolved, app.state.sessions)
     register_voice_channel(
         app,

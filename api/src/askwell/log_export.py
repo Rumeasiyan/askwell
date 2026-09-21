@@ -56,6 +56,7 @@ from askwell.config import Settings
 from askwell.db.engine import session_scope
 from askwell.log_export_verifier import SOURCE as VERIFIER_SOURCE
 from askwell.logging import get_logger
+from askwell.retention import mark_exported_through
 
 log = get_logger(__name__)
 
@@ -404,6 +405,12 @@ async def run_job(
                 ),
                 {"id": job_id, "path": str(zip_final), "size": zip_final.stat().st_size},
             )
+            if since is None:
+                # Only a full-history export proves every interaction up to
+                # `until` was written out — a windowed one says nothing about
+                # what came before its own `since`, so it must never advance
+                # this marker (`askwell.retention.prune`'s own guard reads it).
+                await mark_exported_through(session, until)
         log.info(
             "log_export_done",
             job_id=str(job_id),
