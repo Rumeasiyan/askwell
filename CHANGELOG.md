@@ -4,6 +4,37 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.6.8 - 2026-09-21
+
+`M7-LOG-FE-156` — the settings screen's "Verify the log" action (`docs/ux/settings.md` §6/§8):
+one action, two plain reports, never the word "immutable". `askwell.audit.verify` gained
+optional `on_progress`/`should_continue` parameters (every existing caller unaffected) so a
+walk can report progress and be interrupted, raising a new `VerificationInterrupted` rather
+than folding cancellation into a chain-break reason — a stopped walk asserts neither intact nor
+broken. New `askwell.log_verify` runs both stores' checks as a background job (`verify_jobs`,
+the same durable-row-plus-`arq`-dispatch shape `askwell.log_export`'s `export_jobs` already
+established): `POST /log-verify` enqueues and dispatches; `GET /log-verify/{id}` reports
+progress and, once done, each store's outcome — intact, or the broken record's id, date and
+reason; `POST /log-verify/{id}/cancel` stops a queued or running job without touching a
+finished one. Completion is logged once to the decisions store, naming both stores' results —
+the ticket's own Audit Requirement. `web/components/settings/verify-log.tsx` polls a running
+job every second (the same cadence `trace-panel.tsx` already uses), shows a stop control while
+running, and reports each store's result plainly: "chain intact," or the broken record's date
+and what a break means — that Askwell never rewrites history, so it indicates something outside
+Askwell changed the file — with the one exception the underlying `Break.FORKED` reason
+carries its own "not evidence of tampering" explanation instead. Filed issue #516: this
+ticket's own "break at a prune boundary" Edge Case cannot be built yet, since `M7-LOG-BE-154`
+(the prune that would create a legitimate one) does not exist — every break `verify()` can
+currently produce is real. `docs/decisions.md`, this date. Verified: `scripts/dev.sh test`
+(927 passed, 1 skipped), `scripts/dev.sh test-db` (740 passed, including a real tampered-record
+break naming its id and date, both stores broken independently, and a cancellation mid-run
+proving neither store asserts a verdict), `scripts/dev.sh web-check` (358 tests,
+lint/typecheck/build/contrast/offline all clean), and a live round trip against the running
+compose stack after rebuilding the API image and running the migration: `POST`/`GET
+/log-verify`, a real 218-decisions/202-interactions intact result, a real tampered record named
+with its id and date after altering a row directly with `psql`, and a queued job cancelled
+before it ran, reporting `cancelled` with both stores' `intact` left `null`.
+
 ## 0.6.7 - 2026-09-21
 
 `M7-LOG-BE-155` — log export as a background job, with the chain and a standalone verifier

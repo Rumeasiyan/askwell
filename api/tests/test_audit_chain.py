@@ -21,7 +21,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from askwell.audit import GENESIS, Break, Store, record, verify
+from askwell.audit import GENESIS, Break, Store, VerificationInterrupted, record, verify
 
 pytestmark = pytest.mark.requires_db
 
@@ -107,6 +107,38 @@ async def test_verification_names_the_record_whose_contents_were_altered(
     assert result.first_break == uuid.UUID(str(target[0]))
     assert result.reason is Break.ALTERED
     assert result.checked == 2, "it should stop at the first break, not carry on"
+    assert result.occurred_at is not None, "a break must name when the record was written"
+
+
+async def test_progress_is_reported_at_the_configured_cadence(session: AsyncSession) -> None:
+    for index in range(5):
+        await record(session, Store.DECISIONS, f"event_{index}", {"index": index})
+    await session.commit()
+
+    seen: list[int] = []
+
+    async def on_progress(checked: int) -> None:
+        seen.append(checked)
+
+    result = await verify(session, Store.DECISIONS, on_progress=on_progress, progress_every=2)
+    assert result.intact
+    # Called at 0, 2, 4, and once more at the end with the final count.
+    assert seen == [0, 2, 4, 5]
+
+
+async def test_a_cancellation_request_stops_the_walk_without_a_verdict(
+    session: AsyncSession,
+) -> None:
+    for index in range(5):
+        await record(session, Store.DECISIONS, f"event_{index}", {"index": index})
+    await session.commit()
+
+    async def should_continue() -> bool:
+        return False
+
+    with pytest.raises(VerificationInterrupted) as excinfo:
+        await verify(session, Store.DECISIONS, should_continue=should_continue, progress_every=1)
+    assert excinfo.value.checked == 0
 
 
 async def test_verification_reports_a_removed_record_as_unlinked(

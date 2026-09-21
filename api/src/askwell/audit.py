@@ -20,6 +20,7 @@ bricking the product over a debugging aid is absurd.
 import hashlib
 import json
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
@@ -221,10 +222,24 @@ class Break(StrEnum):
     """Records exist but none starts the chain. The first record was removed."""
 
 
+class VerificationInterrupted(Exception):
+    """A caller-supplied `should_continue` asked the walk to stop.
+
+    Distinct from every `Break` reason on purpose: stopping partway through
+    says nothing about whether the rest of the chain is intact, and must
+    never be reported as tampering — or as a clean pass — by a caller that
+    forgets to catch it.
+    """
+
+    def __init__(self, checked: int) -> None:
+        super().__init__(f"Verification stopped after {checked} records, by request.")
+        self.checked = checked
+
+
 class VerificationResult:
     """What a verification pass found. Plain, and naming the record."""
 
-    __slots__ = ("checked", "detail", "first_break", "reason", "store")
+    __slots__ = ("checked", "detail", "first_break", "occurred_at", "reason", "store")
 
     def __init__(
         self,
@@ -233,12 +248,14 @@ class VerificationResult:
         first_break: uuid.UUID | None = None,
         reason: Break | None = None,
         detail: str = "",
+        occurred_at: datetime | None = None,
     ) -> None:
         self.store = store
         self.checked = checked
         self.first_break = first_break
         self.reason = reason
         self.detail = detail
+        self.occurred_at = occurred_at
 
     @property
     def intact(self) -> bool:
@@ -260,7 +277,14 @@ class VerificationResult:
         return f"{self.store.value}: chain breaks{where} ({self.reason}). {self.detail}"
 
 
-async def verify(session: AsyncSession, store: Store) -> VerificationResult:
+async def verify(
+    session: AsyncSession,
+    store: Store,
+    *,
+    on_progress: Callable[[int], Awaitable[None]] | None = None,
+    should_continue: Callable[[], Awaitable[bool]] | None = None,
+    progress_every: int = 500,
+) -> VerificationResult:
     """Walk a chain and report the first break, by record.
 
     The walk follows the links rather than sorting by anything. A chain defines
@@ -274,6 +298,15 @@ async def verify(session: AsyncSession, store: Store) -> VerificationResult:
     a warning. Reporting the *first* one matters: everything after a break is
     unverifiable rather than wrong, and listing all of it would bury the one
     record the user needs to look at.
+
+    `on_progress`/`should_continue` are optional so `main()` and every direct
+    caller that predates them keep working unchanged. When given, they are
+    polled every `progress_every` records walked — the CLI passes neither, a
+    settings-surface job (`askwell.log_verify`) passes both so a large log
+    shows movement and can be interrupted mid-walk. Interruption raises
+    `VerificationInterrupted` rather than returning a result, because
+    "stopped partway" is not a chain outcome — reporting it as one, in either
+    direction, would be a lie about records that were never checked.
     """
     result = await session.execute(
         # The table name is interpolated, which would be alarming if it came
@@ -295,6 +328,7 @@ async def verify(session: AsyncSession, store: Store) -> VerificationResult:
                 Break.FORKED,
                 f"It and record {existing[0]} both chain to {predecessor}. "
                 f"This is a fault in Askwell, not evidence of tampering.",
+                occurred_at=row[5],
             )
         by_predecessor[predecessor] = tuple(row)
 
@@ -315,6 +349,12 @@ async def verify(session: AsyncSession, store: Store) -> VerificationResult:
     checked = 0
 
     while expected_prev in by_predecessor:
+        if progress_every > 0 and checked % progress_every == 0:
+            if on_progress is not None:
+                await on_progress(checked)
+            if should_continue is not None and not await should_continue():
+                raise VerificationInterrupted(checked)
+
         record_id, kind, payload, prev_hash, stored_hash, occurred_at = by_predecessor.pop(
             expected_prev
         )
@@ -332,9 +372,13 @@ async def verify(session: AsyncSession, store: Store) -> VerificationResult:
                 uuid.UUID(str(record_id)),
                 Break.ALTERED,
                 f"Its contents hash to {recomputed}, but it stores {stored_hash}.",
+                occurred_at=occurred_at,
             )
         expected_prev = str(stored_hash)
         checked += 1
+
+    if on_progress is not None:
+        await on_progress(checked)
 
     if by_predecessor:
         # Reachability ran out before the records did.
@@ -346,6 +390,7 @@ async def verify(session: AsyncSession, store: Store) -> VerificationResult:
             Break.UNLINKED,
             f"It chains to {orphan[3]}, which is not the hash of any record "
             f"reachable from the start. A record has been removed.",
+            occurred_at=orphan[5],
         )
 
     return VerificationResult(store, checked)

@@ -3,9 +3,10 @@ import { HardwareProfile } from "@/components/settings/hardware-profile";
 import { PrivacySecurity } from "@/components/settings/privacy-security";
 import { RetrievalThresholdControl } from "@/components/settings/retrieval-threshold";
 import { Storage } from "@/components/settings/storage";
+import { VerifyLog } from "@/components/settings/verify-log";
 
 /**
- * Settings — five real sections so far.
+ * Settings — six real sections so far.
  *
  * The folders Askwell may read arrive here in M1 because that is where the
  * cold-start walkthrough looks for them: nominate a folder while adding a
@@ -32,7 +33,11 @@ import { Storage } from "@/components/settings/storage";
  * this section exists to draw. The rest of the screen is still its empty
  * state, because `docs/states-and-edge-cases.md` requires every surface to
  * have one and a route stub with nothing in it teaches the next person that
- * empty states are optional.
+ * empty states are optional. "Your data" arrives with `M7-LOG-FE-156`
+ * (`web/components/settings/verify-log.tsx`) — the verify action, its own
+ * ticket's whole scope (`docs/ux/settings.md` §6's other rows — export,
+ * delete a source, delete all memory, reset Askwell — are each their own
+ * unbuilt ticket and are not stubbed here to avoid implying they exist).
  */
 export default function SettingsPage() {
   return (
@@ -77,6 +82,11 @@ export default function SettingsPage() {
       </section>
 
       <Storage />
+
+      <section className="flex flex-col gap-3">
+        <h2 style={{ fontSize: "var(--t-title)", lineHeight: "var(--t-title-lh)" }}>Your data</h2>
+        <VerifyLog />
+      </section>
 
       <PrivacySecurity />
     </div>

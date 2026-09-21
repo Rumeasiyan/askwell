@@ -38,7 +38,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from askwell.db.base import Base, created_at, uuid_pk
@@ -694,6 +694,64 @@ class ExportJob(Base):
 
     file_path: Mapped[str | None] = mapped_column(Text)
     file_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    error: Mapped[str | None] = mapped_column(Text)
+
+    created_at_: Mapped[datetime] = mapped_column(
+        "created_at", DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class VerifyJob(Base):
+    """One hash-chain verification run, across both audit stores. `M7-LOG-FE-156`.
+
+    Same reasoning as `ExportJob`: `arq` dispatches, this table records, and
+    `askwell.log_verify.resume` returns a job a dead worker was holding back
+    to `queued` rather than losing it. Each store gets its own outcome
+    columns (`docs/db/migrations/.../verify_jobs.py` has the full account of
+    why a shared pair could not represent one store broken and the other
+    intact) rather than one shared "intact" flag.
+    """
+
+    __tablename__ = "verify_jobs"
+    __table_args__ = (
+        _one_of("status", ("queued", "running", "done", "failed", "cancelled"), "status"),
+        Index(
+            "ix_verify_jobs_pending",
+            "created_at",
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default=text("'queued'"))
+    cancel_requested: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+
+    decisions_total: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    decisions_checked: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    decisions_intact: Mapped[bool | None] = mapped_column(Boolean)
+    decisions_break_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    decisions_break_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decisions_break_reason: Mapped[str | None] = mapped_column(String(32))
+    decisions_break_detail: Mapped[str | None] = mapped_column(Text)
+
+    interactions_total: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    interactions_checked: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    interactions_intact: Mapped[bool | None] = mapped_column(Boolean)
+    interactions_break_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    interactions_break_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    interactions_break_reason: Mapped[str | None] = mapped_column(String(32))
+    interactions_break_detail: Mapped[str | None] = mapped_column(Text)
+
     error: Mapped[str | None] = mapped_column(Text)
 
     created_at_: Mapped[datetime] = mapped_column(
