@@ -1,6 +1,6 @@
-import { Connections } from "@/components/settings/connections";
 import { Folders } from "@/components/settings/folders";
 import { HardwareProfile } from "@/components/settings/hardware-profile";
+import { PrivacySecurity } from "@/components/settings/privacy-security";
 import { RetrievalThresholdControl } from "@/components/settings/retrieval-threshold";
 import { Storage } from "@/components/settings/storage";
 
@@ -22,11 +22,17 @@ import { Storage } from "@/components/settings/storage";
  * `M7-SET-FE-148` (`web/components/settings/storage.tsx`) — per-source
  * index size, the log budget and its current use, the retention window, and
  * the at-the-limit statement; export and prune is a stated, disabled entry
- * point because its backend (`M7-LOG-BE-155`) does not exist yet. The rest
- * of the screen is still its empty state, because
- * `docs/states-and-edge-cases.md` requires every surface to have one and a
- * route stub with nothing in it teaches the next person that empty states
- * are optional.
+ * point because its backend (`M7-LOG-BE-155`) does not exist yet. Privacy
+ * and security arrives with `M7-SET-FE-147`
+ * (`web/components/settings/privacy-security.tsx`) — the passphrase control
+ * surfacing `M7-SEC-BE-151`, the egress proxy's own live network-activity
+ * count (never a toggle), and connected databases, which moves here from
+ * its previous standalone placement because its read-only status is exactly
+ * the "permitted destination, shown separately from the local-mode zero"
+ * this section exists to draw. The rest of the screen is still its empty
+ * state, because `docs/states-and-edge-cases.md` requires every surface to
+ * have one and a route stub with nothing in it teaches the next person that
+ * empty states are optional.
  */
 export default function SettingsPage() {
   return (
@@ -62,7 +68,6 @@ export default function SettingsPage() {
       </section>
 
       <Folders />
-      <Connections />
 
       <section className="flex flex-col gap-3">
         <h2 style={{ fontSize: "var(--t-title)", lineHeight: "var(--t-title-lh)" }}>
@@ -72,6 +77,8 @@ export default function SettingsPage() {
       </section>
 
       <Storage />
+
+      <PrivacySecurity />
     </div>
   );
 }

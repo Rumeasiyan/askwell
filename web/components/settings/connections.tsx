@@ -47,10 +47,10 @@ export function Connections() {
   );
 
   return (
-    <section className="flex flex-col gap-3">
-      <h2 style={{ fontSize: "var(--t-title)", lineHeight: "var(--t-title-lh)" }}>
+    <div className="flex flex-col gap-3">
+      <h3 style={{ fontSize: "var(--t-ui)", lineHeight: "var(--t-ui-lh)" }}>
         Connected databases
-      </h2>
+      </h3>
 
       {failure !== null ? (
         <p className="ask-prose" style={{ color: "var(--alarm)" }}>
@@ -95,6 +95,6 @@ export function Connections() {
           </ul>
         </>
       )}
-    </section>
+    </div>
   );
 }

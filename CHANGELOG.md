@@ -4,6 +4,21 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.6.5 - 2026-09-21
+
+`M7-SET-FE-147` — the settings screen's privacy and security section (`docs/ux/settings.md`
+§4). Three displays: the passphrase control (`web/components/settings/passphrase.tsx`),
+surfacing `M7-SEC-BE-151`'s set/change/remove with the no-recovery warning stated next to the
+button that sets it, never in a dialog; network activity as a statement, not a toggle
+(`web/components/settings/network-activity.tsx`), reading `GET /network`'s live permitted and
+refused counts straight from the egress proxy and never substituting zero when the counters
+cannot be read; and connected databases (`web/components/settings/connections.tsx`, moved here
+from its previous standalone placement), each one read-only by construction since the write
+probe (`M4-CONN-SEC-097`) already refuses a write-capable credential before a source is ever
+created. No control on this screen pre-authorises egress of any kind, and there is no
+web-search setting — `docs/ux/web-search.md` §5 is explicit that a settings toggle is how a
+per-question permission becomes a standing one.
+
 ## 0.6.4 - 2026-09-21
 
 `M7-SEC-BE-151` — the optional passphrase: set, change, remove and unlock (`docs/ux/settings.md`
