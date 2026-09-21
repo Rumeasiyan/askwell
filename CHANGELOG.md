@@ -4,6 +4,22 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.5.8 - 2026-09-21
+
+`M6-VUI-FE-134` — the past-latency-budget indicator, only once the budget is genuinely passed. `MicControl` starts an 8s (or 3.5s on an `accelerated` hardware profile) timer at the real end of speech — the button release that ends `stopCapture`, matching what the user experiences as "I'm done talking" — and shows nothing on a healthy turn. The timer is cancelled, and any indicator already showing hidden, the instant the turn's own end arrives first: the first synthesized audio chunk actually playing, the turn completing, the turn failing (its failure message replaces the indicator, per `docs/ux/voice.md` §5), or the connection dropping — so a turn that passes budget and finishes a moment later never flickers. The hardware tier read here is `GET /setup`'s `profile.tier` (`askwell.hardware.probe`'s `light`/`standard`/`accelerated`/`workstation`), deliberately not `/health`'s `profile` field, which is a different axis entirely — the deployment `Profile` enum (`light`/`balanced`/`full`) that selects models. An unrecognised or unread tier falls back to the 8s `standard` budget, stated on the Settings screen. A local, in-memory counter of budget misses is kept for later measurement (C1: never transmitted). Full detail in `docs/BRAIN.md`.
+
+**Verified**: `scripts/dev.sh web-check` clean (328 tests, 4 new; typecheck; lint; build; `check-tokens`; `contrast`; `check-offline`). Cold-start walkthrough against the real, rebuilt, running stack: `/settings` renders the new budget copy; the Ask screen's idle mic control shows no latency text; browser network log confirms `MicControl` calls `GET /setup?tier=standard` once on mount and gets `200`, and the API's own hardware probe on this machine reports `tier=standard` (31 GB RAM, no GPU) — the case this ticket's indicator is keyed off. No live voice turn exercised (Whisper/Kokoro weights are not present in this environment, the same known gap every voice ticket so far has carried forward), so the fade-in/clear/failure-replaces-indicator transitions are verified by `web/lib/voice.test.ts`'s unit tests rather than end to end.
+
+### Added
+
+- `web/lib/voice.ts` — `voiceLatencyBudgetMs`, `VOICE_LATENCY_BUDGET_ACCELERATED_MS`, `VOICE_LATENCY_BUDGET_STANDARD_MS`, `VOICE_LATENCY_COPY`, `recordVoiceLatencyBudgetMiss`, `getVoiceLatencyBudgetMissCount`.
+- `web/components/ask/voice-control.tsx` — the latency indicator itself, keyed off end-of-speech and cleared on first audio, turn completion, turn failure, or connection loss.
+- `web/app/globals.css` — `.ask-mic-latency`, fading in via an opacity transition rather than snapping.
+
+### Changed
+
+- `web/app/settings/page.tsx` — states the voice latency budget and its unknown-profile fallback.
+
 ## 0.5.7 - 2026-09-21
 
 `M6-VUI-FE-128a` — mic capture, the voice socket client, and the composer's base voice states. Replaces the Phase 1 stub: `MicControl` now opens a real `WebSocket` against `askwell.voice_channel`'s `/voice/ws`, captures the microphone with `getUserMedia`, and drives idle/listening/transcribing/answering — the composer states every dependent voice ticket reads and extends. Push-to-talk: holding the button streams 16 kHz mono PCM16 audio, releasing it stops the stream and closes the turn, so "transcribing" is a real local fact rather than a guess ahead of the backend's own pause detection (`M6-STT-BE-128`). Permission denied, no input device, and a connection dropping mid-turn all surface as stated idle reasons, never a stuck `listening`; a second press while transcribing or answering is ignored, not a second socket. Full detail, including what is deliberately deferred and why, in `docs/BRAIN.md`.

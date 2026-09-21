@@ -11,12 +11,16 @@ import {
   downsampleTo16k,
   encodeAudioFrame,
   floatTo16BitPCM,
+  getVoiceLatencyBudgetMissCount,
   MIC_NO_DEVICE_REASON,
   MIC_PERMISSION_DENIED_REASON,
   MIC_UNAVAILABLE_REASON,
   nextVoiceStatus,
   parseVoiceEvent,
   pcm16ToFloat32,
+  recordVoiceLatencyBudgetMiss,
+  resetVoiceLatencyBudgetMissCountForTests,
+  voiceLatencyBudgetMs,
   VOICE_CONNECTION_LOST_REASON,
   VOICE_FAILED_REASON,
   VOICE_IDLE,
@@ -167,6 +171,33 @@ test("a confidence event passes through unchanged — not this ticket's state to
     event: { type: "confidence", value: 0.4 },
   });
   assert.equal(result, transcribing);
+});
+
+// --- voiceLatencyBudgetMs ------------------------------------------------------
+
+test("accelerated gets the 3.5s budget", () => {
+  assert.equal(voiceLatencyBudgetMs("accelerated"), 3500);
+});
+
+test("standard gets the 8s budget", () => {
+  assert.equal(voiceLatencyBudgetMs("standard"), 8000);
+});
+
+test("an unknown or unrecognised profile falls back to the standard 8s budget", () => {
+  assert.equal(voiceLatencyBudgetMs(null), 8000);
+  assert.equal(voiceLatencyBudgetMs("light"), 8000);
+  assert.equal(voiceLatencyBudgetMs("workstation"), 8000);
+});
+
+// --- voice latency budget-miss counter ------------------------------------------
+
+test("recordVoiceLatencyBudgetMiss tallies locally only", () => {
+  resetVoiceLatencyBudgetMissCountForTests();
+  assert.equal(getVoiceLatencyBudgetMissCount(), 0);
+  recordVoiceLatencyBudgetMiss();
+  recordVoiceLatencyBudgetMiss();
+  assert.equal(getVoiceLatencyBudgetMissCount(), 2);
+  resetVoiceLatencyBudgetMissCountForTests();
 });
 
 // --- PCM conversion -----------------------------------------------------------

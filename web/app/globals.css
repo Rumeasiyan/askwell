@@ -381,6 +381,25 @@
     opacity: 1;
   }
 
+  /* Past-latency-budget indicator (`voice.md` §4 #15, `M6-VUI-FE-134`):
+     fades in rather than snapping, and is otherwise invisible — no layout
+     reservation, since it must render on zero healthy turns. */
+  .ask-mic-latency {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    width: max-content;
+    max-width: 220px;
+    color: var(--muted);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 240ms ease;
+  }
+
+  .ask-mic-latency[data-visible="true"] {
+    opacity: 1;
+  }
+
   .ask-sr-only {
     position: absolute;
     width: 1px;
