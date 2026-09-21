@@ -22,6 +22,7 @@ from askwell.health import ComponentState, check_components
 from askwell.ingest import register_ingest
 from askwell.interface import register_interface
 from askwell.log_budget import register_log_budget
+from askwell.log_export import register_log_export
 from askwell.logging import configure_logging, get_logger
 from askwell.memory import register_memory
 from askwell.middleware import register_session
@@ -121,6 +122,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_setup(app, resolved, app.state.sessions)
     register_probe(app, resolved, app.state.sessions)
     register_log_budget(app, resolved, app.state.sessions)
+    register_log_export(app, resolved, app.state.sessions)
     register_passphrase(app, resolved, app.state.sessions)
     register_voice_channel(
         app,

@@ -33,6 +33,7 @@ EXPECTED_TABLES = {
     "fact_usage",
     "audit_decisions",
     "audit_interactions",
+    "export_jobs",
 }
 
 

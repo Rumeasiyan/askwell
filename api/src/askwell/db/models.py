@@ -656,6 +656,53 @@ class ReapplyItem(Base):
     done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class ExportJob(Base):
+    """One log export: both audit stores, streamed to disk, zipped with a
+    standalone verifier. `M7-LOG-BE-155`.
+
+    Same reasoning as `IngestJob`/`ReapplyJob`: `arq` dispatches, this table
+    records, and `askwell.log_export.resume` returns a job a dead worker was
+    holding back to `queued` rather than losing it.
+    """
+
+    __tablename__ = "export_jobs"
+    __table_args__ = (
+        _one_of("status", ("queued", "running", "done", "failed"), "status"),
+        # `dispatch`'s and `resume`'s own query: unfinished jobs. Partial,
+        # matching `ix_reapply_jobs_pending` — finished rows accumulate and
+        # are never the answer.
+        Index(
+            "ix_export_jobs_pending",
+            "created_at",
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default=text("'queued'"))
+    since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    decisions_total: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    decisions_done: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    interactions_total: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    interactions_done: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+
+    file_path: Mapped[str | None] = mapped_column(Text)
+    file_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    error: Mapped[str | None] = mapped_column(Text)
+
+    created_at_: Mapped[datetime] = mapped_column(
+        "created_at", DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 # --- conversations ----------------------------------------------------------
 
 
