@@ -1,0 +1,345 @@
+#!/usr/bin/env python3
+"""Askwell's hardware probe. Runs on the host, natively. `M7-PROBE-DEPLOY-137`.
+
+**Why this cannot run in a container**, the same reason inference is native
+(`deploy/inference/askwell-inference`, `docs/architecture.md` §6): a container
+sees the cgroup's or the VM's view of memory, not the machine's, and a wrong
+profile is worse than a missing one. So this refuses outright when it detects
+it is running inside one, rather than reporting a plausible-looking number
+that is actually the container's ceiling.
+
+**Why stdlib only**: the host's Python is not ours to choose — see
+`deploy/inference/askwell-inference`'s docstring, same reasoning, same
+constraint.
+
+**What it does not try to do**: size VRAM precisely, or recognise every
+accelerator that exists. An accelerator this cannot name is treated as
+absent, stated as such, and the user can always override the profile
+(`docs/build-plan.md` M7-PROBE-DEPLOY-137's own edge case) — that is cheaper
+and more honest than a detection matrix that is wrong on day one for whatever
+shipped after it was written.
+
+Configuration comes from the environment, with the same ASKWELL_ names the
+application uses. Writes its result as JSON to `ASKWELL_PROBE_RESULT_PATH`
+(`/run/askwell/probe.json` by default — the same bind mount the inference
+socket and install key already share), which `askwell.probe` on the API side
+reads. A file rather than an endpoint, for the same reason as
+`askwell.inference.state`: this runs on the host and the API can only reach
+it through a shared mount, never a socket of its own.
+
+`--watch` keeps it running and re-probes whenever the API's `POST /probe/
+rerun` touches the request flag next to the result file — the settings
+screen's "re-run on demand" (`docs/ux/settings.md` §2), without needing a
+container to start a host process, which it cannot do.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import json
+import os
+import platform
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+# The four profiles, exactly as `docs/architecture.md` §6 documents them.
+# Kept in step with `askwell.probe.PROFILES` — this script is standalone
+# stdlib and cannot import that module, so a test asserts they have not
+# drifted, the same shape as `askwell.inference.state.ProcessState`.
+LIGHT = "light"
+STANDARD = "standard"
+ACCELERATED = "accelerated"
+WORKSTATION = "workstation"
+
+LIGHT_FLOOR_GB = 8.0
+STANDARD_FLOOR_GB = 16.0
+WORKSTATION_FLOOR_GB = 32.0
+ACCELERATED_VRAM_FLOOR_GB = 8.0
+WORKSTATION_VRAM_FLOOR_GB = 16.0
+
+REQUEST_FLAG = "probe-rerun-request"
+POLL_SECONDS = 1.0
+
+
+def env(name: str, default: str) -> str:
+    return os.environ.get(name, default)
+
+
+def in_container() -> bool:
+    """Best-effort, and only ever used to refuse — a false negative here
+    means a wrong profile; a false positive means an error message telling
+    someone to run this on the host, which is what they should do anyway.
+    """
+    if Path("/.dockerenv").exists() or Path("/run/.containerenv").exists():
+        return True
+    try:
+        cgroup = Path("/proc/1/cgroup").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return any(marker in cgroup for marker in ("docker", "containerd", "kubepods", "libpod"))
+
+
+# --- measurement --------------------------------------------------------
+
+
+def detect_memory() -> tuple[float | None, str]:
+    """Total RAM in GB, and where the number came from.
+
+    The source is stated rather than the reading being second-guessed: a
+    virtual machine that reports its host's memory dishonestly is not this
+    script's problem to solve — the ticket's own edge case says to use the
+    value and state the source, not to detect virtualisation.
+    """
+    system = platform.system()
+
+    if system == "Linux":
+        try:
+            with open("/proc/meminfo", encoding="utf-8") as handle:
+                for line in handle:
+                    if line.startswith("MemTotal:"):
+                        kib = int(line.split()[1])
+                        return kib / (1024 * 1024), "/proc/meminfo"
+        except (OSError, ValueError, IndexError):
+            return None, "/proc/meminfo could not be read"
+        return None, "/proc/meminfo had no MemTotal line"
+
+    if system == "Darwin":
+        try:
+            result = subprocess.run(
+                ["sysctl", "-n", "hw.memsize"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=True,
+            )
+            return int(result.stdout.strip()) / (1024**3), "sysctl hw.memsize"
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return None, "sysctl hw.memsize failed"
+
+    if system == "Windows":
+        try:
+            import ctypes
+
+            class _MemoryStatusEx(ctypes.Structure):
+                _fields_ = (
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                )
+
+            status = _MemoryStatusEx()
+            status.dwLength = ctypes.sizeof(_MemoryStatusEx)
+            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            if not kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return None, "GlobalMemoryStatusEx failed"
+            return status.ullTotalPhys / (1024**3), "GlobalMemoryStatusEx"
+        except (OSError, ValueError, AttributeError):
+            return None, "GlobalMemoryStatusEx unavailable"
+
+    return None, f"unrecognised platform {system!r}"
+
+
+def detect_cpu() -> dict[str, Any]:
+    return {
+        "processor": platform.processor() or platform.machine() or "unknown",
+        "machine": platform.machine(),
+        "cores": os.cpu_count(),
+    }
+
+
+def _nvidia_vram_gb() -> float | None:
+    if shutil.which("nvidia-smi") is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    first_line = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
+    try:
+        return int(first_line.strip()) / 1024
+    except ValueError:
+        return None
+
+
+def detect_accelerator(ram_gb: float | None) -> dict[str, Any]:
+    """Best-effort. Unrecognised hardware is reported absent, not guessed at.
+
+    NVIDIA is the only case with a real VRAM figure. Apple Silicon has no
+    discrete VRAM to query — it is unified memory, and Metal can draw on
+    close to the whole pool, so the RAM figure doubles as its ceiling rather
+    than leaving `vram_gb` null and having a Mac with a GPU read as having
+    none. ROCm is detected but not sized, same caveat `askwell.hardware`
+    already carries for the in-container interim probe: presence without a
+    number, treated the same as an NVIDIA card whose VRAM query failed.
+    """
+    if shutil.which("nvidia-smi") is not None:
+        return {
+            "present": True,
+            "kind": "nvidia",
+            "vram_gb": _nvidia_vram_gb(),
+            "source": "nvidia-smi",
+        }
+
+    if platform.system() == "Darwin" and platform.machine() == "arm64":
+        return {
+            "present": True,
+            "kind": "apple-silicon",
+            "vram_gb": ram_gb,
+            "source": "unified-memory",
+        }
+
+    if shutil.which("rocm-smi") is not None:
+        return {"present": True, "kind": "rocm", "vram_gb": None, "source": "rocm-smi"}
+
+    return {"present": False, "kind": None, "vram_gb": None, "source": "not detected"}
+
+
+def detect_disk(path: Path) -> float:
+    return shutil.disk_usage(path).free / (1024**3)
+
+
+# --- selection -----------------------------------------------------------
+
+
+def select_profile(ram_gb: float | None, accelerator: dict[str, Any]) -> tuple[str, str, bool]:
+    """Profile, reason, and whether detection failed outright.
+
+    Detection failure — `ram_gb` is `None` — is different from a real reading
+    under the `light` floor. The ticket and `docs/architecture.md` §6 are
+    explicit that a failure falls back to `standard`, stated; a genuine
+    under-floor reading still gets `light`, with the warn-and-continue
+    behaviour that belongs to the installer UI (`M7-PROBE-FE-138`), not to
+    this module — this only states the fact via `reason`.
+    """
+    if ram_gb is None:
+        return (
+            STANDARD,
+            "Memory could not be measured on this machine. Defaulting to "
+            "the standard profile.",
+            True,
+        )
+
+    vram_gb = accelerator.get("vram_gb")
+    accelerator_present = bool(accelerator.get("present"))
+    has_vram = isinstance(vram_gb, (int, float))
+
+    if ram_gb < LIGHT_FLOOR_GB:
+        return (
+            LIGHT,
+            f"{ram_gb:.1f} GB is below the {LIGHT_FLOOR_GB:.0f} GB floor. "
+            f"Askwell will run, but slowly.",
+            False,
+        )
+
+    if (
+        ram_gb >= WORKSTATION_FLOOR_GB
+        and accelerator_present
+        and has_vram
+        and vram_gb >= WORKSTATION_VRAM_FLOOR_GB
+    ):
+        return WORKSTATION, f"{ram_gb:.1f} GB RAM, {vram_gb:.1f} GB VRAM.", False
+
+    if (
+        ram_gb >= STANDARD_FLOOR_GB
+        and accelerator_present
+        and (not has_vram or vram_gb >= ACCELERATED_VRAM_FLOOR_GB)
+    ):
+        vram_note = f", {vram_gb:.1f} GB VRAM." if has_vram else " (VRAM not measured)."
+        return ACCELERATED, f"{ram_gb:.1f} GB RAM with an accelerator{vram_note}", False
+
+    if ram_gb >= STANDARD_FLOOR_GB:
+        return STANDARD, f"{ram_gb:.1f} GB RAM, no usable accelerator.", False
+
+    return LIGHT, f"{ram_gb:.1f} GB RAM, no usable accelerator.", False
+
+
+def probe_once(disk_path: Path) -> dict[str, Any]:
+    ram_gb, ram_source = detect_memory()
+    accelerator = detect_accelerator(ram_gb)
+    profile, reason, detection_failed = select_profile(ram_gb, accelerator)
+
+    return {
+        "profile": profile,
+        "reason": reason,
+        "detection_failed": detection_failed,
+        "below_floor": ram_gb is not None and ram_gb < LIGHT_FLOOR_GB,
+        "ram_gb": ram_gb,
+        "ram_source": ram_source,
+        "cpu": detect_cpu(),
+        "accelerator": accelerator,
+        "disk_free_gb": detect_disk(disk_path),
+        "disk_path": str(disk_path),
+        "platform": platform.system(),
+        "probed_at": time.time(),
+    }
+
+
+# --- publishing ------------------------------------------------------------
+
+
+def _write(path: Path, payload: dict[str, Any]) -> None:
+    """Atomic, like `askwell-inference`'s state file: a reader must never see
+    a half-written result."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".partial")
+    temporary.write_text(json.dumps(payload), encoding="utf-8")
+    os.replace(temporary, path)
+    os.chmod(path, 0o644)
+
+
+def main(argv: list[str]) -> int:
+    if in_container():
+        print(
+            "askwell-probe: refusing to run inside a container — it would "
+            "report the container's view of memory, not the machine's "
+            "(docs/architecture.md §6). Run this on the host: "
+            "scripts/dev.sh probe",
+            file=sys.stderr,
+        )
+        return 1
+
+    result_path = Path(env("ASKWELL_PROBE_RESULT_PATH", "/run/askwell/probe.json"))
+    disk_path = Path(env("ASKWELL_PROBE_DISK_PATH", "~")).expanduser()
+    watch = "--watch" in argv
+
+    result = probe_once(disk_path)
+    _write(result_path, result)
+    print(json.dumps(result, indent=2))
+
+    if not watch:
+        return 0
+
+    request_path = result_path.parent / REQUEST_FLAG
+    print(f"askwell-probe: watching for rerun requests at {request_path}", flush=True)
+    try:
+        while True:
+            time.sleep(POLL_SECONDS)
+            if request_path.exists():
+                with contextlib.suppress(OSError):
+                    request_path.unlink()
+                result = probe_once(disk_path)
+                _write(result_path, result)
+                print(f"askwell-probe: re-probed — {result['profile']}", flush=True)
+    except KeyboardInterrupt:
+        print("askwell-probe: stopped", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

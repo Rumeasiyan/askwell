@@ -371,6 +371,25 @@ case "$cmd" in
             exec python3 "$REPO_ROOT/deploy/inference/askwell-inference" "$@"
         ;;
 
+    probe)
+        # Runs on the host, not in a container — a container sees the
+        # cgroup's or the VM's view of memory, not the machine's
+        # (docs/architecture.md §6). stdlib-only, same reasoning as
+        # `inference` above.
+        command -v python3 >/dev/null 2>&1 || die "python3 is needed on the host to run the probe"
+
+        mkdir -p "$REPO_ROOT/.run"
+        note "hardware probe, on the host (not a container)"
+        note "result: $REPO_ROOT/.run/probe.json"
+
+        set -a
+        # shellcheck disable=SC1091
+        [ -f "$REPO_ROOT/.env" ] && . "$REPO_ROOT/.env"
+        set +a
+        ASKWELL_PROBE_RESULT_PATH="$REPO_ROOT/.run/probe.json" \
+            exec python3 "$REPO_ROOT/deploy/probe/askwell-probe" "$@"
+        ;;
+
     psql)
         "$CONTAINER" compose exec "${TTY_FLAGS[@]}" postgres \
             psql -U "$(_db_user)" -d "$(_db_name)" "$@"
