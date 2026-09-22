@@ -57,15 +57,66 @@ test("escalateWebSearch maps the server's snake_case outcome", () => {
   return withFetch(
     () =>
       new Response(
-        JSON.stringify({ status: "ok", reason: null, result_count: 3 }),
+        JSON.stringify({
+          status: "ok",
+          reason: null,
+          result_count: 3,
+          answer_text: null,
+          citations: [],
+        }),
         { status: 200 },
       ),
     () =>
       escalateWebSearch("message-1", "what changed in the 2026 tariff schedule?").then(
         (outcome) => {
-          assert.deepEqual(outcome, { status: "ok", reason: null, resultCount: 3 });
+          assert.deepEqual(outcome, {
+            status: "ok",
+            reason: null,
+            resultCount: 3,
+            answerText: null,
+            citations: [],
+          });
         },
       ),
+  );
+});
+
+test("escalateWebSearch maps a generated answer's citations, ordinal included", () => {
+  return withFetch(
+    () =>
+      new Response(
+        JSON.stringify({
+          status: "ok",
+          reason: null,
+          result_count: 1,
+          answer_text: "The statutory minimum is four weeks [1].",
+          citations: [
+            {
+              claim_ordinal: 1,
+              domain: "gov.example",
+              title: "Notice periods",
+              url: "https://gov.example/notice",
+              passage: "Four weeks is the statutory minimum.",
+              retrieved_at: "2026-09-22T10:00:00Z",
+            },
+          ],
+        }),
+        { status: 200 },
+      ),
+    () =>
+      escalateWebSearch("message-1", "what is the statutory minimum notice?").then((outcome) => {
+        assert.equal(outcome.answerText, "The statutory minimum is four weeks [1].");
+        assert.deepEqual(outcome.citations, [
+          {
+            claimOrdinal: 1,
+            domain: "gov.example",
+            title: "Notice periods",
+            url: "https://gov.example/notice",
+            passage: "Four weeks is the statutory minimum.",
+            retrievedAt: "2026-09-22T10:00:00Z",
+          },
+        ]);
+      }),
   );
 });
 

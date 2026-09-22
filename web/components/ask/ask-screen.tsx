@@ -10,6 +10,8 @@ import { InlineSourceCards, useRaised } from "@/components/ask/provenance-margin
 import { SqlQueryCard, SqlResultTable } from "@/components/ask/sql-result-table";
 import { TraceToggle } from "@/components/ask/trace-panel";
 import { MicControl } from "@/components/ask/voice-control";
+import { useWebRaised } from "@/components/ask/web-pairing";
+import { WebResultsRegion } from "@/components/ask/web-result";
 import { EvidenceBlock } from "@/components/clarifications/clarifications-screen";
 import {
   isConflict,
@@ -1229,6 +1231,41 @@ function AbstentionState({ turn }: { turn: AskTurn }) {
         ))}
       </div>
       <EscalationOffer turn={turn} addSourceLabel={label} />
+      <WebAnswerBlock turn={turn} />
+    </div>
+  );
+}
+
+/**
+ * The escalation's own answer, once one exists — `null` renders nothing, so
+ * an un-escalated abstention or partial answer is untouched by this
+ * component's presence. `M6.5-WEB-FE-191`.
+ *
+ * **The abstention/uncovered-aspects text above stays exactly as it was.**
+ * This never replaces it — `turn.answer` (what `isAbstained`/`AnswerProse`
+ * above already render) is never touched by an escalation, deliberately
+ * (`ask-state.tsx`'s own `webAnswer` field docstring): the honest local
+ * answer is not smoothed away by a web one arriving beside it.
+ *
+ * `ordinalOffset` is computed here, once, from `turn.answer` alone — never
+ * from `turn.webAnswer` growing across more than one escalation, because
+ * `segmentClaims` re-run on the *whole*, ever-growing `turn.webAnswer` on
+ * every render already numbers a second escalation's own claims correctly
+ * relative to the first (`AnswerProse`'s own docstring) — adding the base
+ * offset a second time here would double-count them.
+ */
+function WebAnswerBlock({ turn }: { turn: AskTurn }) {
+  const ordinalOffset = useMemo(() => segmentClaims(turn.answer).length, [turn.answer]);
+  if (turn.webAnswer === null) return null;
+  return (
+    <div className="flex flex-col gap-3">
+      <AnswerProse
+        turnId={turn.id}
+        text={turn.webAnswer}
+        factChips={[]}
+        ordinalOffset={ordinalOffset}
+      />
+      <WebResultsRegion turnId={turn.id} results={turn.webCitations} />
     </div>
   );
 }
@@ -1269,6 +1306,7 @@ function EscalationOffer({
   const [webStatus, setWebStatus] = useState<"idle" | "sending" | WebSearchEscalationOutcome["status"]>(
     "idle",
   );
+  const { applyWebAnswer } = useAsk();
 
   useEffect(() => {
     recordWebSearchOfferMade();
@@ -1284,7 +1322,16 @@ function EscalationOffer({
     recordWebSearchOfferAccepted();
     setWebStatus("sending");
     escalateWebSearch(turn.serverId, turn.question)
-      .then((outcome) => setWebStatus(outcome.status))
+      .then((outcome) => {
+        setWebStatus(outcome.status);
+        // `M6.5-WEB-FE-191`: `outcome.answerText` is `null` whenever there
+        // was nothing to generate from (`status !== "ok"`) or the model
+        // could not be reached (`websearch.py`'s own degrade-rather-than-
+        // fail path) — either way, nothing to fold into the turn.
+        if (outcome.answerText !== null) {
+          applyWebAnswer(turn.id, outcome.answerText, outcome.citations);
+        }
+      })
       .catch(() => setWebStatus("unavailable"));
   };
 
@@ -1426,6 +1473,7 @@ function AnsweredContent({ turn }: { turn: AskTurn }) {
       {partial && turn.status === "completed" ? (
         <EscalationOffer turn={turn} addSourceLabel={addSourceActionLabel(turn.dbState)} />
       ) : null}
+      {partial ? <WebAnswerBlock turn={turn} /> : null}
       {conflict ? <ResolveOffer topic={annotations.conflictTopic!} citations={turn.citations} /> : null}
       {annotations.resolvedByMemory !== null ? (
         <ResolvedByMemoryNote fact={annotations.resolvedByMemory} />
@@ -1561,25 +1609,39 @@ function ResolveOffer({ topic, citations }: { topic: string; citations: Citation
  * re-run on every render rather than incrementally, the same "recompute
  * against the growing prefix" approach the server itself uses, and just as
  * cheap at answer length.
+ *
+ * `ordinalOffset` (`M6.5-WEB-FE-191`, default 0) is what lets this same
+ * component render the escalation's own web-sourced text too
+ * (`AbstentionState`/`AnsweredContent`, below): `text`'s own claims are
+ * numbered locally from 1 by `segmentClaims`, and the offset shifts them
+ * into the shared numbering space `askwell.websearch.ask_escalate_web`
+ * already used when it counted the turn's existing claims server-side —
+ * the two sides agree without either naming a number to the other, the same
+ * "identical deterministic scan" property the base case already relies on.
+ * `factChips` is always `[]` for that call: a web claim has no memory fact
+ * to chip, only ever a citation into `WebResultsRegion`.
  */
 function AnswerProse({
   turnId,
   text,
   factChips,
+  ordinalOffset = 0,
 }: {
   turnId: string;
   text: string;
   factChips: FactChip[];
+  ordinalOffset?: number;
 }) {
   const claims = useMemo(() => segmentClaims(text), [text]);
 
   const nodes: ReactNode[] = [];
   let cursor = 0;
   for (const claim of claims) {
+    const ordinal = ordinalOffset + claim.ordinal;
     if (claim.start > cursor) nodes.push(text.slice(cursor, claim.start));
-    const chipsForClaim = factChips.filter((chip) => chip.claimOrdinal === claim.ordinal);
+    const chipsForClaim = factChips.filter((chip) => chip.claimOrdinal === ordinal);
     nodes.push(
-      <ClaimSpan key={`claim-${claim.ordinal}`} turnId={turnId} ordinal={claim.ordinal}>
+      <ClaimSpan key={`claim-${ordinal}`} turnId={turnId} ordinal={ordinal}>
         {claim.text}
         {claim.terminator}
       </ClaimSpan>,
@@ -1600,6 +1662,16 @@ function AnswerProse({
  * `M1-CITE-FE-044`). `tabIndex={0}` is what makes the second half of that
  * true without a pointer — the ticket's own "keyboard focus produces the
  * same pairing".
+ *
+ * **`raised` ORs the document pairing with the web one** (`M6.5-WEB-FE-191`):
+ * `useRaised` (document citations) and `useWebRaised` (web citations,
+ * `web-pairing.tsx`) each look only at their own kind's pairs, and a claim
+ * ordinal only ever appears in one of the two lists — the turn's document
+ * claims and its web claims share one numbering space but never one entry
+ * in it — so exactly one of the two ever returns `true` for a given span.
+ * Never across them: a document claim can never raise a web card, and a web
+ * claim can never raise a margin card, by construction rather than a check
+ * either hook makes.
  */
 function ClaimSpan({
   turnId,
@@ -1613,7 +1685,12 @@ function ClaimSpan({
   const claimKey = `${turnId}:${ordinal}`;
   const ref = useClaimRef(claimKey);
   const { onHover, onUnhover } = useHoverHandlers(claimKey);
-  const raised = useRaised(claimKey);
+  // Both called unconditionally, every render — `||` on the two *results*
+  // rather than short-circuiting which hook runs, since a short-circuited
+  // `useWebRaised` call would violate the rules of hooks.
+  const documentRaised = useRaised(claimKey);
+  const webRaised = useWebRaised(claimKey);
+  const raised = documentRaised || webRaised;
   return (
     <span
       ref={ref}

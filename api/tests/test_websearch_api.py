@@ -14,18 +14,50 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
+from askwell import websearch
 from askwell.config import Settings
+from askwell.websearch import FixtureWebSearchProvider, WebSearchResult
 
-from .test_ask_api import _app, _truncate, _with_session
+from .test_ask_api import _app, _FakeInferenceClient, _truncate, _with_session
 from .test_websearch import _GrantCalls, grant_calls  # noqa: F401 — fixture, used implicitly
 
 pytestmark = pytest.mark.requires_db
+
+
+def _web_result(passage: str = "The statutory minimum is four weeks.") -> WebSearchResult:
+    return WebSearchResult(
+        source="gov.example",
+        title="Notice periods",
+        url="https://gov.example/notice",
+        passage=passage,
+        retrieved_at=datetime(2026, 9, 22, 12, 0, 0, tzinfo=UTC),
+    )
+
+
+def _patch_results(
+    monkeypatch: pytest.MonkeyPatch, question: str, results: list[WebSearchResult]
+) -> None:
+    """Makes the "fixture" provider name build one preloaded with `results`
+    for `question` — `FixtureWebSearchProvider`'s own constructor argument has
+    no config-file route in, so an HTTP-level test that needs `status == "ok"`
+    has to reach past `Settings.web_search_provider` this way. `M6.5-WEB-FE-191`."""
+    monkeypatch.setitem(
+        websearch._PROVIDERS, "fixture", lambda: FixtureWebSearchProvider({question: results})
+    )
+
+
+def _patch_generation(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings, tokens: list[str]
+) -> None:
+    fake = _FakeInferenceClient(settings, tokens=tokens, vector=[])
+    monkeypatch.setattr(websearch, "InferenceClient", lambda _settings: fake)
 
 
 def _seed_conversation(database_url: str) -> uuid.UUID:
@@ -156,6 +188,96 @@ def test_escalating_a_partial_answer_succeeds(
     )
     response = client.post(f"/ask/{message_id}/escalate/web", json={"question": "renewal terms?"})
     assert response.status_code == 200
+
+
+def test_escalating_an_abstained_turn_with_results_generates_an_answer_and_records_citations(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    database_url: str,
+    grant_calls: _GrantCalls,  # noqa: F811 — parameter shadows the fixture import
+) -> None:
+    """`M6.5-WEB-FE-191`: once there is something to generate from, the
+    endpoint returns the escalation's own answer and citations, not just a
+    result count — `WebResultsRegion` (`M6.5-WEB-FE-190`) has nothing to
+    render from the bare `"ok"` status the earlier tests in this file only
+    ever produce."""
+    _truncate(database_url)
+    question = "what is the statutory minimum notice?"
+    _patch_results(monkeypatch, question, [_web_result()])
+    client = _fixture_client(settings, monkeypatch, tmp_path, database_url)
+    _patch_generation(monkeypatch, settings, ["The statutory minimum is four weeks ", "[1]."])
+
+    conversation_id = _seed_conversation(database_url)
+    message_id = _seed_message(
+        database_url,
+        conversation_id,
+        content="",
+        trace={
+            "status": "completed",
+            "reason": "Nothing in your files answers this.",
+            "partial_coverage": False,
+        },
+    )
+    response = client.post(f"/ask/{message_id}/escalate/web", json={"question": question})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["answer_text"] == "The statutory minimum is four weeks [1]."
+    assert body["citations"] == [
+        {
+            "claim_ordinal": 1,  # the stored answer was empty — nothing to offset past
+            "domain": "gov.example",
+            "title": "Notice periods",
+            "url": "https://gov.example/notice",
+            "passage": "The statutory minimum is four weeks.",
+            "retrieved_at": "2026-09-22T12:00:00+00:00",
+        }
+    ]
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        content = db.execute(
+            "SELECT content FROM messages WHERE id = %s", (message_id,)
+        ).fetchone()[0]
+        stored = db.execute(
+            "SELECT claim_ordinal, url FROM web_citations WHERE message_id = %s", (message_id,)
+        ).fetchall()
+    assert content == "\n\nThe statutory minimum is four weeks [1]."
+    assert stored == [(1, "https://gov.example/notice")]
+
+
+def test_escalating_a_partial_answer_offsets_web_claim_ordinals_past_the_documented_ones(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    database_url: str,
+    grant_calls: _GrantCalls,  # noqa: F811 — parameter shadows the fixture import
+) -> None:
+    """The turn's stored answer already carries one claim (`"[1]"` on the
+    notice-period sentence); the escalation's own claim must not reuse that
+    ordinal — `ClaimSpan`'s hover pairing (`ask-screen.tsx`) depends on a
+    claim ordinal naming exactly one kind of source, never both
+    (`M6.5-WEB-FE-191`)."""
+    _truncate(database_url)
+    question = "renewal terms?"
+    _patch_results(monkeypatch, question, [_web_result("Renewal requires thirty days' notice.")])
+    client = _fixture_client(settings, monkeypatch, tmp_path, database_url)
+    _patch_generation(monkeypatch, settings, ["Renewal requires thirty days ", "[1]."])
+
+    conversation_id = _seed_conversation(database_url)
+    message_id = _seed_message(
+        database_url,
+        conversation_id,
+        content="The notice period is ninety days [1]. Not covered: renewal terms.",
+        trace={"status": "completed", "reason": None, "partial_coverage": True},
+    )
+    response = client.post(f"/ask/{message_id}/escalate/web", json={"question": question})
+    assert response.status_code == 200
+    body = response.json()
+    # One claim already existed in the stored answer ("The notice period is
+    # ninety days [1]."); the web claim continues from there rather than
+    # restarting at 1.
+    assert body["citations"][0]["claim_ordinal"] == 2
 
 
 def test_web_search_settings_reflects_no_provider_configured(

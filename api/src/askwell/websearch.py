@@ -42,7 +42,7 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -51,10 +51,19 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from askwell import egress
+from askwell.agent.claims import segment_claims
 from askwell.audit import Store, record
 from askwell.config import ConfigurationError, Settings
 from askwell.db.engine import session_scope
+from askwell.inference.client import InferenceClient, InferenceFailed, InferenceUnavailable
 from askwell.logging import get_logger
+
+# `askwell.agent.compose` imports `WebSearchResult` from this module — a
+# module-level import the other way would be circular, since it would run
+# while this module is still mid-definition (`WebSearchResult` not yet bound)
+# whenever something imports `askwell.websearch` first. Deferred into
+# `compose_and_generate_web_answer` below instead, where both modules have
+# already finished loading.
 
 log = get_logger(__name__)
 
@@ -344,12 +353,14 @@ async def record_web_citations(
     .md` ticket `M6.5-WEB-BE-189`'s own Scope: "written in the same
     transaction as the answer they support").
 
-    **Never called again for the same message.** `web_citations` has no
-    update path anywhere in this codebase — a stored web result is written
-    once and stands as the record of what was read and when, not what a page
-    says now (`docs/web-search.md` §4). Reading it back later touches no
-    network at all: every value this writes is already what the caller has
-    in hand.
+    **No update path anywhere in this codebase.** A stored web result is
+    written once and stands as the record of what was read and when, not
+    what a page says now (`docs/web-search.md` §4) — calling this again for
+    the same `message_id`, once per accepted escalation on that turn
+    (`ask_escalate_web`'s own "search the web" twice edge case), adds more
+    rows rather than ever touching an earlier one. Reading it back later
+    touches no network at all: every value this writes is already what the
+    caller has in hand.
     """
     for row in records:
         await db.execute(
@@ -370,6 +381,57 @@ async def record_web_citations(
                 "retrieved_at": row.retrieved_at,
             },
         )
+
+
+async def compose_and_generate_web_answer(
+    settings: Settings,
+    *,
+    question: str,
+    results: Sequence[WebSearchResult],
+    client: InferenceClient | None = None,
+) -> tuple[str, list[WebCitationRecord]] | None:
+    """The escalation's own answer, generated from `results` alone —
+    `M6.5-WEB-FE-191`. `None` when the model could not be reached at all, the
+    same `InferenceUnavailable`/`InferenceFailed` distinction
+    `askwell.ask._run_generation` already treats as recoverable rather than
+    fatal: the escalation itself still succeeded (the fetch happened, the
+    grant opened and closed, the interaction is on the record), only the
+    answer over it could not be composed, so the caller degrades rather than
+    losing the whole response to an unhandled error.
+
+    A second, narrower generation call rather than re-running the turn's own
+    — the candidates that produced the original abstained or partial answer
+    are not available here to recombine into one prompt (`docs/decisions.md`,
+    this date). `compose_web_answer` (`askwell.agent.compose`) reuses the same
+    `answer_composition.v1.md` system prompt and the same `<web-content>`
+    delimitation every other turn's generation already carries, so a claim
+    drawn from `results` is bound by the identical C7 boundary.
+
+    **Claim ordinals in the returned records are local to this answer alone**
+    — 1-based, counting only this text's own claim-bearing sentences
+    (`askwell.agent.claims.segment_claims`). `ask_escalate_web` is what
+    offsets them into the turn's shared numbering space, once it knows how
+    many claims the turn's stored answer already carries; this function has
+    no reason to know that and stays testable without it.
+    """
+    # Deferred: `askwell.agent.compose` imports `WebSearchResult` from this
+    # module, so a module-level import here would be circular.
+    from askwell.agent.compose import compose_web_answer
+
+    used_client = client if client is not None else InferenceClient(settings)
+    composed = compose_web_answer(question, results)
+    prompt = f"{composed.system_prompt}\n\n{composed.user_content}"
+    try:
+        completion = await used_client.generate(prompt, max_tokens=settings.generation_max_tokens)
+    except (InferenceUnavailable, InferenceFailed):
+        return None
+
+    records: list[WebCitationRecord] = []
+    for claim in segment_claims(completion.text):
+        for index in claim.indices:
+            if 1 <= index <= len(results):
+                records.append(web_citation_record(results[index - 1], claim.ordinal))
+    return completion.text, records
 
 
 class WebEscalateRequest(BaseModel):
@@ -467,10 +529,76 @@ def register_web_search(
                 question=body.question,
             )
 
+            # `M6.5-WEB-FE-191`: results alone are not an answer — the
+            # margin cites a passage, but this endpoint used to hand the
+            # browser nothing to cite a web result *as* a claim with, so
+            # `WebResultsRegion` (`M6.5-WEB-FE-190`) had nowhere to be
+            # rendered from. Generated only when there is something usable
+            # to generate from — `"no_results"`/`"unavailable"` leave
+            # `answer_text`/`citation_payload` at their defaults, which is
+            # `M6.5-WEB-FE-192`'s own states to render, untouched here.
+            answer_text: str | None = None
+            citation_payload: list[dict[str, Any]] = []
+            if outcome.status == "ok":
+                generated = await compose_and_generate_web_answer(
+                    settings, question=body.question, results=outcome.results
+                )
+                if generated is not None:
+                    web_text, local_records = generated
+                    if local_records:
+                        # `content` still names the turn's answer as it stood
+                        # immediately before this escalation. An earlier
+                        # escalation on the same turn has already appended
+                        # its own text to it (the `UPDATE` below) by the time
+                        # a second one runs, so counting claims in `content`
+                        # here continues the turn's shared ordinal space
+                        # rather than restarting it — the same "read back
+                        # what is already there" approach this endpoint
+                        # already takes to `content`/`trace` above.
+                        ordinal_offset = len(segment_claims(content))
+                        offset_records = [
+                            WebCitationRecord(
+                                claim_ordinal=ordinal_offset + local.claim_ordinal,
+                                domain=local.domain,
+                                title=local.title,
+                                url=local.url,
+                                passage=local.passage,
+                                retrieved_at=local.retrieved_at,
+                            )
+                            for local in local_records
+                        ]
+                        await record_web_citations(
+                            db, message_id=message_id, records=offset_records
+                        )
+                        # Persisted so a second escalation's own `content`
+                        # read (above, next time this endpoint runs) and a
+                        # reload within the same session both see the full
+                        # answer — `messages.content` is already updated this
+                        # way at the end of an ordinary turn's own generation
+                        # (`ask.py`), not a pattern invented here.
+                        await db.execute(
+                            text("UPDATE messages SET content = content || :suffix WHERE id = :id"),
+                            {"suffix": f"\n\n{web_text}", "id": message_id},
+                        )
+                        answer_text = web_text
+                        citation_payload = [
+                            {
+                                "claim_ordinal": record_.claim_ordinal,
+                                "domain": record_.domain,
+                                "title": record_.title,
+                                "url": record_.url,
+                                "passage": record_.passage,
+                                "retrieved_at": record_.retrieved_at.isoformat(),
+                            }
+                            for record_ in offset_records
+                        ]
+
         return JSONResponse(
             {
                 "status": outcome.status,
                 "reason": outcome.reason,
                 "result_count": len(outcome.results),
+                "answer_text": answer_text,
+                "citations": citation_payload,
             }
         )

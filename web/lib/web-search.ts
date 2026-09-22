@@ -1,25 +1,49 @@
+import type { WebCitationEntry } from "@/lib/web-citations";
+
 /**
  * The escalation offer's client side. `M6.5-WEB-FE-186`, `docs/ux/web-search.md` §2.
  *
  * `askwell.websearch` (server) does the escalation itself — the egress
- * grant, the provider call, the interaction record. This module is the one
- * thing the offer needs before that: whether a "search the web" click has
- * anywhere to go at all (`webSearchAvailable`), and the call that fires it
- * (`escalateWebSearch`). Rendering what the search actually found is
- * `M6.5-WEB-FE-192`'s own ticket — this module stops at "sent" or "could not
- * be sent," which is all `EscalationOffer` needs to update its own caption.
+ * grant, the provider call, the interaction record, and, when it has
+ * something to generate from, the escalation's own answer and citations
+ * (`M6.5-WEB-FE-191`). This module is the offer's one point of contact with
+ * all of that: whether a "search the web" click has anywhere to go at all
+ * (`webSearchAvailable`), and the call that fires it (`escalateWebSearch`).
+ * The states this module does *not* attempt to narrate — searching,
+ * unavailable, closed — are `M6.5-WEB-FE-192`'s own ticket; this module
+ * returns what the server sent and leaves rendering it to the caller.
  */
 
 export interface WebSearchEscalationOutcome {
   status: "ok" | "no_results" | "unavailable";
   reason: string | null;
   resultCount: number;
+  /** The escalation's own generated answer, `null` when there was nothing to
+   * generate from (`status !== "ok"`) or the model could not be reached —
+   * `M6.5-WEB-FE-191`. */
+  answerText: string | null;
+  /** One entry per (claim, result) pair the answer actually cited, already
+   * numbered past whatever claims the turn's own answer carries
+   * (`askwell.websearch.ask_escalate_web`'s own offset) — empty whenever
+   * `answerText` is `null`. */
+  citations: WebCitationEntry[];
+}
+
+interface RawWebCitationEntry {
+  claim_ordinal: number;
+  domain: string;
+  title: string;
+  url: string;
+  passage: string;
+  retrieved_at: string;
 }
 
 interface RawEscalationOutcome {
   status: "ok" | "no_results" | "unavailable";
   reason: string | null;
   result_count: number;
+  answer_text: string | null;
+  citations: RawWebCitationEntry[];
 }
 
 /**
@@ -68,7 +92,20 @@ export async function escalateWebSearch(
     throw new Error(`Askwell answered ${response.status} when escalating to the web.`);
   }
   const body = (await response.json()) as RawEscalationOutcome;
-  return { status: body.status, reason: body.reason, resultCount: body.result_count };
+  return {
+    status: body.status,
+    reason: body.reason,
+    resultCount: body.result_count,
+    answerText: body.answer_text,
+    citations: body.citations.map((entry) => ({
+      claimOrdinal: entry.claim_ordinal,
+      domain: entry.domain,
+      title: entry.title,
+      url: entry.url,
+      passage: entry.passage,
+      retrievedAt: entry.retrieved_at,
+    })),
+  };
 }
 
 // Local counters of offers made and offers accepted — `web-search.md` §7's

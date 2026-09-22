@@ -1,3 +1,7 @@
+"use client";
+
+import { useHoverHandlers } from "@/components/ask/leader";
+import { useWebRaised } from "@/components/ask/web-pairing";
 import { retrievedDateLabel, truncatedTitle, truncatedUrl, type WebResult } from "@/lib/web-citations";
 
 /**
@@ -11,12 +15,17 @@ import { retrievedDateLabel, truncatedTitle, truncatedUrl, type WebResult } from
  * and nothing there imports this: the two share no implementation, per the
  * ticket's own "any reuse of the source card component — forbidden."
  *
- * Not yet called from `ask-screen.tsx` — the live turn has nowhere to carry
- * a web result yet (that wiring, and the mixed-answer case, are
- * `M6.5-WEB-FE-191`/`-192`). This is the same isolated-capability shape
- * `M6.5-WEB-BE-185`/`-188`/`-189` each shipped in.
+ * Wired into the live turn by `ask-screen.tsx` (`M6.5-WEB-FE-191`) once a
+ * turn actually carries a web citation — this component itself still knows
+ * nothing about `AskTurn`, only the results it is handed.
  */
-export function WebResultsRegion({ results }: { results: readonly WebResult[] }) {
+export function WebResultsRegion({
+  turnId,
+  results,
+}: {
+  turnId: string;
+  results: readonly WebResult[];
+}) {
   if (results.length === 0) return null;
   return (
     <section
@@ -34,7 +43,7 @@ export function WebResultsRegion({ results }: { results: readonly WebResult[] })
       <ul className="flex flex-col gap-3" style={{ listStyle: "none" }}>
         {results.map((result) => (
           <li key={result.url}>
-            <WebResultCard result={result} />
+            <WebResultCard turnId={turnId} result={result} />
           </li>
         ))}
       </ul>
@@ -51,20 +60,39 @@ export function WebResultsRegion({ results }: { results: readonly WebResult[] })
  * Sized to its own passage — no fixed height, no padding to match a source
  * card's shape, so a one-sentence passage renders at its natural size
  * (the ticket's own edge case).
+ *
+ * **Raises on hover/focus of its own claim(s), never a document's**
+ * (`M6.5-WEB-FE-191`). `useWebRaised`/`useHoverHandlers` are the same shared
+ * hover registry `ProvenanceMargin`'s `SourceCard` uses, keyed `web:` so a
+ * card key here can never collide with a margin card's `chunkId`-based key —
+ * but deliberately *not* `useCardRef`: no leader line is ever drawn to this
+ * region (`design-system.md` §7's own "web result is not a variant of
+ * source card"), so this never registers into the registry
+ * `LeaderCanvas` draws lines from.
  */
-function WebResultCard({ result }: { result: WebResult }) {
+function WebResultCard({ turnId, result }: { turnId: string; result: WebResult }) {
+  const cardKey = `web:${turnId}:${result.url}`;
+  const { onHover, onUnhover } = useHoverHandlers(cardKey);
+  const raised = useWebRaised(cardKey);
   const passage = result.passage.trim();
   const title = truncatedTitle(result.title);
   const url = truncatedUrl(result.url);
 
   return (
-    <article className="flex flex-col gap-1.5">
+    <article
+      className="ask-card-raised flex flex-col gap-1.5"
+      data-raised={raised}
+      onMouseEnter={onHover}
+      onMouseLeave={onUnhover}
+    >
       <a
         href={result.url}
         target="_blank"
         rel="noopener noreferrer"
         className="ask-navigates flex flex-col gap-0.5 w-fit"
         style={{ color: "var(--ink)" }}
+        onFocus={onHover}
+        onBlur={onUnhover}
       >
         <span className="ask-micro" style={{ color: "var(--inferred)" }} title={result.domain}>
           {result.domain}

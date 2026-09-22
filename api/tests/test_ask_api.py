@@ -34,7 +34,7 @@ from askwell import ask as ask_module
 from askwell import session as sessions
 from askwell.app import create_app
 from askwell.config import Settings
-from askwell.inference.client import InferenceUnavailable, StreamChunk
+from askwell.inference.client import Completion, InferenceUnavailable, StreamChunk
 
 from .conftest import drive_and_disconnect
 from .test_ingest_records import TABLES as INGEST_TABLES
@@ -109,6 +109,23 @@ class _FakeInferenceClient:
                 await asyncio.sleep(self.delay)
             yield StreamChunk(text=piece, done=False)
         yield StreamChunk(text="", done=True, truncated=self.truncated)
+
+    async def generate(
+        self,
+        _prompt: str,
+        *,
+        max_tokens: int = 512,
+        temperature: float = 0.2,
+        timeout_seconds: float = 0.0,
+    ) -> Completion:
+        """The non-streaming counterpart `websearch.compose_and_generate_web_answer`
+        (`M6.5-WEB-FE-191`) calls — `self.tokens` joined into one completed
+        response, the same fixture data `stream_generate` above yields piece
+        by piece, so a test can set up one `_FakeInferenceClient` regardless
+        of which call the code under test makes."""
+        if self.fail is not None:
+            raise self.fail
+        return Completion(text="".join(self.tokens), tokens=len(self.tokens))
 
 
 def _patch_client(monkeypatch: pytest.MonkeyPatch, fake: _FakeInferenceClient) -> None:

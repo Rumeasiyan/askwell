@@ -25,6 +25,7 @@ import {
 import { applyCitation, type CitationCard } from "@/lib/citations";
 import { applyFactCitation, type FactChip } from "@/lib/memory-chips";
 import type { SqlQueryDisclosure, SqlResultData } from "@/lib/sql-result";
+import { applyWebCitation, type WebCitationEntry, type WebResult } from "@/lib/web-citations";
 
 /**
  * The conversation, held once for the whole application. `M1-ASK-FE-039`.
@@ -112,6 +113,19 @@ export interface AskTurn {
    * this field being non-`null` on the live turn (`ask-screen.tsx`'s
    * `InlineClarification`); the queue itself is unaffected either way. */
   blocking: BlockingClarification | null;
+  /** The escalation's own answer text, generated from web results alone and
+   * kept apart from `answer` rather than appended to it — `answer`'s
+   * emptiness is exactly what `isAbstained` reads (`lib/ask.ts`), and this
+   * turn's abstention is real and must keep rendering as one even once a
+   * web answer exists beside it (`M6.5-WEB-FE-191`). `null` until
+   * `POST /ask/{id}/escalate/web` returns one; a second escalation on the
+   * same turn appends to it rather than replacing it, so nothing already
+   * rendered — and already claim-numbered — moves. */
+  webAnswer: string | null;
+  /** One card per cited web result, grouped by URL (`applyWebCitation`,
+   * `lib/web-citations.ts`) the same way `citations` groups by chunk —
+   * `WebResultsRegion`'s own data (`web-result.tsx`), never the margin's. */
+  webCitations: WebResult[];
 }
 
 export interface AskApi {
@@ -132,6 +146,13 @@ export interface AskApi {
   openTraceTurnId: string | null;
   openTrace: (turnId: string) => void;
   closeTrace: () => void;
+  /** Folds an escalation's own answer into `turnId`'s turn — `EscalationOffer`
+   * (`ask-screen.tsx`)'s only way to reach turn state, since it is handed a
+   * turn as a prop rather than the provider's own internals. Appends to any
+   * `webAnswer` already there (a second escalation) rather than replacing it,
+   * and folds every entry into `webCitations` via `applyWebCitation`
+   * (`M6.5-WEB-FE-191`). */
+  applyWebAnswer: (turnId: string, text: string, citations: readonly WebCitationEntry[]) => void;
 }
 
 const AskContext = createContext<AskApi | null>(null);
@@ -183,6 +204,8 @@ function blankTurn(
     sqlQuery: null,
     dbState: null,
     blocking: null,
+    webAnswer: null,
+    webCitations: [],
   };
 }
 
@@ -329,9 +352,32 @@ export function AskProvider({ children }: { children: ReactNode }) {
   const openTrace = useCallback((turnId: string): void => setOpenTraceTurnId(turnId), []);
   const closeTrace = useCallback((): void => setOpenTraceTurnId(null), []);
 
+  const applyWebAnswer = useCallback(
+    (turnId: string, text: string, citations: readonly WebCitationEntry[]): void => {
+      setTurns((queue) =>
+        queue.map((turn) => {
+          if (turn.id !== turnId) return turn;
+          const webAnswer = turn.webAnswer === null ? text : `${turn.webAnswer}\n\n${text}`;
+          const webCitations = citations.reduce(applyWebCitation, turn.webCitations);
+          return { ...turn, webAnswer, webCitations };
+        }),
+      );
+    },
+    [],
+  );
+
   const api = useMemo<AskApi>(
-    () => ({ turns, running, ask, stop, openTraceTurnId, openTrace, closeTrace }),
-    [turns, running, ask, stop, openTraceTurnId, openTrace, closeTrace],
+    () => ({
+      turns,
+      running,
+      ask,
+      stop,
+      openTraceTurnId,
+      openTrace,
+      closeTrace,
+      applyWebAnswer,
+    }),
+    [turns, running, ask, stop, openTraceTurnId, openTrace, closeTrace, applyWebAnswer],
   );
 
   return <AskContext.Provider value={api}>{children}</AskContext.Provider>;
