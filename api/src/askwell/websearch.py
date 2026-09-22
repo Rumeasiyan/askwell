@@ -1,28 +1,38 @@
 """The web search provider behind an interface, called only on explicit
-request. `M6.5-WEB-BE-185`.
+request. `M6.5-WEB-BE-185`, egress authorisation `M6.5-WEB-SEC-187`.
 
 **Escalation, never fallback (`docs/web-search.md`, C10).** There is exactly
 one function in this codebase that ever calls a `WebSearchProvider`'s own
 `search()` — `escalate_web_search` below — and it exists to be called from an
-accepted, per-question escalation once `M6.5-WEB-SEC-187`/`M6.5-WEB-FE-186`
-build that surface. Nothing in `askwell.ask` imports this module: a below-
-threshold retrieval abstains and stops there (`M2-ABSTAIN-RET-053`), and the
-absence of a path from that abstention into this file is the property
-`test_websearch.py`'s zero-calls test exists to protect, not an incidental
-fact about the current wiring.
+accepted, per-question escalation once `M6.5-WEB-FE-186` builds that surface.
+Nothing in `askwell.ask` imports this module: a below-threshold retrieval
+abstains and stops there (`M2-ABSTAIN-RET-053`), and the absence of a path
+from that abstention into this file is the property `test_websearch.py`'s
+zero-calls test exists to protect, not an incidental fact about the current
+wiring.
 
 **Behind an interface, like the TTS engine (`docs/architecture.md` §5.2).**
 `WebSearchProvider` is the seam; `build_web_search_provider` is the one place
 a configuration string (`Settings.web_search_provider`) selects which
 implementation answers it, so a provider going away is a change to that one
 mapping, never to the answer path. `FixtureWebSearchProvider` is the only
-implementation this ticket ships — recorded results, for development and for
-the eval suite, which needs a provider that could answer without ever
+implementation `M6.5-WEB-BE-185` ships — recorded results, for development
+and for the eval suite, which needs a provider that could answer without ever
 reaching the network (C1). The real one, `ddgs`, is `M6.5-WEB-BE-195`.
 
 **Every invocation is on the record before it returns**, win or lose
 (`M1-ASK-OBS-041`, C6) — an offer the user accepted is never lost even if the
 provider then failed or nothing came back.
+
+**The egress grant is opened and closed here, around the provider call
+alone** (`M6.5-WEB-SEC-187`, `docs/architecture.md` §5.1). `escalate_web_search`
+is the sole caller of `askwell.egress.open_grant`/`close_grant` for the
+search destination, scoped to this turn's `message_id` and closed in
+`finally` regardless of how the call ends — normally, on a caught provider
+failure, or on this coroutine being cancelled. The proxy still enforces the
+grant independently: even if application code opened one without a real
+acceptance behind it, `open_grant`'s own `accepted` argument refuses it at
+the mechanism, not by trusting this module's docstring.
 """
 
 from __future__ import annotations
@@ -36,6 +46,7 @@ from typing import Literal, Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from askwell import egress
 from askwell.audit import Store, record
 from askwell.config import ConfigurationError, Settings
 from askwell.logging import get_logger
@@ -43,6 +54,8 @@ from askwell.logging import get_logger
 log = get_logger(__name__)
 
 WEB_SEARCH_ESCALATED = "web_search_escalated"
+WEB_SEARCH_GRANT_OPENED = "web_search_grant_opened"
+WEB_SEARCH_GRANT_CLOSED = "web_search_grant_closed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +163,15 @@ class WebSearchOutcome:
     not be reached, not whose fault it was (`docs/web-search.md` §6)."""
 
 
+def _search_destination(settings: Settings) -> str | None:
+    """The `host:port` the turn's egress grant is scoped to, or `None` when
+    no provider is configured at all — there is nothing to grant access to
+    if nothing will ever try to reach it. `M6.5-WEB-SEC-187`."""
+    if settings.web_search_provider is None:
+        return None
+    return f"{settings.web_search_destination_host}:{settings.web_search_destination_port}"
+
+
 async def escalate_web_search(
     settings: Settings,
     db: AsyncSession,
@@ -167,30 +189,76 @@ async def escalate_web_search(
     already resolved one; when omitted, `build_web_search_provider(settings)`
     supplies it, so a caller with nothing special to inject still gets
     whatever configuration selects.
+
+    **The egress grant is opened here and closed in `finally`** —
+    `M6.5-WEB-SEC-187`. `message_id` is this turn's own identifier, and the
+    grant is scoped to it: closed the instant this function returns, by
+    whichever route it returns — an ordinary result, a caught provider
+    failure folded into `"unavailable"`, or the caller cancelling this
+    coroutine (the browser stopping generation mid-search). `try`/`finally`
+    covers all three identically, which is the point — a failure path that
+    leaks a grant is worse than the failure itself.
     """
     used_provider = provider if provider is not None else build_web_search_provider(settings)
     provider_name = settings.web_search_provider or "none"
+    destination = _search_destination(settings)
+    turn_id = str(message_id)
 
-    if used_provider is None:
-        outcome = WebSearchOutcome(status="unavailable", reason="no provider configured")
-    else:
-        try:
-            raw_results = await asyncio.wait_for(
-                used_provider.search(question), timeout=settings.web_search_timeout_seconds
+    grant_opened = False
+    if destination is not None:
+        grant_opened = await egress.open_grant(
+            settings,
+            turn_id=turn_id,
+            destination=destination,
+            accepted=True,
+            ttl_seconds=settings.web_search_grant_ttl_seconds,
+        )
+        if grant_opened:
+            await record(
+                db,
+                Store.INTERACTIONS,
+                WEB_SEARCH_GRANT_OPENED,
+                {
+                    "conversation_id": str(conversation_id),
+                    "message_id": turn_id,
+                    "destination": destination,
+                },
             )
-        except TimeoutError:
-            outcome = WebSearchOutcome(status="unavailable", reason="timed out")
-        except WebSearchUnavailable as error:
-            outcome = WebSearchOutcome(status="unavailable", reason=str(error))
+
+    try:
+        if used_provider is None:
+            outcome = WebSearchOutcome(status="unavailable", reason="no provider configured")
         else:
-            # Dropped, not rendered as an empty citation — this ticket's own
-            # edge case. A result kept with an unresolvable URL is untouched
-            # here; only a missing passage disqualifies it.
-            usable = tuple(item for item in raw_results if item.passage.strip())
-            outcome = (
-                WebSearchOutcome(status="ok", results=usable)
-                if usable
-                else WebSearchOutcome(status="no_results")
+            try:
+                raw_results = await asyncio.wait_for(
+                    used_provider.search(question), timeout=settings.web_search_timeout_seconds
+                )
+            except TimeoutError:
+                outcome = WebSearchOutcome(status="unavailable", reason="timed out")
+            except WebSearchUnavailable as error:
+                outcome = WebSearchOutcome(status="unavailable", reason=str(error))
+            else:
+                # Dropped, not rendered as an empty citation — this ticket's
+                # own edge case. A result kept with an unresolvable URL is
+                # untouched here; only a missing passage disqualifies it.
+                usable = tuple(item for item in raw_results if item.passage.strip())
+                outcome = (
+                    WebSearchOutcome(status="ok", results=usable)
+                    if usable
+                    else WebSearchOutcome(status="no_results")
+                )
+    finally:
+        if grant_opened:
+            await egress.close_grant(settings, turn_id)
+            await record(
+                db,
+                Store.INTERACTIONS,
+                WEB_SEARCH_GRANT_CLOSED,
+                {
+                    "conversation_id": str(conversation_id),
+                    "message_id": turn_id,
+                    "destination": destination,
+                },
             )
 
     # C6/`M1-ASK-OBS-041`: on the interaction record before returning, win or

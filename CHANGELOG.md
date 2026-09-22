@@ -4,6 +4,34 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.6.11 - 2026-09-22
+
+`M6.5-WEB-SEC-187` — per-question egress authorisation, opened and closed at the proxy
+(`docs/architecture.md` §5.1, C1, C10). `askwell.egress` gains a second, narrower
+authorisation primitive next to `M7-UPDATE-BE-161`'s single global `PERMITTED_HOST_KEY`:
+`open_grant`/`close_grant`, one short-lived Redis key per turn (`askwell:egress:grant:
+{turn_id}`), so two escalations in flight hold two independent grants rather than racing
+to overwrite one value. Every grant carries a hard Redis TTL
+(`Settings.web_search_grant_ttl_seconds`, `30.0`) so a missed closing path cannot leave one
+standing — the ticket's own defect to prevent. `EgressProxy.handle` now checks a `CONNECT`
+destination against both the single permitted host and any live turn grant before
+forwarding; nothing else changes about refusal, which stays the default. `open_grant`
+refuses and logs a warning, without ever touching Redis, when called with
+`accepted=False` — the backstop for application code asking for a grant with no real
+acceptance behind it. `askwell.websearch.escalate_web_search` is the sole caller: it opens
+a grant scoped to the turn's `message_id` and the configured search destination
+(`Settings.web_search_destination_host`/`_port`, a placeholder until `M6.5-WEB-BE-195`
+wires the real `ddgs` call) before the provider call and closes it in `finally` — covering
+an ordinary return, a caught provider failure, and the coroutine being cancelled (stop
+pressed mid-search) identically. Opening and closing are recorded on the interaction path
+(C6) with the turn, the destination and the timestamp. New
+`ASKWELL_WEB_SEARCH_DESTINATION_HOST`/`_PORT`/`ASKWELL_WEB_SEARCH_GRANT_TTL_SECONDS` in
+`.env.example`. Verified against the real running stack, not only unit-tested: a grant
+opened against the real proxy and real Redis forwarded a real request to the granted
+destination while a request to an unrelated host in the same window was refused with the
+usual 403, and the settings-screen counter (`askwell.network.read_activity`) picked up the
+forwarded connection from the proxy's own count.
+
 ## 0.6.10 - 2026-09-22
 
 `M6.5-WEB-BE-185` — the web search provider behind an interface, called only on explicit

@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import psycopg
@@ -19,9 +20,12 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from askwell import websearch
 from askwell.config import ConfigurationError, Settings
 from askwell.websearch import (
     WEB_SEARCH_ESCALATED,
+    WEB_SEARCH_GRANT_CLOSED,
+    WEB_SEARCH_GRANT_OPENED,
     FixtureWebSearchProvider,
     WebSearchOutcome,
     WebSearchResult,
@@ -131,12 +135,52 @@ def _truncate_audit(database_url: str) -> None:
 
 
 def _escalations(database_url: str) -> list[dict[str, object]]:
+    return _interactions(database_url, WEB_SEARCH_ESCALATED)
+
+
+def _interactions(database_url: str, kind: str) -> list[dict[str, object]]:
     with psycopg.connect(database_url, autocommit=True) as db:
         rows = db.execute(
             "SELECT payload FROM audit_interactions WHERE kind = %s ORDER BY occurred_at",
-            (WEB_SEARCH_ESCALATED,),
+            (kind,),
         ).fetchall()
     return [row[0] for row in rows]
+
+
+@dataclass
+class _GrantCalls:
+    opened: list[tuple[str, str]]
+    closed: list[str]
+    accepted: list[bool]
+
+
+@pytest.fixture
+def grant_calls(monkeypatch: pytest.MonkeyPatch) -> _GrantCalls:
+    """Records every `open_grant`/`close_grant` call without touching Redis —
+    `test_update_check.py`'s own `egress_calls` fixture follows the same
+    convention for `permit_destination`/`revoke_destination`."""
+    calls = _GrantCalls(opened=[], closed=[], accepted=[])
+
+    async def _open(
+        _settings: Settings,
+        *,
+        turn_id: str,
+        destination: str,
+        accepted: bool,
+        ttl_seconds: float,
+    ) -> bool:
+        calls.accepted.append(accepted)
+        if not accepted:
+            return False
+        calls.opened.append((turn_id, destination))
+        return True
+
+    async def _close(_settings: Settings, turn_id: str) -> None:
+        calls.closed.append(turn_id)
+
+    monkeypatch.setattr(websearch.egress, "open_grant", _open)
+    monkeypatch.setattr(websearch.egress, "close_grant", _close)
+    return calls
 
 
 @pytest.mark.requires_db
@@ -302,6 +346,147 @@ async def test_a_provider_that_never_answers_is_abandoned_at_the_configured_time
 
     assert outcome.status == "unavailable"
     assert outcome.reason == "timed out"
+
+
+# --- the egress grant, `M6.5-WEB-SEC-187` ------------------------------------
+
+
+@pytest.mark.requires_db
+async def test_no_provider_configured_opens_no_grant(
+    settings: Settings,
+    factory: async_sessionmaker[AsyncSession],
+    database_url: str,
+    grant_calls: _GrantCalls,
+) -> None:
+    """Nothing will ever dial out, so there is nothing to grant access to —
+    opening one anyway would be a grant that outlives its own reason to
+    exist before it even started."""
+    _truncate_audit(database_url)
+    async with factory() as db:
+        await escalate_web_search(
+            settings,
+            db,
+            conversation_id=uuid.uuid4(),
+            message_id=uuid.uuid4(),
+            question="q",
+        )
+        await db.commit()
+
+    assert grant_calls.opened == []
+    assert grant_calls.closed == []
+    assert _interactions(database_url, WEB_SEARCH_GRANT_OPENED) == []
+
+
+@pytest.mark.requires_db
+async def test_a_configured_escalation_opens_and_closes_a_grant_around_the_call(
+    settings: Settings,
+    factory: async_sessionmaker[AsyncSession],
+    database_url: str,
+    grant_calls: _GrantCalls,
+) -> None:
+    """The grant's lifetime is exactly the provider call — opened before it,
+    closed in `finally` after, scoped to this turn's own `message_id` and
+    named with the destination the settings fixture defaults to."""
+    _truncate_audit(database_url)
+    configured = settings.model_copy(update={"web_search_provider": "fixture"})
+    message_id = uuid.uuid4()
+    provider = FixtureWebSearchProvider({"opening hours?": [_result()]})
+    async with factory() as db:
+        outcome = await escalate_web_search(
+            configured,
+            db,
+            conversation_id=uuid.uuid4(),
+            message_id=message_id,
+            question="opening hours?",
+            provider=provider,
+        )
+        await db.commit()
+
+    assert outcome.status == "ok"
+    expected_destination = (
+        f"{configured.web_search_destination_host}:{configured.web_search_destination_port}"
+    )
+    assert grant_calls.accepted == [True]
+    assert grant_calls.opened == [(str(message_id), expected_destination)]
+    assert grant_calls.closed == [str(message_id)]
+
+    (opened_payload,) = _interactions(database_url, WEB_SEARCH_GRANT_OPENED)
+    assert opened_payload["message_id"] == str(message_id)
+    assert opened_payload["destination"] == expected_destination
+
+    (closed_payload,) = _interactions(database_url, WEB_SEARCH_GRANT_CLOSED)
+    assert closed_payload["message_id"] == str(message_id)
+    assert closed_payload["destination"] == expected_destination
+
+
+@pytest.mark.requires_db
+async def test_the_grant_closes_even_when_the_provider_raises_unexpectedly(
+    settings: Settings,
+    factory: async_sessionmaker[AsyncSession],
+    database_url: str,
+    grant_calls: _GrantCalls,
+) -> None:
+    """A failure path that leaks a grant is the worst version of this bug —
+    `finally` closes it even for an exception `escalate_web_search` does not
+    itself catch and goes on to propagate."""
+    _truncate_audit(database_url)
+    configured = settings.model_copy(update={"web_search_provider": "fixture"})
+    message_id = uuid.uuid4()
+    async with factory() as db:
+        with pytest.raises(RuntimeError, match="boom"):
+            await escalate_web_search(
+                configured,
+                db,
+                conversation_id=uuid.uuid4(),
+                message_id=message_id,
+                question="q",
+                provider=_FailingProvider(RuntimeError("boom")),
+            )
+        await db.commit()
+
+    assert grant_calls.opened == [
+        (
+            str(message_id),
+            f"{configured.web_search_destination_host}:{configured.web_search_destination_port}",
+        )
+    ]
+    assert grant_calls.closed == [str(message_id)]
+
+
+@pytest.mark.requires_db
+async def test_the_grant_closes_when_the_turn_is_cancelled_mid_search(
+    settings: Settings,
+    factory: async_sessionmaker[AsyncSession],
+    database_url: str,
+    grant_calls: _GrantCalls,
+) -> None:
+    """The user pressing stop while a search is in flight cancels the
+    coroutine running `escalate_web_search` — the grant must close with it,
+    not outlive it while an abandoned request keeps running."""
+    _truncate_audit(database_url)
+    configured = settings.model_copy(update={"web_search_provider": "fixture"})
+    message_id = uuid.uuid4()
+    async with factory() as db:
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(
+                escalate_web_search(
+                    configured,
+                    db,
+                    conversation_id=uuid.uuid4(),
+                    message_id=message_id,
+                    question="q",
+                    provider=_SlowProvider(),
+                ),
+                timeout=0.05,
+            )
+
+    assert grant_calls.opened == [
+        (
+            str(message_id),
+            f"{configured.web_search_destination_host}:{configured.web_search_destination_port}",
+        )
+    ]
+    assert grant_calls.closed == [str(message_id)]
 
 
 # --- the structural guarantee: zero calls from the ordinary answer path -----
