@@ -4,6 +4,30 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.6.14 - 2026-09-22
+
+`M6.5-WEB-FE-190` — the web results region, separate from the provenance margin
+(`docs/ux/web-search.md` §3, `docs/ux/design-system.md` §7, C10). New
+`web/components/ask/web-result.tsx`: `WebResultsRegion` and its `WebResultCard`, a dashed
+`--inferred`-bordered region headed *"From the web — not your files"*, showing domain,
+title, the passage used, the retrieval date and the full URL, each opening in a new browser
+tab (`target="_blank" rel="noopener noreferrer"`). Shares no code, styling or types with
+`provenance-margin.tsx`'s `SourceCard` — a new `WebResult` type in `lib/web-citations.ts`
+(mirroring `askwell.websearch.WebCitationRecord` minus `claim_ordinal`, which belongs to
+per-claim attribution) rather than `CitationCard` with optional fields, and `--provenance`
+appears nowhere in the new files. `truncatedTitle`/`truncatedUrl` truncate visibly with an
+ellipsis, never past the limit, and never so far into a URL's own path that the truncated
+form could read as a different page — the domain is always shown in full and separately.
+7 new tests in `lib/web-citations.test.ts`, all unmarked (pure functions, no network, no
+DOM). Not wired into `ask-screen.tsx` — deliberately: no live turn carries a `WebResult`
+yet, since escalating and rendering the streamed answer are `M6.5-WEB-FE-191`/`-192`, the
+same isolated-capability shape `M6.5-WEB-BE-185`/`-188`/`-189` each shipped in. Verified:
+`scripts/dev.sh web-check` (lint 0 errors/6 pre-existing warnings, typecheck, 365 unmarked
+tests, build, contrast — the web-result dashed border's contrast pair was already measured
+and passing, `design-system.md` §8 — and the offline scan) all clean. Out of scope, per the
+ticket: mixed answers (`M6.5-WEB-FE-191`) and the searching/unavailable/closed states
+(`M6.5-WEB-FE-192`).
+
 ## 0.6.13 - 2026-09-22
 
 `M6.5-WEB-BE-189` — retrieval timestamps, stored with the turn (`docs/web-search.md` §4,
