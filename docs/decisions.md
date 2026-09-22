@@ -4,6 +4,61 @@ Append-only. **Newest first.** Never edit an entry to change its meaning — if 
 
 **Bar for an entry:** something a competent person would later ask *"why is it like this?"* about. Architecture changes, dependency choices, resolved `docs/PRD.md` §11 questions, reversals. **Not** routine implementation choices — those are visible in the diff.
 
+## 2026-09-23 — The Linux installer is a rebuild of a closed PR, carrying its fixes forward and generating real database passwords
+
+**Decision:** `deploy/linux/install.sh`/`lib.sh`/`uninstall.sh`/`install.test.sh`
+(`M7-PACK-DEPLOY-139`) are rebuilt from scratch off current `main`, carrying forward every fix
+already made in the earlier, unmerged attempt (PR #560, closed 2026-09-22 for a stale merge
+base rather than a code defect): the `have_admin_path` fix for issue #503 (real `sudo`, not
+`sudo -n true`) and the `askwell-shell` filename fix. New in this pass: `lib.sh`'s
+`generate_env_passwords`, called from `install.sh`'s `place_files` immediately after a *fresh*
+`.env` is written (never against an existing one), replaces every `POSTGRES_*`/`SANDBOX_*`
+placeholder with a random 256-bit value from `random_hex` (`openssl rand -hex`, falling back to
+reading `/dev/urandom` directly if `openssl` is not on `PATH`). `SANDBOX_OWNER_PASSWORD`/
+`ASKWELL_SANDBOX_OWNER_PASSWORD` and `SANDBOX_READONLY_PASSWORD`/
+`ASKWELL_SANDBOX_READONLY_PASSWORD` are generated once each and written to both variable names,
+since `.env.example` names the same credential twice (Compose builds the app-side value from
+the Compose-side one) and a mismatch there would leave the sandbox roles Compose creates and
+the passwords Askwell connects with out of sync.
+
+**Why:** issue #584, filed against the closed attempt's own audit, found that `place_files`
+copied `.env.example` to `.env` verbatim — the file's own first line says "then set the three
+passwords", but the target user this ticket is for (someone who has never used container
+tooling) will never open `.env` in an editor to do that, so every fresh install ran Postgres
+and both sandbox roles on the same well-known, publicly-documented placeholder credentials.
+Three options existed: (1) generate random values with no user interaction, (2) prompt
+interactively for the passwords during install, (3) leave it and document the gap. (2) was
+rejected as inconsistent with the ticket's own "no terminal, no systems task" framing — this
+installer already never asks a question it can answer itself, e.g. the disk-space and
+runtime-version checks. (3) was rejected because shipping a known placeholder credential by
+default is a worse outcome than a slightly more complex `place_files`, and nothing about
+generating a password needs review or user judgement the way, say, choosing a data directory
+does. (1) shipped. The two paired variables were generated once and shared, not generated
+independently, because they are not two credentials — `.env.example`'s own comments state
+plainly that the `ASKWELL_SANDBOX_*` values are read by the application while the
+`SANDBOX_OWNER_PASSWORD`/`SANDBOX_READONLY_PASSWORD` values are read by Compose to create the
+matching Postgres roles; generating them independently would silently lock Askwell out of its
+own sandbox on every fresh install.
+
+**Consequences:** a fresh install's `.env` now carries six distinct, unguessable values (four
+independent, two shared pairs) instead of six known placeholders; an upgrade over an existing
+install still never touches `.env`, so this changes nothing about the "never touching its data"
+acceptance criterion already in place. Verified end to end against this checkout with a
+stand-in shell binary: a fresh install writes no `change-me` string anywhere in `.env`, the two
+paired credentials match each other, all six stored values are pairwise distinct, and a second
+`install.sh -y` run over the same prefix (an upgrade) leaves the already-generated
+`POSTGRES_PASSWORD` unchanged. Issue #559 (no release pipeline produces the Tauri shell binary
+or an installable bundle) is unaffected by this rebuild and stays open, re-owned rather than
+fixed here — it is release-packaging work with its own shape, out of a 4–6 hour
+installer-logic ticket's scope, exactly as the closed attempt's own decision entry (superseded
+by this one; see git history for PR #560) already reasoned. Issue #584 is closed by this
+change.
+
+**Refs:** `deploy/linux/install.sh`, `deploy/linux/lib.sh`, `deploy/linux/uninstall.sh`,
+`deploy/linux/install.test.sh`; `docs/manual-tests/M7-PACK-DEPLOY-139.md`; issue #503 (fixed,
+carried forward); issue #584 (fixed here); issue #559 (re-owned, unaffected, still open); PR
+#560 (closed, superseded by this rebuild).
+
 **The *Why* should be longer than the *Decision*.** What was built is readable from the code. What was rejected, and the trade-off accepted, is not, and is exactly what gets lost. Name the rejected option.
 
 Template:
