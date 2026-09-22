@@ -4,6 +4,21 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.6.18 - 2026-09-22
+
+`M6.5-EVAL-TEST-194` — the quality gate's eighth category: web escalation discipline, 10
+tasks, pass bar **1.00, no exceptions** (`docs/build-plan.md`; total now 165 tasks across
+eight categories). `Added`: `eval/web_escalation.py`, `eval/suites/web_escalation.v1.json`,
+wired into `eval/bench.py` and `.github/workflows/eval.yml`'s suite loop. Every task drives a
+real `askwell.ask` turn over an unanswerable question against the fixture corpus, covering five
+named ways a fallback could creep in (a near-miss/half-covered corpus, a repeated question, a
+question following an already-accepted escalation in the same conversation, a question after a
+stopped turn, and a retrieval-path error) — reported pass/fail, never a mean. The primary
+assertion is the egress proxy's own `permitted` counter (`askwell.network.read_activity`),
+read before and after every run and independently of the application, so the suite cannot be
+fooled by a text-only check passing against a provider that never touches a real socket
+anyway. Full reasoning in `docs/decisions.md`, this date.
+
 ## 0.6.17 - 2026-09-22
 
 `M6.5-WEB-FE-192` — the remaining escalation states: searching, nothing found, unavailable,
