@@ -4,6 +4,19 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.6.13 - 2026-09-22
+
+`M6.5-WEB-BE-189` — retrieval timestamps, stored with the turn (`docs/web-search.md` §4,
+C10). New `web_citations` table (`message_id`, `claim_ordinal`, `domain`, `title`, `url`,
+`passage`, `retrieved_at NOT NULL`) — a table of its own, not a nullable `chunk_id` and a
+`kind` flag on `citations`, so a web result and a document citation never share a record
+shape. `askwell.websearch` gains `WebCitationRecord`, `web_citation_record()` and
+`record_web_citations()`, writing in whatever transaction the caller is already in and
+never updating a row afterward. `askwell.backup._TABLES` carries the new table so a backup
+includes it. Out of scope, per the ticket: rendering (`M6.5-WEB-FE-190`) and wiring a live
+caller — nothing in `askwell.ask`'s generation loop calls `record_web_citations` yet, the
+same isolated-capability shape `M6.5-WEB-BE-185`/`-187`/`-188` each shipped in.
+
 ## 0.6.12 - 2026-09-22
 
 `M6.5-WEB-BE-188` — fetch caps, identical delimitation, and the never-persisted guarantee

@@ -111,6 +111,7 @@ _TABLES: dict[str, tuple[str, tuple[str, ...]]] = {
     "messages": ("id", ()),
     "fact_usage": ("id", ()),
     "citations": ("id", ()),
+    "web_citations": ("id", ()),
     "settings": ("key", ()),
     "audit_decisions": ("id", ()),
     "audit_interactions": ("id", ()),

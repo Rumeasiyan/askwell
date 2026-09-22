@@ -30,6 +30,7 @@ EXPECTED_TABLES = {
     "conversations",
     "messages",
     "citations",
+    "web_citations",
     "fact_usage",
     "audit_decisions",
     "audit_interactions",
@@ -107,6 +108,25 @@ def test_a_citation_survives_the_deletion_of_its_document() -> None:
         "citations.chunk_id must not cascade: the chunk row exists so that an "
         "old citation still resolves after the document is deleted"
     )
+
+
+def test_a_web_citation_is_structurally_distinct_from_a_document_citation() -> None:
+    """`M6.5-WEB-BE-189`: C10 requires a web result never share a rendering
+    with a document citation, and the cleanest guarantee of that is that
+    they never share a record shape — a separate table, not a nullable
+    `chunk_id` and a `kind` flag bolted onto `citations`.
+    """
+    web_citations = table("web_citations")
+    assert {"message_id", "claim_ordinal", "domain", "title", "url", "passage", "retrieved_at"} <= (
+        set(web_citations.c.keys())
+    )
+    assert "chunk_id" not in web_citations.c.keys()
+
+
+def test_a_web_citations_retrieval_timestamp_is_mandatory() -> None:
+    """The ticket's own Validation Rule: a web result without a retrieval
+    timestamp may not be rendered — enforced at the row's own shape."""
+    assert table("web_citations").c["retrieved_at"].nullable is False
 
 
 def test_a_page_is_unique_per_document_and_cascades_with_it() -> None:
