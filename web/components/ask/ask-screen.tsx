@@ -42,6 +42,13 @@ import { fetchSuggestions, type Suggestion } from "@/lib/suggestions";
 import { segmentClaims } from "@/lib/claims";
 import { useStatus } from "@/lib/use-status";
 import { VERSION } from "@/lib/version";
+import {
+  escalateWebSearch,
+  recordWebSearchOfferAccepted,
+  recordWebSearchOfferMade,
+  webSearchAvailable,
+  type WebSearchEscalationOutcome,
+} from "@/lib/web-search";
 
 /** Fills the composer without sending — `ask.md` §4's suggested-follow-up
  * rule applies here too: lowering the cost of the next question is the
@@ -1188,19 +1195,21 @@ function InlineClarification({
  * get" — never `--alarm`, never a caveat). `py-4` is that "more space": an
  * abstention is not squeezed into the same rhythm as a paragraph of prose.
  *
- * `AddSourceAction` sits in its own region below every line of that message,
- * on purpose: `ask.md`'s own note that this ticket's shape is what
- * `M6.5-WEB-FE-186` later adds two siblings beside, and that nothing may
- * render above the abstention statement (C10). Until that ticket, this
- * region holds exactly one control.
+ * `EscalationOffer` sits in its own region below every line of that message,
+ * never above it (C10) — the abstention is the answer, the offer is what
+ * comes after it. Since `M6.5-WEB-FE-186` that region holds three controls
+ * (`docs/ux/web-search.md` §2): `AddSourceAction`, and its two new siblings,
+ * "search the web" and "ask a larger model".
  *
- * `turn.dbState` (`M4-RESULT-FE-111`) relabels that one control rather than
- * adding a second, for the same "exactly one control" reason: "no
- * connections configured" still wants the add-source flow, just named for
- * what it actually does here ("Connect a database"); "a source is still
- * importing" or "needs attention" already names its own next action in the
- * message text above, and adding a new source would not fix either — the
- * control is dropped for those two rather than offering a wrong one.
+ * `turn.dbState` (`M4-RESULT-FE-111`) relabels the add-source control rather
+ * than adding a second one, for the same "exactly one add-source action"
+ * reason: "no connections configured" still wants the add-source flow, just
+ * named for what it actually does here ("Connect a database"); "a source is
+ * still importing" or "needs attention" already names its own next action in
+ * the message text above, and adding a new source would not fix either — the
+ * control is dropped for those two rather than offering a wrong one. The web
+ * and larger-model options are unaffected by `dbState`: nothing in a
+ * database-routing outcome changes whether escalating is possible.
  */
 function AbstentionState({ turn }: { turn: AskTurn }) {
   const lines = (turn.reason ?? "").split("\n").filter((line) => line !== "");
@@ -1219,12 +1228,134 @@ function AbstentionState({ turn }: { turn: AskTurn }) {
           </p>
         ))}
       </div>
-      {label !== null ? (
-        <div>
-          <AddSourceAction question={turn.question} label={label} />
-        </div>
+      <EscalationOffer turn={turn} addSourceLabel={label} />
+    </div>
+  );
+}
+
+/**
+ * The escalation offer (`docs/ux/web-search.md` §2, `M6.5-WEB-FE-186`).
+ * Three options, equal weight, each stating its own cost — rendered only
+ * below an abstention (`AbstentionState`) or a partial answer's named gap
+ * (`AnsweredContent`), never below a fully grounded answer. Stacks under
+ * `flex-wrap` rather than a fixed grid, so a narrow window keeps all three
+ * rather than dropping one (this ticket's own edge case).
+ *
+ * **Escalation, not fallback (C10).** Nothing here is pre-selected,
+ * auto-focused, or reachable by the Enter key that submitted the question —
+ * every option is an ordinary unfocused `<button>`, and `searchWeb` is the
+ * only place in the whole frontend that ever calls `escalateWebSearch`.
+ * `recordWebSearchOfferMade` fires once per mount (once per offer shown);
+ * `recordWebSearchOfferAccepted` fires only from an actual click, so the
+ * `web-search.md` §7 escalation rate is offers-shown vs. offers-accepted,
+ * never conflated with the render itself.
+ *
+ * The web option's availability is read once, from `GET /settings/web-search`
+ * (`askwell.websearch`) — unset or unreachable renders as "not configured"
+ * rather than the control disappearing, this ticket's own edge case for a
+ * provider that is unavailable or unconfigured. A second click after the
+ * first resolves is a second, independently authorised act (also this
+ * ticket's own edge case) — nothing here remembers a prior escalation past
+ * showing what became of it.
+ */
+function EscalationOffer({
+  turn,
+  addSourceLabel,
+}: {
+  turn: AskTurn;
+  addSourceLabel: string | null;
+}) {
+  const [available, setAvailable] = useState<boolean | null>(null);
+  const [webStatus, setWebStatus] = useState<"idle" | "sending" | WebSearchEscalationOutcome["status"]>(
+    "idle",
+  );
+
+  useEffect(() => {
+    recordWebSearchOfferMade();
+    const controller = new AbortController();
+    webSearchAvailable(controller.signal)
+      .then(setAvailable)
+      .catch(() => setAvailable(false));
+    return () => controller.abort();
+  }, []);
+
+  const searchWeb = (): void => {
+    if (turn.serverId === null) return;
+    recordWebSearchOfferAccepted();
+    setWebStatus("sending");
+    escalateWebSearch(turn.serverId, turn.question)
+      .then((outcome) => setWebStatus(outcome.status))
+      .catch(() => setWebStatus("unavailable"));
+  };
+
+  const webCost =
+    webStatus === "sending"
+      ? "sending your question now"
+      : webStatus === "ok"
+        ? "sent — this question only"
+        : webStatus === "no_results"
+          ? "sent — nothing found on the web either"
+          : webStatus === "unavailable"
+            ? "could not reach the web"
+            : available === false
+              ? "not configured"
+              : "sends your question out · this question only";
+
+  return (
+    <div className="flex flex-wrap gap-3">
+      <EscalationOption
+        label="Search the web"
+        cost={webCost}
+        onClick={searchWeb}
+        disabled={available === false || webStatus === "sending" || turn.serverId === null}
+      />
+      <EscalationOption
+        label="Ask a larger model"
+        cost="uses credits · you have none"
+        onClick={() => {}}
+        disabled
+      />
+      {addSourceLabel !== null ? (
+        <AddSourceAction question={turn.question} label={addSourceLabel} />
       ) : null}
     </div>
+  );
+}
+
+/**
+ * One offer, two lines: the label and its cost, equal weight with its
+ * siblings (`docs/ux/web-search.md` §2's own table) — issue 534 found the
+ * add-source control rendering as a single unlabelled line while its
+ * siblings carried a cost caption underneath; this is the one shape all
+ * three now share, `AddSourceAction` included.
+ */
+function EscalationOption({
+  label,
+  cost,
+  onClick,
+  disabled = false,
+}: {
+  label: string;
+  cost: string;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="ask-navigates flex flex-col items-start gap-1 px-4 py-2"
+      style={{
+        border: "1px solid var(--rule-strong)",
+        textAlign: "left",
+        minWidth: "180px",
+        opacity: disabled ? 0.6 : 1,
+      }}
+    >
+      <span style={{ fontSize: "var(--t-ui)", fontWeight: 600, color: "var(--ink)" }}>{label}</span>
+      <span className="ask-micro">{cost}</span>
+    </button>
   );
 }
 
@@ -1253,14 +1384,11 @@ function AddSourceAction({ question, label = "Add a source" }: { question: strin
   };
 
   return (
-    <button
-      type="button"
+    <EscalationOption
+      label={label}
+      cost="keeps the answer in your own material"
       onClick={addSource}
-      className="ask-navigates px-4 py-2"
-      style={{ border: "1px solid var(--rule-strong)", fontSize: "var(--t-ui)" }}
-    >
-      {label}
-    </button>
+    />
   );
 }
 
@@ -1295,6 +1423,9 @@ function AnsweredContent({ turn }: { turn: AskTurn }) {
       ) : null}
       {turn.sqlQuery !== null ? <SqlQueryCard disclosure={turn.sqlQuery} /> : null}
       {partial ? <UncoveredBlock items={annotations.uncovered} /> : null}
+      {partial && turn.status === "completed" ? (
+        <EscalationOffer turn={turn} addSourceLabel={addSourceActionLabel(turn.dbState)} />
+      ) : null}
       {conflict ? <ResolveOffer topic={annotations.conflictTopic!} citations={turn.citations} /> : null}
       {annotations.resolvedByMemory !== null ? (
         <ResolvedByMemoryNote fact={annotations.resolvedByMemory} />

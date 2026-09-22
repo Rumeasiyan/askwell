@@ -28,7 +28,7 @@ from .test_ingest_records import TABLES as INGEST_TABLES
 
 pytestmark = pytest.mark.requires_db
 
-TABLES = f"{INGEST_TABLES}, conversations, messages, citations, fact_usage"
+TABLES = f"{INGEST_TABLES}, conversations, messages, citations, fact_usage, web_citations"
 
 # The bar the counter-metric must never sit below (`docs/success-metrics.md`
 # §2, "sampled answers where every factual claim traces to a retrieved chunk
@@ -178,6 +178,39 @@ async def test_an_abstention_with_no_claims_counts_as_compliant(session: AsyncSe
         session,
         conversation_id,
         "Nothing in your files answers this. Add the lease agreement to check.",
+    )
+    await session.commit()
+
+    result = await check_citations(session)
+
+    assert result.checked == 1
+    assert result.compliant == 1
+    assert result.violations == ()
+
+
+async def test_a_web_cited_claim_counts_not_a_violation(session: AsyncSession) -> None:
+    """Issue #542: `web_citations` (`M6.5-WEB-BE-189`) has its own
+    `claim_ordinal`, unlike `fact_usage` — a claim cited only by a web
+    result is a real citation and must not be counted uncited, nor must the
+    whole message be excluded the way a `fact_usage` row forces (this
+    message also has a document-cited claim, and that claim must still be
+    checked)."""
+    conversation_id = await _conversation(session)
+    chunk_id = await _source_document_chunk(session)
+    message_id = await _message(
+        session,
+        conversation_id,
+        "The rent is due on the first [1]. Rates rose in 2026 [2].",
+    )
+    await _citation(session, message_id, chunk_id, ordinal=1)
+    await session.execute(
+        text(
+            "INSERT INTO web_citations "
+            "(id, message_id, claim_ordinal, domain, title, url, passage, retrieved_at) "
+            "VALUES (:id, :message_id, 2, 'example.com', 'Rates', 'https://example.com/rates', "
+            "'Rates rose in 2026.', now())"
+        ),
+        {"id": uuid.uuid4(), "message_id": message_id},
     )
     await session.commit()
 

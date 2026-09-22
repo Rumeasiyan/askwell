@@ -40,6 +40,7 @@ from askwell.update_check import register_update_check
 from askwell.voice_channel import register_voice_channel
 from askwell.voice_tts import build_tts_driver
 from askwell.voice_turn_detection import build_vad_turn_detector
+from askwell.websearch import register_web_search
 
 log = get_logger(__name__)
 
@@ -115,6 +116,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_sources(app, resolved, app.state.sessions)
     register_ingest(app, resolved, app.state.sessions)
     register_ask(app, resolved, app.state.sessions)
+    register_web_search(app, resolved, app.state.sessions)
     register_search(app, resolved, app.state.sessions)
     register_retrieval_threshold(app, resolved, app.state.sessions)
     register_suggestions(app, resolved, app.state.sessions)

@@ -103,6 +103,21 @@ async def check_citations(session: AsyncSession) -> CitationCheckResult:
                 )
             ).all()
         }
+        # `web_citations` (`M6.5-WEB-BE-189`) has its own `claim_ordinal`,
+        # unlike `fact_usage` above — issue #542: a claim cited only by a web
+        # result is a real citation, not an uncited one, and excluding the
+        # whole message the way `fact_usage` forces would hide the document
+        # claims in the same answer instead of just correctly counting this
+        # one.
+        cited_ordinals |= {
+            ordinal
+            for (ordinal,) in (
+                await session.execute(
+                    text("SELECT DISTINCT claim_ordinal FROM web_citations WHERE message_id = :id"),
+                    {"id": row.id},
+                )
+            ).all()
+        }
 
         message_violations = [
             UncitedClaim(message_id=message_id, claim_text=claim.text)
