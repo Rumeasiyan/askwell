@@ -18,7 +18,14 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from askwell import backup, content_encryption, passphrase
-from askwell.backup import InsufficientSpace, enqueue, estimate, get_job, run_job
+from askwell.backup import (
+    InsufficientSpace,
+    PassphraseRequired,
+    enqueue,
+    estimate,
+    get_job,
+    run_job,
+)
 from askwell.config import Settings
 from askwell.settings_store import set_setting
 
@@ -149,6 +156,18 @@ async def test_a_migration_in_progress_refuses_the_backup(
         await enqueue(session, settings)
 
 
+async def test_a_protected_corpus_refuses_a_backup_with_no_passphrase(
+    session: AsyncSession, settings: Settings
+) -> None:
+    await passphrase.set_passphrase(
+        session, settings, "correct horse battery staple", acknowledged_no_recovery=True
+    )
+    await session.commit()
+
+    with pytest.raises(PassphraseRequired):
+        await enqueue(session, settings)
+
+
 async def test_insufficient_space_is_refused_before_starting(
     session: AsyncSession, settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -241,7 +260,7 @@ async def test_a_passphrase_protected_backup_states_it_plainly(
             session, settings, "correct horse battery staple", acknowledged_no_recovery=True
         )
         await session.commit()
-        job_id = await enqueue(session, settings)
+        job_id = await enqueue(session, settings, "correct horse battery staple")
         await session.commit()
 
     async with factory() as session:
@@ -254,4 +273,5 @@ async def test_a_passphrase_protected_backup_states_it_plainly(
     zip_path = settings.backup_dir / f"askwell-backup-{job_id}.zip"
     extracted = _extract(zip_path, tmp_path / "extracted")
     manifest = json.loads((extracted / "manifest.json").read_text())
+    assert manifest["install_secret_wrapped"] is not None
     assert manifest["passphrase_protected"] is True
