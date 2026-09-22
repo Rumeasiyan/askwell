@@ -423,8 +423,9 @@ class Settings(BaseSettings):
     # place a string picks the class. Unset (the default) means no provider
     # is configured at all: the escalation is offered as unavailable rather
     # than crashing, the ticket's own "configuration removed entirely" edge
-    # case. `"fixture"` is the only implementation this ticket builds; the
-    # real one (`ddgs`, `docs/decisions.md` 2026-08-26) is `M6.5-WEB-BE-195`.
+    # case. `"fixture"` (`M6.5-WEB-BE-185`) returns recorded results for
+    # development and the eval suite. `"ddgs"` (`M6.5-WEB-BE-195`,
+    # `docs/decisions.md` 2026-08-26) is the real, keyless provider.
     web_search_provider: str | None = None
 
     # How long one escalation's provider call may run before it is abandoned
@@ -438,14 +439,15 @@ class Settings(BaseSettings):
     # `host:port` for the egress proxy grant `M6.5-WEB-SEC-187` opens around
     # one escalation — the one destination the grant names, distinct from
     # `web_search_provider` choosing which `WebSearchProvider` class runs.
-    # A placeholder fixture until `M6.5-WEB-BE-195` wires the real `ddgs`
-    # call: `ddgs` fans out across several backend engines rather than one
-    # fixed host, so this single-host value is deliberately provisional and
-    # `195`'s own job includes replacing it with whatever destination list
-    # the chosen backend(s) actually need — the grant mechanism itself does
-    # not change when that lands, only this value. Kept even while
+    # This is the real endpoint, not a placeholder: `DDGSWebSearchProvider`
+    # (`M6.5-WEB-BE-195`) is pinned to `ddgs`'s single `"duckduckgo"` backend
+    # rather than `"auto"` precisely so the grant only ever needs one
+    # destination — `"auto"` fans across several engines, each its own host,
+    # which a single-destination grant cannot express. That backend's search
+    # URL is `https://html.duckduckgo.com/html/`, which is this value
+    # unchanged from before `195` landed. Kept even while
     # `FixtureWebSearchProvider` never dials it, so the grant's scope is
-    # meaningful and testable now rather than added alongside the real call.
+    # meaningful and testable independent of which provider is configured.
     web_search_destination_host: str = "html.duckduckgo.com"
     web_search_destination_port: Port = 443
 

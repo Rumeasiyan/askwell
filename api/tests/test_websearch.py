@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 import psycopg
 import pytest
 import pytest_asyncio
+from ddgs.exceptions import DDGSException, TimeoutException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from askwell import websearch
@@ -27,6 +28,7 @@ from askwell.websearch import (
     WEB_SEARCH_ESCALATED,
     WEB_SEARCH_GRANT_CLOSED,
     WEB_SEARCH_GRANT_OPENED,
+    DDGSWebSearchProvider,
     FixtureWebSearchProvider,
     WebCitationRecord,
     WebSearchOutcome,
@@ -121,6 +123,82 @@ def test_an_unknown_provider_name_fails_loudly_rather_than_silently_degrading(
     configured = settings.model_copy(update={"web_search_provider": "bing"})
     with pytest.raises(ConfigurationError, match="bing"):
         build_web_search_provider(configured)
+
+
+def test_configuring_ddgs_builds_the_real_provider(settings: Settings) -> None:
+    configured = settings.model_copy(update={"web_search_provider": "ddgs"})
+    provider = build_web_search_provider(configured)
+    assert isinstance(provider, DDGSWebSearchProvider)
+
+
+# --- `DDGSWebSearchProvider`, no real network — `search_fn` is injected ----
+
+
+async def test_ddgs_provider_maps_results_with_domain_title_url_passage_and_date(
+    settings: Settings,
+) -> None:
+    def fake_search(question: str) -> list[dict[str, object]]:
+        assert question == "what standard applies here?"
+        return [
+            {
+                "title": "The Relevant Standard",
+                "href": "https://standards.example/doc",
+                "body": "A snippet describing the standard.",
+            }
+        ]
+
+    provider = DDGSWebSearchProvider(settings, search_fn=fake_search)
+    results = await provider.search("what standard applies here?")
+
+    assert len(results) == 1
+    result = results[0]
+    assert result.source == "standards.example"
+    assert result.title == "The Relevant Standard"
+    assert result.url == "https://standards.example/doc"
+    assert result.passage == "A snippet describing the standard."
+    assert result.retrieved_at.tzinfo is not None
+
+
+async def test_ddgs_provider_drops_a_result_with_no_href(settings: Settings) -> None:
+    """`href` is the URL a citation depends on — a result missing it cannot
+    be cited, the same rule `escalate_web_search` applies to a missing
+    passage."""
+    provider = DDGSWebSearchProvider(
+        settings, search_fn=lambda _q: [{"title": "No link", "href": "", "body": "text"}]
+    )
+    assert await provider.search("q") == []
+
+
+async def test_ddgs_provider_reports_unavailable_on_a_ddgs_failure(settings: Settings) -> None:
+    def failing_search(_question: str) -> list[dict[str, object]]:
+        raise TimeoutException("the request timed out")
+
+    provider = DDGSWebSearchProvider(settings, search_fn=failing_search)
+    with pytest.raises(WebSearchUnavailable, match="timed out"):
+        await provider.search("q")
+
+
+def test_ddgs_provider_uses_the_egress_proxy_from_settings_not_environment_trust(
+    settings: Settings,
+) -> None:
+    """`ddgs` never reads `HTTP_PROXY`/`HTTPS_PROXY` itself (only its own
+    `DDGS_PROXY`) — this asserts the provider passes the proxy explicitly,
+    built from `Settings.egress_proxy_host`/`_port`, rather than silently
+    doing nothing and dialling out unproxied were it ever able to."""
+    configured = settings.model_copy(
+        update={"egress_proxy_host": "egress-proxy", "egress_proxy_port": 3128}
+    )
+    provider = DDGSWebSearchProvider(configured)
+    assert provider._proxy == "http://egress-proxy:3128"
+
+
+def test_ddgs_exception_base_class_is_what_search_catches() -> None:
+    """`TimeoutException`/`RatelimitException` are both `DDGSException`
+    subclasses — the provider's `except DDGSException` in `search` must
+    catch the base class, not one specific subclass, or a `ddgs` failure
+    mode it doesn't happen to test would slip past `WebSearchUnavailable`
+    and crash the turn instead of degrading."""
+    assert issubclass(TimeoutException, DDGSException)
 
 
 # --- `escalate_web_search`, against a real Postgres for the audit write -----

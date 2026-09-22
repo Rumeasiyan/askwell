@@ -4,6 +4,26 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.6.19 - 2026-09-22
+
+`M6.5-WEB-BE-195` — the real web search provider behind `M6.5-WEB-BE-185`'s interface.
+`Added`: `askwell.websearch.DDGSWebSearchProvider`, using `ddgs` (MIT, keyless, no account, no
+cost) pinned to its single `duckduckgo` backend — `Settings.web_search_provider = "ddgs"`
+selects it. Its search URL is `https://html.duckduckgo.com/html/`, the same single destination
+the egress grant (`M6.5-WEB-SEC-187`) already authorised, so the grant needed no change. The
+proxy is passed to `ddgs` explicitly, built from `Settings.egress_proxy_host`/`_port`, since
+`ddgs` never reads `HTTP_PROXY`/`HTTPS_PROXY` itself. `Changed`: `compose.yaml`'s `api` service
+now passes through `ASKWELL_WEB_SEARCH_PROVIDER`/`_DESTINATION_HOST`/`_DESTINATION_PORT`/
+`_GRANT_TTL_SECONDS` (issue #545) — previously set in `.env` had no effect at all. Verified
+against a real running stack: an escalated question returns real results with real domains,
+titles, URLs and retrieval timestamps; with the egress proxy stopped, the same escalation
+reports `unavailable` rather than crashing, and a direct provider call with no grant open is
+refused by the proxy (`403`), confirming the destination stays closed outside a turn. Passages
+are `ddgs`'s own search snippets — fetching the full page behind each result was scoped out;
+see `docs/decisions.md`, this date, and issue #551. `docs/backlog/README.md` and
+`docs/backlog/M6.5-it-can-look-outside.md`'s stale `M6.5-WEB-BLOCKED-195` references corrected
+to `M6.5-WEB-BE-195` (issue #529).
+
 ## 0.6.18 - 2026-09-22
 
 `M6.5-EVAL-TEST-194` — the quality gate's eighth category: web escalation discipline, 10
