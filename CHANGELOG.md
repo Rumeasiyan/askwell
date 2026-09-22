@@ -4,6 +4,35 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.0 - 2026-09-22
+
+`M6.5-WEB-OBS-193` — trace flagging of fetched content, and the escalation on the record. This
+completes **M6.5 — it can look outside, 11 of 11.** `Added`: `askwell.websearch.web_search_trace_steps`
+appends the escalation's own steps to `messages.trace` after the turn's own `abstain`/`sql`
+step — `web_search_accept` (the acceptance), `web_search` (the provider, status and result
+count), one `web_search_fetch` per kept result (URL, source, title, retrieval date, and an
+`injection_flagged`/`injection_patterns` pair run over its passage with the identical heuristic
+a document candidate or tool result already goes through), and one `web_search_drop` per result
+the provider returned but never kept, with its reason. New `WebSearchDrop`/
+`WebSearchOutcome.dropped`. Both stores land through the same two-write shape
+`askwell.ask._run_generation` already uses for a turn's own trace: `TraceRing.write` first
+(fail-open, `M0-DATA-OBS-015`), then `messages.trace` inside the caller's own transaction —
+never fail-open, matching the ticket's own "the decisions record is not fail-open" edge case,
+which the existing `record()`/`session_scope` rollback already enforced and a new test proves
+over HTTP. The ordering itself is the proof the escalation-not-fallback rule holds: the turn's
+own `abstain` step is always first, so a trace where a search preceded an abstention would be
+plainly readable as wrong. The flag is informational only — no severity field, no blocking, the
+same plain shape a tool step's own flag already carries (`docs/ux/trace.md` §3). "Fetched"
+here means what the provider returned (a `WebSearchResult`), not a separately fetched page —
+`askwell.webfetch.fetch_pages` stays unwired (issue #551); full reasoning in
+`docs/decisions.md`, this date. 11 new tests (`api/tests/test_websearch.py`,
+`test_websearch_api.py`), all unmarked except the four exercising the live HTTP endpoint against
+a real Postgres. Issue #549 (the declined-offer edge case) resolved as working-as-intended —
+`docs/backlog/M6.5-it-can-look-outside.md`'s wording corrected to match: a decline writes
+nothing, so the trace stays the ordinary abstention trace, unchanged. `scripts/dev.sh check`-
+equivalent (lint, format, typecheck, 987 unmarked tests, 1 skipped) and `scripts/dev.sh test-db`
+(782 passed) both clean.
+
 ## 0.6.19 - 2026-09-22
 
 `M6.5-WEB-BE-195` — the real web search provider behind `M6.5-WEB-BE-185`'s interface.
