@@ -13,12 +13,20 @@ miss a real attempt and the number is a reassurance rather than a measurement.
 
 import asyncio
 from collections.abc import AsyncIterator
+from typing import Any
 
 import pytest
 import pytest_asyncio
 
 from askwell.config import Settings
-from askwell.egress import REFUSAL_BODY, EgressProxy, parse_destination
+from askwell.egress import (
+    GRANT_KEY_PREFIX,
+    REFUSAL_BODY,
+    EgressProxy,
+    close_grant,
+    open_grant,
+    parse_destination,
+)
 
 
 @pytest.mark.parametrize(
@@ -219,3 +227,219 @@ def test_there_is_no_allowlist_to_configure(settings: Settings) -> None:
     for forbidden in ("ALLOWED_HOSTS", "allowlist", "ALLOWLIST", "permit_host"):
         assert forbidden not in text, f"{forbidden} appears in the proxy"
     assert not any("allow" in name.lower() for name in settings.model_dump())
+
+
+# --- per-turn grants: `M6.5-WEB-SEC-187` -------------------------------------
+
+
+class FakeGrantRedis:
+    """A Redis stand-in for `open_grant`/`close_grant`/`_grant_permits` — the
+    same convention `test_network.py`'s `FakeRedis` already follows rather
+    than a real Redis, which nothing in this test suite touches (`AGENTS.md`
+    §6, `test-db`'s own tests fake Redis too).
+
+    Tracks the `ex=` a `set` was called with, so a test can assert the hard
+    expiry was actually requested rather than only that the key exists.
+    """
+
+    def __init__(self, store: dict[str, str]) -> None:
+        self.store = store
+        self.set_calls: list[tuple[str, str, int | None]] = []
+        self.constructed = 0
+        FakeGrantRedis._last = self  # type: ignore[attr-defined]
+
+    async def set(self, key: str, value: str, ex: int | None = None) -> None:
+        self.set_calls.append((key, value, ex))
+        self.store[key] = value
+
+    async def get(self, key: str) -> bytes | None:
+        value = self.store.get(key)
+        return value.encode("utf-8") if value is not None else None
+
+    async def delete(self, key: str) -> int:
+        return 1 if self.store.pop(key, None) is not None else 0
+
+    async def scan(
+        self, cursor: int, match: str | None = None, count: int | None = None
+    ) -> tuple[int, list[str]]:
+        prefix = (match or "*").rstrip("*")
+        keys = [key for key in self.store if key.startswith(prefix)]
+        return 0, keys
+
+    async def mget(self, keys: list[str]) -> list[bytes | None]:
+        return [self.store[key].encode("utf-8") if key in self.store else None for key in keys]
+
+    async def aclose(self) -> None:
+        return None
+
+
+@pytest.fixture
+def grant_store(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    store: dict[str, str] = {}
+    constructed: list[FakeGrantRedis] = []
+
+    def _build(**_kwargs: Any) -> FakeGrantRedis:
+        client = FakeGrantRedis(store)
+        constructed.append(client)
+        return client
+
+    import redis.asyncio as redis
+
+    monkeypatch.setattr(redis, "Redis", _build)
+    return store
+
+
+async def test_a_grant_with_no_acceptance_is_refused_and_never_touches_redis(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`open_grant`'s own `accepted` argument is the backstop the ticket
+    calls "an anomaly worth reading" — refused here, at the mechanism,
+    regardless of what the caller believed. Redis is never even reached: a
+    call that constructs a client here would be trusting the caller first
+    and checking second, which is the property this test exists to rule
+    out."""
+
+    def _fail(**_kwargs: Any) -> Any:
+        raise AssertionError("Redis must not be touched for an unaccepted grant")
+
+    import redis.asyncio as redis
+
+    monkeypatch.setattr(redis, "Redis", _fail)
+
+    opened = await open_grant(
+        settings,
+        turn_id="turn-1",
+        destination="html.duckduckgo.com:443",
+        accepted=False,
+        ttl_seconds=30.0,
+    )
+    assert opened is False
+
+
+async def test_an_accepted_grant_is_set_with_a_hard_expiry(
+    settings: Settings, grant_store: dict[str, str]
+) -> None:
+    opened = await open_grant(
+        settings,
+        turn_id="turn-1",
+        destination="html.duckduckgo.com:443",
+        accepted=True,
+        ttl_seconds=30.0,
+    )
+    assert opened is True
+    (key,) = grant_store
+    assert key == f"{GRANT_KEY_PREFIX}turn-1"
+    assert grant_store[key] == "html.duckduckgo.com:443"
+
+
+async def test_closing_a_grant_removes_it(settings: Settings, grant_store: dict[str, str]) -> None:
+    await open_grant(
+        settings,
+        turn_id="turn-1",
+        destination="html.duckduckgo.com:443",
+        accepted=True,
+        ttl_seconds=30.0,
+    )
+    await close_grant(settings, "turn-1")
+    assert grant_store == {}
+
+
+async def test_closing_a_grant_that_was_never_opened_is_a_no_op(
+    settings: Settings, grant_store: dict[str, str]
+) -> None:
+    await close_grant(settings, "turn-never-opened")
+    assert grant_store == {}
+
+
+async def test_two_escalations_hold_two_independent_grants(
+    settings: Settings, grant_store: dict[str, str]
+) -> None:
+    """Never one merged grant — closing the first must not touch the
+    second, even though both name the same destination."""
+    await open_grant(
+        settings,
+        turn_id="turn-a",
+        destination="html.duckduckgo.com:443",
+        accepted=True,
+        ttl_seconds=30.0,
+    )
+    await open_grant(
+        settings,
+        turn_id="turn-b",
+        destination="html.duckduckgo.com:443",
+        accepted=True,
+        ttl_seconds=30.0,
+    )
+    assert len(grant_store) == 2
+
+    await close_grant(settings, "turn-a")
+    assert len(grant_store) == 1
+    assert f"{GRANT_KEY_PREFIX}turn-b" in grant_store
+
+
+async def test_a_connect_matching_an_open_grant_is_forwarded(
+    proxy_port: tuple[int, EgressProxy],
+) -> None:
+    """The proxy's own combined check, not just the standalone functions —
+    a request naming exactly the granted destination is forwarded even
+    though no single global `PERMITTED_HOST_KEY` was ever set."""
+
+    async def echo(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        data = await reader.read(1024)
+        writer.write(data.upper())
+        await writer.drain()
+        writer.close()
+
+    upstream = await asyncio.start_server(echo, "127.0.0.1", 0)
+    upstream_port = upstream.sockets[0].getsockname()[1]
+    destination = f"127.0.0.1:{upstream_port}"
+
+    port, proxy = proxy_port
+
+    async def _matching_grant(candidate: str) -> bool:
+        return candidate == destination
+
+    proxy._grant_permits = _matching_grant  # type: ignore[method-assign]
+
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(f"CONNECT {destination} HTTP/1.1\r\nHost: {destination}\r\n\r\n".encode())
+        await writer.drain()
+        established = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=5)
+        assert b"200 Connection Established" in established
+
+        writer.write(b"hello")
+        await writer.drain()
+        echoed = await asyncio.wait_for(reader.read(1024), timeout=5)
+        writer.close()
+
+        assert echoed == b"HELLO"
+        assert proxy.permitted == 1
+        assert proxy.refused == 0
+    finally:
+        upstream.close()
+        await upstream.wait_closed()
+
+
+async def test_a_connect_to_a_different_host_is_refused_even_with_a_grant_open(
+    proxy_port: tuple[int, EgressProxy],
+) -> None:
+    """A grant is exactly one destination. Anything else stays 403 while it
+    is open — the ticket's own "no configuration or grant may widen the
+    door" requirement."""
+    port, proxy = proxy_port
+
+    async def _matching_grant(candidate: str) -> bool:
+        return candidate == "html.duckduckgo.com:443"
+
+    proxy._grant_permits = _matching_grant  # type: ignore[method-assign]
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    writer.write(b"CONNECT some-other-host.example:443 HTTP/1.1\r\n\r\n")
+    await writer.drain()
+    response = await asyncio.wait_for(reader.read(2048), timeout=5)
+    writer.close()
+
+    assert b"403 Forbidden" in response
+    assert proxy.refused == 1
+    assert proxy.permitted == 0

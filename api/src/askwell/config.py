@@ -435,6 +435,28 @@ class Settings(BaseSettings):
     # `health_probe_timeout_seconds`.
     web_search_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
 
+    # `host:port` for the egress proxy grant `M6.5-WEB-SEC-187` opens around
+    # one escalation — the one destination the grant names, distinct from
+    # `web_search_provider` choosing which `WebSearchProvider` class runs.
+    # A placeholder fixture until `M6.5-WEB-BE-195` wires the real `ddgs`
+    # call: `ddgs` fans out across several backend engines rather than one
+    # fixed host, so this single-host value is deliberately provisional and
+    # `195`'s own job includes replacing it with whatever destination list
+    # the chosen backend(s) actually need — the grant mechanism itself does
+    # not change when that lands, only this value. Kept even while
+    # `FixtureWebSearchProvider` never dials it, so the grant's scope is
+    # meaningful and testable now rather than added alongside the real call.
+    web_search_destination_host: str = "html.duckduckgo.com"
+    web_search_destination_port: Port = 443
+
+    # How long a turn's egress grant may stand before it expires on its own,
+    # regardless of whether the turn ever tells the proxy it is done —
+    # `M6.5-WEB-SEC-187`'s own hard-expiry requirement. Generous over
+    # `web_search_timeout_seconds` (one provider call plus margin for the
+    # request that opens the grant and the one that closes it), short enough
+    # that a leaked grant is a bounded window, not a standing one.
+    web_search_grant_ttl_seconds: float = Field(default=30.0, gt=0, le=300)
+
     # 32 random bytes that make a copied `postgres-data` volume alone
     # insufficient to read `sources.config_encrypted` (C8, `M4-CONN-SEC-098`).
     # Generated on first use if absent. Lives on the same bind mount the

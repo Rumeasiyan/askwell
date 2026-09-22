@@ -52,6 +52,16 @@ REPORTING_SINCE_KEY = "askwell:egress:since"
 # has to change the instant a setting does, not on the proxy's next restart.
 PERMITTED_HOST_KEY = "askwell:egress:permitted_host"
 
+# A short-lived, per-turn grant — `M6.5-WEB-SEC-187`. One key per turn, so two
+# escalations in quick succession hold two independent grants rather than
+# racing to overwrite the single `PERMITTED_HOST_KEY` above, and each expires
+# on its own Redis TTL — a hard stop that does not depend on the API ever
+# calling `close_grant`, which is the ticket's own "missed code path" edge
+# case. `PERMITTED_HOST_KEY` stays as it is for `M7-UPDATE-BE-161`, which is
+# not turn-scoped at all; this is a second, narrower mechanism next to it, not
+# a replacement.
+GRANT_KEY_PREFIX = "askwell:egress:grant:"
+
 RECENT_LIMIT = 50
 
 # Long enough for a real request line and headers, short enough that a client
@@ -163,6 +173,76 @@ async def revoke_destination(settings: Settings) -> None:
             await client.aclose()
 
 
+def _grant_key(turn_id: str) -> str:
+    return f"{GRANT_KEY_PREFIX}{turn_id}"
+
+
+async def open_grant(
+    settings: Settings,
+    *,
+    turn_id: str,
+    destination: str,
+    accepted: bool,
+    ttl_seconds: float,
+) -> bool:
+    """Open a grant scoped to one turn and one destination, `destination`
+    being `host:port`. Returns whether it opened.
+
+    `accepted` is the one thing this function trusts nothing else about: a
+    caller asking for a grant with no acceptance behind it gets refused here,
+    at the mechanism, rather than by convention in whatever code called this.
+    That refusal is itself worth reading, so it is logged as a warning rather
+    than passed through silently — `docs/backlog/M6.5-it-can-look-outside.md`
+    calls this "an anomaly worth reading" and this is where that happens.
+
+    The Redis key expires on its own after `ttl_seconds` regardless of
+    whether `close_grant` is ever called — the hard expiry the ticket
+    requires so a missed closing path cannot leave a grant standing.
+    """
+    if not accepted:
+        log.warning("egress_grant_refused_unaccepted", turn_id=turn_id, destination=destination)
+        return False
+
+    import redis.asyncio as redis
+
+    client = redis.Redis(
+        host=settings.redis_host,
+        port=settings.redis_port,
+        socket_connect_timeout=2.0,
+        socket_timeout=2.0,
+    )
+    try:
+        await client.set(_grant_key(turn_id), destination, ex=max(1, int(ttl_seconds)))
+    finally:
+        with contextlib.suppress(Exception):
+            await client.aclose()
+    log.info(
+        "egress_grant_opened", turn_id=turn_id, destination=destination, ttl_seconds=ttl_seconds
+    )
+    return True
+
+
+async def close_grant(settings: Settings, turn_id: str) -> None:
+    """Close a turn's grant. A no-op if it already expired or was never
+    opened — every route by which a turn can end calls this unconditionally,
+    so it has to tolerate being called on a turn that never escalated."""
+    import redis.asyncio as redis
+
+    client = redis.Redis(
+        host=settings.redis_host,
+        port=settings.redis_port,
+        socket_connect_timeout=2.0,
+        socket_timeout=2.0,
+    )
+    try:
+        deleted = await client.delete(_grant_key(turn_id))
+    finally:
+        with contextlib.suppress(Exception):
+            await client.aclose()
+    if deleted:
+        log.info("egress_grant_closed", turn_id=turn_id)
+
+
 class EgressProxy:
     """Refuses every outbound request except the one destination, if any,
     that has been explicitly permitted — and counts both."""
@@ -194,6 +274,45 @@ class EgressProxy:
         if value is None:
             return None
         return value.decode("utf-8") if isinstance(value, bytes) else value
+
+    async def _grant_permits(self, destination: str) -> bool:
+        """Whether any live turn grant names exactly `destination`.
+
+        Read fresh on every connection, like `_permitted_destination` above —
+        a grant closed by the API, or one that expired on its own TTL, must
+        stop permitting the very next connection, not on this proxy's next
+        restart. Scanning rather than a single key because a grant is
+        per-turn: two escalations in flight hold two keys, and this has to
+        find either.
+        """
+        import redis.asyncio as redis
+
+        client = redis.Redis(
+            host=self.settings.redis_host,
+            port=self.settings.redis_port,
+            socket_connect_timeout=1.0,
+            socket_timeout=1.0,
+        )
+        try:
+            cursor = 0
+            while True:
+                cursor, keys = await client.scan(cursor, match=f"{GRANT_KEY_PREFIX}*", count=100)
+                if keys:
+                    values = await client.mget(keys)
+                    for value in values:
+                        if value is None:
+                            continue
+                        text = value.decode("utf-8") if isinstance(value, bytes) else value
+                        if text == destination:
+                            return True
+                if cursor == 0:
+                    return False
+        except Exception as error:
+            log.warning("egress_grant_unreadable", error=f"{type(error).__name__}: {error}")
+            return False
+        finally:
+            with contextlib.suppress(Exception):
+                await client.aclose()
 
     async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         peer = writer.get_extra_info("peername")
@@ -234,7 +353,10 @@ class EgressProxy:
 
         if method == "CONNECT" and destination is not None:
             permitted = await self._permitted_destination()
-            if permitted is not None and destination == permitted:
+            allowed = permitted is not None and destination == permitted
+            if not allowed:
+                allowed = await self._grant_permits(destination)
+            if allowed:
                 await self._consume_header_block(reader)
                 await self._forward(reader, writer, destination, service)
                 return
