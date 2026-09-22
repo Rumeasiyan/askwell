@@ -4,6 +4,33 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.9 - 2026-09-23
+
+`M7-PACK-DEPLOY-141` — the macOS installer. `Added`: `deploy/macos/install.sh` creates and
+starts a Podman machine (`podman machine init`/`start`) when none exists — Podman has no
+native macOS container runtime, the platform's own version of Windows' WSL2 requirement —
+detected via `podman machine list --noheading`'s stable table output. Names, informationally,
+that the machine's default mount window only covers `$HOME`, so a folder on an external volume
+needs the machine recreated with `--volume` before it can register as anything but
+`not_mounted` — the macOS-specific cause for a state every platform already accepts
+(`docs/decisions.md`, 2026-08-27). Refuses before copying on insufficient disk space or a
+missing `Askwell.app` bundle, naming the build command. Places the stack under
+`~/Library/Application Support/Askwell/app`, the app bundle at `~/Applications/Askwell.app`,
+generates real database passwords in place of `.env.example`'s `change-me*` placeholders
+(issue #584's fix, same as Linux/Windows), writes and loads a `launchctl` LaunchAgent so
+Askwell starts with the session and restarts after a crash but not after a deliberate quit,
+writes an install record, and launches via `open` — never a browser tab. Never checks or
+claims a code signature: Askwell ships unsigned (`docs/decisions.md`, 2026-08-26), and this
+installer treats that as settled rather than re-raising it. `deploy/macos/uninstall.sh` mirrors
+Linux's and Windows': removes the LaunchAgent, the CLI symlink and the app bundle; leaves the
+data directory untouched unless `--purge-data` is given, which still asks first. 36 unit tests
+(`deploy/macos/install.test.sh`) pass on this Linux build host — every function under test is
+pure string handling with no macOS-only syscall — and the runtime-detection step was
+additionally run for real against this host's own Podman. No real macOS walkthrough exists yet
+(issue #592, same shape as #590 for Windows and the Linux precursor to #559); `docs/decisions.md`
+and `docs/manual-tests/M7-PACK-DEPLOY-141.md` have the full detail, including a
+corrected-mid-session overstatement about a related permission-explanation gap (issue #593).
+
 ## 0.7.8 - 2026-09-23
 
 `M7-PACK-DEPLOY-140` — the Windows installer. `Added`: `deploy/windows/install.ps1` checks

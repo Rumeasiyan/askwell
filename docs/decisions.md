@@ -4,6 +4,85 @@ Append-only. **Newest first.** Never edit an entry to change its meaning — if 
 
 **Bar for an entry:** something a competent person would later ask *"why is it like this?"* about. Architecture changes, dependency choices, resolved `docs/PRD.md` §11 questions, reversals. **Not** routine implementation choices — those are visible in the diff.
 
+## 2026-09-23 — The macOS installer creates and starts its own Podman machine, and names the Podman-machine mount window rather than enforcing it
+
+**Decision:** `deploy/macos/install.sh`/`lib.sh`/`uninstall.sh`/`install.test.sh`
+(`M7-PACK-DEPLOY-141`) mirror the Linux and Windows installers' shape — same artefact layout,
+same refuse-before-copy discipline, same `.env` secrets fix as issue #584 — with macOS's own
+two problems named. First, Podman has no native macOS container runtime; every container runs
+inside a small VM ("the Podman machine"), the Mac analogue of Windows' WSL2. `check_runtime`
+creates one (`podman machine init`) and starts it (`podman machine start`) if neither already
+exists, detected via `podman machine list --noheading`'s table output rather than
+`--format`'s Go-template field names — those names (`Running`, `Starting`, …) could not be
+verified against a real running machine from this build host (no Mac; Podman's own machine
+subcommand does exist on Linux too, and was actually exercised here, but `--format`'s exact
+JSON schema for the installed version was not confirmed), and the visible table's literal
+`Currently running` string is the honest choice over guessing one (`AGENTS.md` §4). This was
+run for real against this build host's own Podman: `podman machine init && podman machine
+start` correctly exercised `has_podman_machine`/`podman_machine_running`'s detection before
+failing on a host-specific missing `gvproxy` binary unrelated to the installer, proving the
+detection logic against real output rather than only a synthetic test double.
+
+Second, that machine only sees paths under the installing account's home directory by default.
+`ASKWELL_ROOTS_MOUNT` (`docs/decisions.md`, 2026-08-27, "Nominated folders are mounted at their
+own paths") already accepted `not_mounted` as a recorded, explained state rather than a defect
+— "no platform Askwell supports can add a mount to a running container." macOS adds a
+platform-specific *cause* for that state: a folder outside `$HOME` needs the machine recreated
+with an explicit `--volume` before it becomes reachable at all, which install time is not the
+right moment to attempt (recreating a machine destroys and rebuilds it, and it may already be
+running other work). `check_roots_mount` prints this once, informationally, rather than
+enforcing or verifying it — a deliberately smaller claim than could have been made, because
+verifying it precisely means the same unverified `podman machine inspect` JSON schema problem
+`check_runtime` already declined to guess at.
+
+**Why unsigned distribution is treated as settled, not raised again.** The ticket's own
+Context/Background and Assumptions describe `M7-TAURI-DEPLOY-184` as delivering signed,
+notarised artefacts to be "wired in" here, and name an unavailable signing certificate as a
+blocking issue to raise. That premise is stale: the 2026-08-26 entry below already settled
+this — Askwell ships **unsigned**, real signing survives only as the deferred
+`M7-TAURI-DEPLOY-184a` (blocked on cost, not engineering), and `deploy/windows/lib.ps1` already
+treats this as fact (`Get-AskwellQuarantineMessage`: "Askwell's ... unsigned desktop shell").
+Re-raising a already-settled decision as if newly discovered would be its own mistake; instead
+`install.sh` never checks or claims a signature, and `launch()` names the
+`docs/installing.md` bypass path if `codesign` reports none, rather than asserting the ticket's
+"runs without disabling security features" criterion is met when the accepted product decision
+means it provably is not for a *downloaded* release (only for a same-machine local build, which
+carries no Gatekeeper quarantine attribute).
+
+**A second, smaller gap surfaced and was not absorbed into this ticket.** This ticket's own
+"folder access permission requests ... explained" scope line overlaps `M7-TAURI-FE-182`'s
+acceptance criterion, so it was checked against the tree rather than trusted. The
+application-level explanation genuinely works — `folders.tsx` calls `isMacOS()` and renders
+Askwell's line beside the native picker, `docs/ux/add-source.md` §7 has the matching copy, both
+confirmed present in `M7-TAURI-FE-182`'s real merge (`f0ea93ae`). What is still missing:
+`web/src-tauri/Info.plist` and `tauri.conf.json`'s `bundle.macOS.infoPlist` key, which would
+carry `NSDesktopFolderUsageDescription`/etc. so macOS's own system dialog shows
+Askwell-authored wording instead of generic OS text — a refinement to the system prompt's own
+copy, not the "an explanation appears" behaviour, which already ships. Filed as issue #593
+(corrected mid-session once the overstatement was caught) rather than authored here — that
+remaining content is `M7-TAURI-FE-182`'s stated scope, not this installer script's, which
+places whatever bundle exists and does not author its permission-prompt content.
+
+**Rejected:** stripping the quarantine attribute (`xattr -d com.apple.quarantine`)
+automatically after copying a bundle — this is exactly the bypass `docs/installing.md`
+deliberately sequences *after* checksum verification, and scripting it unconditionally would
+remove the one real safeguard that page names. Verifying `podman machine inspect`'s actual
+current mounts programmatically — considered and rejected for this ticket, since the field
+names could not be confirmed against a real instance and a wrong guess is worse than an
+honest, informational message (same reasoning `check_runtime` already applied to `--format`).
+
+**Consequences:** `deploy/macos/install.test.sh` (36/36, run on this Linux build host — every
+function under test is pure string handling with no macOS-only syscall) proves `lib.sh`'s
+logic; the real cold-start walkthrough remains unrun (issue #592, same shape as #590 for
+Windows). `docs/manual-tests/M7-PACK-DEPLOY-141.md` records both what was verified for real
+(the runtime-detection step, against this host's own Podman) and what was not.
+
+**Refs:** `deploy/macos/`; `docs/manual-tests/M7-PACK-DEPLOY-141.md`; issues #559, #590, #592,
+#593, #501; this file, 2026-08-26 ("No trademark, unsigned distribution, and Apache-2.0
+stays") and 2026-08-27 ("Nominated folders are mounted at their own paths").
+
+---
+
 ## 2026-09-23 — The Windows installer checks virtualisation before Podman, and verifies its own copies rather than trusting them
 
 **Decision:** `deploy/windows/install.ps1`/`lib.ps1`/`uninstall.ps1`/`install.test.ps1`
