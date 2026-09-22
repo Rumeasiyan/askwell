@@ -103,6 +103,7 @@ from askwell.ingest import coverage
 from askwell.inline_clarify import default_assumption, find_blocking
 from askwell.logging import get_logger
 from askwell.memory import MemoryFact, SchemaNote, retrieve_relevant_facts
+from askwell.model_select import active_model_identity
 from askwell.retrieve import Candidate, candidate_score, retrieve
 from askwell.sql import execute as sql_execute_checked
 from askwell.sql.dry_run import DryRunReason, dry_run_connection_query, dry_run_sandbox_query
@@ -235,6 +236,20 @@ def _semaphore(settings: Settings) -> asyncio.Semaphore:
         _generation_semaphore = asyncio.Semaphore(limit)
         _generation_semaphore_size = limit
     return _generation_semaphore
+
+
+def generation_semaphore(settings: Settings) -> asyncio.Semaphore:
+    """The same semaphore `_generate` bounds itself with, for a caller outside
+    this module that needs to wait for every in-flight turn to finish rather
+    than just the next one.
+
+    `askwell.model_select` is that caller: a model swap acquires every permit
+    before touching the inference process, which is what "queued until the
+    turn finishes" (`M7-SET-BE-145a`'s own edge case) means in practice — a
+    turn already generating keeps its permit until it is done, and a new one
+    cannot start until the swap releases them all.
+    """
+    return _semaphore(settings)
 
 
 def _retire(message_id: uuid.UUID) -> None:
@@ -2285,17 +2300,29 @@ def register_ask(
             # created, not after it finishes — a turn a client never sees
             # started must still be a row `reconcile_interrupted` can find
             # and fail on the next startup, rather than nothing at all.
+            #
+            # The model identity is captured in the same step (`M7-SET-BE-
+            # 145a`): `askwell.model_select.select_user_model` holds every
+            # `generation_semaphore` permit for the duration of a swap, and
+            # this insert runs before the background task ever requests one
+            # — a swap racing the exact instant a question is asked is a
+            # narrower window than this ticket's own scope covers, and this
+            # is still a real reading of what is configured right now rather
+            # than a guess.
             message_id = uuid.uuid4()
+            model_identity = await active_model_identity(db, settings)
             await db.execute(
                 text(
-                    "INSERT INTO messages (id, conversation_id, role, content, trace) "
+                    "INSERT INTO messages (id, conversation_id, role, content, trace, "
+                    "model_identity) "
                     "VALUES (:id, :conversation_id, 'assistant', '', "
-                    "CAST(:trace AS jsonb))"
+                    "CAST(:trace AS jsonb), CAST(:model_identity AS jsonb))"
                 ),
                 {
                     "id": message_id,
                     "conversation_id": conversation_id,
                     "trace": json.dumps({"status": "running", "steps": []}),
+                    "model_identity": json.dumps(model_identity),
                 },
             )
 

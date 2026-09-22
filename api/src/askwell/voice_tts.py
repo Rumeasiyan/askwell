@@ -105,6 +105,7 @@ from askwell.ask import _Turn as AskTurn
 from askwell.config import Settings
 from askwell.db.engine import session_scope
 from askwell.logging import get_logger
+from askwell.model_select import active_model_identity
 from askwell.voice_channel import VoiceTurn, stage_breakdown_ms
 from askwell.voice_stt import ClientFactory, build_stt_driver
 
@@ -180,22 +181,28 @@ async def _synthesize_and_queue(
 
 
 async def _insert_pending_answer(
-    factory: async_sessionmaker[AsyncSession], ask_turn: AskTurn
+    factory: async_sessionmaker[AsyncSession], ask_turn: AskTurn, settings: Settings
 ) -> None:
     # Same shape as `askwell.ask`'s own `/ask` endpoint: a `running` row
     # exists before generation starts, so a process that dies mid-turn
     # leaves something `askwell.ask.reconcile_interrupted` can find and fail
-    # on the next startup, rather than a turn with no record at all.
+    # on the next startup, rather than a turn with no record at all. The
+    # model identity is captured here too, the same as that endpoint
+    # (`M7-SET-BE-145a`).
     async with session_scope(factory) as db:
+        model_identity = await active_model_identity(db, settings)
         await db.execute(
             text(
-                "INSERT INTO messages (id, conversation_id, role, content, trace) "
-                "VALUES (:id, :conversation_id, 'assistant', '', CAST(:trace AS jsonb))"
+                "INSERT INTO messages (id, conversation_id, role, content, trace, "
+                "model_identity) "
+                "VALUES (:id, :conversation_id, 'assistant', '', CAST(:trace AS jsonb), "
+                "CAST(:model_identity AS jsonb))"
             ),
             {
                 "id": ask_turn.message_id,
                 "conversation_id": ask_turn.conversation_id,
                 "trace": json.dumps({"status": "running", "steps": []}),
+                "model_identity": json.dumps(model_identity),
             },
         )
 
@@ -212,7 +219,7 @@ async def _speak_answer(
 ) -> None:
     assert turn.conversation_id is not None  # set by the STT driver before this hook runs
     ask_turn = AskTurn(message_id=uuid.uuid4(), conversation_id=turn.conversation_id)
-    await _insert_pending_answer(factory, ask_turn)
+    await _insert_pending_answer(factory, ask_turn, settings)
 
     gen_task: asyncio.Task[None] = asyncio.create_task(
         generate(settings, factory, ask_turn, question, None, None)

@@ -5,6 +5,8 @@ tenancy, no roles and no second node — anything here that looks like it is
 preparing for those is a mistake, not foresight.
 """
 
+import asyncio
+import contextlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -27,6 +29,7 @@ from askwell.log_export import register_log_export
 from askwell.logging import configure_logging, get_logger
 from askwell.memory import register_memory
 from askwell.middleware import register_session
+from askwell.model_select import reapply_user_model, register_model_select
 from askwell.network import read_activity
 from askwell.passphrase import register_passphrase
 from askwell.probe import register_probe
@@ -85,9 +88,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if reconciled:
             log.warning("ask_turns_reconciled", count=reconciled)
 
+        # Backgrounded, not awaited: the shipped default the host just booted
+        # can take minutes to answer on a cold, light-profile machine, and a
+        # persisted user-supplied selection (`M7-SET-BE-145a`) should not make
+        # every startup wait on top of that. `reapply_user_model` is a no-op
+        # if nothing was ever selected.
+        reapply_task = asyncio.create_task(reapply_user_model(app.state.sessions, settings))
+        app.state.model_reapply_task = reapply_task
+
     try:
         yield
     finally:
+        pending_reapply: asyncio.Task[None] | None = getattr(app.state, "model_reapply_task", None)
+        if pending_reapply is not None:
+            pending_reapply.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pending_reapply
         log.info("shutdown", version=__version__)
         await app.state.engine.dispose()
 
@@ -125,6 +141,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_memory(app, resolved, app.state.sessions)
     register_setup(app, resolved, app.state.sessions)
     register_probe(app, resolved, app.state.sessions)
+    register_model_select(app, resolved, app.state.sessions)
     register_log_budget(app, resolved, app.state.sessions)
     register_log_export(app, resolved, app.state.sessions)
     register_backup(app, resolved, app.state.sessions)
