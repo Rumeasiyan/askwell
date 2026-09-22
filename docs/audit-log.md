@@ -62,6 +62,8 @@ Which is genuinely useful: a consultant who needs to show a client what was aske
 
 **Do not describe this as immutable.** It is tamper-evident. The difference is the whole point.
 
+**A legitimate prune (§8) is not tampering, and verification says so.** Deleting the oldest run of interaction records is, from the chain's own shape, indistinguishable from someone deleting them by hand — that is exactly what the chain-integrity check exists to catch. Each prune records the hash the surviving chain now starts from (`interactions_pruned`, in the decisions store, which is never pruned), and `askwell.audit.verify` checks a broken-looking start against that recorded boundary before reporting it as a break. A chain that starts there reports intact, with a note explaining the prune, rather than `MISSING_GENESIS`.
+
 ---
 
 ## 5. Export

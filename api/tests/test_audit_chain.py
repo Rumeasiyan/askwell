@@ -241,3 +241,60 @@ async def test_deleting_the_first_record_is_reported_as_a_break(
     assert not result.intact, "a chain with no start must not report as intact"
     assert result.reason is Break.MISSING_GENESIS
     assert "first record has been removed" in result.detail
+
+
+async def test_a_chain_starting_at_a_known_prune_boundary_verifies(
+    session: AsyncSession,
+) -> None:
+    """The shape `askwell.log_prune` actually produces: the oldest records
+    gone, with no gap for anything else to have removed them. Passed the
+    boundary hash it recorded, `verify` must not report `MISSING_GENESIS` —
+    that is exactly the false positive issue #516 named.
+    """
+    for index in range(5):
+        await record(session, Store.INTERACTIONS, f"event_{index}", {"index": index})
+    await session.commit()
+
+    rows = (
+        await session.execute(
+            text("SELECT id, hash FROM audit_interactions ORDER BY occurred_at ASC")
+        )
+    ).all()
+    boundary_hash = rows[1][1]  # the last of the two records about to be "pruned"
+    await session.execute(
+        text("DELETE FROM audit_interactions WHERE id = ANY(:ids)"),
+        {"ids": [rows[0][0], rows[1][0]]},
+    )
+    await session.commit()
+
+    without_boundary = await verify(session, Store.INTERACTIONS)
+    assert not without_boundary.intact
+    assert without_boundary.reason is Break.MISSING_GENESIS
+
+    with_boundary = await verify(
+        session, Store.INTERACTIONS, prune_boundaries=[(boundary_hash, "2026-01-01")]
+    )
+    assert with_boundary.intact, str(with_boundary)
+    assert with_boundary.checked == 3
+    assert "prune" in with_boundary.note
+    assert "2026-01-01" in with_boundary.note
+    assert "prune" in str(with_boundary)
+
+
+async def test_an_unknown_prune_boundary_does_not_paper_over_real_tampering(
+    session: AsyncSession,
+) -> None:
+    """A boundary hash only excuses a start that actually matches it. A
+    real deletion with an unrelated boundary in hand must still break."""
+    for index in range(3):
+        await record(session, Store.INTERACTIONS, f"event_{index}", {"index": index})
+    await session.commit()
+
+    await session.execute(
+        text("DELETE FROM audit_interactions WHERE prev_hash = :genesis"), {"genesis": GENESIS}
+    )
+    await session.commit()
+
+    result = await verify(session, Store.INTERACTIONS, prune_boundaries=[("f" * 64, "irrelevant")])
+    assert not result.intact
+    assert result.reason is Break.MISSING_GENESIS

@@ -750,6 +750,44 @@ class BackupJob(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class PruneJob(Base):
+    """One interaction-retention prune: everything in `audit_interactions`
+    older than the job's own frozen cutoff, deleted. `M7-LOG-BE-154`.
+
+    Same reasoning as `ExportJob`: `arq` dispatches, this table records, and
+    `askwell.log_prune.resume` returns a job a dead worker was holding back
+    to `queued` rather than losing it. `cutoff` is computed once at enqueue
+    time and stored here rather than recomputed from the retention setting
+    on every run — a retry after a crash must prune exactly what the
+    original request decided, not whatever the setting says by the time a
+    worker gets to it.
+    """
+
+    __tablename__ = "prune_jobs"
+    __table_args__ = (
+        _one_of("status", ("queued", "running", "done", "failed"), "status"),
+        Index(
+            "ix_prune_jobs_pending",
+            "created_at",
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default=text("'queued'"))
+    cutoff: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    pruned_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    boundary_hash: Mapped[str | None] = mapped_column(String(64))
+    error: Mapped[str | None] = mapped_column(Text)
+
+    created_at_: Mapped[datetime] = mapped_column(
+        "created_at", DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 # --- conversations ----------------------------------------------------------
 
 
