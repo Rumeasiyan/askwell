@@ -4,6 +4,21 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.10 - 2026-09-23
+
+`M7-TAURI-DEPLOY-184` — unsigned distribution with checksums. `Added`: `scripts/release-checksums.sh`
+generates a `SHA256SUMS` file covering every artefact in a release directory, deterministic and
+refusing to run against an empty or missing directory (`scripts/release-checksums.test.sh`, 9/9
+passing). `docs/release-procedure.md` documents the release steps — assemble artefacts, generate
+checksums, publish, verify the upload from outside the build, then the cold-start walkthrough —
+and names the real gap: no pipeline yet produces an installable bundle per platform (issue #559),
+so this covers publishing whatever artefact exists, not building it. `docs/release-notes-template.md`
+puts `docs/installing.md`'s link above the artefact list, matching that page's own verify-before-bypass
+ordering. `Fixed`: `docs/backlog/M7-someone-else-can-install-it.md`'s Acceptance Criteria for this
+ticket described signed, notarised artefacts — the stale premise `docs/decisions.md` (2026-09-23,
+macOS entry) already flagged as settled wrong — corrected to match the ticket's own Scope
+(unsigned, checksummed). No signing credential is introduced by this change (C8 untouched).
+
 ## 0.7.9 - 2026-09-23
 
 `M7-PACK-DEPLOY-141` — the macOS installer. `Added`: `deploy/macos/install.sh` creates and
