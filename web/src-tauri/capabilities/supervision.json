@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "supervision",
+  "description": "`M7-PACK-FE-143`'s supervision/repair window (`shell-assets/supervision.html`) — a second bundled asset, never retrieved content, scoped to its own window label so these three commands are never reachable from `main` (where the real web app, and content inside it, runs).",
+  "windows": ["supervision"],
+  "permissions": ["allow-supervision-status", "allow-supervision-control", "allow-supervision-log-location"]
+}

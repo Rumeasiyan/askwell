@@ -4,6 +4,34 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.14 - 2026-09-23
+
+`M7-PACK-FE-143` — a supervision surface: start, stop, repair, and what is wrong. `Added`:
+`web/src-tauri/shell-assets/supervision.html`, a second bundled window (never served by the
+API, so it works while the API is down) showing the container stack and the native inference
+process with their state and last failure reason, and Start/Stop/Restart per half plus a
+"Restart both" convenience. Reachable two ways: a native "Askwell" application menu with a
+"Supervision…" item (`main.rs`, present the moment the window exists, whichever page it is
+showing), and a button on the "assistant unavailable"/"Askwell is not running" banner
+(`web/components/shell/status-banner.tsx`) once the real app has loaded, rendered only inside
+the desktop shell. `web/src-tauri/src/supervisor.rs` gains the read/write half this needed:
+`Handle::status`/`Handle::control`, fed through a channel into the same thread that already owns
+`RestartPolicy`/the child process, so a manual action can never race the loop's own automatic
+one. A manually stopped half (`stack_manual_stopped`/`inference_manual_stopped`) is tracked
+separately from a capped one — the loop must not treat "asked to be off" as a failure to retry
+past, and the surface reports it as `stopped`, not `failed`. A log-location command
+(`supervision_log_location`) resolves each platform's own `$DATA_DIR/logs` (already created by
+`M7-PACK-DEPLOY-142`'s installers) and says plainly that only macOS's `LaunchAgent`s write files
+there today — Linux/Windows point at their own service journal instead, named rather than
+pointing at an empty folder with no explanation. Issue #607 (macOS's restart cap has no
+OS-level "failed" state) is resolved as decided in `docs/decisions.md` 2026-09-23: the surface
+reads the shell's own supervisor state, which already derives from `state.json`'s heartbeat
+rather than the OS service state, so the asymmetry is invisible here. `Changed`: nine unit
+tests added to `web/src-tauri/src/supervisor.rs` for the new status-derivation logic
+(`stack_status_now`/`inference_status_now`/`log_location`/`resolve_data_dir`), verified against
+a throwaway scratch crate (same constraint as `M7-TAURI-DEPLOY-183` — no `pkg-config`-visible
+`libsoup-3.0` on this build host, issue #497, so `cargo build`/`cargo test` cannot run in-tree).
+
 ## 0.7.13 - 2026-09-23
 
 `M7-PACK-DEPLOY-142` — the platform half of supervision: the container stack and the native

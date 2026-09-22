@@ -22,11 +22,20 @@
 //! so it never worked on Windows) is why adoption here is decided from
 //! `state.json`'s heartbeat instead — the same file exists on every
 //! platform.
+//!
+//! `M7-PACK-FE-143` adds the supervision surface's read/write half further
+//! down this file (`Handle::status`/`Handle::control`, `Target`,
+//! `ControlAction`, `ComponentStatus`): a manual Stop/Start/Restart per half,
+//! surfaced state with the last failure reason, and the log-file location.
+//! A manually stopped half is tracked separately from a capped one
+//! (`stack_manual_stopped`/`inference_manual_stopped`) — the loop must not
+//! treat "the user asked for this to be off" as a failure to retry past.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -86,6 +95,95 @@ fn report_on_window(app: &AppHandle, cause: &Cause) {
     let _ = window.eval(format!(
         "window.askwellReportCause && window.askwellReportCause({payload})"
     ));
+}
+
+// --- `M7-PACK-FE-143`: the supervision surface's read/write half ------------
+//
+// Everything above this point is `M7-TAURI-DEPLOY-183`'s own automatic
+// supervision loop, unchanged. This section adds the two things a repair
+// surface needs that the loop alone does not provide: a snapshot of what it
+// currently believes (`Handle::status`, polled by the surface, not pushed —
+// the surface is a separate window that may not exist yet when the state
+// changes) and a way to ask it to do something (`Handle::control`), fed into
+// the same loop via a channel so every mutation of `stack_policy`/
+// `inference_policy`/the child process still happens on the one thread that
+// already owns them, rather than racing a second one.
+
+/// Which half a control action targets. "Both" (this ticket's scope line)
+/// is the surface calling this twice, not a third variant here — the loop
+/// has no notion of "both" and treating stack/inference identically either
+/// way keeps this enum matching the two real owners of state below.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    Stack,
+    Inference,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ControlAction {
+    Start,
+    Stop,
+    Restart,
+}
+
+/// One component's state as the surface renders it. Deliberately a plain
+/// string rather than reusing `Cause` (which only ever exists to describe
+/// the *stack* pre-handoff) or `ProcessState` (which is the Python
+/// supervisor's own vocabulary for the inference half specifically) — this
+/// is the one vocabulary both halves share on this surface: `starting`,
+/// `running`, `stopped` (deliberately, by manual action), `runtime_missing`
+/// (stack only — Askwell cannot start Podman itself), `failed` (backoff
+/// capped, `reason` is the last one).
+#[derive(Clone, serde::Serialize)]
+pub struct ComponentStatus {
+    pub state: &'static str,
+    pub reason: Option<String>,
+    pub restarts: u64,
+}
+
+impl Default for ComponentStatus {
+    fn default() -> Self {
+        ComponentStatus { state: "starting", reason: None, restarts: 0 }
+    }
+}
+
+fn stack_status_now(
+    manual_stopped: bool,
+    confirmed: bool,
+    runtime_missing: bool,
+    policy: &RestartPolicy,
+) -> ComponentStatus {
+    let state = if manual_stopped {
+        "stopped"
+    } else if confirmed {
+        "running"
+    } else if runtime_missing {
+        "runtime_missing"
+    } else if policy.capped() {
+        "failed"
+    } else {
+        "starting"
+    };
+    ComponentStatus { state, reason: policy.last_reason.clone(), restarts: policy.restarts }
+}
+
+fn inference_status_now(manual_stopped: bool, confirmed: bool, policy: &RestartPolicy) -> ComponentStatus {
+    let state = if manual_stopped {
+        "stopped"
+    } else if confirmed {
+        "running"
+    } else if policy.capped() {
+        "failed"
+    } else {
+        "starting"
+    };
+    ComponentStatus { state, reason: policy.last_reason.clone(), restarts: policy.restarts }
+}
+
+#[derive(Default)]
+struct Shared {
+    stack: Mutex<ComponentStatus>,
+    inference: Mutex<ComponentStatus>,
 }
 
 // --- local, stdout-only supervision log --------------------------------------
@@ -215,6 +313,55 @@ pub fn resolve_install_root() -> PathBuf {
         platform_default_install_prefix(),
         PathBuf::from(env!("ASKWELL_REPO_ROOT")),
     )
+}
+
+/// Mirrors each platform installer's own `data_dir_default`/`Get-AskwellDataDir`
+/// (`deploy/linux/lib.sh`, `deploy/macos/lib.sh`, `deploy/windows/lib.ps1`) —
+/// the directory those scripts already `mkdir -p ... logs` under at install
+/// time, so this is not a new location, only a second reader of one that
+/// already exists. `ASKWELL_DATA_DIR` overrides on every platform, same as
+/// the installers.
+pub fn resolve_data_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("ASKWELL_DATA_DIR").map(PathBuf::from) {
+        return dir;
+    }
+    if cfg!(target_os = "macos") {
+        home_dir().join("Library/Application Support/Askwell")
+    } else if cfg!(windows) {
+        let base = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home_dir().join("AppData/Local"));
+        base.join("Askwell")
+    } else {
+        let base = std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home_dir().join(".local/share"));
+        base.join("askwell")
+    }
+}
+
+/// What a bug report needs: the folder the installer already creates
+/// (`$DATA_DIR/logs` on every platform), plus one honest line about what is
+/// actually written there right now. Only macOS's `LaunchAgent`s
+/// (`M7-PACK-DEPLOY-142`) redirect their stdout/stderr into files in that
+/// folder today (`askwell-stack.log`, `askwell-inference.log`); Linux's
+/// `systemd --user` units and Windows' Scheduled Tasks write to their own
+/// platform journal instead, so the folder exists there but is not yet where
+/// their output lands — saying so is the honest thing to surface rather than
+/// pointing at an empty directory with no explanation (C6's overclaiming
+/// concern applies here just as much as to the audit log).
+pub fn log_location() -> (PathBuf, &'static str) {
+    let dir = resolve_data_dir().join("logs");
+    let note = if cfg!(target_os = "macos") {
+        "askwell-stack.log and askwell-inference.log are written here."
+    } else if cfg!(windows) {
+        "Stack and inference output isn't written to a file here yet — check \
+         Task Scheduler's history for the askwell-stack and askwell-inference tasks."
+    } else {
+        "Stack and inference output isn't written to a file here yet — read it with: \
+         journalctl --user -u askwell-stack.service -u askwell-inference.service"
+    };
+    (dir, note)
 }
 
 /// A minimal `KEY=VALUE` reader for the installer-written `.env` — `podman
@@ -494,6 +641,8 @@ pub struct Handle {
     stopping: Arc<AtomicBool>,
     stopped_once: AtomicBool,
     join: Mutex<Option<thread::JoinHandle<()>>>,
+    shared: Arc<Shared>,
+    commands: Sender<(Target, ControlAction)>,
 }
 
 impl Handle {
@@ -508,16 +657,41 @@ impl Handle {
             let _ = handle.join();
         }
     }
+
+    /// The supervision surface's read half — a snapshot, not a subscription.
+    /// The surface is a separate window that polls this on an interval of
+    /// its own rather than the loop pushing into it, because unlike
+    /// `starting.html` (guaranteed to exist while the loop runs pre-handoff)
+    /// this window may not be open at all most of the time.
+    pub fn status(&self) -> (ComponentStatus, ComponentStatus) {
+        (self.shared.stack.lock().unwrap().clone(), self.shared.inference.lock().unwrap().clone())
+    }
+
+    /// The write half. Queued into the loop's own thread rather than acted
+    /// on here — `stack_policy`/`inference_policy`/the child `Process`
+    /// handle are all owned by that one thread, and mutating them from a
+    /// second one (the Tauri command's own async runtime thread) is exactly
+    /// the kind of race this avoids by construction rather than by locking.
+    /// Best-effort: the channel can only be disconnected once the loop has
+    /// already exited, at which point there is nothing left to control.
+    pub fn control(&self, target: Target, action: ControlAction) {
+        let _ = self.commands.send((target, action));
+    }
 }
 
 pub fn start(app: AppHandle, config: SupervisorConfig) -> Arc<Handle> {
     let stopping = Arc::new(AtomicBool::new(false));
     let loop_stopping = stopping.clone();
-    let join = thread::spawn(move || run(app, config, loop_stopping));
+    let shared = Arc::new(Shared::default());
+    let loop_shared = shared.clone();
+    let (tx, rx) = mpsc::channel();
+    let join = thread::spawn(move || run(app, config, loop_stopping, loop_shared, rx));
     Arc::new(Handle {
         stopping,
         stopped_once: AtomicBool::new(false),
         join: Mutex::new(Some(join)),
+        shared,
+        commands: tx,
     })
 }
 
@@ -532,21 +706,30 @@ fn wait_or_stop(stopping: &AtomicBool, timeout: Duration) -> bool {
     stopping.load(Ordering::SeqCst)
 }
 
-fn run(app: AppHandle, config: SupervisorConfig, stopping: Arc<AtomicBool>) {
+fn run(
+    app: AppHandle,
+    config: SupervisorConfig,
+    stopping: Arc<AtomicBool>,
+    shared: Arc<Shared>,
+    commands: Receiver<(Target, ControlAction)>,
+) {
     report_on_window(&app, &Cause::Starting);
 
     // Ordered start: the stack first, then the native process — deterministic
     // rather than a race, per this ticket's own scope line.
     let mut stack_policy = RestartPolicy::default();
     let mut stack_up_confirmed = false;
+    let mut stack_runtime_missing = false;
+    let mut stack_manual_stopped = false;
     let mut last_reported: Option<Cause> = None;
     log_supervisor_event("stack", "supervisor_stack_start", None);
-    attempt_stack_up(&app, &config, &mut stack_policy, &mut last_reported);
+    attempt_stack_up(&app, &config, &mut stack_policy, &mut last_reported, &mut stack_runtime_missing);
 
     let mut inference: Option<Child> = None;
     let mut inference_policy = RestartPolicy::default();
     let mut inference_confirmed = false;
     let mut inference_capped = false;
+    let mut inference_manual_stopped = false;
     let mut next_inference_attempt = Instant::now();
     log_supervisor_event("inference", "supervisor_inference_start", None);
     if let Some(delay) = bring_up_inference(&config, &mut inference, &mut inference_policy) {
@@ -560,66 +743,143 @@ fn run(app: AppHandle, config: SupervisorConfig, stopping: Arc<AtomicBool>) {
             break;
         }
 
+        // --- manual actions from the M7-PACK-FE-143 supervision surface ---
+        // Drained fully before this tick's own checks so a Stop followed
+        // immediately by a Start (a Restart, from the surface's point of
+        // view) cannot be partially undone by stale state below.
+        while let Ok((target, action)) = commands.try_recv() {
+            match (target, action) {
+                (Target::Stack, ControlAction::Stop) => {
+                    compose_down(&config);
+                    stack_manual_stopped = true;
+                    stack_up_confirmed = false;
+                    stack_policy = RestartPolicy::default();
+                    log_supervisor_event("stack", "supervisor_stack_stop_manual", None);
+                }
+                (Target::Stack, ControlAction::Start) => {
+                    stack_manual_stopped = false;
+                    stack_policy = RestartPolicy::default();
+                    next_stack_attempt = Instant::now();
+                    log_supervisor_event("stack", "supervisor_stack_start_manual", None);
+                }
+                (Target::Stack, ControlAction::Restart) => {
+                    compose_down(&config);
+                    stack_manual_stopped = false;
+                    stack_up_confirmed = false;
+                    stack_policy = RestartPolicy::default();
+                    next_stack_attempt = Instant::now();
+                    log_supervisor_event("stack", "supervisor_stack_restart_manual", None);
+                }
+                (Target::Inference, ControlAction::Stop) => {
+                    if let Some(mut child) = inference.take() {
+                        terminate_child(&mut child);
+                    }
+                    inference_manual_stopped = true;
+                    inference_confirmed = false;
+                    inference_capped = false;
+                    inference_policy = RestartPolicy::default();
+                    log_supervisor_event("inference", "supervisor_inference_stop_manual", None);
+                }
+                (Target::Inference, ControlAction::Start) => {
+                    inference_manual_stopped = false;
+                    inference_policy = RestartPolicy::default();
+                    next_inference_attempt = Instant::now();
+                    log_supervisor_event("inference", "supervisor_inference_start_manual", None);
+                }
+                (Target::Inference, ControlAction::Restart) => {
+                    if let Some(mut child) = inference.take() {
+                        terminate_child(&mut child);
+                    }
+                    inference_manual_stopped = false;
+                    inference_confirmed = false;
+                    inference_capped = false;
+                    inference_policy = RestartPolicy::default();
+                    next_inference_attempt = Instant::now();
+                    log_supervisor_event("inference", "supervisor_inference_restart_manual", None);
+                }
+            }
+        }
+
         // --- stack ---
-        if stack_reachable(&config.api_origin) {
+        if stack_manual_stopped {
+            // Deliberately not running — nothing to probe or retry until a
+            // Start/Restart command clears this.
+        } else if stack_reachable(&config.api_origin) {
             if !stack_up_confirmed {
                 stack_policy.reset();
                 stack_up_confirmed = true;
+                stack_runtime_missing = false;
                 log_supervisor_event("stack", "supervisor_stack_ready", None);
                 set_reported(&app, &mut last_reported, Cause::Ready);
             }
         } else {
             stack_up_confirmed = false;
             if !stack_policy.capped() && Instant::now() >= next_stack_attempt {
-                if let Some(delay) = attempt_stack_up(&app, &config, &mut stack_policy, &mut last_reported) {
+                if let Some(delay) = attempt_stack_up(
+                    &app,
+                    &config,
+                    &mut stack_policy,
+                    &mut last_reported,
+                    &mut stack_runtime_missing,
+                ) {
                     next_stack_attempt = Instant::now() + delay;
                 }
             }
         }
+        *shared.stack.lock().unwrap() =
+            stack_status_now(stack_manual_stopped, stack_up_confirmed, stack_runtime_missing, &stack_policy);
 
         // --- inference ---
-        match inference.as_mut() {
-            Some(child) => match child.try_wait() {
-                Ok(None) => {
-                    if !inference_confirmed && inference_confirmed_ready(&config.run_dir) {
-                        inference_policy.reset();
-                        inference_confirmed = true;
-                        inference_capped = false;
-                        log_supervisor_event("inference", "supervisor_inference_ready", None);
+        if inference_manual_stopped {
+            // Deliberately not running, same as the stack above.
+        } else {
+            match inference.as_mut() {
+                Some(child) => match child.try_wait() {
+                    Ok(None) => {
+                        if !inference_confirmed && inference_confirmed_ready(&config.run_dir) {
+                            inference_policy.reset();
+                            inference_confirmed = true;
+                            inference_capped = false;
+                            log_supervisor_event("inference", "supervisor_inference_ready", None);
+                        }
                     }
-                }
-                Ok(Some(status)) => {
-                    let reason = inference_last_reason(&config.run_dir)
-                        .unwrap_or_else(|| format!("askwell-inference exited with {status}"));
-                    inference = None;
-                    inference_confirmed = false;
-                    match inference_policy.record_failure(reason.clone()) {
-                        Some(delay) => {
-                            log_supervisor_event("inference", "supervisor_inference_restart", Some(&reason));
+                    Ok(Some(status)) => {
+                        let reason = inference_last_reason(&config.run_dir)
+                            .unwrap_or_else(|| format!("askwell-inference exited with {status}"));
+                        inference = None;
+                        inference_confirmed = false;
+                        match inference_policy.record_failure(reason.clone()) {
+                            Some(delay) => {
+                                log_supervisor_event("inference", "supervisor_inference_restart", Some(&reason));
+                                next_inference_attempt = Instant::now() + delay;
+                            }
+                            None => {
+                                inference_capped = true;
+                                log_supervisor_event("inference", "supervisor_inference_failed", Some(&reason));
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        log_supervisor_event(
+                            "inference",
+                            "supervisor_inference_poll_error",
+                            Some(&error.to_string()),
+                        );
+                    }
+                },
+                None => {
+                    if !inference_capped && Instant::now() >= next_inference_attempt {
+                        if let Some(delay) =
+                            bring_up_inference(&config, &mut inference, &mut inference_policy)
+                        {
                             next_inference_attempt = Instant::now() + delay;
                         }
-                        None => {
-                            inference_capped = true;
-                            log_supervisor_event("inference", "supervisor_inference_failed", Some(&reason));
-                        }
-                    }
-                }
-                Err(error) => {
-                    log_supervisor_event(
-                        "inference",
-                        "supervisor_inference_poll_error",
-                        Some(&error.to_string()),
-                    );
-                }
-            },
-            None => {
-                if !inference_capped && Instant::now() >= next_inference_attempt {
-                    if let Some(delay) = bring_up_inference(&config, &mut inference, &mut inference_policy) {
-                        next_inference_attempt = Instant::now() + delay;
                     }
                 }
             }
         }
+        *shared.inference.lock().unwrap() =
+            inference_status_now(inference_manual_stopped, inference_confirmed, &inference_policy);
 
         if wait_or_stop(&stopping, POLL_INTERVAL) {
             break;
@@ -638,14 +898,19 @@ fn attempt_stack_up(
     config: &SupervisorConfig,
     policy: &mut RestartPolicy,
     last_reported: &mut Option<Cause>,
+    runtime_missing: &mut bool,
 ) -> Option<Duration> {
     match stack_up(config) {
-        Ok(()) => None,
+        Ok(()) => {
+            *runtime_missing = false;
+            None
+        }
         Err(cause) => {
             let detail = match &cause {
                 Cause::RuntimeMissing { detail } | Cause::StackDown { detail } => detail.clone(),
                 _ => String::new(),
             };
+            *runtime_missing = matches!(cause, Cause::RuntimeMissing { .. });
             match policy.record_failure(detail) {
                 Some(delay) => {
                     log_supervisor_event("stack", "supervisor_stack_restart", policy.last_reason.as_deref());
@@ -859,5 +1124,89 @@ mod tests {
         .unwrap();
         assert!(inference_confirmed_ready(&dir));
         fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- M7-PACK-FE-143: the supervision surface's status derivation ------
+
+    #[test]
+    fn stack_status_manual_stop_wins_over_everything_else() {
+        let mut policy = RestartPolicy::default();
+        policy.record_failure("boom");
+        let status = stack_status_now(true, false, true, &policy);
+        assert_eq!(status.state, "stopped");
+    }
+
+    #[test]
+    fn stack_status_runtime_missing_is_distinct_from_a_capped_stack_failure() {
+        let mut policy = RestartPolicy::default();
+        for _ in 0..5 {
+            policy.record_failure("podman machine not running");
+        }
+        assert!(policy.capped());
+        let status = stack_status_now(false, false, true, &policy);
+        assert_eq!(status.state, "runtime_missing");
+        assert_eq!(status.reason.as_deref(), Some("podman machine not running"));
+    }
+
+    #[test]
+    fn stack_status_capped_without_runtime_missing_is_failed() {
+        let mut policy = RestartPolicy::default();
+        for _ in 0..5 {
+            policy.record_failure("compose exited 1");
+        }
+        let status = stack_status_now(false, false, false, &policy);
+        assert_eq!(status.state, "failed");
+    }
+
+    #[test]
+    fn stack_status_confirmed_is_running_even_mid_backoff_history() {
+        let mut policy = RestartPolicy::default();
+        policy.record_failure("transient");
+        policy.reset();
+        let status = stack_status_now(false, true, false, &policy);
+        assert_eq!(status.state, "running");
+    }
+
+    #[test]
+    fn stack_status_default_is_starting() {
+        let policy = RestartPolicy::default();
+        let status = stack_status_now(false, false, false, &policy);
+        assert_eq!(status.state, "starting");
+    }
+
+    #[test]
+    fn inference_status_manual_stop_wins_over_a_capped_failure() {
+        let mut policy = RestartPolicy::default();
+        for _ in 0..5 {
+            policy.record_failure("load_failed");
+        }
+        let status = inference_status_now(true, false, &policy);
+        assert_eq!(status.state, "stopped");
+    }
+
+    #[test]
+    fn inference_status_capped_is_failed_with_last_reason() {
+        let mut policy = RestartPolicy::default();
+        for _ in 0..5 {
+            policy.record_failure("model_missing");
+        }
+        let status = inference_status_now(false, false, &policy);
+        assert_eq!(status.state, "failed");
+        assert_eq!(status.reason.as_deref(), Some("model_missing"));
+    }
+
+    #[test]
+    fn log_location_names_a_platform_specific_note() {
+        let (dir, note) = log_location();
+        assert!(dir.ends_with("logs"));
+        assert!(!note.is_empty());
+    }
+
+    #[test]
+    fn resolve_data_dir_prefers_the_env_override() {
+        std::env::set_var("ASKWELL_DATA_DIR", "/tmp/askwell-data-dir-test-override");
+        let resolved = resolve_data_dir();
+        std::env::remove_var("ASKWELL_DATA_DIR");
+        assert_eq!(resolved, PathBuf::from("/tmp/askwell-data-dir-test-override"));
     }
 }

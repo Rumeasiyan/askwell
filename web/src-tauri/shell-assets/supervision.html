@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Askwell — Supervision</title>
+    <!--
+      `M7-PACK-FE-143`: a small, native surface for the two halves the shell
+      supervises (`web/src-tauri/src/supervisor.rs`, `M7-TAURI-DEPLOY-183`) —
+      state, last failure reason, and start/stop/restart, reachable from the
+      desktop entry point (the native "Askwell" menu's "Supervision…" item,
+      `main.rs`) and from the real application's "assistant unavailable"
+      state once it has loaded.
+
+      Bundled the same way as `starting.html`: no font, no CDN, nothing but
+      this document, so it loads with no network dependency and works
+      identically whether the API is up or not — the whole point of a
+      surface that exists for when the API is down. It never renders
+      retrieved or remote content, so it carries none of the C7 concerns the
+      rest of the app does.
+
+      Talks to the shell process only, via three commands scoped to this
+      window alone (`capabilities/supervision.json`): `supervision_status`
+      (polled — this page is not always open, so the loop cannot push into
+      it the way it pushes into `starting.html`), `supervision_control`
+      (start/stop/restart, one component at a time) and
+      `supervision_log_location`.
+    -->
+    <style>
+      :root {
+        --paper: #e9ebe7;
+        --ink: #232722;
+        --muted: #5f655e;
+        --provenance: #2f6b62;
+        --line: #cfd3cb;
+        --danger: #9a3b2f;
+        --card: #f4f5f2;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --paper: #191c1a;
+          --ink: #e4e7e1;
+          --muted: #9aa096;
+          --provenance: #5fa99b;
+          --line: #33362f;
+          --danger: #d98a7c;
+          --card: #20241f;
+        }
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        background: var(--paper);
+        color: var(--ink);
+        font-family:
+          ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        padding: 1.5rem;
+        box-sizing: border-box;
+      }
+      h1 {
+        font-size: 1.05rem;
+        font-weight: 600;
+        margin: 0 0 0.25rem;
+      }
+      p.lede {
+        color: var(--muted);
+        font-size: 0.85rem;
+        margin: 0 0 1.25rem;
+      }
+      .banner {
+        border: 1px solid var(--line);
+        border-radius: 0.5rem;
+        padding: 0.6rem 0.85rem;
+        font-size: 0.85rem;
+        margin-bottom: 1rem;
+        color: var(--muted);
+      }
+      .banner.ok {
+        border-color: var(--provenance);
+        color: var(--provenance);
+      }
+      section.component {
+        border: 1px solid var(--line);
+        border-radius: 0.6rem;
+        background: var(--card);
+        padding: 1rem;
+        margin-bottom: 1rem;
+      }
+      .component h2 {
+        font-size: 0.95rem;
+        margin: 0 0 0.35rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+      .dot {
+        width: 0.55rem;
+        height: 0.55rem;
+        border-radius: 50%;
+        background: var(--muted);
+        flex: none;
+      }
+      .dot.running {
+        background: var(--provenance);
+      }
+      .dot.failed,
+      .dot.runtime_missing {
+        background: var(--danger);
+      }
+      .state {
+        font-size: 0.8rem;
+        color: var(--muted);
+        text-transform: capitalize;
+      }
+      .reason {
+        font-size: 0.8rem;
+        color: var(--ink);
+        background: var(--paper);
+        border-radius: 0.4rem;
+        padding: 0.5rem 0.6rem;
+        margin: 0.5rem 0 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .actions {
+        display: flex;
+        gap: 0.5rem;
+        margin-top: 0.75rem;
+      }
+      button {
+        font: inherit;
+        font-size: 0.8rem;
+        padding: 0.4rem 0.75rem;
+        border-radius: 0.4rem;
+        border: 1px solid var(--line);
+        background: var(--paper);
+        color: var(--ink);
+        cursor: pointer;
+      }
+      button:hover {
+        border-color: var(--provenance);
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      .log {
+        font-size: 0.8rem;
+        color: var(--muted);
+      }
+      .log code {
+        display: block;
+        margin-top: 0.35rem;
+        padding: 0.5rem 0.6rem;
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 0.4rem;
+        word-break: break-all;
+        color: var(--ink);
+      }
+      .error {
+        color: var(--danger);
+        font-size: 0.8rem;
+        margin-top: 0.5rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Supervision</h1>
+    <p class="lede">The container stack and the native inference process, and what to do about either.</p>
+
+    <div id="banner" class="banner">Checking…</div>
+
+    <section class="component" id="stack-section">
+      <h2><span class="dot" id="stack-dot"></span>Container stack</h2>
+      <div class="state" id="stack-state">—</div>
+      <div class="reason" id="stack-reason" hidden></div>
+      <div class="actions">
+        <button data-component="stack" data-action="start">Start</button>
+        <button data-component="stack" data-action="stop">Stop</button>
+        <button data-component="stack" data-action="restart">Restart</button>
+      </div>
+    </section>
+
+    <section class="component" id="inference-section">
+      <h2><span class="dot" id="inference-dot"></span>Inference process</h2>
+      <div class="state" id="inference-state">—</div>
+      <div class="reason" id="inference-reason" hidden></div>
+      <div class="actions">
+        <button data-component="inference" data-action="start">Start</button>
+        <button data-component="inference" data-action="stop">Stop</button>
+        <button data-component="inference" data-action="restart">Restart</button>
+      </div>
+    </section>
+
+    <section class="component">
+      <h2>Both</h2>
+      <div class="actions">
+        <button id="restart-both">Restart both</button>
+      </div>
+    </section>
+
+    <section class="component log">
+      <h2 style="font-size: 0.9rem; margin-bottom: 0.35rem">Logs, for a bug report</h2>
+      <div id="log-note">Looking up the log location…</div>
+      <code id="log-path"></code>
+      <div class="actions">
+        <button id="copy-log-path" disabled>Copy path</button>
+      </div>
+    </section>
+
+    <div class="error" id="error" hidden></div>
+
+    <script>
+      (function () {
+        var invoke = function (cmd, args) {
+          return window.__TAURI_INTERNALS__.invoke(cmd, args || {});
+        };
+
+        var STATE_LABEL = {
+          starting: "Starting",
+          running: "Running",
+          stopped: "Stopped",
+          runtime_missing: "Container runtime not running",
+          failed: "Failed",
+        };
+
+        var errorEl = document.getElementById("error");
+
+        function showError(message) {
+          errorEl.textContent = message;
+          errorEl.hidden = false;
+        }
+
+        function renderComponent(name, status) {
+          var dot = document.getElementById(name + "-dot");
+          var stateEl = document.getElementById(name + "-state");
+          var reasonEl = document.getElementById(name + "-reason");
+          dot.className = "dot " + status.state;
+          stateEl.textContent = STATE_LABEL[status.state] || status.state;
+          if (status.reason) {
+            reasonEl.textContent = status.reason;
+            reasonEl.hidden = false;
+          } else {
+            reasonEl.hidden = true;
+          }
+          var section = document.getElementById(name + "-section");
+          var stopButton = section.querySelector('[data-action="stop"]');
+          var startButton = section.querySelector('[data-action="start"]');
+          // "Both halves healthy — the surface says so plainly rather than
+          // inviting unnecessary action" (this ticket's own edge case):
+          // Stop stays reachable for a deliberate manual stop, but Start is
+          // disabled while already running — there is nothing for it to do.
+          startButton.disabled = status.state === "running" || status.state === "starting";
+          stopButton.disabled = status.state === "stopped";
+        }
+
+        function renderBanner(stack, inference) {
+          var banner = document.getElementById("banner");
+          if (stack.state === "running" && inference.state === "running") {
+            banner.textContent = "Both are running. Nothing needs your attention.";
+            banner.className = "banner ok";
+            return;
+          }
+          banner.className = "banner";
+          var parts = [];
+          if (stack.state !== "running") parts.push("the container stack");
+          if (inference.state !== "running") parts.push("the inference process");
+          banner.textContent = "Not answering yet: " + parts.join(" and ") + ".";
+        }
+
+        function poll() {
+          invoke("supervision_status")
+            .then(function (status) {
+              renderComponent("stack", status.stack);
+              renderComponent("inference", status.inference);
+              renderBanner(status.stack, status.inference);
+              errorEl.hidden = true;
+            })
+            .catch(function (error) {
+              showError("Could not read status: " + error);
+            })
+            .finally(function () {
+              window.setTimeout(poll, 1500);
+            });
+        }
+
+        document.querySelectorAll("button[data-component]").forEach(function (button) {
+          button.addEventListener("click", function () {
+            var component = button.getAttribute("data-component");
+            var action = button.getAttribute("data-action");
+            button.disabled = true;
+            invoke("supervision_control", { component: component, action: action })
+              .catch(function (error) {
+                showError("Could not " + action + " the " + component + ": " + error);
+              })
+              .finally(function () {
+                button.disabled = false;
+              });
+          });
+        });
+
+        document.getElementById("restart-both").addEventListener("click", function () {
+          invoke("supervision_control", { component: "stack", action: "restart" }).catch(function (error) {
+            showError("Could not restart the stack: " + error);
+          });
+          invoke("supervision_control", { component: "inference", action: "restart" }).catch(function (error) {
+            showError("Could not restart inference: " + error);
+          });
+        });
+
+        var logPathEl = document.getElementById("log-path");
+        var logNoteEl = document.getElementById("log-note");
+        var copyButton = document.getElementById("copy-log-path");
+        var currentLogPath = "";
+
+        invoke("supervision_log_location")
+          .then(function (location) {
+            currentLogPath = location.path;
+            logPathEl.textContent = location.path;
+            logNoteEl.textContent = location.note;
+            copyButton.disabled = false;
+          })
+          .catch(function (error) {
+            logNoteEl.textContent = "Could not look up the log location: " + error;
+          });
+
+        copyButton.addEventListener("click", function () {
+          if (!currentLogPath || !navigator.clipboard) return;
+          navigator.clipboard.writeText(currentLogPath).catch(function () {
+            /* clipboard access denied — the path is already shown on screen */
+          });
+        });
+
+        poll();
+      })();
+    </script>
+  </body>
+</html>

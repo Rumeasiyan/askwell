@@ -89,6 +89,21 @@
         color: var(--muted);
         margin: 0;
       }
+      button#repair {
+        display: none;
+        margin-top: 1rem;
+        font: inherit;
+        font-size: 0.8rem;
+        padding: 0.4rem 0.9rem;
+        border-radius: 0.4rem;
+        border: 1px solid var(--muted);
+        background: transparent;
+        color: var(--ink);
+        cursor: pointer;
+      }
+      button#repair:hover {
+        border-color: var(--provenance);
+      }
     </style>
   </head>
   <body>
@@ -96,6 +111,12 @@
       <div class="mark" aria-hidden="true"></div>
       <h1 id="headline">Starting Askwell</h1>
       <p id="detail">Waiting for the local application to come up.</p>
+      <!--
+        `M7-PACK-FE-143`: shown only once a real cause has been reported
+        (below) — before that, this is the ordinary few-seconds cold start
+        and a repair button would invite action on nothing wrong.
+      -->
+      <button id="repair" type="button">Open Supervision…</button>
     </main>
     <script>
       (function () {
@@ -108,6 +129,15 @@
         // explanation stays on screen — the generic "still starting" text
         // below must not overwrite a real, named cause with a vaguer one.
         var reportedCause = null;
+        var repairButton = document.getElementById("repair");
+
+        repairButton.addEventListener("click", function () {
+          if (window.__TAURI_INTERNALS__) {
+            window.__TAURI_INTERNALS__.invoke("open_supervision_window").catch(function () {
+              /* nothing more useful to do here than leave the button visible */
+            });
+          }
+        });
 
         // Called by `web/src-tauri/src/supervisor.rs` via `WebviewWindow::eval`
         // whenever the shell-level cause changes: the container runtime
@@ -123,15 +153,18 @@
             detail.textContent =
               payload.detail ||
               "Askwell needs Podman to run its container stack. Install or start it, then reopen Askwell.";
+            repairButton.style.display = "inline-block";
           } else if (payload.cause === "stack_down") {
             headline.textContent = "The container stack couldn't start";
             detail.textContent =
               payload.detail || "Check Podman and try reopening Askwell.";
+            repairButton.style.display = "inline-block";
           } else {
             // "starting" or "ready" — back to the ordinary starting copy.
             reportedCause = null;
             headline.textContent = "Starting Askwell";
             detail.textContent = "Waiting for the local application to come up.";
+            repairButton.style.display = "none";
           }
         };
 
