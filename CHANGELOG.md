@@ -4,6 +4,27 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.12 - 2026-09-23
+
+`M7-TAURI-DEPLOY-183` — the shell supervises the stack and the inference process. `Added`:
+`web/src-tauri/src/supervisor.rs` starts the container stack and the native `askwell-inference`
+process in order on launch, watches both, restarts either with a five-step capped backoff on
+failure, and stops both cleanly on quit (`podman compose down` plus a SIGTERM/kill of the
+process it owns). Two new shell-level unavailability causes — the container runtime missing or
+not running, and the stack failing to come up after backoff caps — are reported distinctly on
+`starting.html`, extending `M0-MODEL-BE-020`'s existing two. Adoption (an already-running stack
+or a supervisor left behind by a killed shell) is detected from the native supervisor's own
+`state.json` heartbeat, which exists identically on Linux, macOS and Windows. `Fixed`: closes
+issues #600 (adoption previously checked a Unix socket only, so it never worked on Windows),
+#601 (the backoff policy reset on every poll where the process was merely alive, making the
+give-up path unreachable), and #602 (a process that failed to even spawn was never retried or
+reported). Issue #581 (warning before shutdown if ingestion is running) remains open — it needs
+a backend aggregate this ticket does not build. `docs/decisions.md` records the design choices
+and a verification gap: this session's host lacks the `-devel` packages Tauri's own dependency
+chain needs to link, so the module's pure logic was verified in a throwaway scratch crate (9
+tests) rather than via a real `cargo build`/`cargo test` — the same pre-existing gap issue #497
+already tracks.
+
 ## 0.7.11 - 2026-09-23
 
 `M7-BACKUP-TEST-159` — the restore release gate. `Added`: `docs/restore-release-test.md` (the

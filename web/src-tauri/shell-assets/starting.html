@@ -15,6 +15,18 @@
       loads with no network dependency at all — no font, no CDN, nothing but
       this document. It never renders retrieved or remote content, so it
       carries none of the C7 concerns the rest of the app does.
+
+      `M7-TAURI-DEPLOY-183` adds the third distinct unavailability cause: the
+      container runtime missing/not running, or the stack itself never
+      coming up — the two failures that mean no API ever answers, so this
+      page is the only surface that can ever say so. `web/src-tauri/src/
+      supervisor.rs` pushes that in directly via `WebviewWindow::eval`
+      (`window.askwellReportCause`) rather than a Tauri command: this page is
+      the shell's own bundled asset, not retrieved content, so there is no
+      IPC surface to add just for a read-only status line. A model that
+      fails to load once the stack *is* up is a different, already-existing
+      cause (`M0-MODEL-BE-020`) reported by the real application after
+      hand-off, not by this page.
     -->
     <style>
       :root {
@@ -92,6 +104,36 @@
         var headline = document.getElementById("headline");
         var detail = document.getElementById("detail");
         var attempt = 0;
+        // Once the shell has told us *why* nothing is coming up, that
+        // explanation stays on screen — the generic "still starting" text
+        // below must not overwrite a real, named cause with a vaguer one.
+        var reportedCause = null;
+
+        // Called by `web/src-tauri/src/supervisor.rs` via `WebviewWindow::eval`
+        // whenever the shell-level cause changes: the container runtime
+        // missing or not running, or the stack itself failing after
+        // exhausting its restart backoff. Both mean no API will ever answer
+        // here, so `poll()` below would otherwise spin forever with no
+        // explanation.
+        window.askwellReportCause = function (payload) {
+          if (!payload || !payload.cause) return;
+          reportedCause = payload.cause;
+          if (payload.cause === "runtime_missing") {
+            headline.textContent = "Podman isn't available";
+            detail.textContent =
+              payload.detail ||
+              "Askwell needs Podman to run its container stack. Install or start it, then reopen Askwell.";
+          } else if (payload.cause === "stack_down") {
+            headline.textContent = "The container stack couldn't start";
+            detail.textContent =
+              payload.detail || "Check Podman and try reopening Askwell.";
+          } else {
+            // "starting" or "ready" — back to the ordinary starting copy.
+            reportedCause = null;
+            headline.textContent = "Starting Askwell";
+            detail.textContent = "Waiting for the local application to come up.";
+          }
+        };
 
         function poll() {
           attempt += 1;
@@ -108,7 +150,7 @@
               window.location.replace(apiOrigin + "/");
             })
             .catch(function () {
-              if (attempt > 3) {
+              if (attempt > 3 && !reportedCause) {
                 headline.textContent = "Still starting Askwell";
                 detail.textContent =
                   "This is taking longer than usual. It will open as soon as the application answers.";

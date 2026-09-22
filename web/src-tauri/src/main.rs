@@ -9,6 +9,8 @@ use std::sync::Mutex;
 use tauri::webview::NewWindowResponse;
 use tauri::{Manager, Url, WebviewUrl, WebviewWindowBuilder};
 
+mod supervisor;
+
 /// The version baked in by `build.rs` from the repo-root `VERSION` file — see
 /// that file's docstring for why the shell never hand-copies this number.
 const SHELL_VERSION: &str = env!("ASKWELL_SHELL_VERSION");
@@ -90,6 +92,22 @@ fn main() {
 
             spawn_api_version_watcher(app.handle().clone(), api_origin.clone());
 
+            // `M7-TAURI-DEPLOY-183`: the shell brings up the container stack
+            // and the native inference process, watches both, and stops both
+            // on quit — see `supervisor.rs`. Started after the window exists
+            // because it reports into that window while things come up.
+            let install_root = supervisor::resolve_install_root();
+            let run_dir = install_root.join(".run");
+            let supervisor_config = supervisor::SupervisorConfig {
+                install_root,
+                run_dir,
+                container_binary: std::env::var("ASKWELL_CONTAINER_BINARY")
+                    .unwrap_or_else(|_| "podman".to_string()),
+                api_origin: api_origin.clone(),
+            };
+            let supervisor_handle = supervisor::start(app.handle().clone(), supervisor_config);
+            app.manage(supervisor_handle);
+
             Ok(())
         })
         .build(tauri::generate_context!());
@@ -99,6 +117,13 @@ fn main() {
             app.run(|app_handle, event| {
                 if let tauri::RunEvent::ExitRequested { .. } = event {
                     log_event(app_handle, "shell_stop", None);
+                    // Blocking here delays `Exit` until both halves have
+                    // stopped — this ticket's "quitting the shell leaves no
+                    // container and no process running", not merely
+                    // "eventually".
+                    app_handle
+                        .state::<std::sync::Arc<supervisor::Handle>>()
+                        .stop_and_wait();
                 }
             });
         }

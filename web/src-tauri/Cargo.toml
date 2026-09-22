@@ -21,6 +21,13 @@ serde_json = "1.0.151"
 rfd = "0.17.2"
 ureq = { version = "3.4.2", default-features = false }
 
+# `supervisor.rs` sends SIGTERM to the inference process on shutdown so its
+# own child (llama-server) gets a chance to stop cleanly — `std::process::Child`
+# only exposes a hard kill. Unix-only: Windows has no SIGTERM equivalent, and
+# the Python supervisor's own signal handling is already a no-op there.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [profile.release]
 panic = "abort"
 codegen-units = 1

@@ -14,6 +14,18 @@ fn main() {
     println!("cargo:rustc-env=ASKWELL_SHELL_VERSION={version}");
     println!("cargo:rerun-if-changed={}", version_path.display());
 
+    // `supervisor.rs` needs `compose.yaml` and `deploy/inference/askwell-inference`.
+    // An installed build finds them under the platform install prefix
+    // (`ASKWELL_INSTALL_PREFIX`, see `deploy/*/lib.*`); baking the repo root
+    // in here too is what lets `cargo tauri dev` find them without that
+    // installer having run — the same pattern `ASKWELL_SHELL_VERSION` already
+    // uses for the same reason (a build-time fact the binary cannot discover
+    // any other way once running from a `target/` directory).
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let repo_root = fs::canonicalize(&repo_root)
+        .unwrap_or_else(|error| panic!("could not resolve {}: {error}", repo_root.display()));
+    println!("cargo:rustc-env=ASKWELL_REPO_ROOT={}", repo_root.display());
+
     // `M7-TAURI-FE-182`'s five commands (native dialogs plus the two scoped
     // filesystem reads they unlock) need to be named here so tauri-build can
     // autogenerate the `allow-*`/`deny-*` permissions `capabilities/default.json`
