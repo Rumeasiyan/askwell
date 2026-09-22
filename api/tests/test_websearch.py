@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from askwell import websearch
 from askwell.config import ConfigurationError, Settings
+from askwell.inference.client import InferenceUnavailable
 from askwell.websearch import (
     WEB_SEARCH_ESCALATED,
     WEB_SEARCH_GRANT_CLOSED,
@@ -32,6 +33,7 @@ from askwell.websearch import (
     WebSearchResult,
     WebSearchUnavailable,
     build_web_search_provider,
+    compose_and_generate_web_answer,
     escalate_web_search,
     record_web_citations,
     web_citation_record,
@@ -675,3 +677,63 @@ def test_a_web_citation_is_cascade_deleted_with_its_message(
     )
     owner.execute("DELETE FROM messages WHERE id = %s", (message_id,))
     assert _web_citations(database_url, message_id) == []
+
+
+# --- `compose_and_generate_web_answer`: the escalation's own answer ---------
+# `M6.5-WEB-FE-191`.
+
+
+def test_compose_and_generate_web_answer_returns_text_and_local_citations(
+    settings: Settings,
+) -> None:
+    fake = _FakeInferenceClient(settings, tokens=["The office opens at nine ", "[1]."], vector=[])
+    result = asyncio.run(
+        compose_and_generate_web_answer(settings, question="q", results=[_result()], client=fake)
+    )
+    assert result is not None
+    text, records = result
+    assert text == "The office opens at nine [1]."
+    assert records == [web_citation_record(_result(), claim_ordinal=1)]
+
+
+def test_compose_and_generate_web_answer_ordinals_are_local_not_offset(settings: Settings) -> None:
+    """This function's own contract: it does not know or care how many
+    claims the turn's stored answer already has — offsetting into the
+    turn's shared numbering space is `ask_escalate_web`'s job, not this
+    one's (its own docstring)."""
+    two_results = [_result("first"), _result("second passage")]
+    fake = _FakeInferenceClient(settings, tokens=["First ", "[1]. ", "Second ", "[2]."], vector=[])
+    result = asyncio.run(
+        compose_and_generate_web_answer(settings, question="q", results=two_results, client=fake)
+    )
+    assert result is not None
+    _, records = result
+    assert [record.claim_ordinal for record in records] == [1, 2]
+
+
+def test_compose_and_generate_web_answer_ignores_an_index_past_the_result_list(
+    settings: Settings,
+) -> None:
+    """A model citing `[2]` when only one result was ever delimited is the
+    same "hallucinated reference number" case `_cite_claim` (`ask.py`)
+    already treats as a grounding problem, not a crash — skipped rather
+    than raised."""
+    fake = _FakeInferenceClient(settings, tokens=["Something ", "[2]."], vector=[])
+    result = asyncio.run(
+        compose_and_generate_web_answer(settings, question="q", results=[_result()], client=fake)
+    )
+    assert result is not None
+    _, records = result
+    assert records == []
+
+
+def test_compose_and_generate_web_answer_degrades_to_none_when_the_model_is_unavailable(
+    settings: Settings,
+) -> None:
+    fake = _FakeInferenceClient(
+        settings, tokens=[], vector=[], fail=InferenceUnavailable("loading")
+    )
+    result = asyncio.run(
+        compose_and_generate_web_answer(settings, question="q", results=[_result()], client=fake)
+    )
+    assert result is None

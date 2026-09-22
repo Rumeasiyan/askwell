@@ -238,3 +238,47 @@ def compose(question: str, candidates: list[Candidate]) -> ComposedPrompt:
         injection_flagged=injection_flagged,
         injection_patterns=injection_patterns,
     )
+
+
+def delimit_web_results(results: Sequence[WebSearchResult], start_index: int) -> str:
+    """Every fetched web result, each in its own `<web-content>` block
+    (`delimit_web_result`), `start_index`-numbered the same way
+    `delimit_memory_facts`/`delimit_schema_notes` continue a numbering scheme
+    from wherever the caller's own candidates left off. `M6.5-WEB-FE-191`.
+
+    Empty input returns `""`, never an empty block — `delimit_memory_facts`'s
+    own reasoning: a labelled block with nothing in it reads as a claim
+    ("the web has nothing to say") rather than the section's own absence.
+    """
+    if not results:
+        return ""
+    blocks = [
+        delimit_web_result(index, result) for index, result in enumerate(results, start=start_index)
+    ]
+    return "\n\n".join(blocks)
+
+
+def compose_web_answer(question: str, results: Sequence[WebSearchResult]) -> ComposedPrompt:
+    """Build the prompt for the escalation's own answer — the same
+    `answer_composition.v1.md` system prompt every other turn uses (its "Web
+    results" section already documents this exact block), with no
+    `<retrieved-content>` at all: the turn that already ran retrieval and
+    abstained or answered partially is not re-run here, so there is nothing
+    from the user's own corpus to recombine (`docs/decisions.md`, this date).
+
+    Web results are numbered from 1, local to this call — never continuing a
+    candidate numbering scheme from the original turn, because this prompt
+    never carries any candidates to continue from. `websearch.py`'s own
+    caller is what offsets the resulting claim ordinals into the turn's
+    shared numbering space, once it has both halves in hand.
+    """
+    injection_flagged, injection_patterns = flag_injection_text(
+        [result.passage for result in results]
+    )
+    return ComposedPrompt(
+        system_prompt=_load_system_prompt(),
+        user_content=f"{delimit_web_results(results, start_index=1)}\n\nQuestion: {question}",
+        prompt_version=PROMPT_VERSION,
+        injection_flagged=injection_flagged,
+        injection_patterns=injection_patterns,
+    )

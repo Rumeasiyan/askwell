@@ -4,6 +4,29 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.6.16 - 2026-09-22
+
+`M6.5-WEB-FE-191` — mixed answers: each claim points at its own kind of source
+(`docs/ux/web-search.md` §3, `docs/web-search.md` §4, C10). `POST /ask/{message_id}/escalate/web`
+now generates the escalation's own answer from the fetched results once there is something
+usable to generate from (`askwell.websearch.compose_and_generate_web_answer`, a second, narrower
+generation call over `<web-content>` alone — the original turn's document candidates are not
+recombined), records it to `web_citations` with claim ordinals continuing past however many
+claims the turn's stored answer already carries, and appends the generated text to
+`messages.content`. New `askwell.agent.compose.compose_web_answer`/`delimit_web_results`.
+
+`Added` (web): `AskTurn.webAnswer`/`webCitations` (`ask-state.tsx`), kept apart from `answer` so
+an abstention's own text is never displaced by a web answer arriving beside it. `WebResultsRegion`
+(`M6.5-WEB-FE-190`) is now actually rendered, under both `AbstentionState` and a partial answer's
+`AnsweredContent`, via a new shared `WebAnswerBlock`. `AnswerProse`/`ClaimSpan` gained an ordinal
+offset and a second, independent hover-pairing path (new `web/components/ask/web-pairing.tsx`,
+`useLiveWebPairs`/`useWebRaised`) — a web claim raises only its own result card, a document claim
+raises only its own margin card, never across the two, and a web result never joins the margin
+even when it supports a claim a document already grounds. `web/lib/web-citations.ts` gained
+`WebResult.claimOrdinals`, `WebCitationEntry` and `applyWebCitation` (grouped by URL, mirroring
+`applyCitation`). `web/lib/web-search.ts`'s `escalateWebSearch` now returns `answerText`/`citations`
+alongside the existing status fields.
+
 ## 0.6.15 - 2026-09-22
 
 `M6.5-WEB-FE-186` — the escalation offer on the abstention surface
