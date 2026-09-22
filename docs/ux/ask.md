@@ -81,7 +81,7 @@ Every one of these ships. A screen with only the answered state is not finished.
 | **Conflicting sources** | Both presented with both citations and their dates. Never silently prefers one. Offers to resolve, which writes a memory fact |
 | **Tool ceiling hit** | What was gathered, plus a note that it stopped after 8 steps, plus **Continue** |
 | **Inline clarification** | When the answer depends on an unresolved ambiguity, ask here, in the conversation. The one place a clarification interrupts |
-| **Model unavailable** | "The assistant is unavailable." Search across sources still works — degrade to search, not to a blank product |
+| **Model unavailable** | "The assistant is unavailable." Search across sources still works — degrade to search, not to a blank product. Inside the desktop shell, an "Open Supervision…" button on this banner opens `M7-PACK-FE-143`'s repair surface (state, last failure reason, start/stop/restart for the stack and the inference process); absent in a plain browser tab, which has nothing for it to open |
 | **Deleted source cited** | Card renders as *deleted on 3 June*, greyed, not clickable (#11) |
 | **Unvalidated model** | Persistent marker on every answer produced by a user-supplied model, naming that citations and abstention are unverified for it. Not an error state — the user chose this knowingly (`settings.md` §2) |
 | **Answered from the web** | Separate region, marked as not-your-material, never in the margin (`web-search.md` §3) |

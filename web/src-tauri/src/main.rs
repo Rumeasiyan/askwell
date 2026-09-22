@@ -6,8 +6,9 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::webview::NewWindowResponse;
-use tauri::{Manager, Url, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder};
 
 mod supervisor;
 
@@ -54,7 +55,11 @@ fn main() {
             pick_files,
             pick_file,
             list_dir,
-            read_head
+            read_head,
+            open_supervision_window,
+            supervision_status,
+            supervision_control,
+            supervision_log_location
         ])
         .setup(move |app| {
             let launch_count = record_launch(app.handle());
@@ -107,6 +112,35 @@ fn main() {
             };
             let supervisor_handle = supervisor::start(app.handle().clone(), supervisor_config);
             app.manage(supervisor_handle);
+
+            // `M7-PACK-FE-143`: the one "desktop entry point" this ticket asks
+            // for — a native application menu item, present in the window's
+            // own chrome the moment the window exists, whether that window is
+            // still showing `starting.html` or has handed off to the real
+            // application. A menu lives at the OS level rather than inside
+            // page content, so it works even if the page itself never loads.
+            let supervision_item =
+                MenuItem::with_id(app, "open_supervision", "Supervision…", true, None::<&str>)?;
+            let askwell_menu = Submenu::with_id_and_items(
+                app,
+                "askwell",
+                "Askwell",
+                true,
+                &[
+                    &supervision_item,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::quit(app, None)?,
+                ],
+            )?;
+            let menu = Menu::with_items(app, &[&askwell_menu])?;
+            app.set_menu(menu)?;
+            app.on_menu_event(move |app_handle, event| {
+                if event.id() == "open_supervision" {
+                    if let Err(error) = open_supervision_window_impl(app_handle) {
+                        eprintln!("askwell-shell: could not open the supervision window: {error}");
+                    }
+                }
+            });
 
             Ok(())
         })
@@ -296,6 +330,121 @@ fn log_event(app: &tauri::AppHandle, event: &str, api_version: Option<&str>) {
     });
     println!("{payload}");
     let _ = app; // reserved for a future structured-log plugin sink
+}
+
+// --- `M7-PACK-FE-143`: the supervision surface -------------------------------
+//
+// A second, small window over a second bundled asset (`supervision.html`,
+// same trust level as `starting.html` — never retrieved content, so no C7
+// boundary here either) rather than a route inside the real web app: the
+// whole point of this ticket is that it must work "even when the API is
+// down", and a page served by the API cannot be that page. It talks to the
+// shell's own `supervisor::Handle` — already managed as app state since
+// `M7-TAURI-DEPLOY-183` — through the three commands below, all scoped to
+// the `supervision` window alone by `capabilities/supervision.json`, plus
+// one more (`open_supervision_window`) granted to `main` so both required
+// entry points — the native menu item above, and a button on the
+// "assistant unavailable" state once the real app has loaded — can reach it.
+
+/// Shared by the Tauri command and the native menu handler above: raised or
+/// created, then focused. A second click while it is already open must not
+/// spawn a second window pointed at the same state.
+fn open_supervision_window_impl(app: &AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("supervision") {
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+
+    let origin = api_origin();
+    let navigation_origin = origin.clone();
+    let url = format!("supervision.html?api={}", urlencode(&origin));
+
+    WebviewWindowBuilder::new(app, "supervision", WebviewUrl::App(url.into()))
+        .title("Askwell — Supervision")
+        .inner_size(560.0, 680.0)
+        .min_inner_size(420.0, 480.0)
+        .center()
+        // Same C1/C7 boundary as the main window: this page never navigates
+        // anywhere but its own bundled asset and the local API's origin.
+        .on_navigation(move |url| is_allowed_navigation(url, &navigation_origin))
+        .on_new_window(|_url, _features| NewWindowResponse::Deny)
+        .build()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn open_supervision_window(app: tauri::AppHandle) -> Result<(), String> {
+    open_supervision_window_impl(&app)
+}
+
+#[derive(serde::Serialize)]
+struct ComponentStatusDto {
+    state: &'static str,
+    reason: Option<String>,
+    restarts: u64,
+}
+
+impl From<supervisor::ComponentStatus> for ComponentStatusDto {
+    fn from(status: supervisor::ComponentStatus) -> Self {
+        ComponentStatusDto { state: status.state, reason: status.reason, restarts: status.restarts }
+    }
+}
+
+#[derive(serde::Serialize)]
+struct SupervisionStatusDto {
+    stack: ComponentStatusDto,
+    inference: ComponentStatusDto,
+}
+
+/// Polled by `supervision.html` on an interval, not pushed — unlike the
+/// starting page (guaranteed open for the loop's entire pre-handoff life),
+/// this window usually does not exist at all, so there is nothing for the
+/// loop to `eval` into most of the time.
+#[tauri::command]
+fn supervision_status(
+    handle: tauri::State<'_, std::sync::Arc<supervisor::Handle>>,
+) -> SupervisionStatusDto {
+    let (stack, inference) = handle.status();
+    SupervisionStatusDto { stack: stack.into(), inference: inference.into() }
+}
+
+/// `component` is `"stack"` or `"inference"`; the surface calls this twice
+/// for "both", per this ticket's own scope line — the supervisor loop has no
+/// notion of "both" and treating the two halves identically either way is
+/// simpler than inventing a third target for one caller.
+#[tauri::command]
+fn supervision_control(
+    component: String,
+    action: String,
+    handle: tauri::State<'_, std::sync::Arc<supervisor::Handle>>,
+) -> Result<(), String> {
+    let target = match component.as_str() {
+        "stack" => supervisor::Target::Stack,
+        "inference" => supervisor::Target::Inference,
+        other => return Err(format!("Unknown component: {other}")),
+    };
+    let action = match action.as_str() {
+        "start" => supervisor::ControlAction::Start,
+        "stop" => supervisor::ControlAction::Stop,
+        "restart" => supervisor::ControlAction::Restart,
+        other => return Err(format!("Unknown action: {other}")),
+    };
+    handle.control(target, action);
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct LogLocation {
+    path: String,
+    note: String,
+}
+
+#[tauri::command]
+fn supervision_log_location() -> LogLocation {
+    let (dir, note) = supervisor::log_location();
+    LogLocation { path: dir.to_string_lossy().into_owned(), note: note.to_string() }
 }
 
 // --- native dialogs and the scoped filesystem reads they unlock ------------

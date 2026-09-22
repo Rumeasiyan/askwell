@@ -11,6 +11,7 @@
     "allow-pick-files",
     "allow-pick-file",
     "allow-list-dir",
-    "allow-read-head"
+    "allow-read-head",
+    "allow-open-supervision-window"
   ]
 }
