@@ -4,6 +4,24 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.6.12 - 2026-09-22
+
+`M6.5-WEB-BE-188` — fetch caps, identical delimitation, and the never-persisted guarantee
+for web content (`docs/web-search.md` §5, C7, C10). New `askwell.webfetch.fetch_pages`
+fetches at most `Settings.web_fetch_max_results` URLs (default `3`), each capped at
+`Settings.web_fetch_max_bytes` (default `500_000`, kept at exactly the limit, dropped the
+byte after it) and `Settings.web_fetch_timeout_seconds` (default `5.0`, distinct from the
+whole-provider-call `web_search_timeout_seconds`). A page over any cap, a non-text
+resource, a redirect loop, or a fetch failure is dropped whole with a recorded reason —
+never truncated into the prompt — and every attempt is logged (`web_fetch_attempted`).
+`askwell.agent.compose` gains `delimit_web_result`/`WEB_CONTENT_TAG`: a fetched page is
+wrapped in its own `<web-content>` block, unforgeable from inside the data exactly like a
+`<tool-result>` block, and `answer_composition.v1.md`'s C7 standing statement now names
+`<web-content>` alongside the other two. Fetched content has no path into `askwell.ingest`
+or `chunks` — structural, proven by a corpus-invariance test rather than enforced by a
+runtime check. Nothing in the live `/ask` or escalation path calls `fetch_pages` yet;
+`M6.5-WEB-BE-195`'s real provider is what wires it in (`docs/decisions.md` 2026-09-22).
+
 ## 0.6.11 - 2026-09-22
 
 `M6.5-WEB-SEC-187` — per-question egress authorisation, opened and closed at the proxy

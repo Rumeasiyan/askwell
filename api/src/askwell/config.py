@@ -457,6 +457,28 @@ class Settings(BaseSettings):
     # that a leaked grant is a bounded window, not a standing one.
     web_search_grant_ttl_seconds: float = Field(default=30.0, gt=0, le=300)
 
+    # `askwell.webfetch.fetch_pages`'s three caps, `M6.5-WEB-BE-188`.
+    # Configuration, not constants — the ticket's own assumption that these
+    # are first guesses, tuned with real use, and that a change is a
+    # decision because it is a settings edit, not a code edit.
+
+    # How many of a provider's results are ever fetched. A single escalated
+    # question, not a crawl — the rest are dropped with reason "result cap
+    # reached" rather than fetched and then discarded.
+    web_fetch_max_results: int = Field(default=3, ge=1, le=10)
+
+    # A page over this many bytes is dropped whole, never truncated into the
+    # prompt — truncation is how a size limit becomes a choice of which half
+    # of a hostile page gets in (`docs/web-search.md` §5). A page of exactly
+    # this many bytes is kept; the byte after it is what trips the drop.
+    web_fetch_max_bytes: int = Field(default=500_000, ge=1_000, le=5_000_000)
+
+    # Per-page fetch timeout, distinct from `web_search_timeout_seconds`
+    # (which bounds the whole provider call, search included). A slow page
+    # is dropped on its own rather than consuming the escalation's entire
+    # budget.
+    web_fetch_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
+
     # 32 random bytes that make a copied `postgres-data` volume alone
     # insufficient to read `sources.config_encrypted` (C8, `M4-CONN-SEC-098`).
     # Generated on first use if absent. Lives on the same bind mount the

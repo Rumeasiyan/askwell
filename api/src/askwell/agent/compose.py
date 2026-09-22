@@ -18,6 +18,15 @@ like it". `askwell.agent.tools._step` reuses `flag_injection_text` here
 rather than a second copy of the same heuristic, so a tool result's flag on
 `messages.trace` is the identical check a retrieved passage gets.
 
+`M6.5-WEB-BE-188` extends both again, to a fetched web page: `delimit_web_result`
+wraps one `askwell.websearch.WebSearchResult` in its own `<web-content>`
+block, same unforgeable escaping, and the prompt file now names
+`<web-content>` alongside the other two. Web content gets this and nothing
+more here — the caps that decide whether a page is ever fetched at all live
+in `askwell.webfetch`, and the never-persisted guarantee is structural
+(nothing in this module or `askwell.ingest` ever takes a `WebSearchResult`
+as input), not something delimitation enforces.
+
 Instruction-like pattern flagging is a mitigation, not a detection system: it
 misses anything that does not match a pattern, and it flags legitimate
 instructional prose (a policy manual) exactly as readily as a real attempt.
@@ -36,6 +45,7 @@ from pathlib import Path
 
 from askwell.memory import MemoryFact, SchemaNote
 from askwell.retrieve import Candidate
+from askwell.websearch import WebSearchResult
 
 PROMPT_DIR = Path(__file__).parent / "prompts"
 PROMPT_VERSION = "answer_composition.v1"
@@ -52,6 +62,12 @@ CONTENT_TAG = "retrieved-content"
 # whether the user wrote it themselves. Delimited the same way, with the
 # same standing statement extended to cover it in the prompt file.
 TOOL_RESULT_TAG = "tool-result"
+
+# `M6.5-WEB-BE-188`. The one kind of retrieved content the user did not
+# choose (`docs/web-search.md` §5) — same C7 boundary, same delimiter
+# mechanics, its own tag so a caller and a reader can tell which of the
+# three a block came from.
+WEB_CONTENT_TAG = "web-content"
 
 # Heuristic and known to both miss real attempts and flag harmless prose
 # (`docs/architecture.md` §9). Ordered roughly most- to least-specific; not
@@ -125,6 +141,22 @@ def delimit_tool_result(index: int, tool_name: str, content: str) -> str:
     escaped = _escape_forged_delimiter(content, TOOL_RESULT_TAG)
     return (
         f'<{TOOL_RESULT_TAG} index="{index}" tool="{tool_name}">\n{escaped}\n</{TOOL_RESULT_TAG}>'
+    )
+
+
+def delimit_web_result(index: int, result: WebSearchResult) -> str:
+    """Wrap one fetched web result in its own `<web-content>` block, labelled
+    by its source, URL and retrieval date — the fields `docs/web-search.md`
+    §4 requires on every citation, carried into the prompt itself rather
+    than only shown after the fact. `_escape_forged_delimiter` runs first,
+    the same unforgeability `delimit_tool_result` gets, because a page the
+    user did not choose is exactly as capable of forging a delimiter as a
+    row of tool output.
+    """
+    escaped = _escape_forged_delimiter(result.passage, WEB_CONTENT_TAG)
+    return (
+        f'<{WEB_CONTENT_TAG} index="{index}" url="{result.url}" source="{result.source}" '
+        f'retrieved_at="{result.retrieved_at.isoformat()}">\n{escaped}\n</{WEB_CONTENT_TAG}>'
     )
 
 
