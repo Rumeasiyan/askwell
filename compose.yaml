@@ -172,6 +172,13 @@ services:
     command: ["askwell-inference-bridge"]
     environment:
       ASKWELL_DATABASE_URL: postgresql://askwell_app:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in .env}@127.0.0.1:5432/${POSTGRES_DB:-askwell}
+      # Required by the shared `Settings` model even though this process
+      # never opens a sandbox connection — same latent gap as `egress-proxy`
+      # and `voice` below, issue #439/#524, hit here too once a recreate
+      # picked up `Settings.sandbox_database_url` becoming required.
+      ASKWELL_SANDBOX_DATABASE_URL: postgresql://${SANDBOX_POSTGRES_USER:-askwell_sandbox}:${SANDBOX_POSTGRES_PASSWORD:?set SANDBOX_POSTGRES_PASSWORD in .env}@127.0.0.1:5432/postgres
+      ASKWELL_SANDBOX_OWNER_PASSWORD: ${SANDBOX_OWNER_PASSWORD:?set SANDBOX_OWNER_PASSWORD in .env}
+      ASKWELL_SANDBOX_READONLY_PASSWORD: ${SANDBOX_READONLY_PASSWORD:?set SANDBOX_READONLY_PASSWORD in .env}
       ASKWELL_INFERENCE_SOCKET: /run/askwell/inference.sock
       ASKWELL_INFERENCE_UPSTREAM_PORT: ${ASKWELL_INFERENCE_UPSTREAM_PORT:-8080}
       ASKWELL_EMBEDDING_PORT: ${ASKWELL_EMBEDDING_PORT:-8081}

@@ -4,6 +4,31 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.5 - 2026-09-22
+
+`M7-PERF-TEST-167` — measure the answer-path performance budgets on a realistic corpus. `Added`:
+`eval/fixtures/generate_perf_corpus.py` builds a synthetic multi-page-PDF corpus sized for
+latency measurement (larger than the eval fixture corpus, default 80 documents), each carrying
+one invented, checkable fact. `eval/answer_latency.py` measures the four budgets
+(`docs/ux/ask.md` §7) per hardware profile — first-step label, first token, full-answer
+p50/p95 — as this script's own wall clock against `POST /ask`'s real SSE stream, plus a
+per-stage breakdown read from the server's own `GET /ask/{id}/trace`, cold and warm passes
+kept separate, and ingestion throughput measured through the real `POST /roots`/`POST /sources`
+flow against `GET /ingest`'s own queue estimate. Exits non-zero with no results file written
+when nothing could be honestly measured (issue #572's first finding, fixed from this script's
+first commit rather than retrofitted). `scripts/dev.sh answer-latency` runs it against the live
+stack. `Fixed`: `inference-bridge` in `compose.yaml` was crash-looping from the same missing
+`ASKWELL_SANDBOX_*` variables issue #439 named for `egress-proxy` — found while trying to run
+this ticket's own harness against a stack with no working inference socket, fixed the same way.
+`Changed`: `eval/tests/test_answer_latency.py` covers the SSE event-kind pairing, percentile
+summarization, stage attribution and budget verdict — pure logic, no running stack, matching
+`eval/tests/test_voice_latency.py`'s own split. **Not measured end-to-end against a live stack
+this session** — this specific shared dev machine's accumulated state (a locked content-encryption
+passphrase this session does not hold, and an already-ingested corpus large enough to exceed the
+native inference process's configured context window) blocked a clean new run; see issue #576 and
+`docs/BRAIN.md` for the full account, including a still-valid prior measurement on this same
+machine and profile from before it accumulated that state.
+
 ## 0.7.4 - 2026-09-22
 
 `M7-BACKUP-BE-158` — restore, with the re-embed cost stated at the moment it matters. `Added`:
