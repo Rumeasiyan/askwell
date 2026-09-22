@@ -191,7 +191,7 @@ This drops all application data and the install secret, so the restore that foll
 merging into anything:
 
 ```
-scripts/dev.sh db psql <<'SQL'
+scripts/dev.sh psql <<'SQL'
 TRUNCATE roots, sources, documents, document_pages, chunks, memory, schema_notes,
   clarifications, conversations, messages, fact_usage, citations, web_citations,
   settings, audit_decisions, audit_interactions, backup_jobs, restore_jobs CASCADE;
@@ -254,7 +254,7 @@ climbing toward `chunks_total`) then `"done"`.
 ### 16. Memory and its history are present
 
 ```
-scripts/dev.sh db psql -c "SELECT count(*) FROM memory;"
+scripts/dev.sh psql -c "SELECT count(*) FROM memory;"
 ```
 
 **Expect:** at least `1` if step 3 produced a remembered fact.

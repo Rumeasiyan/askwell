@@ -46,7 +46,15 @@ Naming is illustrative — match whatever the packaging step actually produces o
 **Do not publish a partial platform set silently** — if a platform's artefact could not be
 built, that is a release blocker to raise, not a reason to ship the other two quietly.
 
-## 3. Generate checksums
+## 3. The restore gate
+
+Before checksumming or publishing anything, run `docs/restore-release-test.md` for this
+`VERSION` and record the result in `docs/restore-test-log.md`. **A failed run blocks the
+release** — this is a gate, not an aside (`M7-BACKUP-TEST-159`; `AGENTS.md` §3 "a release with
+a failed restore test does not ship"). Do not proceed to step 4 without a `pass` entry for this
+exact version.
+
+## 4. Generate checksums
 
 ```
 scripts/release-checksums.sh dist/askwell-<version>/
@@ -57,7 +65,7 @@ against an empty directory (an empty `SHA256SUMS` is indistinguishable from "ver
 glance, and only step 2 having actually produced something makes that true). Read the printed
 output before continuing — it lists exactly what will be published.
 
-## 4. Publish
+## 5. Publish
 
 Create the GitHub release and upload every artefact **and** `SHA256SUMS` itself:
 
@@ -76,7 +84,7 @@ Do not edit the notes to move that link down or drop it. If the template needs c
 is a decision — log it in `docs/decisions.md` the way any change to `installing.md`'s ordering
 already must be (`docs/decisions.md`, 2026-08-26).
 
-## 5. Verify from outside the build
+## 6. Verify from outside the build
 
 Before telling anyone the release is up, download it fresh — not from the build directory —
 and check it against the published `SHA256SUMS`, exactly as `docs/installing.md` instructs a
@@ -90,7 +98,7 @@ A mismatch here means the upload is broken, not that anything was tampered with 
 the same check a suspicious user will run, so it must pass before the release is announced
 anywhere.
 
-## 6. Cold-start install verification
+## 7. Cold-start install verification
 
 `docs/installing.md`'s instructions must be followed exactly, as written, on a machine that
 has never seen Askwell, for each platform. This is a manual walkthrough, not something this
