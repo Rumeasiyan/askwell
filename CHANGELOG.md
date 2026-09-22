@@ -4,6 +4,34 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.6.15 - 2026-09-22
+
+`M6.5-WEB-FE-186` — the escalation offer on the abstention surface
+(`docs/ux/web-search.md` §2, C10). Three options, equal weight, each stating its own cost,
+rendered below every abstention and below a partial answer's named gap, never above and
+never below a fully grounded answer: `EscalationOffer`/`EscalationOption`
+(`web/components/ask/ask-screen.tsx`). "Add a source instead" is the pre-existing
+`AddSourceAction`, now sharing `EscalationOption`'s two-line shape rather than rendering as
+a single unlabelled line. "Ask a larger model" is permanently disabled with its cost stated
+as "you have none" — there is no credits system before M8. New `web/lib/web-search.ts`:
+`escalateWebSearch`, `webSearchAvailable` and the local, untransmitted offer-made/accepted
+counters (`docs/web-search.md` §7's escalation rate).
+
+New backend route `POST /ask/{message_id}/escalate/web` (`askwell.websearch.
+register_web_search`) — the HTTP boundary `M6.5-WEB-BE-185`'s `escalate_web_search` had no
+caller for. Independently verifies the named turn actually abstained or answered partially
+before reaching the provider call (`messages.trace`), refusing a direct call against a
+fully-grounded turn with 409 — C10's "the offer is the only route to a search" as a
+structural guarantee of the server, not a rendering convention of one screen. Acceptance is
+recorded to `Store.DECISIONS` (`web_search_escalation_accepted`), distinct from what
+`escalate_web_search` itself records to `Store.INTERACTIONS`. New `GET /settings/web-search`
+reports whether a provider is configured, so the offer states "not configured" rather than
+the control disappearing.
+
+Fixed `askwell.agent.citation_check.check_citations`, which read only `citations` and
+therefore misflagged a web-cited claim as uncited (`web_citations`, `M6.5-WEB-BE-189`, has
+its own `claim_ordinal` and is now reconciled the same way `citations` is).
+
 ## 0.6.14 - 2026-09-22
 
 `M6.5-WEB-FE-190` — the web results region, separate from the provenance margin

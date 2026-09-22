@@ -44,12 +44,16 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Protocol
 
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from askwell import egress
 from askwell.audit import Store, record
 from askwell.config import ConfigurationError, Settings
+from askwell.db.engine import session_scope
 from askwell.logging import get_logger
 
 log = get_logger(__name__)
@@ -365,4 +369,108 @@ async def record_web_citations(
                 "passage": row.passage,
                 "retrieved_at": row.retrieved_at,
             },
+        )
+
+
+class WebEscalateRequest(BaseModel):
+    """The question the client is escalating — this turn's own question,
+    carried back rather than re-read from `messages`, since the row this
+    endpoint loads is the assistant turn, not the user one that asked it."""
+
+    question: str
+
+
+def register_web_search(
+    app: FastAPI, settings: Settings, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """Attach the one HTTP route `M6.5-WEB-FE-186`'s escalation offer calls:
+    `POST /ask/{message_id}/escalate/web`. `escalate_web_search` (above) is
+    the whole implementation; this is the boundary that decides whether a
+    given `message_id` is even allowed to reach it.
+
+    **The turn must have actually abstained or answered partially** — issue
+    #532, filed against this exact endpoint before it existed: the frontend
+    offer only ever renders below an abstention or a partial answer's named
+    gap, so in normal use this check never fires, but C10's guarantee ("the
+    offer is the only route to a search") is stated elsewhere in this
+    codebase as a structural property of the *server*, not a rendering
+    convention of one screen — `test_the_full_answer_path_never_calls_the_
+    provider` (`test_websearch.py`) already treats it that way. Checking here
+    is what makes a direct `POST` against a fully-grounded turn refused by
+    the mechanism rather than merely undrawn by the UI.
+
+    Abstained: `content` is empty and `trace ->> 'reason'` is set — the same
+    test `lib/ask.ts`'s `isAbstained` uses client-side (`messages.trace` is
+    where `_run_generation` writes both). Partial: `trace ->> 'partial_coverage'`
+    is true (`M2-PARTIAL-BE-057`). Neither → 409, matching the 409 shape
+    `ask_clarify_resolve` already uses for "this turn is not in the state
+    this action requires."
+    """
+
+    @app.get("/settings/web-search")
+    async def settings_web_search() -> JSONResponse:
+        """Whether the escalation offer's web option has anywhere to send a
+        question — `docs/ux/web-search.md` §4's "Search unavailable" state,
+        which must say so plainly rather than the control disappearing
+        (`M6.5-WEB-FE-186`'s own Edge Cases). Read once, on render, rather
+        than the offer discovering unavailability only after the user has
+        already clicked."""
+        return JSONResponse({"available": settings.web_search_provider is not None})
+
+    @app.post("/ask/{message_id}/escalate/web")
+    async def ask_escalate_web(message_id: uuid.UUID, body: WebEscalateRequest) -> JSONResponse:
+        async with session_scope(factory) as db:
+            row = (
+                await db.execute(
+                    text(
+                        "SELECT conversation_id, content, trace FROM messages "
+                        "WHERE id = :id AND role = 'assistant'"
+                    ),
+                    {"id": message_id},
+                )
+            ).first()
+            if row is None:
+                return JSONResponse({"error": "Askwell has no turn with that id."}, status_code=404)
+            conversation_id, content, trace = row
+            trace = trace if isinstance(trace, dict) else {}
+            abstained = content == "" and trace.get("reason") is not None
+            partial = bool(trace.get("partial_coverage"))
+            if not (abstained or partial):
+                return JSONResponse(
+                    {"error": "That turn did not abstain or answer partially."}, status_code=409
+                )
+
+            # `M6.5-WEB-FE-186`'s own Audit/Logging Requirement: "Accepting
+            # is a decisions record — the user authorised content to leave
+            # the machine." Recorded on acceptance itself, in `Store.DECISIONS`
+            # rather than `Store.INTERACTIONS` (where `escalate_web_search`
+            # below logs what came of it) — the two answer different
+            # questions, "did the user authorise this" and "what happened
+            # when it ran," and C6 treats a decision as its own kind of
+            # record independent of outcome.
+            await record(
+                db,
+                Store.DECISIONS,
+                "web_search_escalation_accepted",
+                {
+                    "conversation_id": str(conversation_id),
+                    "message_id": str(message_id),
+                    "question": body.question,
+                },
+            )
+
+            outcome = await escalate_web_search(
+                settings,
+                db,
+                conversation_id=conversation_id,
+                message_id=message_id,
+                question=body.question,
+            )
+
+        return JSONResponse(
+            {
+                "status": outcome.status,
+                "reason": outcome.reason,
+                "result_count": len(outcome.results),
+            }
         )
