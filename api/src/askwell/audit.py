@@ -225,7 +225,7 @@ class Break(StrEnum):
 class VerificationResult:
     """What a verification pass found. Plain, and naming the record."""
 
-    __slots__ = ("checked", "detail", "first_break", "note", "reason", "store")
+    __slots__ = ("broken_at", "checked", "detail", "first_break", "note", "reason", "store")
 
     def __init__(
         self,
@@ -235,6 +235,7 @@ class VerificationResult:
         reason: Break | None = None,
         detail: str = "",
         note: str = "",
+        broken_at: datetime | None = None,
     ) -> None:
         self.store = store
         self.checked = checked
@@ -246,6 +247,10 @@ class VerificationResult:
         # recorded where. Kept separate from `detail`, which belongs to a
         # break: this is the explanation for something that is *not* one.
         self.note = note
+        # The broken record's own `occurred_at` — naming a record with no
+        # date attached is half the report `M7-LOG-FE-156` asks for. Not set
+        # for `MISSING_GENESIS`, which has no single record to date either.
+        self.broken_at = broken_at
 
     @property
     def intact(self) -> bool:
@@ -265,7 +270,8 @@ class VerificationResult:
             suffix = f" {self.note}" if self.note else ""
             return f"{self.store.value}: {self.checked} records, chain intact.{suffix}"
         where = f" at record {self.first_break}" if self.first_break else ""
-        return f"{self.store.value}: chain breaks{where} ({self.reason}). {self.detail}"
+        when = f" ({self.broken_at.isoformat()})" if self.broken_at else ""
+        return f"{self.store.value}: chain breaks{where}{when} ({self.reason}). {self.detail}"
 
 
 async def verify(
@@ -317,6 +323,7 @@ async def verify(
                 Break.FORKED,
                 f"It and record {existing[0]} both chain to {predecessor}. "
                 f"This is a fault in Askwell, not evidence of tampering.",
+                broken_at=row[5],
             )
         by_predecessor[predecessor] = tuple(row)
 
@@ -365,6 +372,7 @@ async def verify(
                 uuid.UUID(str(record_id)),
                 Break.ALTERED,
                 f"Its contents hash to {recomputed}, but it stores {stored_hash}.",
+                broken_at=occurred_at,
             )
         expected_prev = str(stored_hash)
         checked += 1
@@ -379,6 +387,7 @@ async def verify(
             Break.UNLINKED,
             f"It chains to {orphan[3]}, which is not the hash of any record "
             f"reachable from the start. A record has been removed.",
+            broken_at=orphan[5],
         )
 
     return VerificationResult(store, checked, note=note)
