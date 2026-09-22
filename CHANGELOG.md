@@ -4,6 +4,26 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.6.10 - 2026-09-22
+
+`M6.5-WEB-BE-185` — the web search provider behind an interface, called only on explicit
+request (`docs/architecture.md` §5.2, like the TTS engine). New `askwell.websearch`:
+`WebSearchProvider` (question in, results with source, title, URL, passage and retrieval
+time out), `FixtureWebSearchProvider` returning recorded results for development and the
+eval suite, and `build_web_search_provider` as the one place `Settings.web_search_provider`
+selects an implementation — no provider name elsewhere in application code. The single call
+site, `escalate_web_search`, distinguishes "nothing matched" (a real, distinct result) from
+"the provider could not be reached" (unreachable, timed out, or unconfigured), drops a
+result with no usable passage rather than rendering an empty citation, and records every
+invocation — question, provider, outcome — on the interaction path (`M1-ASK-OBS-041`, C6)
+before returning, win or lose. New `ASKWELL_WEB_SEARCH_PROVIDER`/
+`ASKWELL_WEB_SEARCH_TIMEOUT_SECONDS` in `.env.example`. **Nothing calls this yet** —
+`askwell.ask` does not import `askwell.websearch` at all, which is the point:
+`test_the_full_answer_path_never_calls_the_provider` runs the full answer path over an
+empty corpus and asserts zero `web_search_escalated` audit records. The real provider
+(`ddgs`, `docs/decisions.md` 2026-08-26) is `M6.5-WEB-BE-195`; the escalation surface itself
+is `M6.5-WEB-FE-186`/`M6.5-WEB-SEC-187`.
+
 ## 0.6.9 - 2026-09-22
 
 `M7-UPDATE-BE-161` — the update check, agreed to at installation (`docs/ux/settings.md` §7 and

@@ -417,6 +417,24 @@ class Settings(BaseSettings):
     # widening a hardcoded number in code.
     sql_row_limit: int = Field(default=1000, ge=1, le=1_000_000)
 
+    # Which `askwell.websearch.WebSearchProvider` implementation
+    # `build_web_search_provider` returns, `M6.5-WEB-BE-185`. Never a
+    # provider name in application code (`AGENTS.md` §4) — this is the one
+    # place a string picks the class. Unset (the default) means no provider
+    # is configured at all: the escalation is offered as unavailable rather
+    # than crashing, the ticket's own "configuration removed entirely" edge
+    # case. `"fixture"` is the only implementation this ticket builds; the
+    # real one (`ddgs`, `docs/decisions.md` 2026-08-26) is `M6.5-WEB-BE-195`.
+    web_search_provider: str | None = None
+
+    # How long one escalation's provider call may run before it is abandoned
+    # and the turn reports the provider unreachable, the ticket's own "takes
+    # longer than the timeout" edge case. Generous, since this is a single
+    # explicit per-question act the user is already waiting on, not a
+    # background job — closer to `connection_probe_timeout_seconds` than to
+    # `health_probe_timeout_seconds`.
+    web_search_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
+
     # 32 random bytes that make a copied `postgres-data` volume alone
     # insufficient to read `sources.config_encrypted` (C8, `M4-CONN-SEC-098`).
     # Generated on first use if absent. Lives on the same bind mount the
@@ -433,7 +451,7 @@ class Settings(BaseSettings):
     # its result across the same bind mount.
     probe_result_path: Path = Path("/run/askwell/probe.json")
 
-    @field_validator("roots_mount", mode="before")
+    @field_validator("roots_mount", "web_search_provider", mode="before")
     @classmethod
     def _optional_path(cls, value: object) -> object:
         """An empty value means "no window", not a directory named "".
@@ -442,6 +460,10 @@ class Settings(BaseSettings):
         variable is always present and is empty when the user has not set one.
         Without this, that empty string becomes `Path('')`, which is falsy in
         some checks and truthy in others — the worst kind of value to carry.
+
+        `web_search_provider` shares this rule for the same reason: an empty
+        string set by an unset compose interpolation must mean "no provider
+        configured", not a provider literally named `""`.
         """
         if isinstance(value, str) and not value.strip():
             return None
