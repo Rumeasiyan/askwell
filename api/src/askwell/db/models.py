@@ -206,6 +206,12 @@ class Source(Base):
     # a specific fix, which needs somewhere to put the cause.
     last_error: Mapped[str | None] = mapped_column(Text)
     last_indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # `20260828_5f3a7c1e9d42_source_deleted_at.py` / `20260919_9d4e7a2c1b58_
+    # source_last_healthy_at.py`. Declared here so `Base.metadata` matches the
+    # live schema exactly — a prior gap (issue #569) left both columns real in
+    # Postgres but invisible to any caller trusting the ORM model.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_healthy_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     added_at: Mapped[datetime] = created_at()
 
 
@@ -738,9 +744,72 @@ class BackupJob(Base):
     chunk_count: Mapped[int | None] = mapped_column(BigInteger)
     estimated_reembed_seconds: Mapped[float | None] = mapped_column(Float)
     passphrase_protected: Mapped[bool | None] = mapped_column(Boolean)
+    # `askwell.backup._wrap_install_secret` — required to ever restore this
+    # artefact's passphrase-protected content onto a different install
+    # secret. `20260922_e8b3f61a92d4_restore_jobs.py`, `M7-BACKUP-BE-158`.
+    install_secret_wrapped: Mapped[str | None] = mapped_column(Text)
 
     file_path: Mapped[str | None] = mapped_column(Text)
     file_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    error: Mapped[str | None] = mapped_column(Text)
+
+    created_at_: Mapped[datetime] = mapped_column(
+        "created_at", DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RestoreJob(Base):
+    """One restore: schema-currency check, install-secret unwrap if needed,
+    every table restored, re-embedded, the chain verified. `M7-BACKUP-BE-158`.
+
+    Same reasoning as `BackupJob`, its companion job. Two counter pairs, not
+    one — `tables_done`/`tables_total` for the table-restore phase and
+    `chunks_done`/`chunks_total` for re-embedding — because the two phases
+    have genuinely different units of progress; `20260922_e8b3f61a92d4`'s own
+    docstring has the full reasoning.
+    """
+
+    __tablename__ = "restore_jobs"
+    __table_args__ = (
+        _one_of(
+            "status",
+            ("queued", "restoring_tables", "reembedding", "done", "failed"),
+            "status",
+        ),
+        Index(
+            "ix_restore_jobs_pending",
+            "created_at",
+            postgresql_where=text("status IN ('queued', 'restoring_tables', 'reembedding')"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    status: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'queued'"))
+
+    file_path: Mapped[str] = mapped_column(Text, nullable=False)
+    source_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    replace_existing: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    passphrase_protected: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+
+    chunk_count: Mapped[int | None] = mapped_column(BigInteger)
+    estimated_reembed_seconds: Mapped[float | None] = mapped_column(Float)
+
+    tables_total: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    tables_done: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    rows_total: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    rows_done: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    chunks_total: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    chunks_done: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+
+    chain_verified: Mapped[bool | None] = mapped_column(Boolean)
+    chain_detail: Mapped[str | None] = mapped_column(Text)
     error: Mapped[str | None] = mapped_column(Text)
 
     created_at_: Mapped[datetime] = mapped_column(

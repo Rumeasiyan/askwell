@@ -4,6 +4,40 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.4 - 2026-09-22
+
+`M7-BACKUP-BE-158` — restore, with the re-embed cost stated at the moment it matters. `Added`:
+`askwell.restore` reads a `askwell.backup` artefact back onto a machine: refuses one made with a
+newer Askwell by name rather than partially applying it; refuses to run against a database not
+at Alembic head, naming `scripts/dev.sh db upgrade head` rather than attempting the migration
+itself (`askwell_app` holds no DDL grant, by the same C6-adjacent role separation
+`docs/decisions.md` "the database has three roles" already established — the credential-honest
+resolution to issue #570, not the ticket's literal "applies migrations" wording); requires the
+source machine's passphrase for a passphrase-protected backup and unwraps a new manifest field,
+`install_secret_wrapped` (`askwell.backup.enqueue` now takes an optional passphrase and refuses
+outright, `PassphraseRequired`, when the corpus is protected and none is given), writing the
+*source* install secret back so content encrypted under it decrypts on a machine with its own,
+different one; refuses to merge into existing corpus/memory data unless `replace_existing` is
+set, which then `DELETE`s (never `TRUNCATE` — no grant) every table but the two audit stores,
+which are never cleared and never gate the refusal, by design (C6) and by necessity (`enqueue`
+itself writes to them). Restores per table inside its own transaction, `tables_done` gating
+resume so a crash never re-attempts a table already committed (issue #571); re-embeds with
+`WHERE embedding IS NULL`, the same cursor-free resume `askwell.content_encryption` and
+`askwell.embed` already rely on; verifies both hash chains at the end
+(`askwell.log_verify.run`) and records the one `restore_completed` decision, deliberately after
+the restored chain rather than before it, so a clean machine's history chains intact instead of
+gaining a second root from the job's own bookkeeping. New `POST /restore/inspect`, `POST
+/restore`, `GET /restore/{id}`, `POST /restore/{id}/resume` (`askwell.restore.register_restore`);
+new `restore_job` arq task, wired into `askwell.worker.startup`'s resume (a passphrase-protected
+job returns to `queued` but does not self-redispatch — the passphrase was never persisted, so
+there is nothing to redispatch it with until it is re-entered). New `RestoreJob`
+(`api/src/askwell/db/models.py`), migration `e8b3f61a92d4` (`restore_jobs`,
+`backup_jobs.install_secret_wrapped`). `Fixed`: `Source` (`api/src/askwell/db/models.py`) was
+missing `deleted_at`/`last_healthy_at`, real columns on the live table since two earlier
+migrations — issue #569. 22 new tests (`api/tests/test_restore.py`, `requires_db`), plus two
+`test_backup.py` updates for the now-required passphrase argument. `scripts/dev.sh check`
+green.
+
 ## 0.7.3 - 2026-09-22
 
 `M7-LOG-FE-156` — the settings-screen verifier `askwell.audit`'s own docstring named as

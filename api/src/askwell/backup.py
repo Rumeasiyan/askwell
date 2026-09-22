@@ -43,6 +43,26 @@ what `chunks.content` *means* (plaintext vs Fernet token) row by row while
 it runs, which a snapshot cannot paper over, so that one case *is* refused
 rather than silently included half-migrated.
 
+**A passphrase-protected backup carries a passphrase-wrapped copy of the
+install secret.** `chunks.content` (when encrypted) and `sources.config_encrypted`
+are both ciphertext under `crypto.derive_key(install_secret, passphrase)` —
+tied to *this* install's secret, which is 32 random bytes that live outside
+the database (`Settings.install_secret_path`, C8) and are deliberately never
+included in the dump. Restoring those rows onto a machine with a different
+(freshly generated) install secret would make them permanently undecryptable
+even with the correct passphrase — the key that made them would simply not
+exist anywhere. `docs/ux/settings.md` §9's settled decision — "a backup taken
+from a passphrase-protected install is encrypted with that passphrase, and
+restore refuses clearly without it" — is only true if the passphrase is
+enough on its own, so `enqueue` requires it when the corpus is protected and
+`run_job` wraps the install secret with `crypto.derive_key(b"", passphrase)`
+(a key that depends on nothing install-specific) and writes it to the
+manifest as `install_secret_wrapped`. Restore unwraps it with the same
+passphrase, writes the *original* install secret back to its own
+`install_secret_path`, and the existing content/credential ciphertext
+decrypts exactly as it did on the source machine — no re-encryption of
+either at backup or restore time. `docs/decisions.md`, this ticket's date.
+
 **The re-embed cost is a stated estimate, not a measurement.**
 `ESTIMATED_CHUNKS_PER_SECOND` is a deliberately conservative, unmeasured
 constant — no native inference process is available in this environment to
@@ -63,6 +83,7 @@ half-written table sitting under the name a finished one would have.
 """
 
 import asyncio
+import base64
 import json
 import shutil
 import uuid
@@ -75,10 +96,11 @@ from typing import Any
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from askwell import __version__, content_encryption, passphrase
+from askwell import __version__, content_encryption, crypto, passphrase
 from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
@@ -125,6 +147,32 @@ _USER_FILES_STATEMENT = (
     "Your own files are not included. Askwell never copies them — this backup "
     "carries what it learned from them, not the files themselves."
 )
+
+# The FK-safe table order `run_job`/`_dump_table` dump in and `askwell.restore`
+# restores in — exposed for that module to import rather than duplicate, the
+# same cross-module private-name reuse `askwell.voice_tts` already does for
+# `askwell.ask`. Restore is a companion job to this one; the two must agree on
+# what "every table" means, and a second copy of this dict is how that drifts.
+TABLES = _TABLES
+
+
+def _wrap_install_secret(install_secret: bytes, backup_passphrase: str) -> str:
+    """The install secret, encrypted with a key derived from the passphrase
+    alone — see the module docstring's "passphrase-wrapped install secret"
+    section for why this, and not the passphrase-plus-install-secret key
+    everything else in the corpus already uses, is what makes restore onto a
+    different install possible at all."""
+    portable_key = crypto.derive_key(b"", backup_passphrase)
+    return base64.urlsafe_b64encode(crypto.encrypt(install_secret, portable_key)).decode("ascii")
+
+
+class PassphraseRequired(Exception):
+    """The corpus is passphrase-protected and no passphrase was given.
+
+    Raised by `enqueue`, before anything is written — a backup without the
+    wrapped install secret would be one `restore` could never decrypt, which
+    is worse than refusing plainly up front.
+    """
 
 
 class InsufficientSpace(Exception):
@@ -232,14 +280,32 @@ async def estimate(session: AsyncSession, settings: Settings) -> BackupEstimate:
 # --- enqueue, dispatch, resume --------------------------------------------
 
 
-async def enqueue(session: AsyncSession, settings: Settings) -> uuid.UUID:
+async def enqueue(
+    session: AsyncSession, settings: Settings, backup_passphrase: str | None = None
+) -> uuid.UUID:
     """Record the intent to back up. Always a decisions record naming the
     job and what it estimated — the ticket's own Audit Requirement — written
     in the same transaction as the job row.
+
+    `backup_passphrase` is required exactly when the corpus is
+    passphrase-protected — see the module docstring's "passphrase-wrapped
+    install secret" section. It is used once, here, to compute
+    `install_secret_wrapped` and is never itself stored.
     """
     await content_encryption.assert_not_migrating(session)
 
     preflight = await estimate(session, settings)
+    if preflight.passphrase_protected and backup_passphrase is None:
+        raise PassphraseRequired(
+            "This corpus is passphrase-protected. Its passphrase is required to take "
+            "a backup that can ever be restored."
+        )
+    install_secret_wrapped = None
+    if preflight.passphrase_protected:
+        assert backup_passphrase is not None  # narrowed by the check above
+        install_secret = crypto.load_or_create_install_secret(settings.install_secret_path)
+        install_secret_wrapped = _wrap_install_secret(install_secret, backup_passphrase)
+
     settings.backup_dir.mkdir(parents=True, exist_ok=True)
     free_bytes = shutil.disk_usage(settings.backup_dir).free
     # A generous margin: the run writes JSONL under `backup_dir` and then a
@@ -253,8 +319,10 @@ async def enqueue(session: AsyncSession, settings: Settings) -> uuid.UUID:
     await session.execute(
         text(
             "INSERT INTO backup_jobs "
-            "(id, tables_total, chunk_count, estimated_reembed_seconds, passphrase_protected) "
-            "VALUES (:id, :tables_total, :chunk_count, :reembed, :passphrase_protected)"
+            "(id, tables_total, chunk_count, estimated_reembed_seconds, passphrase_protected, "
+            "install_secret_wrapped) "
+            "VALUES (:id, :tables_total, :chunk_count, :reembed, :passphrase_protected, "
+            ":install_secret_wrapped)"
         ),
         {
             "id": job_id,
@@ -262,6 +330,7 @@ async def enqueue(session: AsyncSession, settings: Settings) -> uuid.UUID:
             "chunk_count": preflight.chunk_count,
             "reembed": preflight.estimated_reembed_seconds,
             "passphrase_protected": preflight.passphrase_protected,
+            "install_secret_wrapped": install_secret_wrapped,
         },
     )
     await record(
@@ -483,6 +552,15 @@ async def run_job(
                 await session.execute(text("SELECT count(*) FROM chunks WHERE content IS NOT NULL"))
             ).scalar_one()
             passphrase_protected = await passphrase.is_enabled(session)
+            # Computed once, at `enqueue` time, from the passphrase the caller
+            # gave then — never re-derived here, since this transaction has
+            # no passphrase to derive it from.
+            install_secret_wrapped = (
+                await session.execute(
+                    text("SELECT install_secret_wrapped FROM backup_jobs WHERE id = :id"),
+                    {"id": job_id},
+                )
+            ).scalar_one()
 
             tables_done = 0
             for table, (pk, exclude) in _TABLES.items():
@@ -511,6 +589,7 @@ async def run_job(
             "chunk_count": int(chunk_count),
             "estimated_reembed_seconds": chunk_count / ESTIMATED_CHUNKS_PER_SECOND,
             "passphrase_protected": passphrase_protected,
+            "install_secret_wrapped": install_secret_wrapped,
             "user_files_included": False,
             "user_files_statement": _USER_FILES_STATEMENT,
         }
@@ -557,6 +636,10 @@ async def run_job(
         raise
 
 
+class CreateBackupRequest(BaseModel):
+    passphrase: str | None = None
+
+
 # --- HTTP --------------------------------------------------------------
 
 
@@ -576,12 +659,15 @@ def register_backup(
         return JSONResponse(preflight.as_dict())
 
     @app.post("/backup")
-    async def create_backup() -> JSONResponse:
+    async def create_backup(body: CreateBackupRequest | None = None) -> JSONResponse:
+        body = body or CreateBackupRequest()
         try:
             async with session_scope(factory) as db:
-                job_id = await enqueue(db, settings)
+                job_id = await enqueue(db, settings, body.passphrase)
         except content_encryption.MigrationInProgress as error:
             return JSONResponse({"error": str(error)}, status_code=409)
+        except PassphraseRequired as error:
+            return JSONResponse({"error": str(error)}, status_code=422)
         except InsufficientSpace as error:
             return JSONResponse(
                 {
