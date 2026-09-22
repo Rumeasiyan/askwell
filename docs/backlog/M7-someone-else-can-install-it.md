@@ -1554,6 +1554,62 @@ Add one named volume mounted at `/var/lib/askwell` on both services, covering bo
 
 ---
 
+### M7-DATA-BE-159a — Reset can clear the audit tables, and nothing else can
+
+**Type:** Task
+
+**User Story**
+- **Actor:** someone handing the laptop on, or starting over.
+- **User Need:** reset to actually delete everything, including the audit stores.
+- **Business Value:** a free local product's real-delete promise is the one thing a user can check for themselves. Reset that fails silently is worse than no reset.
+- *As someone wiping my own machine, I want reset to finish, so that what I was promised is destroyed is actually gone.*
+
+**Context / Background**
+**Detailed Description:** `askwell.reset.perform` issues one `TRUNCATE` naming every table including `audit_decisions` and `audit_interactions`. The app connects as `askwell_app`, and migration `20260827_a8208099ef38` deliberately revokes `UPDATE, DELETE, TRUNCATE` on the audit tables from exactly that role (C6). A single `TRUNCATE a, b, c` is atomic, so Postgres refuses the whole statement — reset clears nothing at all, not just the audit tables. It fails for every real deployment and always has.
+
+C6 says the application never rewrites history and that tampering is detectable; it also says plainly that the user owns the machine and can always delete their data. A user-initiated, confirmed reset is that deletion, not the app rewriting history behind their back. So the fix is a narrowly-scoped privilege for this one named path, not a broadened grant.
+
+Take option 1 of #523: a `SECURITY DEFINER` function (or an equivalently narrow grant) that truncates the audit tables and is callable only from the reset path. Option 2 — a second elevated connection for the app — was rejected: it puts another credential into the application for one code path, and every other path then has an elevated connection sitting next to it.
+
+**Scope**
+- A narrowly-scoped, migration-defined way for reset alone to clear `audit_decisions` and `audit_interactions`.
+- `askwell.reset.perform` using it, with the non-audit truncate unchanged.
+- The ordinary app role still unable to `UPDATE`, `DELETE` or `TRUNCATE` those tables by any other path.
+- Tests that run reset under a connection restricted exactly as `askwell_app` is at runtime.
+
+**Out of Scope**
+- The reset surface itself (`M7-DATA-FE-160`, which rebuilds on top of this).
+- Any change to what the audit stores record or to the hash chain.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** Reset completes against a real deployment and every named table is empty afterwards, audit tables included. An ordinary code path running as `askwell_app` still cannot `UPDATE`, `DELETE` or `TRUNCATE` an audit table — proved by a test that tries and is refused. The reset itself is recorded before the tables go, so the act of resetting is not the one thing that vanishes without trace.
+- **Edge Cases:** Reset attempted while an ingestion holds the lock — the existing refusal stands, unchanged. The elevated path invoked from anywhere but reset — refused, and the test says so. A reset that fails partway — one transaction, so nothing is half-cleared.
+- **Permissions / Roles:** Single user, but two database roles: the app's, and the narrow reset privilege. The distinction is the whole ticket.
+- **UI States:** None here; `M7-DATA-FE-160` owns the surface.
+- **Validation Rules:** C6 is preserved, not relaxed: the application still never rewrites history as a side effect. One deliberate, user-confirmed, recorded action can delete it, which C6's own text already allows.
+- **Audit / Logging Requirements:** The reset is recorded before it executes. State in the ticket's closing comment how C6 was preserved — the `constraint:audit` label requires it.
+- **Analytics Events:** None.
+
+**Real-World Example Scenarios**
+- A user sells the laptop, runs reset, and finds the interaction log genuinely empty rather than a reset that reported success and changed nothing.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M0-DATA-BE-012, M7-BACKUP-BE-157.
+- **API / Data Touchpoints:** `api/src/askwell/reset.py`; a new Alembic migration; the grants in `20260827_a8208099ef38`; `api/tests/test_reset.py` and its `factory` fixture.
+- **Assumptions:** The test harness can connect as a role restricted the way `askwell_app` is — `test_sql_execute_connection_db.py` and `test_connections_write_probe_db.py` already do this for other restricted roles, so the pattern exists.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** Cold start, ingest a document, ask a question, then reset. Confirm the API returns success and that `audit_interactions` and `audit_decisions` are both empty from a `psql` shell.
+- **Other scenarios:** Under the restricted role, attempt `DELETE FROM audit_interactions` and confirm it is refused. Run the full reset test suite under a restricted connection rather than the admin one — this is the gap that let the bug ship.
+- **Known gaps:** None. If the reset path cannot be narrowed as described, stop and raise it rather than widening the app role.
+
+**Effort & Granularity Check**
+- **Estimate:** 3–4 hours · **Priority:** Critical
+- **Labels / Component:** `phase:7`, `constraint:audit`, backend
+- **Granularity:** One migration, one call site, one test fixture corrected.
+
+---
+
 ### M7-DATA-FE-160 — Export everything, delete memory, reset Askwell
 
 **Type:** Story
@@ -1591,7 +1647,7 @@ Add one named volume mounted at `/var/lib/askwell` on both services, covering bo
 - A cautious user exports everything on day two, opens the files in a text editor, confirms they are readable and complete, and then trusts the product.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M7-LOG-BE-155, M3-MEM-FE-084, M2-DELETE-FE-062.
+- **Dependencies:** M7-DATA-BE-159a, M7-LOG-BE-155, M3-MEM-FE-084, M2-DELETE-FE-062.
 - **API / Data Touchpoints:** All tables; the file system.
 - **Assumptions:** Open formats mean formats readable without Askwell — plain text, delimited data and a documented structure.
 
