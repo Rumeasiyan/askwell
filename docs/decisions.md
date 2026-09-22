@@ -4,6 +4,63 @@ Append-only. **Newest first.** Never edit an entry to change its meaning — if 
 
 **Bar for an entry:** something a competent person would later ask *"why is it like this?"* about. Architecture changes, dependency choices, resolved `docs/PRD.md` §11 questions, reversals. **Not** routine implementation choices — those are visible in the diff.
 
+## 2026-09-23 — The restore release gate is a documented walkthrough with a retained log, not a script, and its first real run failed on the citation check
+
+**Decision:** `M7-BACKUP-TEST-159` ships `docs/restore-release-test.md` (the gate procedure and
+checklist, run once per release before `docs/release-procedure.md` step 4) and
+`docs/restore-test-log.md` (the append-only, retained pass/fail record the ticket's own
+Acceptance Criteria asks for). `docs/release-procedure.md` gained a new step 3 wiring the gate
+in as a hard blocker, renumbering what follows. The procedure was proven by actually running it
+once against the real stack rather than only written and left unexercised — `docs/manual-tests/M7-BACKUP-TEST-159.md`
+has the full account, and the run's own result is `fail`, recorded honestly in the log rather
+than smoothed into a pass.
+
+**Why it failed, and why that is the correct outcome to record.** The ticket's Acceptance
+Criteria require citations to reproduce through a restore and be checked; this run's corpus
+never produced a citation on either side of the restore, so the check cannot be reported as
+passed. The cause is issue #220 (pre-existing, open): the local `Qwen3.5-4B` model's `<think>`
+block is never stripped and, on this CPU-bound host's `generation_max_tokens` budget (1024),
+regularly exhausts the whole budget before emitting a delimited answer — the turn is then
+scored as abstained. This is a generation-quality defect, not a backup/restore one: `chunks`,
+`documents`, `memory`, `sources` and the audit chain all restored correctly and were verified at
+the data layer instead. Recording the run as `fail` rather than a qualified pass follows the
+gate's own stated rule (`docs/restore-release-test.md` §4: "any unchecked box fails the run —
+do not average partial success into a pass") — a rule written into the procedure specifically
+so a future run under time pressure cannot talk itself into a pass it did not earn.
+
+**A second, previously-unknown defect the run found live: issue #597.** `askwell.restore._existing_data_present`
+checks the `settings` table along with everything else `backup.TABLES` covers, and
+`askwell.session.secret` writes a `session_secret` row into `settings` the moment the wiped API
+serves its first request — which on a real installer flow is the interface's own first load,
+before a user does anything. A restore's "refuse to merge silently" check
+(`docs/decisions.md`'s original restore design, and issue #574's neighbouring discussion of the
+same refusal path) therefore fires on every genuinely clean machine in practice, not only on one
+with real prior activity, and the gate's own procedure had to route around it with
+`replace_existing: true` — the same flag meant to mean "I am knowingly overwriting real data."
+Recorded as its own issue rather than folded into this one, since fixing it is `restore.py`
+logic, not documentation, and outside `M7-BACKUP-TEST-159`'s own scope (a procedure and a
+checklist, not a code change to the system under test).
+
+**Issue #574 (a `replace_existing` restore reporting `chain_verified: false` against real prior
+audit activity, with no UI explanation) stays open, re-owned rather than closed by this ticket**:
+its own recommended home is a future restore settings-screen surface, which does not exist yet
+— there is nothing to wire the explanation into. `docs/restore-release-test.md` §4.5 names the
+expected-`false` case explicitly so a gate run does not mistake it for a defect in the meantime.
+
+**Consequences:** `VERSION` → `0.7.11` (`CHANGELOG.md` same date). `docs/restore-test-log.md`
+carries the `0.7.10` entry as `fail`; no real release should be represented as gate-passed until
+either #220 is fixed or a working citation is produced through some other means and the gate is
+re-run. Issues #220 (re-owned), #574 (re-owned), #597 (new), #598 (new, no second-platform
+machine to run the gate cross-platform — the restore-specific counterpart to #590/#592's install
+gap) all stay open. A small doc bug also fixed in the same change: `docs/manual-tests/M7-BACKUP-BE-158.md`'s
+own commands used `scripts/dev.sh db psql`, which is not a valid invocation (`db` is
+alembic-only) — corrected to `scripts/dev.sh psql` there and in the new procedure, meaning
+`-158`'s manual test was never actually runnable verbatim as written.
+
+**Refs:** `docs/backlog/M7-someone-else-can-install-it.md` (`M7-BACKUP-TEST-159`),
+`docs/restore-release-test.md`, `docs/restore-test-log.md`, `docs/manual-tests/M7-BACKUP-TEST-159.md`,
+`docs/release-procedure.md`, issues #220, #574, #597, #598.
+
 ## 2026-09-23 — Release checksums and procedure ship; the ticket's own Acceptance Criteria described the wrong (signed) product and were corrected at the source
 
 **Decision:** `M7-TAURI-DEPLOY-184` is implemented as `scripts/release-checksums.sh` (generates

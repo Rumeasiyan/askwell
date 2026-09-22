@@ -4,6 +4,29 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.11 - 2026-09-23
+
+`M7-BACKUP-TEST-159` — the restore release gate. `Added`: `docs/restore-release-test.md` (the
+documented, repeatable procedure and verification checklist — back up a representative corpus,
+restore onto a clean machine, verify corpus/memory/conversations/citations/audit chain) and
+`docs/restore-test-log.md` (the append-only, retained pass/fail record the ticket asks for).
+`docs/release-procedure.md` gained a new step 3 wiring the gate in as a hard blocker before
+checksumming or publishing, renumbering the steps that follow. The procedure was proven by
+running it for real against the current stack rather than only written
+(`docs/manual-tests/M7-BACKUP-TEST-159.md`) — that first run's own result is `fail`: the
+ticket's citation-reproduction criterion could not be verified because the local model never
+produced a citation to round-trip (issue #220, pre-existing, unrelated to backup/restore), while
+everything restore itself owns (corpus, memory, sources, the audit chain, re-embedding actually
+completing) verified correct at the data layer. That same run found a real, previously-unknown
+defect live: **issue #597**, a fresh machine's own session bootstrap (`settings.session_secret`,
+written on the interface's first load) trips restore's "existing data" refusal before any real
+prior activity exists, meaning a plain restore needs `replace_existing: true` in practice on
+every genuinely clean machine today. `Fixed`: a doc bug carried into `M7-BACKUP-BE-158.md`'s own
+manual test — `scripts/dev.sh db psql` is not a valid invocation (`db` is alembic-only); both
+that file and the new procedure use `scripts/dev.sh psql`. No application code changed; `#220`
+and `#574` stay open, re-owned rather than fixed here (out of this ticket's own scope). Full
+account: `docs/decisions.md`, 2026-09-23.
+
 ## 0.7.10 - 2026-09-23
 
 `M7-TAURI-DEPLOY-184` — unsigned distribution with checksums. `Added`: `scripts/release-checksums.sh`
