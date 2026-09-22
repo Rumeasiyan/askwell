@@ -4,6 +4,53 @@ Append-only. **Newest first.** Never edit an entry to change its meaning — if 
 
 **Bar for an entry:** something a competent person would later ask *"why is it like this?"* about. Architecture changes, dependency choices, resolved `docs/PRD.md` §11 questions, reversals. **Not** routine implementation choices — those are visible in the diff.
 
+## 2026-09-23 — Release checksums and procedure ship; the ticket's own Acceptance Criteria described the wrong (signed) product and were corrected at the source
+
+**Decision:** `M7-TAURI-DEPLOY-184` is implemented as `scripts/release-checksums.sh` (generates
+`SHA256SUMS` for a release directory, deterministic, refuses an empty directory),
+`docs/release-procedure.md` (assemble → checksum → publish → verify from outside the build →
+cold-start walkthrough), and `docs/release-notes-template.md` (puts the `docs/installing.md`
+link above the artefact list, matching that page's own ordering). No signing, notarisation, or
+credential handling was added — none of it is this ticket's scope.
+
+**Why the ticket text itself was edited, not just disregarded.** The backlog entry's own
+Acceptance Criteria, Real-World Example Scenarios, Dependencies and Testing Notes described a
+*signed, notarised* artefact — "signing credentials exist only as environment secrets",
+"notarisation rejected for a nested binary" — directly contradicting the same ticket's Scope
+("Code signing and Apple notarisation — deferred to `M7-TAURI-DEPLOY-184a`") and its own header
+note ("Signing is deferred, not dropped"). That premise was already settled wrong once before:
+the 2026-08-26 entry below chose unsigned distribution specifically because no certificates
+exist (issue #42), and this same file's own 2026-09-23 macOS entry (above) had to flag the
+identical stale text reappearing in `M7-PACK-DEPLOY-141`'s dependencies. Correcting the source
+document rather than only working around it in code is the point of that earlier note — leaving
+the wrong AC in place would guarantee a third session hits the same trap. `docs/backlog/M7-someone-else-can-install-it.md`'s AC/Scenarios/Dependencies/Testing Notes for `184` now
+describe checksums and the release procedure, matching what Scope always said.
+
+**Why checksum generation ships without a real packaging pipeline behind it.** Issue #559 (open)
+tracks that no CI job or script produces an actual installable bundle per platform yet —
+`tauri.conf.json` still has `bundle.active: false`, and `deploy/linux/install.sh`'s own header
+says today's release artefact is a trimmed repository tarball, assembled by hand. Building that
+pipeline is explicitly out of #559's own scope note ("inventing one is out of this ticket's
+scope") and therefore out of this one too — `184`'s job is what happens to an artefact once it
+exists (checksum it, publish it, verify it), not producing the artefact. `docs/release-procedure.md`
+says this directly rather than implying a pipeline exists. The corollary: the ticket's own
+"verification on each platform that a freshly downloaded artefact installs" cannot be run for
+real yet, for the same reason `docs/manual-tests/M7-PACK-DEPLOY-140.md`/`141.md` couldn't
+(issues #590, #592) — tracked there, not re-invented here or silently marked done.
+
+**Consequences:** `VERSION` → `0.7.10` (`CHANGELOG.md` same date). Issues #559, #590, #592 stay
+open and are the honest blockers on end-to-end verification; this ticket does not close any of
+them, and #592 specifically is confirmed independent of `184` (it was never actually blocked on
+it — the backlog text's own dependency wording was the same stale-signing artefact this entry
+corrects). Once #559 lands, `docs/release-procedure.md` §2 gets a real command in place of "by
+hand or by a future CI job."
+
+**Refs:** `docs/backlog/M7-someone-else-can-install-it.md` (`M7-TAURI-DEPLOY-184`),
+`scripts/release-checksums.sh`, `scripts/release-checksums.test.sh`, `docs/release-procedure.md`,
+`docs/release-notes-template.md`, `docs/installing.md`, issues #42, #559, #590, #592.
+
+---
+
 ## 2026-09-23 — The macOS installer creates and starts its own Podman machine, and names the Podman-machine mount window rather than enforcing it
 
 **Decision:** `deploy/macos/install.sh`/`lib.sh`/`uninstall.sh`/`install.test.sh`
