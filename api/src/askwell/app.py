@@ -26,6 +26,7 @@ from askwell.ingest import register_ingest
 from askwell.interface import register_interface
 from askwell.log_budget import register_log_budget
 from askwell.log_export import register_log_export
+from askwell.log_prune import register_log_prune
 from askwell.logging import configure_logging, get_logger
 from askwell.memory import register_memory
 from askwell.middleware import register_session
@@ -144,6 +145,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_model_select(app, resolved, app.state.sessions)
     register_log_budget(app, resolved, app.state.sessions)
     register_log_export(app, resolved, app.state.sessions)
+    register_log_prune(app, resolved, app.state.sessions)
     register_backup(app, resolved, app.state.sessions)
     register_passphrase(app, resolved, app.state.sessions)
     register_update_check(app, resolved, app.state.sessions)

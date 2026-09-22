@@ -4,6 +4,25 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.2 - 2026-09-22
+
+`M7-LOG-BE-154` — interaction retention window and prune. `Added`: `askwell.log_prune` deletes
+`audit_interactions` rows older than `interaction_retention_months` (`askwell.log_budget`, 12
+months by default) as a background job (`prune_jobs`), the same job-table-plus-`arq` shape
+`askwell.log_export`/`askwell.backup` already use. `POST /log-prune` refuses
+(`PruneNotExported`, 400) unless a completed, unfiltered log export already covers the window,
+and refuses again (`PruneRequiresConfirmation`, 400) if the current window would prune 90% or
+more of what exists, unless `acknowledged_nearly_everything` is set. The delete and the
+`interactions_pruned` decisions record that names the range removed are one transaction, so a
+worker killed mid-run leaves the chain exactly as it was — `askwell.worker.startup`'s `resume`
+returns the job to `queued` and a re-run is not distinguishable from running once.
+`askwell.audit.verify` gained an optional `prune_boundaries` argument (issue #516): a chain that
+starts at a hash a legitimate prune recorded, rather than at `GENESIS`, now verifies as intact
+with an explanatory note instead of reporting `MISSING_GENESIS` — a false positive the
+`askwell-verify` command would otherwise have produced against its own prune. Decisions and
+memory are never touched — every statement in `run_job` names `audit_interactions` explicitly.
+New `PruneJob` (`api/src/askwell/db/models.py`), migration `f2c7d4e1a683`.
+
 ## 0.7.1 - 2026-09-22
 
 `M7-SET-BE-145a` — a user-supplied model, and which model answered. `Added`:

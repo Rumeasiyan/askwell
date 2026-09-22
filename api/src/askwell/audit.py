@@ -20,6 +20,7 @@ bricking the product over a debugging aid is absurd.
 import hashlib
 import json
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
@@ -224,7 +225,7 @@ class Break(StrEnum):
 class VerificationResult:
     """What a verification pass found. Plain, and naming the record."""
 
-    __slots__ = ("checked", "detail", "first_break", "reason", "store")
+    __slots__ = ("checked", "detail", "first_break", "note", "reason", "store")
 
     def __init__(
         self,
@@ -233,12 +234,18 @@ class VerificationResult:
         first_break: uuid.UUID | None = None,
         reason: Break | None = None,
         detail: str = "",
+        note: str = "",
     ) -> None:
         self.store = store
         self.checked = checked
         self.first_break = first_break
         self.reason = reason
         self.detail = detail
+        # Set only when the chain verified but did not start at `GENESIS` —
+        # a legitimate prune (`askwell.log_prune`) moved the head forward and
+        # recorded where. Kept separate from `detail`, which belongs to a
+        # break: this is the explanation for something that is *not* one.
+        self.note = note
 
     @property
     def intact(self) -> bool:
@@ -255,12 +262,18 @@ class VerificationResult:
 
     def __str__(self) -> str:
         if self.intact:
-            return f"{self.store.value}: {self.checked} records, chain intact."
+            suffix = f" {self.note}" if self.note else ""
+            return f"{self.store.value}: {self.checked} records, chain intact.{suffix}"
         where = f" at record {self.first_break}" if self.first_break else ""
         return f"{self.store.value}: chain breaks{where} ({self.reason}). {self.detail}"
 
 
-async def verify(session: AsyncSession, store: Store) -> VerificationResult:
+async def verify(
+    session: AsyncSession,
+    store: Store,
+    *,
+    prune_boundaries: Sequence[tuple[str, str]] = (),
+) -> VerificationResult:
     """Walk a chain and report the first break, by record.
 
     The walk follows the links rather than sorting by anything. A chain defines
@@ -274,6 +287,15 @@ async def verify(session: AsyncSession, store: Store) -> VerificationResult:
     a warning. Reporting the *first* one matters: everything after a break is
     unverifiable rather than wrong, and listing all of it would bury the one
     record the user needs to look at.
+
+    `prune_boundaries` is only ever meaningful for `Store.INTERACTIONS`:
+    `(boundary_hash, explanation)` pairs, newest prune first, taken from every
+    `interactions_pruned` decisions record (`askwell.log_prune`). A legitimate
+    prune deletes a run of records from the *front* of the chain, which is
+    exactly what `Break.UNLINKED`/`MISSING_GENESIS` exist to catch for a real
+    deletion — the two are indistinguishable from the records alone. Checking
+    the chain's actual start against a hash Askwell itself recorded as a prune
+    boundary is what tells them apart (issue #516).
     """
     result = await session.execute(
         # The table name is interpolated, which would be alarming if it came
@@ -301,17 +323,28 @@ async def verify(session: AsyncSession, store: Store) -> VerificationResult:
     if total == 0:
         return VerificationResult(store, 0)
 
+    start = GENESIS
+    note = ""
     if GENESIS not in by_predecessor:
-        return VerificationResult(
-            store,
-            0,
-            None,
-            Break.MISSING_GENESIS,
-            f"{total} records exist but none chains to the genesis value. "
-            f"The first record has been removed.",
-        )
+        for boundary_hash, explanation in prune_boundaries:
+            if boundary_hash in by_predecessor:
+                start = boundary_hash
+                note = (
+                    f"Chain starts after a prune ({explanation}), not at genesis — "
+                    f"expected, recorded in the decisions store."
+                )
+                break
+        else:
+            return VerificationResult(
+                store,
+                0,
+                None,
+                Break.MISSING_GENESIS,
+                f"{total} records exist but none chains to the genesis value. "
+                f"The first record has been removed.",
+            )
 
-    expected_prev = GENESIS
+    expected_prev = start
     checked = 0
 
     while expected_prev in by_predecessor:
@@ -348,7 +381,27 @@ async def verify(session: AsyncSession, store: Store) -> VerificationResult:
             f"reachable from the start. A record has been removed.",
         )
 
-    return VerificationResult(store, checked)
+    return VerificationResult(store, checked, note=note)
+
+
+async def prune_boundaries(session: AsyncSession) -> list[tuple[str, str]]:
+    """Every `interactions_pruned` decisions record, newest first — the
+    `verify` argument of the same name. Reads the decisions store rather than
+    `askwell.log_prune` directly so this module never imports it: prune's own
+    job bookkeeping is none of the verifier's business, only what it recorded.
+    """
+    result = await session.execute(
+        text(
+            f"SELECT payload FROM {Store.DECISIONS.value} "
+            f"WHERE kind = 'interactions_pruned' ORDER BY occurred_at DESC"
+        )
+    )
+    boundaries: list[tuple[str, str]] = []
+    for (payload,) in result:
+        boundary_hash = payload.get("boundary_hash")
+        if boundary_hash:
+            boundaries.append((boundary_hash, f"pruned through {payload.get('cutoff')}"))
+    return boundaries
 
 
 def main() -> None:
@@ -373,8 +426,13 @@ def main() -> None:
         broken = 0
         try:
             async with factory() as session:
+                boundaries = await prune_boundaries(session)
                 for store in Store:
-                    outcome = await verify(session, store)
+                    outcome = await verify(
+                        session,
+                        store,
+                        prune_boundaries=boundaries if store is Store.INTERACTIONS else (),
+                    )
                     print(outcome)  # noqa: T201 - a command, talking to a terminal
                     if not outcome.intact:
                         broken += 1

@@ -209,6 +209,20 @@ async def backup_job(ctx: dict[str, Any], job_id: str) -> None:
     await backup.run_job(ctx["sessions"], ctx["settings"], uuid.UUID(job_id))
 
 
+async def prune_job(ctx: dict[str, Any], job_id: str) -> None:
+    """Prune one batch of interactions past the retention window.
+    `M7-LOG-BE-154`.
+
+    Thin, the same reason `export_job` is: everything about what pruning
+    *is* lives in `askwell.log_prune`, so it can be tested without a Redis,
+    a worker process and a job serialiser in the way. No `settings` — a
+    prune touches only Postgres, never the filesystem.
+    """
+    from askwell import log_prune
+
+    await log_prune.run_job(ctx["sessions"], uuid.UUID(job_id))
+
+
 async def reconcile_queue(ctx: dict[str, Any]) -> int:
     """Re-dispatch queued work Redis has forgotten about.
 
@@ -284,7 +298,7 @@ async def run_update_check(ctx: dict[str, Any]) -> bool:
 
 
 async def startup(ctx: dict[str, Any]) -> None:
-    from askwell import backup, embed, ingest, log_export, reapply, sandbox
+    from askwell import backup, embed, ingest, log_export, log_prune, reapply, sandbox
 
     settings: Settings = ctx["settings"]
     engine = build_engine(settings)
@@ -309,6 +323,7 @@ async def startup(ctx: dict[str, Any]) -> None:
             resumed_reapply = await reapply.resume(session)
             resumed_export = await log_export.resume(session)
             resumed_backup = await backup.resume(session)
+            resumed_prune = await log_prune.resume(session)
         waiting = await ingest.reconcile(ctx["sessions"], settings)
         reclaimed = await _reclaim_sandbox_orphans(ctx["sessions"], settings)
     except embed.EmbeddingDimensionMismatch:
@@ -349,6 +364,7 @@ async def startup(ctx: dict[str, Any]) -> None:
     reapply_dispatched = await reapply.dispatch(settings, resumed_reapply)
     export_dispatched = await log_export.dispatch(settings, resumed_export)
     backup_dispatched = await backup.dispatch(settings, resumed_backup)
+    prune_dispatched = await log_prune.dispatch(settings, resumed_prune)
 
     log.info(
         "worker_resumed",
@@ -360,6 +376,8 @@ async def startup(ctx: dict[str, Any]) -> None:
         export_dispatched=export_dispatched,
         backup_interrupted=len(resumed_backup),
         backup_dispatched=backup_dispatched,
+        prune_interrupted=len(resumed_prune),
+        prune_dispatched=prune_dispatched,
         sandbox_orphans_reclaimed=len(reclaimed),
     )
 
@@ -413,6 +431,7 @@ class WorkerSettings:
         reapply_job,
         export_job,
         backup_job,
+        prune_job,
         import_dump_job,
         import_table_job,
         introspect_connection_job,
