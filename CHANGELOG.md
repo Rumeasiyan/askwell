@@ -4,6 +4,27 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.1 - 2026-09-22
+
+`M7-SET-BE-145a` — a user-supplied model, and which model answered. `Added`:
+`askwell.model_select` validates a user-placed GGUF file (readable, GGUF magic bytes — never
+described as licence-verified, which is C9's territory, not a file someone placed themselves),
+swaps it against the host inference supervisor over the same file-signal seam
+`askwell.model_download` already uses for a fetch, and persists the selection in `settings`
+(`model.user_model_path`, `model.active_source`) so it is the model actually loaded on the next
+restart (`reapply_user_model`, run as a backgrounded startup task). `deploy/inference/
+askwell-inference`'s `Supervisor` gained `swap_model`: it terminates the running process and lets
+its own `supervise()` loop bring the new one up — the same path a crash already takes, but not
+counted as one — and restores the previous model, naming why, when the new one fails to load. A
+swap holds every permit of `askwell.ask.generation_semaphore` for its duration, so a turn already
+answering finishes on the model it started with and a new question queues behind the swap rather
+than racing it. New `messages.model_identity` column (migration `a1c2e5f6b3d4`), `NOT NULL` with
+a server default distinguishing "predates this column" from "no model was loaded", stamped at
+`POST /ask` and the voice pending-answer insert with a shipped/user-supplied fact this module
+writes and never guesses from a loaded file's name. New `GET /model`/`POST /model/select`. A
+model too large for the probed hardware is accepted with the consequence stated, never silently
+refused. `Refs`: `docs/build-plan.md` Phase 7; `M0-MODEL-BE-019`; `M7-PROBE-DEPLOY-137`.
+
 ## 0.7.0 - 2026-09-22
 
 `M6.5-WEB-OBS-193` — trace flagging of fetched content, and the escalation on the record. This

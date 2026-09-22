@@ -810,6 +810,16 @@ class Message(Base):
     # answer time — `NULL` for a document-grounded or abstained turn, same
     # as `source_count` stays `NULL` rather than `0` for those.
     sql_result: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    # `M7-SET-BE-145a`: which model produced this turn and whether it was
+    # shipped or user-supplied (`askwell.model_select`). `NOT NULL` with a
+    # server default rather than nullable — the ticket's own edge case is
+    # that a message written while no model is loaded must record that fact,
+    # not a `NULL` nobody downstream can tell apart from "predates the column".
+    model_identity: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=text("""'{"source": "unknown", "display_name": null}'"""),
+    )
     created_at_: Mapped[datetime] = mapped_column(
         "created_at", DateTime(timezone=True), nullable=False, server_default=func.now()
     )

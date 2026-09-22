@@ -113,6 +113,18 @@ class Supervisor:
 
         self.process: asyncio.subprocess.Process | None = None
 
+        # A live model swap (`M7-SET-BE-145a`), tracked the same way a
+        # requested fetch is: a flag the outer loop checks, not a second
+        # control path alongside it. `_supervising` is what lets `swap_model`
+        # tell "nothing is running to swap" apart from "the process just
+        # has not started yet" — both look like `self.process is None`
+        # otherwise.
+        self._supervising = False
+        self._swap_requested = False
+        self._pending_model: Path | None = None
+        self._swap_previous: Path | None = None
+        self._swap_future: "asyncio.Future[tuple[bool, str | None]] | None" = None
+
         # Two counters, because they answer different questions. `restarts` is
         # cumulative and is what the user is shown: "this has restarted eleven
         # times today" is a fact worth knowing. `consecutive` drives the
@@ -328,36 +340,126 @@ class Supervisor:
             pass
 
     async def supervise(self) -> None:
-        while True:
-            if not await self.start_once():
-                return
+        self._supervising = True
+        try:
+            while True:
+                if not await self.start_once():
+                    return
 
-            if await self.wait_until_ready():
-                self.consecutive = 0
-                heartbeat = asyncio.create_task(self._heartbeat())
-                try:
-                    await self.drain()
-                finally:
-                    heartbeat.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await heartbeat
+                if await self.wait_until_ready():
+                    self.consecutive = 0
+                    heartbeat = asyncio.create_task(self._heartbeat())
+                    try:
+                        await self.drain()
+                    finally:
+                        heartbeat.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await heartbeat
 
-            code = await self.process.wait() if self.process else None
+                code = await self.process.wait() if self.process else None
 
-            if self.consecutive >= len(BACKOFF_SECONDS):
-                self._write(
-                    UNAVAILABLE,
-                    f"Stopped after {self.consecutive} restarts in a row; the last exit was "
-                    f"{code}. Askwell is not retrying — by now the reason is "
-                    f"more useful to you than another attempt.",
-                )
-                return
+                if self._swap_requested:
+                    self._swap_requested = False
+                    target = self._pending_model
+                    previous = self._swap_previous
+                    self._pending_model = None
+                    self._swap_previous = None
+                    assert target is not None  # only set by swap_model, alongside the flag
 
-            delay = BACKOFF_SECONDS[self.consecutive]
-            self.consecutive += 1
-            self.restarts += 1
-            self._write(CRASHED, f"Exited with {code}. Restarting in {delay}s.")
-            await asyncio.sleep(delay)
+                    self.model = target
+                    ok = await self.start_once()
+                    if ok:
+                        ok = await self.wait_until_ready()
+
+                    if ok:
+                        self.consecutive = 0
+                        outcome: tuple[bool, str | None] = (True, None)
+                    else:
+                        reason = (
+                            f"Could not load {target.name}. Staying on "
+                            f"{previous.name if previous is not None else 'no model'}."
+                        )
+                        restored = False
+                        if previous is not None:
+                            self.model = previous
+                            restored = await self.start_once()
+                            if restored:
+                                restored = await self.wait_until_ready()
+                        if restored:
+                            self.consecutive = 0
+                        else:
+                            reason += (
+                                " The previous model also failed to reload; this role is "
+                                "down until the supervisor is restarted."
+                            )
+                        outcome = (False, reason)
+
+                    future = self._swap_future
+                    self._swap_future = None
+                    if future is not None and not future.done():
+                        future.set_result(outcome)
+                    continue
+
+                if self.consecutive >= len(BACKOFF_SECONDS):
+                    self._write(
+                        UNAVAILABLE,
+                        f"Stopped after {self.consecutive} restarts in a row; the last exit was "
+                        f"{code}. Askwell is not retrying — by now the reason is "
+                        f"more useful to you than another attempt.",
+                    )
+                    return
+
+                delay = BACKOFF_SECONDS[self.consecutive]
+                self.consecutive += 1
+                self.restarts += 1
+                self._write(CRASHED, f"Exited with {code}. Restarting in {delay}s.")
+                await asyncio.sleep(delay)
+        finally:
+            self._supervising = False
+
+    async def swap_model(self, new_model: Path) -> tuple[bool, str | None]:
+        """Point this role at a different model file, live. `M7-SET-BE-145a`.
+
+        Terminates the running process and lets `supervise()`'s own loop
+        bring the new one up — the same path a crash already takes, so there
+        is no second way this role can end up running. The difference from a
+        crash is only that this is not counted as one: `consecutive` is
+        untouched and the state written is `starting`, not `crashed`, and a
+        failure restores the previous model rather than backing off and
+        retrying the one that just failed.
+        """
+        if not self._supervising:
+            return False, (
+                "The inference supervisor is not running this role — nothing is there to "
+                "swap. Start it with: scripts/dev.sh inference"
+            )
+        process = self.process
+        if process is None or process.returncode is not None:
+            return False, (
+                f"This role is not currently answering ({self.model.name or 'no model'} is "
+                f"still starting, or failed to start) — wait for it to finish, or fix that "
+                f"first, before swapping."
+            )
+        if not new_model.is_file():
+            return False, f"No file at {new_model}."
+
+        loop = asyncio.get_running_loop()
+        future: "asyncio.Future[tuple[bool, str | None]]" = loop.create_future()
+        self._swap_future = future
+        self._pending_model = new_model
+        self._swap_previous = self.model
+        self._swap_requested = True
+
+        with contextlib.suppress(ProcessLookupError):
+            process.send_signal(signal.SIGTERM)
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(10):
+                await process.wait()
+        if process.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+
+        return await future
 
     async def _heartbeat(self) -> None:
         """Keep saying `ready` while it is.
@@ -403,6 +505,26 @@ FETCH_REQUEST = "fetch-request.json"
 FETCH_PROGRESS = "fetch-progress.json"
 FETCH_POLL_SECONDS = 1.0
 FETCH_CHUNK = 1024 * 1024
+
+# The same file-signal shape as the fetch request above, for the generation
+# role's model swap (`M7-SET-BE-145a`, `askwell.model_select`). The API
+# writes the first, this script writes the second — both sides agree on
+# these two names and nothing else.
+SWAP_REQUEST = "model-swap-request.json"
+SWAP_RESULT = "model-swap-result.json"
+SWAP_POLL_SECONDS = 1.0
+
+
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    """Publish a result the way `_write`/`_fetch_write` do: atomically."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".partial")
+        temporary.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(temporary, path)
+        os.chmod(path, 0o644)
+    except OSError as error:
+        print(f"askwell-inference[swap]: could not write result: {error}", file=sys.stderr)
 
 
 def _fetch_write(models_dir: Path, payload: dict) -> None:
@@ -508,6 +630,41 @@ async def watch_for_fetch_requests(models_dir: Path, stopping: asyncio.Event) ->
             await asyncio.wait_for(stopping.wait(), timeout=FETCH_POLL_SECONDS)
 
 
+async def watch_for_swap_requests(
+    supervisor: Supervisor, run_dir: Path, stopping: asyncio.Event
+) -> None:
+    """Do what the API asked, when it asks, and nothing when it does not.
+
+    Generation only (`M7-SET-BE-145a`): the settings section this backs is
+    "a model file of your own next to the bundled one", which names the
+    model that answers questions — embedding and reranking have no
+    equivalent user-facing choice today.
+    """
+    request_path = run_dir / SWAP_REQUEST
+    result_path = run_dir / SWAP_RESULT
+    while not stopping.is_set():
+        try:
+            if request_path.is_file():
+                request = json.loads(request_path.read_text(encoding="utf-8"))
+                request_path.unlink(missing_ok=True)
+                model_path = Path(str(request["model_path"]))
+                ok, reason = await supervisor.swap_model(model_path)
+                _write_json_atomic(
+                    result_path,
+                    {
+                        "model_path": str(model_path),
+                        "ok": ok,
+                        "reason": reason,
+                        "updated_at": time.time(),
+                    },
+                )
+        except (OSError, json.JSONDecodeError, KeyError, ValueError) as error:
+            print(f"askwell-inference[swap]: bad request: {error}", file=sys.stderr)
+            request_path.unlink(missing_ok=True)
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(stopping.wait(), timeout=SWAP_POLL_SECONDS)
+
+
 async def main() -> int:
     supervisors = [Supervisor(*role) for role in ROLES]
 
@@ -529,6 +686,11 @@ async def main() -> int:
         env("ASKWELL_MODELS_DIR", os.path.expanduser("~/.local/share/askwell/models"))
     )
     running.append(asyncio.create_task(watch_for_fetch_requests(models_dir, stopping)))
+
+    generation = next(s for s in supervisors if s.role == "generation")
+    run_dir = generation.socket_path.parent
+    running.append(asyncio.create_task(watch_for_swap_requests(generation, run_dir, stopping)))
+
     waiting = asyncio.create_task(stopping.wait())
 
     try:
