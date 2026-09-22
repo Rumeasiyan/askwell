@@ -78,15 +78,23 @@ export async function webSearchAvailable(signal?: AbortSignal): Promise<boolean>
  * shown somewhere it should not have been, which is this module's own bug
  * to surface, not the user's to work around, so it is thrown rather than
  * folded into `"unavailable"`.
+ *
+ * `signal`, when given, lets the caller abort mid-flight — `M6.5-WEB-FE-192`'s
+ * own edge case, "the user stops generation while searching": aborting the
+ * fetch disconnects the request, which is what lets `askwell.websearch`'s
+ * cancelled-coroutine path (`M6.5-WEB-SEC-187`) close the egress grant the
+ * same way an ordinary return or a provider failure does.
  */
 export async function escalateWebSearch(
   messageId: string,
   question: string,
+  signal?: AbortSignal,
 ): Promise<WebSearchEscalationOutcome> {
   const response = await fetch(`/ask/${messageId}/escalate/web`, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify({ question }),
+    ...(signal ? { signal } : {}),
   });
   if (!response.ok) {
     throw new Error(`Askwell answered ${response.status} when escalating to the web.`);
@@ -129,4 +137,97 @@ export function recordWebSearchOfferAccepted(): void {
 
 export function getWebSearchOfferAcceptedCount(): number {
   return offersAcceptedCount;
+}
+
+/**
+ * The remaining states — searching, nothing found, unavailable, closed —
+ * `M6.5-WEB-FE-192` (`docs/ux/web-search.md` §4, `docs/web-search.md` §6).
+ *
+ * Fixed copy, exported rather than inlined at the call site, so the exact
+ * wording the human-review pass checks against `docs/ux/` is asserted once
+ * here rather than retyped (and silently drifting) wherever it renders.
+ * `WEB_SEARCH_UNAVAILABLE` is `web-search.md` §6's own quote, verbatim.
+ */
+export const WEB_SEARCH_PROGRESS_LABEL =
+  "Searching the web — your question has left this machine.";
+export const WEB_SEARCH_NOTHING_FOUND = "Nothing found on the web either.";
+export const WEB_SEARCH_UNAVAILABLE = "I can't reach the web right now.";
+export const WEB_SEARCH_CLOSED_NOTE =
+  "The search closed with this question — your next one starts local again.";
+
+export type WebSearchDisplayStatus = "idle" | "sending" | "answered" | "nothing_found" | "unavailable";
+
+/**
+ * Collapses a fetch's lifecycle (`idle`/`sending`/`settled`) plus whatever
+ * outcome it settled with into one of five display states.
+ *
+ * A settled `"ok"` with no `answerText` reads as `"nothing_found"`, not
+ * `"answered"` — the ticket's own edge case: "search succeeds but every
+ * result is dropped by the caps [`M6.5-WEB-BE-188`] — reads as nothing
+ * usable came back, not as an answer." A missing answer is a missing
+ * answer regardless of whether the provider called it `"ok"` or
+ * `"no_results"`; the caller never has to know which of those two produced
+ * this state, only that nothing came of it.
+ */
+export function webSearchDisplayStatus(
+  phase: "idle" | "sending" | "settled",
+  outcome: WebSearchEscalationOutcome | null,
+): WebSearchDisplayStatus {
+  if (phase === "idle" || phase === "sending") return phase;
+  if (outcome === null) return "idle";
+  if (outcome.status === "unavailable") return "unavailable";
+  if (outcome.status === "no_results" || outcome.answerText === null) return "nothing_found";
+  return "answered";
+}
+
+/**
+ * The plain statement for a display state, `null` for `"idle"`/`"answered"` —
+ * an answer speaks for itself (`WebAnswerBlock`) and an unattempted offer has
+ * nothing to report yet.
+ */
+export function webSearchStatusMessage(status: WebSearchDisplayStatus): string | null {
+  switch (status) {
+    case "sending":
+      return WEB_SEARCH_PROGRESS_LABEL;
+    case "nothing_found":
+      return WEB_SEARCH_NOTHING_FOUND;
+    case "unavailable":
+      return WEB_SEARCH_UNAVAILABLE;
+    default:
+      return null;
+  }
+}
+
+/**
+ * The escalation-closed note (`docs/ux/web-search.md` §4) is shown once a
+ * search has actually run and settled — answered, nothing found, or
+ * unavailable — and never while it is still `"sending"` or before it has
+ * ever been tried. This is the "only turns that escalated get one" rule
+ * from the ticket's own edge cases, expressed as one predicate rather than
+ * duplicated at each call site.
+ */
+export function webSearchShowsClosedNote(status: WebSearchDisplayStatus): boolean {
+  return status === "answered" || status === "nothing_found" || status === "unavailable";
+}
+
+/**
+ * The escalation option's own cost caption, one line under its label
+ * (`EscalationOption`, `ask-screen.tsx`) — kept separate from
+ * `webSearchStatusMessage` because it must stay short enough to sit under a
+ * button, and reads slightly differently once idle needs to say whether the
+ * option is even configured.
+ */
+export function webSearchOptionCost(status: WebSearchDisplayStatus, available: boolean | null): string {
+  switch (status) {
+    case "sending":
+      return "sending — your question has left this machine";
+    case "answered":
+      return "sent — this question only";
+    case "nothing_found":
+      return "sent — nothing usable came back";
+    case "unavailable":
+      return "could not reach the web";
+    default:
+      return available === false ? "not configured" : "sends your question out · this question only";
+  }
 }

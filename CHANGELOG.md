@@ -4,6 +4,38 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.6.17 - 2026-09-22
+
+`M6.5-WEB-FE-192` — the remaining escalation states: searching, nothing found, unavailable,
+and the escalation closing (`docs/ux/web-search.md` §4, `docs/states-and-edge-cases.md` §1/§7.1,
+C10). `EscalationOffer` (`web/components/ask/ask-screen.tsx`) tracks its own `phase`
+(`idle`/`sending`/`settled`) and `outcome` instead of the old single `webStatus` string, and
+derives what to show from three new pure helpers in `web/lib/web-search.ts`:
+`webSearchDisplayStatus` (folds a settled `"ok"` outcome with no generated answer into
+`"nothing_found"`, never `"answered"` — the caps-dropped-everything edge case),
+`webSearchStatusMessage` (the exact `"I can't reach the web right now."` copy from
+`docs/web-search.md` §6 for `unavailable`, a distinct plain "Nothing found on the web either."
+for `nothing_found`, and the named-progress "Searching the web — your question has left this
+machine." while `sending`), and `webSearchShowsClosedNote` (the "the search closed with this
+question — your next one starts local again." note, shown only once a search has actually
+settled, never for an untried or in-flight one).
+
+`Added` (web): a `Stop` control appears beside the searching progress line — clicking it aborts
+`escalateWebSearch`'s now-optional `signal` parameter, which disconnects the request and lets
+`askwell.websearch`'s cancelled-coroutine path (`M6.5-WEB-SEC-187`) close the egress grant the
+same way an ordinary return does; the offer reverts to unattempted rather than reporting
+`"unavailable"` for a search the user chose to stop. `CollapsedTurn` gained a `WebMarker` —
+`--inferred`, a dashed ring rather than `SourceCountBadge`'s filled dot, so a past turn that
+used the web keeps a visibly distinct marker once collapsed and is never mistaken for a
+document-grounded one, even in greyscale.
+
+Out of scope, per the ticket: voice escalation, and the trace's own flagging of fetched content
+(`M6.5-WEB-OBS-193`). Filed issue #545: `compose.yaml`'s `api` service never passes
+`ASKWELL_WEB_SEARCH_PROVIDER`/`_DESTINATION_HOST`/`_DESTINATION_PORT`/`_GRANT_TTL_SECONDS`
+through, discovered while trying to verify this ticket against the real running stack — the
+whole escalation has been unreachable through the shipped Compose file since `M6.5-WEB-BE-185`,
+independent of this ticket's own frontend scope.
+
 ## 0.6.16 - 2026-09-22
 
 `M6.5-WEB-FE-191` — mixed answers: each claim points at its own kind of source

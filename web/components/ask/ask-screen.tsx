@@ -49,6 +49,11 @@ import {
   recordWebSearchOfferAccepted,
   recordWebSearchOfferMade,
   webSearchAvailable,
+  webSearchDisplayStatus,
+  webSearchOptionCost,
+  webSearchShowsClosedNote,
+  webSearchStatusMessage,
+  WEB_SEARCH_CLOSED_NOTE,
   type WebSearchEscalationOutcome,
 } from "@/lib/web-search";
 
@@ -808,6 +813,7 @@ function CollapsedTurn({ turn }: { turn: AskTurn }) {
         <p className="ask-micro ask-collapsed-line" style={{ textTransform: "none", flex: 1 }}>
           {turn.summary ?? ""}
         </p>
+        {turn.webCitations.length > 0 ? <WebMarker /> : null}
         <SourceCountBadge
           count={turn.sourceCount}
           onClick={turn.sourceCount !== null ? expandAndScrollToMargin : undefined}
@@ -853,6 +859,42 @@ function CollapsedTurn({ turn }: { turn: AskTurn }) {
         </div>
       ) : null}
     </article>
+  );
+}
+
+/**
+ * The web marker a collapsed turn keeps once it escalated
+ * (`conversation.md` §5, `states-and-edge-cases.md` §7.1: "keeps its web
+ * marker when collapsed. Never shown as if it came from the user's files").
+ *
+ * `--inferred`, never `--provenance` — the same colour `WebResultsRegion`
+ * uses for "from the web, not your files" (`web-result.tsx`), so a
+ * collapsed row cannot be mistaken for a document-grounded one at a glance.
+ * A dashed ring rather than `SourceCountBadge`'s filled dot, for the same
+ * "colour is never the only signal" reason (`design-system.md` §8): the two
+ * badges must read as different shapes even in greyscale, not just
+ * different colours of the same dot.
+ */
+function WebMarker() {
+  return (
+    <span
+      className="ask-micro flex items-center gap-1"
+      style={{ textTransform: "none", whiteSpace: "nowrap", color: "var(--inferred)" }}
+      title="This turn used the web"
+    >
+      <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+        <circle
+          cx="5"
+          cy="5"
+          r="4"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.2"
+          strokeDasharray="1.6 1.4"
+        />
+      </svg>
+      Web
+    </span>
   );
 }
 
@@ -1294,6 +1336,17 @@ function WebAnswerBlock({ turn }: { turn: AskTurn }) {
  * first resolves is a second, independently authorised act (also this
  * ticket's own edge case) — nothing here remembers a prior escalation past
  * showing what became of it.
+ *
+ * **`M6.5-WEB-FE-192`** adds the four states this offer's own button caption
+ * used to carry alone: named progress while `"sending"` (with a `Stop`
+ * control, `lib/web-search.ts`'s own docstring on why aborting the fetch is
+ * what closes the egress grant early), a plain nothing-found statement, the
+ * exact `"I can't reach the web right now."` unavailable copy
+ * (`docs/web-search.md` §6), and the escalation-closed note once a search
+ * has actually settled. `phase`/`outcome` replace the old single `webStatus`
+ * string precisely so `webSearchDisplayStatus` (`lib/web-search.ts`) can fold
+ * a settled `"ok"` with no `answerText` into `"nothing_found"` rather than
+ * `"answered"` — the caps-dropped-everything edge case.
  */
 function EscalationOffer({
   turn,
@@ -1303,9 +1356,9 @@ function EscalationOffer({
   addSourceLabel: string | null;
 }) {
   const [available, setAvailable] = useState<boolean | null>(null);
-  const [webStatus, setWebStatus] = useState<"idle" | "sending" | WebSearchEscalationOutcome["status"]>(
-    "idle",
-  );
+  const [phase, setPhase] = useState<"idle" | "sending" | "settled">("idle");
+  const [outcome, setOutcome] = useState<WebSearchEscalationOutcome | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const { applyWebAnswer } = useAsk();
 
   useEffect(() => {
@@ -1317,53 +1370,94 @@ function EscalationOffer({
     return () => controller.abort();
   }, []);
 
+  useEffect(() => () => abortRef.current?.abort(), []);
+
   const searchWeb = (): void => {
     if (turn.serverId === null) return;
     recordWebSearchOfferAccepted();
-    setWebStatus("sending");
-    escalateWebSearch(turn.serverId, turn.question)
-      .then((outcome) => {
-        setWebStatus(outcome.status);
-        // `M6.5-WEB-FE-191`: `outcome.answerText` is `null` whenever there
-        // was nothing to generate from (`status !== "ok"`) or the model
-        // could not be reached (`websearch.py`'s own degrade-rather-than-
-        // fail path) — either way, nothing to fold into the turn.
-        if (outcome.answerText !== null) {
-          applyWebAnswer(turn.id, outcome.answerText, outcome.citations);
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setOutcome(null);
+    setPhase("sending");
+    escalateWebSearch(turn.serverId, turn.question, controller.signal)
+      .then((result) => {
+        setOutcome(result);
+        setPhase("settled");
+        // `M6.5-WEB-FE-191`: `answerText` is `null` whenever there was
+        // nothing to generate from or the model could not be reached
+        // (`websearch.py`'s own degrade-rather-than-fail path) — either
+        // way, nothing to fold into the turn.
+        if (result.answerText !== null) {
+          applyWebAnswer(turn.id, result.answerText, result.citations);
         }
       })
-      .catch(() => setWebStatus("unavailable"));
+      .catch((error: unknown) => {
+        // Stopping mid-search (this ticket's own edge case) is not a
+        // provider failure — the request was disconnected on purpose, the
+        // grant closes the same cancelled-coroutine way a real failure
+        // would (`M6.5-WEB-SEC-187`), and the offer simply goes back to
+        // unattempted rather than reporting "unavailable" for something
+        // the user chose.
+        if (error instanceof DOMException && error.name === "AbortError") {
+          setPhase("idle");
+          return;
+        }
+        setOutcome({ status: "unavailable", reason: null, resultCount: 0, answerText: null, citations: [] });
+        setPhase("settled");
+      });
   };
 
-  const webCost =
-    webStatus === "sending"
-      ? "sending your question now"
-      : webStatus === "ok"
-        ? "sent — this question only"
-        : webStatus === "no_results"
-          ? "sent — nothing found on the web either"
-          : webStatus === "unavailable"
-            ? "could not reach the web"
-            : available === false
-              ? "not configured"
-              : "sends your question out · this question only";
+  const stopSearch = (): void => abortRef.current?.abort();
+
+  const status = webSearchDisplayStatus(phase, outcome);
+  const message = webSearchStatusMessage(status);
 
   return (
-    <div className="flex flex-wrap gap-3">
-      <EscalationOption
-        label="Search the web"
-        cost={webCost}
-        onClick={searchWeb}
-        disabled={available === false || webStatus === "sending" || turn.serverId === null}
-      />
-      <EscalationOption
-        label="Ask a larger model"
-        cost="uses credits · you have none"
-        onClick={() => {}}
-        disabled
-      />
-      {addSourceLabel !== null ? (
-        <AddSourceAction question={turn.question} label={addSourceLabel} />
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap gap-3">
+        <EscalationOption
+          label="Search the web"
+          cost={webSearchOptionCost(status, available)}
+          onClick={searchWeb}
+          disabled={available === false || status === "sending" || turn.serverId === null}
+        />
+        <EscalationOption
+          label="Ask a larger model"
+          cost="uses credits · you have none"
+          onClick={() => {}}
+          disabled
+        />
+        {addSourceLabel !== null ? (
+          <AddSourceAction question={turn.question} label={addSourceLabel} />
+        ) : null}
+      </div>
+
+      {status === "sending" ? (
+        <div className="flex items-center gap-3">
+          <p className="ask-micro" aria-live="polite">
+            {message}
+          </p>
+          <button
+            type="button"
+            onClick={stopSearch}
+            className="ask-navigates px-3 py-1"
+            style={{ border: "1px solid var(--rule-strong)", fontSize: "var(--t-ui)" }}
+          >
+            Stop
+          </button>
+        </div>
+      ) : null}
+
+      {status !== "sending" && message !== null ? (
+        <p className="ask-prose" style={{ color: "var(--muted)" }}>
+          {message}
+        </p>
+      ) : null}
+
+      {webSearchShowsClosedNote(status) ? (
+        <p className="ask-micro" style={{ color: "var(--muted)" }}>
+          {WEB_SEARCH_CLOSED_NOTE}
+        </p>
       ) : null}
     </div>
   );
