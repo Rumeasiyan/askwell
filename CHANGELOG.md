@@ -4,6 +4,27 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.7 - 2026-09-23
+
+`M7-PACK-DEPLOY-139` — the Linux installer. `Added`: `deploy/linux/install.sh` checks for or
+installs Podman (real `sudo`, allowed to prompt for a password — the fix for issue #503),
+refuses before copying anything if disk space is short or the runtime version is too old,
+detects a previous install and upgrades application files in place without touching its data,
+places the stack, the native inference binary and the probe, runs the probe, creates and
+reports the data directory (overridable via `--data-dir`/`ASKWELL_DATA_DIR`), writes an
+applications-menu entry and a `systemd --user` unit so Askwell starts with the session, writes
+an install record, and launches the desktop shell — never a browser tab. On a fresh install
+only, `lib.sh`'s new `generate_env_passwords` replaces every `change-me*` placeholder in the
+copied `.env` with a random 256-bit value (`random_hex`, via `openssl rand -hex` or
+`/dev/urandom`), fixing issue #584 — the installer previously shipped the literal placeholders
+as real database credentials on every install. `deploy/linux/uninstall.sh` removes application
+files and registration; the data directory, and therefore the user's own indexed material, is
+left alone unless `--purge-data` is given and confirmed. The one artefact this repository does
+not yet produce — the compiled Tauri shell binary — is a named, honest refusal rather than a
+silent stub or a browser fallback; full reasoning in `docs/decisions.md`, this date. 38 tests
+(`deploy/linux/install.test.sh`), plus a real end-to-end install/upgrade/uninstall run against
+this checkout using a stand-in shell binary (`docs/manual-tests/M7-PACK-DEPLOY-139.md`).
+
 ## 0.7.6 - 2026-09-22
 
 `M7-TAURI-FE-182` — native file dialogs for root registration and relocating a moved file.
