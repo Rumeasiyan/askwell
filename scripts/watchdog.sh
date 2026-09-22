@@ -175,11 +175,21 @@ fi
 # is a person's problem, not something to tidy away automatically.
 git fetch -q origin >/dev/null 2>&1
 branch=$(git branch --show-current)
-dirty=$(git status --porcelain | wc -l)
+# Only *tracked* modifications count. An untracked leftover — a fixture a
+# parked ticket generated and never committed — is not somebody's work in
+# progress, and refusing to start over one has now cost two multi-hour
+# stalls ("needs a person" every fifteen minutes while nothing was wrong).
+# A branch is cut fresh from main anyway, so a stray untracked file cannot
+# end up in a ticket's diff.
+dirty=$(git status --porcelain | grep -cv '^??')
+untracked=$(git status --porcelain | grep -c '^??')
 
 if [ "$branch" != "main" ] || [ "$dirty" -ne 0 ]; then
-  say "not starting: on '$branch' with $dirty uncommitted file(s) — needs a person"
+  say "not starting: on '$branch' with $dirty modified tracked file(s) — needs a person"
   exit 0
+fi
+if [ "${untracked:-0}" -ne 0 ]; then
+  say "starting anyway: $untracked untracked file(s) present, none of them tracked work"
 fi
 
 git reset -q --hard origin/main >/dev/null 2>&1
