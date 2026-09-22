@@ -49,7 +49,9 @@ def _patch_results(
     no config-file route in, so an HTTP-level test that needs `status == "ok"`
     has to reach past `Settings.web_search_provider` this way. `M6.5-WEB-FE-191`."""
     monkeypatch.setitem(
-        websearch._PROVIDERS, "fixture", lambda: FixtureWebSearchProvider({question: results})
+        websearch._PROVIDERS,
+        "fixture",
+        lambda _settings: FixtureWebSearchProvider({question: results}),
     )
 
 

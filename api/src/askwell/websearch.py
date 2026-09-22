@@ -15,10 +15,25 @@ wiring.
 `WebSearchProvider` is the seam; `build_web_search_provider` is the one place
 a configuration string (`Settings.web_search_provider`) selects which
 implementation answers it, so a provider going away is a change to that one
-mapping, never to the answer path. `FixtureWebSearchProvider` is the only
-implementation `M6.5-WEB-BE-185` ships — recorded results, for development
-and for the eval suite, which needs a provider that could answer without ever
-reaching the network (C1). The real one, `ddgs`, is `M6.5-WEB-BE-195`.
+mapping, never to the answer path. `FixtureWebSearchProvider` is what
+`M6.5-WEB-BE-185` shipped — recorded results, for development and for the
+eval suite, which needs a provider that could answer without ever reaching
+the network (C1). `DDGSWebSearchProvider`, `M6.5-WEB-BE-195`, is the real one.
+
+**`DDGSWebSearchProvider` is pinned to the single `"duckduckgo"` backend, not
+`ddgs`'s own `"auto"`.** `ddgs` can fan a search across several engines, each
+its own host — the egress grant this module opens (below) is scoped to one
+destination per turn, and `"auto"` would need as many as `ddgs` chose to
+try. The `duckduckgo` backend alone posts to
+`https://html.duckduckgo.com/html/`, which is exactly
+`Settings.web_search_destination_host`/`_port`'s existing value — that
+default was already the real endpoint, not a placeholder needing to change.
+Results carry only the snippet `ddgs` itself returns as `passage`; nothing
+here calls `askwell.webfetch.fetch_pages` on the result URLs, which would
+mean fetching arbitrary third-party hosts the single-destination grant
+cannot express without redesigning `askwell.egress` itself — out of this
+ticket's scope, and recorded as a follow-up (`docs/decisions.md`, this
+date).
 
 **Every invocation is on the record before it returns**, win or lose
 (`M1-ASK-OBS-041`, C6) — an offer the user accepted is never lost even if the
@@ -41,9 +56,13 @@ import asyncio
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
+from math import ceil
 from typing import Any, Literal, Protocol
+from urllib.parse import urlsplit
 
+from ddgs import DDGS
+from ddgs.exceptions import DDGSException
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -134,10 +153,73 @@ class FixtureWebSearchProvider:
         return list(self._results.get(question, ()))
 
 
+class DDGSWebSearchProvider:
+    """The real provider. `ddgs` — MIT, keyless, no account, no cost
+    (`docs/web-search.md` §6, `docs/decisions.md` 2026-08-26). Pinned to the
+    `"duckduckgo"` backend alone; see this module's own docstring for why.
+
+    `ddgs` is synchronous — `DDGS.text` runs its own thread pool internally
+    even for one backend — so `search` below runs it via `asyncio.to_thread`
+    rather than blocking the event loop `escalate_web_search` awaits it on.
+
+    The egress proxy is a forward proxy (`askwell.egress.EgressProxy`), not
+    transparent routing: a client has to be told to use it, the way
+    `askwell.webfetch`'s `httpx.AsyncClient` already is implicitly through
+    `HTTP_PROXY`/`HTTPS_PROXY` (`compose.yaml`). `ddgs` does not read those —
+    `DDGS.__init__` only ever consults its own `proxy` argument or
+    `DDGS_PROXY` — so this passes `Settings.egress_proxy_host`/`_port`
+    explicitly rather than depending on undocumented behaviour in `primp`,
+    the Rust HTTP client `ddgs` is built on.
+    """
+
+    _BACKEND = "duckduckgo"
+
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        search_fn: Callable[[str], list[dict[str, Any]]] | None = None,
+    ) -> None:
+        self._proxy = f"http://{settings.egress_proxy_host}:{settings.egress_proxy_port}"
+        self._timeout_seconds = settings.web_search_timeout_seconds
+        # Injectable for tests, which must stay network-free like every other
+        # unmarked test (`AGENTS.md` §6) — `_ddgs_text` below is what a real
+        # deployment uses, never exercised directly by this module's tests.
+        self._search_fn = search_fn or self._ddgs_text
+
+    def _ddgs_text(self, question: str) -> list[dict[str, Any]]:
+        with DDGS(proxy=self._proxy, timeout=max(1, ceil(self._timeout_seconds))) as ddgs:
+            result: list[dict[str, Any]] = ddgs.text(question, backend=self._BACKEND)
+            return result
+
+    async def search(self, question: str) -> list[WebSearchResult]:
+        try:
+            raw_results = await asyncio.to_thread(self._search_fn, question)
+        except DDGSException as error:
+            raise WebSearchUnavailable(str(error)) from error
+        retrieved_at = datetime.now(UTC)
+        results: list[WebSearchResult] = []
+        for item in raw_results:
+            href = str(item.get("href") or "").strip()
+            if not href:
+                continue
+            results.append(
+                WebSearchResult(
+                    source=urlsplit(href).netloc,
+                    title=str(item.get("title") or ""),
+                    url=href,
+                    passage=str(item.get("body") or ""),
+                    retrieved_at=retrieved_at,
+                )
+            )
+        return results
+
+
 # The one place a configuration string maps to an implementation
 # (`AGENTS.md` §4 — never a provider name anywhere else in application code).
-_PROVIDERS: dict[str, Callable[[], WebSearchProvider]] = {
-    "fixture": FixtureWebSearchProvider,
+_PROVIDERS: dict[str, Callable[[Settings], WebSearchProvider]] = {
+    "fixture": lambda _settings: FixtureWebSearchProvider(),
+    "ddgs": DDGSWebSearchProvider,
 }
 
 
@@ -161,7 +243,7 @@ def build_web_search_provider(settings: Settings) -> WebSearchProvider | None:
             f"ASKWELL_WEB_SEARCH_PROVIDER={settings.web_search_provider!r} is not a known "
             f"web search provider. Known providers: {sorted(_PROVIDERS)}."
         ) from error
-    return build()
+    return build(settings)
 
 
 @dataclass(frozen=True, slots=True)

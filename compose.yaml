@@ -296,6 +296,15 @@ services:
       # which is the correct state on a fresh install — nominating a folder
       # then tells the user exactly what to set here.
       ASKWELL_ROOTS_MOUNT: ${ASKWELL_ROOTS_MOUNT:-}
+      # Web search escalation, `M6.5-WEB-BE-195`. Empty means no provider is
+      # configured — the escalation offer reports unavailable rather than
+      # reaching anywhere. Set `ASKWELL_WEB_SEARCH_PROVIDER=ddgs` in `.env`
+      # to reach the real, keyless provider; never hardcode a value here
+      # (issue #548 — a stack must not ship fake web search by default).
+      ASKWELL_WEB_SEARCH_PROVIDER: ${ASKWELL_WEB_SEARCH_PROVIDER:-}
+      ASKWELL_WEB_SEARCH_DESTINATION_HOST: ${ASKWELL_WEB_SEARCH_DESTINATION_HOST:-html.duckduckgo.com}
+      ASKWELL_WEB_SEARCH_DESTINATION_PORT: ${ASKWELL_WEB_SEARCH_DESTINATION_PORT:-443}
+      ASKWELL_WEB_SEARCH_GRANT_TTL_SECONDS: ${ASKWELL_WEB_SEARCH_GRANT_TTL_SECONDS:-30.0}
       # Anything that respects these gets refused *with a log naming it*.
       # Anything that ignores them gets no route at all, because `internal`
       # has none — refused either way, but only the first way is diagnosable,

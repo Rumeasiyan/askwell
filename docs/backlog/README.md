@@ -103,7 +103,7 @@ Each is labelled where it appears in the tickets. None is a silent default.
 
 1. **Indexing in place means nominated root directories become known mounts.** The user nominates a root at add time; the container gets a route to that tree and nothing else. Safer than open filesystem access, and the only approach that works with a virtual machine in the path on Windows and macOS. **No screen specification covers path registration** — M1-ADD-ING-021 writes it against the existing add-source shape rather than inventing a new screen, and M7's installers handle the platform half.
 2. **The native file dialog arrives four phases after the flows that need it.** The desktop shell is Phase 6; root registration and relocating a moved file are Phase 1. Both are therefore built against a browser-provided selection step, **behind a single seam**, so M7-TAURI-FE-182 substitutes the native dialog without touching the roots registry, the hash verification or the state machine. This is stated because it is the one place where the sequence and the justification for the shell disagree: the picker is *why* the shell exists, and it is not available when the paths it justifies are first built. If either flow is built without that seam, M7-TAURI-FE-182's estimate is wrong.
-3. **The search provider and its billing model are not chosen** (`../web-search.md` §6). Everything in M6.5 is built against a fixture implementation, which is enough for the whole milestone including the eval suite — because that suite asserts a *negative*, that no search happens, and needs no provider at all. Only M6.5-WEB-BLOCKED-195 waits on the decision.
+3. **The search provider and its billing model are resolved: `ddgs`, a keyless metasearch library** (`../web-search.md` §6, `../decisions.md` 2026-08-26). Everything in M6.5 up to M6.5-WEB-BE-195 is built against a fixture implementation, which is enough for the whole milestone including the eval suite — because that suite asserts a *negative*, that no search happens, and needs no provider at all. M6.5-WEB-BE-195 wires the real one in.
 4. **Speech-to-text stays containerised on CPU.** Whisper `small` on CPU is likely adequate for the standard profile, but it is untested. M6-PERF-TEST-136 is what answers it; if transcription is the cause of a missed budget, it becomes a second native process and the installer changes. Flagged in M6-AUDIO-DEPLOY-125.
 5. **A live database connection is an authorised outbound destination, not a violation of C1.** It is the user's own database, authorised explicitly by them at connection time, limited to that destination, and counted separately in settings so the local-mode zero stays meaningful. Stated in M4-CONN-FE-096.
 6. **Passage-level highlighting on scanned pages starts at page level.** The licence decision that rules out one PDF library makes coordinate mapping harder; scans highlight the page and say so. Passage-level on scans is a later story, not a defect.
@@ -455,7 +455,6 @@ Every ticket, in dependency order within each domain. Full text lives in the mil
 
 | ID | Title | Blocked on |
 | -- | ----- | ---------- |
-| M6.5-WEB-BLOCKED-195 | Search provider and billing model | Which provider, and whether the user supplies a key or it is metered through credits. Metered is consistent with "you never hand Askwell an API key" (`../PRD.md` §6) and sequences search behind M8; a user key is cheaper and breaks that sentence |
 | M8-ONLINE-OBS-172 | Online-mode logging | What online mode transmits |
 | M8-CREDIT-BLOCKED-173 | Credit purchase | Credit pricing — rate, minimum, margin |
 | M8-CREDIT-BLOCKED-174 | Spending limit and balance | The same decision, and 173 |
@@ -573,7 +572,7 @@ Stated so it is not discovered as a surprise.
 
 - **Update delivery does not exist.** Users learn about a new version by looking. This is a blocked decision, and M7-OPS-DOC-165 names the incident-response limitation it creates rather than glossing over it.
 - **Prompt injection is mitigated, not solved**, and it is **weaker for web content than for documents**. Retrieved content is delimited, the standing statement is in the prompt, and instruction-like content is flagged in the trace — identically for a page and for a file. But the user chose their documents and did not choose a page written to contain instructions, so the residual risk is larger on the web path. Fetches are capped in count, size and time, an oversized page is dropped rather than truncated into the prompt, and nothing fetched is ever persisted into the corpus. That is a mitigation. It is documented honestly, because overclaiming here would be the same error the design warns about elsewhere.
-- **Web search has no chosen provider.** M6.5 is complete and testable against a fixture, including its eval suite, and M6.5-WEB-BLOCKED-195 is the one ticket waiting on the decision. Askwell can prove it does not search on its own long before it can search at all — which is the right order for this particular feature.
+- **Web search now has a real, keyless provider (`ddgs`, M6.5-WEB-BE-195)**, wired behind the same fixture-tested interface. Askwell proved it does not search on its own before it could search at all — which was the right order for this particular feature.
 - **Escalating a web search by voice is unspecified** and deferred with the voice work. So is re-asking an escalated question locally once the user adds a relevant document.
 - **The abstention band and the retention targets are reasoned, not measured**, and there is no telemetry to measure them with. That is an accepted handicap, carried by conservative defaults instead.
 - **Passage-level highlighting on scanned pages** starts at page level.
@@ -586,11 +585,9 @@ Free and open sets a support expectation a single maintainer cannot meet. The bo
 
 ### Tickets whose id says BLOCKED but are not
 
-`M8-CREDIT-BLOCKED-173/174` were blocked when they were written and are not any more — their `[BLOCKED]` markers now read `[UNBLOCKED 2026-08-26]`, and the runner builds them. `M7-UPDATE-BLOCKED-161/162` were rewritten as `M7-UPDATE-BE-161` and `M7-UPDATE-FE-162` once the update-delivery decision was taken on 2026-09-21 (`docs/decisions.md`).
+`M8-CREDIT-BLOCKED-173/174` were blocked when they were written and are not any more — their `[BLOCKED]` markers now read `[UNBLOCKED 2026-08-26]`, and the runner builds them. `M7-UPDATE-BLOCKED-161/162` were rewritten as `M7-UPDATE-BE-161` and `M7-UPDATE-FE-162` once the update-delivery decision was taken on 2026-09-21 (`docs/decisions.md`). `M6.5-WEB-BLOCKED-195` was rewritten as `M6.5-WEB-BE-195` the same way, once the provider decision (`ddgs`) was taken on 2026-08-26 (`docs/decisions.md`) — this file's own earlier references to `M6.5-WEB-BLOCKED-195` have been updated to match (issue #529).
 
 **The ids were not renamed.** Every dependency field in 198 tickets refers to tickets by id, and renaming four of them to fix a cosmetic inaccuracy would break references across ten files to remove a word. The marker is what the runner reads; the id is only a name.
-
-`M6.5-WEB-BLOCKED-195` is genuinely still blocked, on the web search provider decision.
 
 ### The copy-review marker
 
