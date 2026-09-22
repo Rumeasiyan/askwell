@@ -4,6 +4,64 @@ Append-only. **Newest first.** Never edit an entry to change its meaning — if 
 
 **Bar for an entry:** something a competent person would later ask *"why is it like this?"* about. Architecture changes, dependency choices, resolved `docs/PRD.md` §11 questions, reversals. **Not** routine implementation choices — those are visible in the diff.
 
+## 2026-09-23 — The Windows installer checks virtualisation before Podman, and verifies its own copies rather than trusting them
+
+**Decision:** `deploy/windows/install.ps1`/`lib.ps1`/`uninstall.ps1`/`install.test.ps1`
+(`M7-PACK-DEPLOY-140`) mirror `deploy/linux/install.sh`'s shape — same artefact layout, same
+refuse-before-copy discipline, same `.env` secrets fix as issue #584 — with two things Linux's
+installer never has to do. First, virtualisation is checked *before* Podman: Podman on Windows
+only runs containers inside a WSL2 virtual machine, so "is the runtime installed" has to answer
+"can a runtime exist on this machine at all" first. That check parses `systeminfo`'s own
+"Hyper-V Requirements" text block rather than a `Get-ComputerInfo` CIM property — the block's
+two wordings (`Virtualization Enabled In Firmware: Yes/No`, or `A hypervisor has been
+detected...` once one is already running) are documented, stable `systeminfo` output across
+Windows versions; the CIM property names this file would otherwise depend on (`HyperVisorPresent`,
+`HyperVRequirementVirtualizationFirmwareEnabled`) could not be verified against an installed
+Windows machine from this build host, and AGENTS.md's registry-verification rule (§4) reads the
+same for an unverifiable API as for an unverifiable model name — don't assert it, use what can
+be checked. Second, every file this installer copies is checked with `Test-Path` immediately
+after the copy, not assumed to have landed: a plain `Copy-Item` returning without error and an
+antivirus product lifting the file a moment later look identical from the installer's own
+control flow, and the ticket's own acceptance criterion — a quarantined binary "produces a
+message naming the file and the likely cause" — cannot be met by trusting the copy call. Disk
+space, path-length (Windows' 260-character `MAX_PATH`) and admin-rights checks follow the same
+refuse-before-copying discipline `install.sh` already established. Registered-root path
+handling across the WSL2 boundary — a changed drive letter reporting a root unavailable, a path
+past `MAX_PATH` failing per file — is **not** new code: `api/src/askwell/roots.py`'s `probe()`
+and `extract_common`'s per-file `OSError` handling were written platform-agnostically in
+`M1-ADD-ING-021` and already produce the right behaviour; this ticket exercises them rather
+than duplicating them, and `docs/states-and-edge-cases.md` §3 now names the Windows-specific
+triggers for both rows explicitly rather than leaving them implicit.
+
+**Why:** the alternative for virtualisation detection was `Get-ComputerInfo`'s `HyperV*`
+properties, which would have been shorter code but rested on property names recalled rather
+than verified — exactly the failure mode AGENTS.md §4 names by its own history ("correct model
+names ... replaced with older ones," issues #24/#25). `systeminfo` text parsing is more code
+and one more subprocess call, but every word of it is checkable against Microsoft's own
+long-stable output format, and the unit tests (`install.test.ps1`) assert against fixture text
+rather than a live machine either way — so the extra robustness cost nothing at test time and
+removed a real risk at install time. For the post-copy verification: the cheaper alternative
+was to only check quarantine reactively, after a user reports a launch failure — rejected
+because the ticket's acceptance criterion is explicitly about *this* installer producing *this*
+message at *install* time, not about a later support conversation.
+
+**Consequences:** `deploy/windows/lib.ps1`'s `Test-AskwellVirtualizationEnabled` takes a
+`systeminfo` string rather than a live probe object, which is what makes it unit-testable with
+fixture text on this Linux build host — the same reason `deploy/linux/lib.sh`'s
+`parse_podman_version` takes a raw version string rather than shelling out itself. The real
+end-to-end walkthrough (virtualisation-disabled refusal, quarantine message, WSL2-boundary
+citation, drive-letter-changed unavailable state, all against a real Windows machine) is
+unverified from this build host — issue #590, filed the same way #559 already tracks the
+identical gap for Linux plus the still-missing `askwell-shell.exe` release pipeline that blocks
+both platforms' installers from a full cold start. PowerShell 5.1 (Windows' default) versus
+PowerShell 7 (what this suite ran under) is an open compatibility question, folded into #590
+rather than filed separately since it needs the same Windows machine to resolve.
+
+**Refs:** `deploy/windows/install.ps1`, `lib.ps1`, `uninstall.ps1`, `install.test.ps1`;
+`docs/manual-tests/M7-PACK-DEPLOY-140.md`; `docs/states-and-edge-cases.md` §3; issue #584 (the
+placeholder-password fix, extended to Windows here); issue #559 (the missing release pipeline,
+unchanged, now also named as blocking Windows); issue #590 (this ticket's own walkthrough gap).
+
 ## 2026-09-23 — The Linux installer is a rebuild of a closed PR, carrying its fixes forward and generating real database passwords
 
 **Decision:** `deploy/linux/install.sh`/`lib.sh`/`uninstall.sh`/`install.test.sh`

@@ -4,6 +4,33 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.8 - 2026-09-23
+
+`M7-PACK-DEPLOY-140` — the Windows installer. `Added`: `deploy/windows/install.ps1` checks
+virtualisation is enabled before Podman — WSL2 has no native Windows container runtime, so a
+missing firmware setting is refused first, naming it, since Askwell cannot enable it itself —
+then checks for or installs Podman Desktop via `winget` (refusing clearly, not silently, when
+the account has no path to administrator rights, which WSL2 registration needs), refuses
+before copying if disk space is short, the runtime is too old, or the computed install path
+would exceed Windows' `MAX_PATH` (260 characters), detects a previous install and upgrades in
+place without touching its data, places the stack, the native inference supervisor and the
+probe, verifies each copied file survived (naming antivirus quarantine as the likely cause,
+alongside the file, when one does not), runs the probe, writes a Start-menu entry and a
+Startup-folder shortcut so Askwell starts with the session, registers an uninstall entry under
+`HKCU:\...\Uninstall\Askwell`, writes an install record, and launches the desktop shell — never
+a browser tab. `lib.ps1`'s `Set-AskwellEnvPasswords` replaces every `change-me*` `.env`
+placeholder with a random 256-bit value on a fresh install only, the Windows side of issue
+#584's fix. `deploy/windows/uninstall.ps1` removes the Start-menu entry, the Startup shortcut
+and the uninstall registry entry, leaves the data directory alone unless `-PurgeData` is given
+(which still prompts), and runs `podman compose down` first when a stack is present.
+Registered-root path handling across the WSL2 boundary — a drive letter that changed between
+sessions reporting the root unavailable rather than every file missing, and a path past
+`MAX_PATH` failing per file rather than the batch — is existing `M1-ADD-ING-021` logic,
+exercised here rather than rebuilt (`docs/states-and-edge-cases.md` §3). No model is fetched.
+`Refs #590` (the real cold-start walkthrough needs a Windows machine this build host does not
+have; #559, the missing shell-binary release pipeline, applies to Windows exactly as it already
+did to Linux).
+
 ## 0.7.7 - 2026-09-23
 
 `M7-PACK-DEPLOY-139` — the Linux installer. `Added`: `deploy/linux/install.sh` checks for or
