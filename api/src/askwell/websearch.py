@@ -53,6 +53,7 @@ the mechanism, not by trusting this module's docstring.
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -76,6 +77,7 @@ from askwell.config import ConfigurationError, Settings
 from askwell.db.engine import session_scope
 from askwell.inference.client import InferenceClient, InferenceFailed, InferenceUnavailable
 from askwell.logging import get_logger
+from askwell.traces import TraceRing
 
 # `askwell.agent.compose` imports `WebSearchResult` from this module — a
 # module-level import the other way would be circular, since it would run
@@ -247,6 +249,25 @@ def build_web_search_provider(settings: Settings) -> WebSearchProvider | None:
 
 
 @dataclass(frozen=True, slots=True)
+class WebSearchDrop:
+    """One result the provider returned that never became usable — the
+    trace's own "which were dropped with the cap that dropped them"
+    (`M6.5-WEB-OBS-193`). `reason` is always `"no usable passage"` today:
+    `askwell.webfetch.fetch_pages`'s own byte/count/timeout caps
+    (`M6.5-WEB-BE-188`) never run in the live escalation path — `ddgs`'s
+    `"auto"` backend and the result URLs it would fetch both need a
+    destination list the single-string egress grant cannot express
+    (`docs/decisions.md`, 2026-09-22), so a real cap-driven drop is not
+    reachable here until issue #551 lands. This still satisfies the trace's
+    own job — recording what actually happened, not what the caps *would*
+    do once wired in.
+    """
+
+    url: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class WebSearchOutcome:
     """What one escalation produced, distinguishing every state a caller
     needs to render distinctly rather than folding them into "no results"."""
@@ -257,6 +278,10 @@ class WebSearchOutcome:
     """Set only for `"unavailable"` — not configured, unreachable, or timed
     out. Never shown to the user as-is; the surface says the provider could
     not be reached, not whose fault it was (`docs/web-search.md` §6)."""
+    dropped: tuple[WebSearchDrop, ...] = ()
+    """Every result the provider returned but that never became `results` —
+    `M6.5-WEB-OBS-193`'s own trace edge case: "a dropped page is never
+    invisible.\""""
 
 
 def _search_destination(settings: Settings) -> str | None:
@@ -337,11 +362,19 @@ async def escalate_web_search(
                 # Dropped, not rendered as an empty citation — this ticket's
                 # own edge case. A result kept with an unresolvable URL is
                 # untouched here; only a missing passage disqualifies it.
+                # `M6.5-WEB-OBS-193`: recorded as a `WebSearchDrop` rather
+                # than discarded outright, so the escalation's trace can
+                # name it — "a dropped page is never invisible."
                 usable = tuple(item for item in raw_results if item.passage.strip())
+                dropped = tuple(
+                    WebSearchDrop(url=item.url, reason="no usable passage")
+                    for item in raw_results
+                    if not item.passage.strip()
+                )
                 outcome = (
-                    WebSearchOutcome(status="ok", results=usable)
+                    WebSearchOutcome(status="ok", results=usable, dropped=dropped)
                     if usable
-                    else WebSearchOutcome(status="no_results")
+                    else WebSearchOutcome(status="no_results", dropped=dropped)
                 )
     finally:
         if grant_opened:
@@ -516,6 +549,113 @@ async def compose_and_generate_web_answer(
     return completion.text, records
 
 
+def web_search_trace_steps(
+    question: str, provider_name: str, outcome: WebSearchOutcome
+) -> list[dict[str, Any]]:
+    """The escalation's own steps, in the order `docs/web-search.md` §2's
+    flow actually happened: acceptance, the search, every kept result, every
+    drop (`M6.5-WEB-OBS-193`).
+
+    Appended to a turn's existing `trace["steps"]`, never replacing it — the
+    turn's own `retrieve`/`abstain` step is already first in that list, so
+    the escalation's steps landing after it is what makes "the abstention
+    precedes the acceptance" a property `../trace.md` readers see for free,
+    not a rule this function has to assert (`docs/web-search.md` §1, C10).
+
+    Each kept result is flagged with the identical heuristic a document
+    candidate goes through — `askwell.agent.compose.flag_injection_text`,
+    imported here rather than at module level to avoid the circular import
+    this module's own docstring already explains for
+    `compose_and_generate_web_answer`. The flag is carried on the step, never
+    used to drop or alter the result — flagging is informational
+    (`docs/ux/web-search.md` §4's "Instruction-like content fetched" state).
+    """
+    from askwell.agent.compose import flag_injection_text
+
+    steps: list[dict[str, Any]] = [
+        {"kind": "web_search_accept", "question": question},
+        {
+            "kind": "web_search",
+            "provider": provider_name,
+            "status": outcome.status,
+            "reason": outcome.reason,
+            "result_count": len(outcome.results),
+        },
+    ]
+    for result in outcome.results:
+        injection_flagged, injection_patterns = flag_injection_text([result.passage])
+        steps.append(
+            {
+                "kind": "web_search_fetch",
+                "url": result.url,
+                "source": result.source,
+                "title": result.title,
+                "retrieved_at": result.retrieved_at.isoformat(),
+                "injection_flagged": injection_flagged,
+                "injection_patterns": list(injection_patterns),
+            }
+        )
+    for drop in outcome.dropped:
+        steps.append({"kind": "web_search_drop", "url": drop.url, "reason": drop.reason})
+    return steps
+
+
+async def _record_escalation_trace(
+    settings: Settings,
+    db: AsyncSession,
+    *,
+    message_id: uuid.UUID,
+    trace: dict[str, Any],
+    web_steps: list[dict[str, Any]],
+) -> None:
+    """Merge `web_steps` into `trace` and write both stores it belongs to —
+    the file ring buffer (fail-open, `M0-DATA-OBS-015`) and `messages.trace`
+    itself, the same two-write shape `askwell.ask._run_generation` already
+    uses for the turn's own trace. Deferred imports of `askwell.ask`'s
+    private helpers: `askwell.ask` transitively imports this module already
+    (via `askwell.agent.compose`), so importing back at module level here
+    would be circular — the same reasoning `compose_and_generate_web_answer`
+    already documents for its own deferred `askwell.agent.compose` import.
+
+    A trace that could not be written does not fail the escalation —
+    `TraceRing.write` cannot raise — but the `messages.trace` `UPDATE` runs
+    in the caller's own transaction and fails it exactly as any other write
+    in that transaction would, which is correct: the ring buffer file is the
+    thing this ticket's "fails open" edge case names, not the database
+    column the answer itself already depends on.
+    """
+    from askwell.ask import _bound_trace_steps, _trim_rotated_traces
+
+    existing_patterns = trace.get("injection_patterns")
+    merged_patterns = set(existing_patterns) if isinstance(existing_patterns, list) else set()
+    web_flagged = False
+    for step in web_steps:
+        if step.get("kind") == "web_search_fetch" and step.get("injection_flagged"):
+            web_flagged = True
+            merged_patterns.update(step.get("injection_patterns") or ())
+
+    all_steps = list(trace.get("steps", [])) + web_steps
+    bounded_steps, steps_truncated = _bound_trace_steps(all_steps)
+    updated_trace = {
+        **trace,
+        "steps": bounded_steps,
+        "steps_truncated": steps_truncated or bool(trace.get("steps_truncated")),
+        "injection_flagged": bool(trace.get("injection_flagged")) or web_flagged,
+        "injection_patterns": sorted(merged_patterns),
+    }
+
+    rotated = (
+        TraceRing(settings.trace_dir, settings.trace_max_bytes)
+        .write(message_id, updated_trace)
+        .dropped
+    )
+    await _trim_rotated_traces(db, rotated)
+    await db.execute(
+        text("UPDATE messages SET trace = CAST(:trace AS jsonb) WHERE id = :id"),
+        {"trace": json.dumps(updated_trace), "id": message_id},
+    )
+
+
 class WebEscalateRequest(BaseModel):
     """The question the client is escalating — this turn's own question,
     carried back rather than re-read from `messages`, since the row this
@@ -674,6 +814,17 @@ def register_web_search(
                             }
                             for record_ in offset_records
                         ]
+
+            # `M6.5-WEB-OBS-193`: the escalation's own steps, appended after
+            # whatever this turn's own generation already wrote — the
+            # abstain/sql step from before this endpoint ever ran, so its
+            # position ahead of these in `trace["steps"]` is what makes the
+            # escalation-not-fallback rule readable from the trace alone.
+            provider_name = settings.web_search_provider or "none"
+            web_steps = web_search_trace_steps(body.question, provider_name, outcome)
+            await _record_escalation_trace(
+                settings, db, message_id=message_id, trace=trace, web_steps=web_steps
+            )
 
         return JSONResponse(
             {
