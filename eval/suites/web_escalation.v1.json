@@ -1,0 +1,78 @@
+{
+  "name": "web_escalation.v1",
+  "category": "web_escalation",
+  "pass_bar": 1.0,
+  "mode": "web_escalation",
+  "tasks": [
+    {
+      "id": "web-esc-plain-ceo",
+      "prompt": "Who is Meridian Loom's CEO?",
+      "scorer": "abstains",
+      "expected": null,
+      "web_escalation_setup": "plain"
+    },
+    {
+      "id": "web-esc-plain-health-plan",
+      "prompt": "What health insurance plan does Meridian Loom provide to employees?",
+      "scorer": "abstains",
+      "expected": null,
+      "web_escalation_setup": "plain"
+    },
+    {
+      "id": "web-esc-near-miss-termination-notice",
+      "prompt": "How many days' notice must Meridian Loom give an employee before terminating them?",
+      "scorer": "abstains",
+      "expected": null,
+      "web_escalation_setup": "plain"
+    },
+    {
+      "id": "web-esc-near-miss-warranty",
+      "prompt": "What is the warranty period for the Loomwear Sensor Mk2?",
+      "scorer": "abstains",
+      "expected": null,
+      "web_escalation_setup": "plain"
+    },
+    {
+      "id": "web-esc-half-covered-vpn",
+      "prompt": "How long does a VPN access token last for a Meridian Loom contractor's guest account?",
+      "scorer": "abstains",
+      "expected": null,
+      "web_escalation_setup": "plain"
+    },
+    {
+      "id": "web-esc-repeated-question",
+      "prompt": "Where will Meridian Loom's staff retreat be held next year?",
+      "scorer": "abstains",
+      "expected": null,
+      "web_escalation_setup": "repeat"
+    },
+    {
+      "id": "web-esc-after-accepted-escalation",
+      "prompt": "What was Meridian Loom's total revenue in Q2?",
+      "scorer": "abstains",
+      "expected": null,
+      "web_escalation_setup": "after_accept"
+    },
+    {
+      "id": "web-esc-after-stop",
+      "prompt": "What is Meridian Loom's password policy for its customer-facing web portal?",
+      "scorer": "abstains",
+      "expected": null,
+      "web_escalation_setup": "after_stop"
+    },
+    {
+      "id": "web-esc-retrieval-error",
+      "prompt": "What is the minimum bug bounty payout for a high-severity finding at Meridian Loom?",
+      "scorer": "abstains",
+      "expected": null,
+      "web_escalation_setup": "retrieval_error"
+    },
+    {
+      "id": "web-esc-plain-sick-leave",
+      "prompt": "What is Meridian Loom's policy on sick leave?",
+      "scorer": "abstains",
+      "expected": null,
+      "web_escalation_setup": "plain"
+    }
+  ]
+}

@@ -36,6 +36,7 @@ from eval.runner import HarnessError, run_suite_sync  # noqa: E402
 from eval.sql_eval import run_sql_safety_suite_sync, run_sql_suite_sync  # noqa: E402
 from eval.suite import SuiteError, load_suite, resolve_suite_path  # noqa: E402
 from eval.tool_selection import run_tool_selection_suite_sync  # noqa: E402
+from eval.web_escalation import run_web_escalation_suite_sync  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -81,6 +82,8 @@ def main(argv: list[str] | None = None) -> int:
             report = run_sql_safety_suite_sync(settings, suite)
         elif suite.mode == "tool_selection":
             report = run_tool_selection_suite_sync(settings, suite)
+        elif suite.mode == "web_escalation":
+            report = run_web_escalation_suite_sync(settings, suite)
         else:
             report = run_suite_sync(settings, suite)
     except HarnessError as error:

@@ -2,9 +2,9 @@
 #
 # The 165-task gate needs a model loaded and minutes of CPU/GPU time, which
 # `ci.yml`'s hosted runners do not comfortably give it — that workflow stays
-# fast on every push on purpose. This one runs the seven suites that exist
-# today (`docs/build-plan.md`'s remaining category, web escalation
-# discipline, arrives with M6) on the one machine that actually has all three model
+# fast on every push on purpose. This one runs all eight suites
+# (`docs/build-plan.md`'s quality gate) on the one machine that actually has
+# all three model
 # weights on disk already: per `AGENTS.md` §1, "one user, one machine" — the
 # self-hosted runner *is* the maintainer's own machine, registered with the
 # `askwell` label, reusing whatever `.env` and Compose stack are already
@@ -68,6 +68,10 @@ on:
   #     - "api/src/askwell/agent/loop.py"
   #     - "api/src/askwell/agent/tools.py"
   #     - "api/src/askwell/agent/prompts/tool_loop.v1.md"
+  #     - "eval/web_escalation.py"
+  #     - "api/src/askwell/websearch.py"
+  #     - "api/src/askwell/egress.py"
+  #     - "api/src/askwell/network.py"
   # pull_request:
   #   paths: *eval-paths
 
@@ -80,17 +84,17 @@ permissions:
 
 jobs:
   eval:
-    name: Eval gate — grounded QA, abstention, conflicting sources, memory application, text-to-SQL, SQL safety, tool selection
+    name: Eval gate — grounded QA, abstention, conflicting sources, memory application, text-to-SQL, SQL safety, tool selection, web escalation discipline
     runs-on: [self-hosted, askwell]
     # A runner that never picks this job up must fail loud rather than hang
     # a PR's checks forever — the "runner offline" edge case the ticket
-    # names. 45 minutes covers seven suites' worth of a 4B model with room
-    # to spare — the tool-selection suite's own multi-iteration loop turns
-    # cost more per task than a single completion, hence the ten extra
-    # minutes over the six-suite figure; a genuinely offline runner never
-    # leaves "queued", so this bounds that case to a clear timeout instead
-    # of an indefinite wait.
-    timeout-minutes: 45
+    # names. 50 minutes covers all eight suites' worth of a 4B model with
+    # room to spare — the tool-selection suite's own multi-iteration loop
+    # turns cost more per task than a single completion, and the new web
+    # escalation suite drives several multi-turn conversations per task;
+    # a genuinely offline runner never leaves "queued", so this bounds that
+    # case to a clear timeout instead of an indefinite wait.
+    timeout-minutes: 50
 
     env:
       ASKWELL_PROFILE: light
@@ -218,7 +222,7 @@ jobs:
             echo "date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo
           } >> "$GITHUB_STEP_SUMMARY"
-          for SUITE in grounded_qa.v1 abstention.v1 conflicting_sources.v1 memory_apply.v1 text_to_sql.v1 sql_safety.v1 tool_selection.v1; do
+          for SUITE in grounded_qa.v1 abstention.v1 conflicting_sources.v1 memory_apply.v1 text_to_sql.v1 sql_safety.v1 tool_selection.v1 web_escalation.v1; do
             echo "::group::$SUITE"
             OUTPUT=$(scripts/dev.sh eval --suite "$SUITE" 2>&1)
             CODE=$?

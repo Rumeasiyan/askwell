@@ -58,6 +58,16 @@ class Task:
     than one tool, and those tools must be dispatched in the same iteration
     (concurrently), not across separate turns — the ticket's own "emitting
     independent calls in parallel" behaviour, checked rather than assumed."""
+    web_escalation_setup: str = "plain"
+    """`mode: "web_escalation"` only: which way of tempting an automatic
+    fallback this task exercises (`M6.5-EVAL-TEST-194`'s own enumerated
+    edge cases). `"plain"` covers a near-miss or half-covered corpus, since
+    both take the same below-threshold abstain path; `"repeat"` asks the
+    same question twice in one conversation; `"after_accept"` asks a second
+    question in a conversation where an earlier question's escalation was
+    already accepted; `"after_stop"` asks a question in a conversation
+    whose previous turn was stopped; `"retrieval_error"` asks a question
+    while `askwell.ask`'s own retrieval call is made to fail."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,7 +107,12 @@ class Suite:
     (`M5-EVAL-TEST-124`). `"sql_safety"` runs
     `eval.sql_eval.run_sql_safety_suite` — the same generate/validate path,
     scored on whether `askwell.sql.validate.validate_query` (C2) ever
-    accepts a candidate a task expects to be refused."""
+    accepts a candidate a task expects to be refused. `"web_escalation"`
+    runs `eval.web_escalation.run_web_escalation_suite` — the same real
+    `askwell.ask` path over unanswerable questions, scored pass/fail on
+    whether the turn ever escalates to the web on its own, read from the
+    egress proxy's own permitted-request counter rather than trusted from
+    the application (C10, `M6.5-EVAL-TEST-194`)."""
 
     @property
     def strict(self) -> bool:
@@ -105,6 +120,10 @@ class Suite:
 
 
 _DEFAULT_TIMEOUT_SECONDS = 60.0
+
+_WEB_ESCALATION_SETUPS = frozenset(
+    {"plain", "repeat", "after_accept", "after_stop", "retrieval_error"}
+)
 
 
 def load_suite(path: Path) -> Suite:
@@ -146,10 +165,11 @@ def load_suite(path: Path) -> Suite:
         "sql",
         "sql_safety",
         "tool_selection",
+        "web_escalation",
     ):
         raise SuiteError(
             f"{path}: unknown mode {mode!r}. Available: completion, grounded, abstain, "
-            "conflict, memory, sql, sql_safety, tool_selection"
+            "conflict, memory, sql, sql_safety, tool_selection, web_escalation"
         )
     if mode == "grounded":
         for task in tasks:
@@ -179,6 +199,14 @@ def load_suite(path: Path) -> Suite:
                     f"{path}: task {task.id!r} sets 'require_parallel' but no accepted "
                     "route in 'expected_tools' has more than one tool"
                 )
+    if mode == "web_escalation":
+        for task in tasks:
+            if task.web_escalation_setup not in _WEB_ESCALATION_SETUPS:
+                raise SuiteError(
+                    f"{path}: task {task.id!r} has web_escalation_setup "
+                    f"{task.web_escalation_setup!r}, must be one of "
+                    f"{sorted(_WEB_ESCALATION_SETUPS)}"
+                )
 
     return Suite(
         name=str(raw["name"]),
@@ -205,6 +233,7 @@ def _load_task(path: Path, entry: Any) -> Task:
         position_values=tuple(entry.get("position_values", ())),
         expected_tool_routes=tuple(tuple(route) for route in entry.get("expected_tools", ())),
         require_parallel=bool(entry.get("require_parallel", False)),
+        web_escalation_setup=str(entry.get("web_escalation_setup", "plain")),
     )
 
 
