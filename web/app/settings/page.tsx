@@ -3,9 +3,10 @@ import { HardwareProfile } from "@/components/settings/hardware-profile";
 import { PrivacySecurity } from "@/components/settings/privacy-security";
 import { RetrievalThresholdControl } from "@/components/settings/retrieval-threshold";
 import { Storage } from "@/components/settings/storage";
+import { VerifyLog } from "@/components/settings/verify-log";
 
 /**
- * Settings — five real sections so far.
+ * Settings — six real sections so far.
  *
  * The folders Askwell may read arrive here in M1 because that is where the
  * cold-start walkthrough looks for them: nominate a folder while adding a
@@ -29,10 +30,15 @@ import { Storage } from "@/components/settings/storage";
  * count (never a toggle), and connected databases, which moves here from
  * its previous standalone placement because its read-only status is exactly
  * the "permitted destination, shown separately from the local-mode zero"
- * this section exists to draw. The rest of the screen is still its empty
- * state, because `docs/states-and-edge-cases.md` requires every surface to
- * have one and a route stub with nothing in it teaches the next person that
- * empty states are optional.
+ * this section exists to draw. Your data arrives with `M7-LOG-FE-156`
+ * (`web/components/settings/verify-log.tsx`) — only "verify the log" of
+ * `docs/ux/settings.md` §6's six actions: export everything, export the log
+ * alone, delete a source, delete all memory and reset Askwell have no
+ * backend yet and are not stubbed here, the same honesty `storage.tsx`
+ * already uses for export and prune. The rest of the screen is still its
+ * empty state, because `docs/states-and-edge-cases.md` requires every
+ * surface to have one and a route stub with nothing in it teaches the next
+ * person that empty states are optional.
  */
 export default function SettingsPage() {
   return (
@@ -79,6 +85,11 @@ export default function SettingsPage() {
       <Storage />
 
       <PrivacySecurity />
+
+      <section className="flex flex-col gap-3">
+        <h2 style={{ fontSize: "var(--t-title)", lineHeight: "var(--t-title-lh)" }}>Your data</h2>
+        <VerifyLog />
+      </section>
     </div>
   );
 }

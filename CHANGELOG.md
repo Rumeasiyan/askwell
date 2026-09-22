@@ -4,6 +4,31 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.3 - 2026-09-22
+
+`M7-LOG-FE-156` — the settings-screen verifier `askwell.audit`'s own docstring named as
+missing. `Added`: `GET /log-verify` (`askwell.log_verify`) walks the hash chain in both audit
+stores in one request and reports, per store, whether it is intact or, if not, the first
+broken record's id and its date — the report `askwell-verify` (the CLI) already gave, now
+reachable from settings. A run is itself recorded as a `log_verification_run` decision, naming
+either store's break where one exists. `askwell.audit.VerificationResult` gained `broken_at`
+(the broken record's own `occurred_at`), used by both the new endpoint and the CLI's own
+`__str__`. New `web/components/settings/verify-log.tsx`: a "Verify the log" action, an
+elapsed-time counter and a Stop button that aborts the in-flight request while checking, and a
+plain report per store — "chain intact" or "chain broken", the record and its date, and
+explanatory copy stating that Askwell never rewrites history and that a break indicates
+something outside Askwell changed the file. The word "immutable" appears nowhere in either the
+backend or the new component. A chain that starts after a legitimate prune (`M7-LOG-BE-154`)
+reports intact with the boundary explained, not as a break. No job table: unlike export and
+prune, a verification touches nothing and has nothing to resume, so the read is synchronous and
+"interruptible" means aborting the wait, not cancelling a write. 21 new tests
+(`api/tests/test_log_verify.py`, `requires_db`). Verified against the real, rebuilt, running
+compose stack: `GET /log-verify` over HTTP with a live session cookie, cross-checked against
+`askwell-verify` run inside the `api` container — both reported the same pre-existing break in
+this machine's own `audit_decisions` chain (record `fa563570-…`, altered before this ticket,
+unrelated to it and not touched here), naming the same record and date; the settings bundle was
+confirmed to contain the new component and serve it after a rebuild.
+
 ## 0.7.2 - 2026-09-22
 
 `M7-LOG-BE-154` — interaction retention window and prune. `Added`: `askwell.log_prune` deletes
