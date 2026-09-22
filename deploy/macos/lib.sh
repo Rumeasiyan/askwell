@@ -289,3 +289,99 @@ launch_agent_plist_contents() {
 </plist>
 EOF
 }
+
+# The platform half of M7-PACK-DEPLOY-142: the container stack and native
+# inference process, each as their own LaunchAgent, so both are running for
+# the session whether or not the app itself is ever opened — the shell's own
+# supervisor (M7-TAURI-DEPLOY-183) attaches to whatever is already up via
+# `state.json`'s heartbeat rather than racing to start a second copy.
+#
+# `podman compose up -d` returns immediately, leaving `KeepAlive` nothing to
+# watch, so `ProgramArguments` runs compose in the foreground instead —
+# `--abort-on-container-exit` makes that foreground process exit non-zero the
+# moment any container dies, which is what `KeepAlive`/`SuccessfulExit=false`
+# needs in order to restart it.
+#
+# Known, disclosed limitation (issue #607, decided in docs/decisions.md this
+# date): unlike systemd's `StartLimitBurst`, launchd has no configurable cap
+# on `KeepAlive` restarts — a permanently failing agent is retried
+# indefinitely, throttled only by launchd's own undocumented back-off, and
+# never reaches a distinct `failed` state the way the Linux unit or the
+# Windows scheduled task does. The decision was to accept that asymmetry
+# rather than add a wrapper script that duplicates the backoff logic
+# `deploy/inference/askwell-inference` already has, and to let
+# `state.json`'s heartbeat age be the one detection path every platform's
+# repair surface (M7-PACK-FE-143) can share.
+launch_agent_stack_plist_contents() {
+  local podman_bin="$1" compose_path="$2" env_path="$3" working_dir="$4" log_dir="$5"
+  cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.askwell.stack</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$podman_bin</string>
+    <string>compose</string>
+    <string>-f</string>
+    <string>$compose_path</string>
+    <string>--env-file</string>
+    <string>$env_path</string>
+    <string>up</string>
+    <string>--abort-on-container-exit</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>$working_dir</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>$log_dir/askwell-stack.log</string>
+  <key>StandardErrorPath</key>
+  <string>$log_dir/askwell-stack.log</string>
+</dict>
+</plist>
+EOF
+}
+
+# The native inference supervisor (`deploy/inference/askwell-inference`,
+# M0-MODEL-DEPLOY-018) as its own LaunchAgent. That script already retries a
+# failed llama.cpp spawn on its own five-step backoff and records a reason in
+# `state.json` when it gives up; this agent is a different, rarer layer above
+# it — restarting the outer Python process itself if something kills it
+# outright, which the script's own retry loop cannot cover because there is
+# no script left running to do it.
+launch_agent_inference_plist_contents() {
+  local exec_path="$1" log_dir="$2"
+  cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.askwell.inference</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$exec_path</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>$log_dir/askwell-inference.log</string>
+  <key>StandardErrorPath</key>
+  <string>$log_dir/askwell-inference.log</string>
+</dict>
+</plist>
+EOF
+}

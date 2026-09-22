@@ -134,6 +134,29 @@ $msg = Get-AskwellQuarantineMessage 'askwell-inference'
 if ($msg -match 'askwell-inference') { Test-Ok 'quarantine message names the missing file' } else { Test-Bad 'quarantine message names the missing file' $msg 'askwell-inference' }
 if ($msg -match 'quarantine') { Test-Ok 'quarantine message names the likely cause' } else { Test-Bad 'quarantine message names the likely cause' $msg 'quarantine' }
 
+# --- M7-PACK-DEPLOY-142: stack + inference scheduled task helpers ------------------
+# NOTE: this build host has no pwsh (PowerShell 7) to actually run this file
+# (see docs/decisions.md, this date, and issue #606) — these assertions are
+# written and reviewed, not executed here, the same disclosed gap as the rest
+# of this suite's newest additions.
+Test-Check 'stack task has a stable name' (Get-AskwellStackTaskName) 'AskwellStack'
+Test-Check 'inference task has a stable, distinct name' (Get-AskwellInferenceTaskName) 'AskwellInference'
+
+$stackArgs = Get-AskwellStackTaskArguments -ComposePath 'C:\Askwell\compose.yaml' -EnvPath 'C:\Askwell\.env'
+if ($stackArgs -match 'compose -f "C:\\Askwell\\compose\.yaml" --env-file "C:\\Askwell\\\.env" up') {
+    Test-Ok 'stack task arguments run compose against the real files'
+} else {
+    Test-Bad 'stack task arguments run compose against the real files' $stackArgs 'compose -f "..." --env-file "..." up'
+}
+if ($stackArgs -match '--abort-on-container-exit') {
+    Test-Ok 'stack task arguments run compose in the foreground (--abort-on-container-exit)'
+} else {
+    Test-Bad 'stack task arguments run compose in the foreground (--abort-on-container-exit)' $stackArgs '--abort-on-container-exit'
+}
+
+$inferenceArgs = Get-AskwellInferenceTaskArguments -ScriptPath 'C:\Askwell\askwell-inference'
+Test-Check 'inference task arguments name the real supervisor script' $inferenceArgs '"C:\Askwell\askwell-inference"'
+
 Remove-Item -Path $tmp -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host ''

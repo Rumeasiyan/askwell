@@ -4,6 +4,35 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.13 - 2026-09-23
+
+`M7-PACK-DEPLOY-142` — the platform half of supervision: the container stack and the native
+inference process, each registered with the machine's own service mechanism so both start with
+the session and keep running whether or not the desktop shell is ever opened. `Added`: on Linux,
+`deploy/linux/lib.sh` gains `systemd_stack_unit_contents`/`systemd_inference_unit_contents` —
+two `systemd --user` units, `podman compose up --abort-on-container-exit` and
+`askwell-inference` run in the foreground so `Restart=on-failure` has a process to watch, capped
+by `StartLimitIntervalSec=300`/`StartLimitBurst=5` so a restart loop settles into a real `failed`
+unit state rather than retrying forever. On macOS, `deploy/macos/lib.sh` gains
+`launch_agent_stack_plist_contents`/`launch_agent_inference_plist_contents` — two LaunchAgents
+with `KeepAlive`/`SuccessfulExit=false`, `podman` resolved to its absolute Homebrew path since a
+LaunchAgent's own default `PATH` never includes it. On Windows, `deploy/windows/lib.ps1` gains
+the pure helpers (`Get-AskwellStackTaskName`, `Get-AskwellInferenceTaskName`,
+`Get-AskwellStackTaskArguments`, `Get-AskwellInferenceTaskArguments`) and `install.ps1` gains
+`Register-AskwellStackTask`/`Register-AskwellInferenceTask` — two Scheduled Tasks triggered
+`AtLogOn` with `-RestartCount 5`, `-ExecutionTimeLimit` zeroed out (Task Scheduler's own 72-hour
+default would otherwise kill a session-long task), `-MultipleInstances IgnoreNew` covering
+"starting Askwell twice attaches rather than duplicating". All three uninstallers stop and
+remove the new services before falling back to `podman compose down`, leaving nothing orphaned.
+No API or health-endpoint change was needed — `GET /health`'s existing per-component TCP probes
+already surface a service that failed to come back up as `unreachable`, and the shell's own three
+unavailability causes (`M7-TAURI-DEPLOY-183`) are unaffected by who started the stack first.
+Two known gaps carried forward rather than silently fixed: macOS's `KeepAlive` has no
+Linux/Windows-equivalent restart cap (accepted asymmetry, `docs/decisions.md` this date,
+issue #607 re-owned to the health-surface's own heartbeat detection instead); the Windows
+Scheduled Task restart semantics are unverified against a live session — no `pwsh` on this build
+host (issue #606, re-owned, unchanged from the prior attempt).
+
 ## 0.7.12 - 2026-09-23
 
 `M7-TAURI-DEPLOY-183` — the shell supervises the stack and the inference process. `Added`:

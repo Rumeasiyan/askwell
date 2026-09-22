@@ -280,6 +280,72 @@ function Register-AskwellShortcuts {
     Write-AskwellSay 'Askwell registered to start with your session (Startup folder).'
 }
 
+# The platform half of M7-PACK-DEPLOY-142: the stack and native inference
+# process, each as their own Scheduled Task triggered `AtLogOn`, running for
+# the session whether or not the app itself is ever opened.
+#
+# `-ExecutionTimeLimit ([TimeSpan]::Zero)` matters more here than it looks:
+# Task Scheduler's own default execution time limit is 72 hours, after which
+# it stops a still-running task outright — exactly wrong for something meant
+# to run for the entire session. Zero is documented to mean "no time limit".
+#
+# `-MultipleInstances IgnoreNew` is the "starting Askwell twice attaches
+# rather than creating a duplicate stack" edge case: a second attempt to
+# start an already-running task is a no-op rather than a second `podman
+# compose up`.
+#
+# Verification gap, disclosed rather than assumed away (issue #606,
+# re-confirmed in docs/decisions.md this date): this build host has no pwsh
+# (PowerShell 7) and no passwordless sudo to install one, so
+# `Register-ScheduledTask`/`RestartCount`/`RestartInterval`'s exact restart
+# semantics — in particular whether a non-zero *action process* exit counts
+# as the "task failure" that triggers a restart, versus only a failure Task
+# Scheduler itself judges at the task level — were verified against
+# documentation, not a live Windows session. If that assumption is wrong,
+# the backoff-and-restart acceptance criterion is unmet on Windows
+# specifically, silently. Issue #606 stays open, re-owned rather than
+# silently assumed correct, until a Windows host or a Linux host with pwsh
+# installed can run the real walkthrough this ticket's own Testing Notes
+# describe.
+function Register-AskwellStackTask {
+    $podman = Get-Command podman -ErrorAction SilentlyContinue
+    if (-not $podman) {
+        Write-AskwellSay 'Podman not found on PATH; cannot register the stack scheduled task.'
+        return
+    }
+    $taskName = Get-AskwellStackTaskName
+    $taskArgs = Get-AskwellStackTaskArguments -ComposePath (Join-Path $InstallPrefix 'compose.yaml') -EnvPath (Join-Path $InstallPrefix '.env')
+    $action = New-ScheduledTaskAction -Execute $podman.Source -Argument $taskArgs -WorkingDirectory $InstallPrefix
+    $trigger = New-ScheduledTaskTrigger -AtLogOn
+    $settings = New-ScheduledTaskSettingsSet -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1) `
+        -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero)
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings `
+        -Description 'Askwell container stack' | Out-Null
+    Start-ScheduledTask -TaskName $taskName
+    Write-AskwellSay "Askwell's container stack registered to run with your session (Scheduled Task: $taskName)."
+}
+
+function Register-AskwellInferenceTask {
+    $python = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $python) { $python = Get-Command py -ErrorAction SilentlyContinue }
+    if (-not $python) {
+        Write-AskwellSay 'No Python found on PATH; cannot register the inference scheduled task.'
+        return
+    }
+    $taskName = Get-AskwellInferenceTaskName
+    $taskArgs = Get-AskwellInferenceTaskArguments -ScriptPath (Join-Path $InstallPrefix 'askwell-inference')
+    $action = New-ScheduledTaskAction -Execute $python.Source -Argument $taskArgs -WorkingDirectory $InstallPrefix
+    $trigger = New-ScheduledTaskTrigger -AtLogOn
+    $settings = New-ScheduledTaskSettingsSet -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1) `
+        -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero)
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings `
+        -Description 'Askwell native inference supervisor' | Out-Null
+    Start-ScheduledTask -TaskName $taskName
+    Write-AskwellSay "Askwell's native inference process registered to run with your session (Scheduled Task: $taskName)."
+}
+
 function Register-AskwellUninstallEntry {
     $uninstallCmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$Here\uninstall.ps1`""
     $values = Get-AskwellUninstallRegistryValues -Version $Version -UninstallCommand $uninstallCmd -InstallPrefix $InstallPrefix
@@ -314,6 +380,8 @@ function Main {
     New-AskwellDataDirs
     Invoke-AskwellProbe
     Register-AskwellShortcuts
+    Register-AskwellStackTask
+    Register-AskwellInferenceTask
     Register-AskwellUninstallEntry
     Write-AskwellRecord
     Start-Askwell

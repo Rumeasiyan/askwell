@@ -51,8 +51,16 @@ confirm() {
 
 main() {
   local plist="$LAUNCH_AGENTS_DIR/com.askwell.app.plist"
+  local plist_stack="$LAUNCH_AGENTS_DIR/com.askwell.stack.plist"
+  local plist_inference="$LAUNCH_AGENTS_DIR/com.askwell.inference.plist"
+  # M7-PACK-DEPLOY-142: unload the stack and inference LaunchAgents before the
+  # shell's own, and before the `podman compose down` fallback below — that
+  # fallback exists for the case where these were never loaded at all, not as
+  # the primary stop path.
+  launchctl unload "$plist_inference" >/dev/null 2>&1 || true
+  launchctl unload "$plist_stack" >/dev/null 2>&1 || true
   launchctl unload "$plist" >/dev/null 2>&1 || true
-  rm -f "$plist"
+  rm -f "$plist" "$plist_stack" "$plist_inference"
   rm -f "$BIN_DIR/askwell"
   rm -rf "$APP_DIR"
 

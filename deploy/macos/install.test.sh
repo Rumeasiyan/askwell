@@ -202,5 +202,22 @@ out="$(quarantine_message "Askwell.app")"
 case "$out" in *"Askwell.app"*) ok "quarantine message names the missing file" ;;
                *) bad "quarantine message names the missing file" ;; esac
 
+# --- M7-PACK-DEPLOY-142: stack + inference LaunchAgents ------------------------
+out="$(launch_agent_stack_plist_contents "/opt/homebrew/bin/podman" "/data/compose.yaml" "/data/.env" "/data" "/data/logs")"
+case "$out" in *"<string>/opt/homebrew/bin/podman</string>"*"<string>compose</string>"*"<string>up</string>"*"<string>--abort-on-container-exit</string>"*)
+                 ok "stack agent runs compose in the foreground with an absolute podman path" ;;
+               *) bad "stack agent runs compose in the foreground with an absolute podman path" ;; esac
+case "$out" in *"<key>KeepAlive</key>"*"<key>SuccessfulExit</key>"*"<false/>"*)
+                 ok "stack agent restarts on a non-zero exit" ;;
+               *) bad "stack agent restarts on a non-zero exit" ;; esac
+case "$out" in *"com.askwell.stack"*) ok "stack agent has its own label, distinct from the app" ;;
+               *) bad "stack agent has its own label, distinct from the app" ;; esac
+
+out="$(launch_agent_inference_plist_contents "/data/askwell-inference" "/data/logs")"
+case "$out" in *"<string>/data/askwell-inference</string>"*) ok "inference agent execs the real supervisor script" ;;
+               *) bad "inference agent execs the real supervisor script" ;; esac
+case "$out" in *"com.askwell.inference"*) ok "inference agent has its own label, distinct from the app" ;;
+               *) bad "inference agent has its own label, distinct from the app" ;; esac
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
