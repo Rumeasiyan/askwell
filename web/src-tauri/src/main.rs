@@ -1,6 +1,11 @@
 // Prevents an extra console window from opening on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::collections::HashSet;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
 use tauri::webview::NewWindowResponse;
 use tauri::{Manager, Url, WebviewUrl, WebviewWindowBuilder};
 
@@ -37,6 +42,18 @@ fn main() {
         // saved position when a monitor still exists there — otherwise it
         // leaves placement to the OS default rather than opening off-screen.
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        // `M7-TAURI-FE-182`: the set of paths a dialog has actually returned
+        // to this session. `list_dir`/`read_head` refuse anything outside it
+        // — the IPC boundary is the enforcement point named in
+        // `docs/decisions.md`, and it did none of this before (issue #580).
+        .manage(AllowedRoots(Mutex::new(HashSet::new())))
+        .invoke_handler(tauri::generate_handler![
+            pick_folder,
+            pick_files,
+            pick_file,
+            list_dir,
+            read_head
+        ])
         .setup(move |app| {
             let launch_count = record_launch(app.handle());
             log_event(app.handle(), "shell_start", None);
@@ -254,4 +271,313 @@ fn log_event(app: &tauri::AppHandle, event: &str, api_version: Option<&str>) {
     });
     println!("{payload}");
     let _ = app; // reserved for a future structured-log plugin sink
+}
+
+// --- native dialogs and the scoped filesystem reads they unlock ------------
+//
+// `M7-TAURI-FE-182`. Five commands: three dialogs (`pick_folder` for root
+// registration, `pick_file` for relocating a moved document, `pick_files` as
+// the add-source screen's browse alternative) and two reads (`list_dir`,
+// `read_head`) that let the frontend walk a chosen folder and detect what is
+// inside it the same way it already does for a browser drop
+// (`web/lib/add-source.ts`'s `flatten`/`HEAD_BYTES`).
+//
+// Nothing here copies a byte anywhere Askwell does not already put it: a
+// dialog returns a path, `read_head` returns the first few kilobytes of one
+// file for format detection, exactly the budget a browser-picked file already
+// gets. Askwell still indexes in place — these commands exist so the frontend
+// can *name* what is there, not so it can upload it.
+
+/// The paths a dialog has actually handed back to this running session —
+/// every `pick_folder`/`pick_file`/`pick_files` call adds one. `list_dir` and
+/// `read_head` refuse anything that is not underneath one of these, which is
+/// the fix for issue #580: without it, the IPC layer read whatever path
+/// string the webview passed, with no check against a root the user actually
+/// chose or the roots registry at all.
+struct AllowedRoots(Mutex<HashSet<PathBuf>>);
+
+fn allow_root(state: &AllowedRoots, path: &Path) {
+    if let Ok(canonical) = path.canonicalize() {
+        state.0.lock().unwrap().insert(canonical);
+    }
+}
+
+/// True when `path` is, or is inside, a path a dialog has already returned.
+/// Canonicalises both sides so a `..` segment or a symlink cannot be used to
+/// step outside an allowed root while still textually starting with it.
+fn is_within_allowed(state: &AllowedRoots, path: &Path) -> bool {
+    let Ok(canonical) = path.canonicalize() else {
+        return false;
+    };
+    state
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|root| canonical.starts_with(root))
+}
+
+/// A refusal named by what actually went wrong, not a bare error — the
+/// ticket's own edge case ("a directory the user cannot read — refused... with
+/// the permission named, not with a missing-file message").
+fn describe_io_error(path: &Path, error: &std::io::Error) -> String {
+    match error.kind() {
+        std::io::ErrorKind::PermissionDenied => {
+            format!("Askwell does not have permission to read {}.", path.display())
+        }
+        std::io::ErrorKind::NotFound => format!("{} could not be found.", path.display()),
+        _ => format!("Askwell could not read {}: {error}", path.display()),
+    }
+}
+
+const OUTSIDE_CHOSEN_PATH: &str = "That path is outside every folder or file you chose.";
+
+/// `to_string_lossy()` silently mangles a genuinely non-UTF-8 path (rare on
+/// Linux/macOS, where a path is just bytes with no encoding guarantee) into
+/// one that no longer names the file the user actually chose — issue #499's
+/// finding. Refusing here, at the moment of picking, turns that into an
+/// honest refusal instead of a `list_dir`/`read_head` failure against a
+/// corrupted string later.
+fn path_string(path: &Path) -> Result<String, String> {
+    path.to_str().map(str::to_string).ok_or_else(|| {
+        format!(
+            "{} cannot be represented and cannot be chosen.",
+            path.display()
+        )
+    })
+}
+
+#[tauri::command]
+async fn pick_folder(state: tauri::State<'_, AllowedRoots>) -> Result<Option<String>, String> {
+    let Some(handle) = rfd::AsyncFileDialog::new().pick_folder().await else {
+        return Ok(None);
+    };
+    let path = handle.path().to_path_buf();
+    let string = path_string(&path)?;
+    allow_root(&state, &path);
+    Ok(Some(string))
+}
+
+/// A path plus the size the shell already had to stat to grant it — sparing
+/// the frontend a second round trip through `list_dir` just to learn how big
+/// a file it was just handed is.
+#[derive(serde::Serialize)]
+struct PickedFile {
+    path: String,
+    size: u64,
+}
+
+fn picked_file(path: PathBuf, state: &AllowedRoots) -> Result<PickedFile, String> {
+    let string = path_string(&path)?;
+    if let Some(parent) = path.parent() {
+        allow_root(state, parent);
+    }
+    allow_root(state, &path);
+    let size = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+    Ok(PickedFile { path: string, size })
+}
+
+#[tauri::command]
+async fn pick_file(state: tauri::State<'_, AllowedRoots>) -> Result<Option<PickedFile>, String> {
+    let Some(handle) = rfd::AsyncFileDialog::new().pick_file().await else {
+        return Ok(None);
+    };
+    Ok(Some(picked_file(handle.path().to_path_buf(), &state)?))
+}
+
+#[tauri::command]
+async fn pick_files(state: tauri::State<'_, AllowedRoots>) -> Result<Vec<PickedFile>, String> {
+    let Some(handles) = rfd::AsyncFileDialog::new().pick_files().await else {
+        return Ok(Vec::new());
+    };
+    handles
+        .into_iter()
+        .map(|handle| picked_file(handle.path().to_path_buf(), &state))
+        .collect()
+}
+
+#[derive(serde::Serialize)]
+struct NativeDirEntry {
+    name: String,
+    path: String,
+    is_dir: bool,
+    size: u64,
+}
+
+/// The actual work, taking a plain reference rather than `tauri::State` —
+/// `State` has no public constructor outside a running `App`, so a unit test
+/// cannot build one to call the `#[tauri::command]` directly. Splitting the
+/// scoping logic out this way is what makes `native_command_tests` runnable
+/// at all.
+fn list_dir_impl(path: &str, state: &AllowedRoots) -> Result<Vec<NativeDirEntry>, String> {
+    let dir = PathBuf::from(path);
+    if !is_within_allowed(state, &dir) {
+        return Err(OUTSIDE_CHOSEN_PATH.to_string());
+    }
+    let read_dir = std::fs::read_dir(&dir).map_err(|error| describe_io_error(&dir, &error))?;
+    let mut entries = Vec::new();
+    for item in read_dir {
+        let item = item.map_err(|error| describe_io_error(&dir, &error))?;
+        // A non-UTF-8 name here (same rare case as #499, one level down)
+        // cannot be named honestly over JSON — skipped from the listing
+        // rather than corrupted into a name that resolves to nothing.
+        let (Ok(name), Ok(path)) = (item.file_name().into_string(), path_string(&item.path()))
+        else {
+            continue;
+        };
+        let metadata = item.metadata().map_err(|error| describe_io_error(&item.path(), &error))?;
+        entries.push(NativeDirEntry {
+            name,
+            path,
+            is_dir: metadata.is_dir(),
+            size: metadata.len(),
+        });
+    }
+    Ok(entries)
+}
+
+#[tauri::command]
+fn list_dir(path: String, state: tauri::State<'_, AllowedRoots>) -> Result<Vec<NativeDirEntry>, String> {
+    list_dir_impl(&path, &state)
+}
+
+fn read_head_impl(path: &str, bytes: usize, state: &AllowedRoots) -> Result<Vec<u8>, String> {
+    let file_path = PathBuf::from(path);
+    if !is_within_allowed(state, &file_path) {
+        return Err(OUTSIDE_CHOSEN_PATH.to_string());
+    }
+    let mut file = std::fs::File::open(&file_path).map_err(|error| describe_io_error(&file_path, &error))?;
+    let mut buffer = vec![0u8; bytes];
+    let read = file
+        .read(&mut buffer)
+        .map_err(|error| describe_io_error(&file_path, &error))?;
+    buffer.truncate(read);
+    Ok(buffer)
+}
+
+#[tauri::command]
+fn read_head(path: String, bytes: usize, state: tauri::State<'_, AllowedRoots>) -> Result<Vec<u8>, String> {
+    read_head_impl(&path, bytes, &state)
+}
+
+#[cfg(test)]
+mod native_command_tests {
+    use super::*;
+
+    fn state() -> AllowedRoots {
+        AllowedRoots(Mutex::new(HashSet::new()))
+    }
+
+    fn scratch_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "askwell-native-test-{name}-{}-{}",
+            std::process::id(),
+            name.len()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn path_string_accepts_an_ordinary_path() {
+        assert_eq!(
+            path_string(Path::new("/home/anna/clients/lease.pdf")).unwrap(),
+            "/home/anna/clients/lease.pdf",
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn path_string_refuses_genuinely_invalid_utf8() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        // 0x80 alone is never valid UTF-8 in any position.
+        let invalid = OsStr::from_bytes(b"clients/le\x80se.pdf");
+        assert!(path_string(Path::new(invalid)).is_err());
+    }
+
+    #[test]
+    fn allows_a_path_under_a_granted_root() {
+        let dir = scratch_dir("allowed");
+        let file = dir.join("contract.pdf");
+        std::fs::write(&file, b"hello").unwrap();
+
+        let allowed = state();
+        allow_root(&allowed, &dir);
+
+        assert!(is_within_allowed(&allowed, &file));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn refuses_a_path_outside_every_granted_root() {
+        let granted = scratch_dir("granted");
+        let other = scratch_dir("other");
+        let secret = other.join("secret.txt");
+        std::fs::write(&secret, b"hidden").unwrap();
+
+        let allowed = state();
+        allow_root(&allowed, &granted);
+
+        assert!(!is_within_allowed(&allowed, &secret));
+        std::fs::remove_dir_all(&granted).ok();
+        std::fs::remove_dir_all(&other).ok();
+    }
+
+    #[test]
+    fn read_head_refuses_a_path_never_granted() {
+        let dir = scratch_dir("readhead-refuse");
+        let file = dir.join("doc.txt");
+        std::fs::write(&file, b"never granted").unwrap();
+
+        let allowed = state();
+        let result = read_head_impl(&file.to_string_lossy(), 4096, &allowed);
+
+        assert!(result.is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_head_returns_only_the_requested_bytes() {
+        let dir = scratch_dir("readhead-allow");
+        let file = dir.join("doc.txt");
+        std::fs::write(&file, b"0123456789").unwrap();
+
+        let allowed = state();
+        allow_root(&allowed, &dir);
+        let result = read_head_impl(&file.to_string_lossy(), 4, &allowed);
+
+        assert_eq!(result.unwrap(), b"0123".to_vec());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn list_dir_refuses_a_path_never_granted() {
+        let dir = scratch_dir("listdir-refuse");
+        std::fs::write(dir.join("a.txt"), b"a").unwrap();
+
+        let allowed = state();
+        let result = list_dir_impl(&dir.to_string_lossy(), &allowed);
+
+        assert!(result.is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn list_dir_reports_names_and_kinds() {
+        let dir = scratch_dir("listdir");
+        std::fs::write(dir.join("a.txt"), b"a").unwrap();
+        std::fs::create_dir(dir.join("sub")).unwrap();
+
+        let allowed = state();
+        allow_root(&allowed, &dir);
+        let entries = list_dir_impl(&dir.to_string_lossy(), &allowed).unwrap();
+
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().any(|e| e.name == "a.txt" && !e.is_dir));
+        assert!(entries.iter().any(|e| e.name == "sub" && e.is_dir));
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

@@ -24,15 +24,17 @@
  * question stops being asked.
  */
 
-import { HEAD_BYTES, type TreeEntry, flatten } from "./add-source";
+import { HEAD_BYTES, type TreeEntry, flatten } from "./add-source.ts";
+import { type NativePick, basenameOfNativePath, isNative, listNativeDir, readNativeHead } from "./native.ts";
 
 /**
  * Whether the host can say where a file actually lives.
  *
- * False in a browser, permanently. `M7-TAURI-FE-182` is what makes it true,
- * and the screen reads it rather than assuming the browser.
+ * False in a browser, permanently true in the desktop shell — `isNative()`
+ * is real once `M7-TAURI-FE-182`'s bridge is present, and the screen reads
+ * this rather than assuming either one.
  */
-export const HOST_GIVES_PATHS: boolean = false;
+export const HOST_GIVES_PATHS: boolean = isNative();
 
 export interface Picked {
   name: string;
@@ -163,4 +165,63 @@ export function fromFiles(list: FileList): Selection {
       .filter((folder) => folder !== ""),
   );
   return { files, folders: folders.size, truncated: false };
+}
+
+// --- the desktop shell's own alternative to fromDrop/fromFiles -------------
+
+interface NativeWalked extends TreeEntry {
+  path: string;
+  size: number;
+}
+
+function pickNative(path: string, size: number, relativePath: string): Picked {
+  return {
+    name: basenameOfNativePath(path),
+    relativePath,
+    size,
+    absolutePath: path,
+    head: () => readNativeHead(path, HEAD_BYTES),
+  };
+}
+
+/**
+ * `M7-TAURI-FE-182`'s replacement for `fromDrop`'s folder case: a path from
+ * `pickFolder()` in, walked with `list_dir` instead of the browser's
+ * directory reader. Reuses `flatten` rather than a second walk written by
+ * hand — nesting, ordering and the `MAX_FILES` cap stay the one behaviour
+ * `add-source.test.ts` already exercises, for both ways a folder can arrive.
+ */
+export async function fromNativeFolder(rootPath: string): Promise<Selection> {
+  const root: NativeWalked = {
+    name: basenameOfNativePath(rootPath),
+    directory: true,
+    path: rootPath,
+    size: 0,
+  };
+
+  const expansion = await flatten<NativeWalked>([root], async (walked) => {
+    const entries = await listNativeDir(walked.path);
+    return entries.map((entry) => ({
+      name: entry.name,
+      directory: entry.is_dir,
+      path: entry.path,
+      size: entry.size,
+    }));
+  });
+
+  const files = expansion.files.map((found) =>
+    pickNative(found.entry.path, found.entry.size, found.relativePath),
+  );
+  return { files, folders: expansion.folders, truncated: expansion.truncated };
+}
+
+/**
+ * `M7-TAURI-FE-182`'s replacement for `fromFiles`: a flat list from
+ * `pickFiles()`, each one already carrying the size the shell stat'd when it
+ * granted the path — no second round trip through `list_dir` just to learn
+ * how big a file it was just handed is.
+ */
+export function fromNativeFiles(picks: NativePick[]): Selection {
+  const files = picks.map((picked) => pickNative(picked.path, picked.size, basenameOfNativePath(picked.path)));
+  return { files, folders: 0, truncated: false };
 }

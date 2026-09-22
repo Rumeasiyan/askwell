@@ -180,6 +180,14 @@ They have four different fixes and are never collapsed into one message.
 
 Selection is by typed path — and this is true of **adding files**, not only of nominating a folder. No browser reveals a file's absolute path, on any platform: it gives the name and the path *within* a dropped folder, and that is a sandbox rule rather than a missing API. So a drop is expanded and counted first, and then asked one question — *which folder is `clients` in?* — once for the whole drop rather than once per file. A root is a permission over a tree, so one answer settles all of them.
 
-Until the desktop shell ships `M7-TAURI-FE-182` a folder the browser will not surface has to be typed. The screen says so rather than leaving it to be discovered. It is deliberately **not** a file-upload control: that copies bytes, and Askwell copies nothing.
+A folder the browser will not surface has to be typed there. The screen says so rather than leaving it to be discovered. It is deliberately **not** a file-upload control: that copies bytes, and Askwell copies nothing.
 
-The flow is shaped so the picker replaces the selection step alone. The registry, the validation, and what removing a folder does are untouched by that change.
+### The native picker
+
+`M7-TAURI-FE-182`. In the desktop shell, **Choose a folder** opens the platform's own directory dialog; the chosen path registers exactly as a typed one always did — nothing about the prompt above, the refusal table, or removing a folder changes. A browser has no directory dialog to offer, so the typed field stays there as the fallback, and stays visible in the shell too rather than disappearing the moment a picker exists. Cancelling the dialog changes nothing and shows no error — the screen is exactly where it was.
+
+**macOS only:** choosing a folder outside the few areas an app is allowed into by default makes the operating system itself ask for permission, before Askwell ever sees a path. Askwell's own line sits beside that system prompt rather than replacing it:
+
+> macOS is the one asking here — it checks every app, not just this one. Askwell only ever sees the folder you choose.
+
+The same swap happens in two more places, both unchanged otherwise: the add-source screen's **Choose files** browses natively instead of opening the browser's file input, and relocating a moved document (`../ux/source-viewer.md` §4) gets a **Choose the file** button ahead of its typed field. Either way, the request that follows — `POST /roots` for a folder, `POST /documents/{id}/relocate` for a file — is exactly what a typed path already produced, including the relocation's hash check: a native dialog does not make a chosen file trustworthy.

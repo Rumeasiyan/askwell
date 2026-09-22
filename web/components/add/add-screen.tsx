@@ -33,8 +33,9 @@ import {
   type FailedDocument,
   type FlaggedDocument,
 } from "@/lib/ingest";
+import { isNative, pickFiles, pickFolder } from "@/lib/native";
 import { askCovering, nominate, type CoveringPrompt } from "@/lib/roots";
-import { HOST_GIVES_PATHS, fromFiles } from "@/lib/selection";
+import { HOST_GIVES_PATHS, fromFiles, fromNativeFiles, fromNativeFolder } from "@/lib/selection";
 import { type Recorded as RecordedOutcome, duplicateLine, withOutcome } from "@/lib/sources";
 import { type Batch, type Item, laterIn, refusedIn, supportedIn, useAdd } from "./add-state";
 
@@ -101,13 +102,38 @@ function FilesRoute() {
   const { accept } = useAdd();
   const files = useRef<HTMLInputElement>(null);
   const folder = useRef<HTMLInputElement>(null);
+  const [nativeFailure, setNativeFailure] = useState<string | null>(null);
 
   // `webkitdirectory` is how every browser offers a directory chooser and it
   // is not in React's typed attributes, so it is set on the element instead of
   // cast onto the props. Without it the folder button is a second file button.
+  // Unused in the desktop shell, which has a real directory dialog instead.
   useEffect(() => {
     folder.current?.setAttribute("webkitdirectory", "");
   }, []);
+
+  async function chooseNativeFiles(): Promise<void> {
+    setNativeFailure(null);
+    try {
+      const picked = await pickFiles();
+      // Cancelled: nothing changed, no error (this ticket's own cancel case).
+      if (picked.length === 0) return;
+      accept(fromNativeFiles(picked));
+    } catch (error) {
+      setNativeFailure(error instanceof Error ? error.message : "Those files could not be chosen.");
+    }
+  }
+
+  async function chooseNativeFolder(): Promise<void> {
+    setNativeFailure(null);
+    try {
+      const chosen = await pickFolder();
+      if (chosen === null) return;
+      accept(await fromNativeFolder(chosen));
+    } catch (error) {
+      setNativeFailure(error instanceof Error ? error.message : "That folder could not be chosen.");
+    }
+  }
 
   return (
     <div
@@ -131,7 +157,7 @@ function FilesRoute() {
       <div className="flex flex-wrap gap-2">
         <button
           type="button"
-          onClick={() => files.current?.click()}
+          onClick={() => (isNative() ? void chooseNativeFiles() : files.current?.click())}
           className="ask-action-primary px-4"
           style={{ fontSize: "var(--t-ui)" }}
         >
@@ -139,7 +165,7 @@ function FilesRoute() {
         </button>
         <button
           type="button"
-          onClick={() => folder.current?.click()}
+          onClick={() => (isNative() ? void chooseNativeFolder() : folder.current?.click())}
           className="ask-navigates px-4"
           style={{
             border: "1px solid var(--rule-strong)",
@@ -150,6 +176,10 @@ function FilesRoute() {
           Choose a folder
         </button>
       </div>
+
+      {nativeFailure === null ? null : (
+        <p className="ask-prose ask-pdf-page-note">{nativeFailure}</p>
+      )}
 
       {/* Named, not uploaded. These inputs exist because a browser has no other
           way to let someone point at a file; nothing is posted anywhere, and

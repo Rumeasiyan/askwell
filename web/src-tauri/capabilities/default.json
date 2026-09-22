@@ -1,7 +1,16 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The window hosts the Askwell web app over plain HTTP, not a Tauri IPC page. No command is granted: the webview has no way to reach a Rust API, which is exactly the shape C7 wants — content in the window stays data, never a route to native capability.",
+  "description": "The window hosts the Askwell web app over plain HTTP. `M7-TAURI-FE-182` grants exactly five commands to that one origin — three native dialogs and two filesystem reads scoped to whatever a dialog already returned (`AllowedRoots` in `src/main.rs`) — nothing else reaches Rust, which is still the shape C7 wants: content in the window stays data, and the only route to native capability is this named, narrow allowlist.",
   "windows": ["main"],
-  "permissions": []
+  "remote": {
+    "urls": ["http://127.0.0.1:*"]
+  },
+  "permissions": [
+    "allow-pick-folder",
+    "allow-pick-files",
+    "allow-pick-file",
+    "allow-list-dir",
+    "allow-read-head"
+  ]
 }

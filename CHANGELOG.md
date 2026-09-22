@@ -4,6 +4,29 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.6 - 2026-09-22
+
+`M7-TAURI-FE-182` — native file dialogs for root registration and relocating a moved file.
+`Added`: `web/src-tauri/src/main.rs` gains five commands — `pick_folder`, `pick_file`,
+`pick_files` (native dialogs) and `list_dir`, `read_head` (scoped filesystem reads) — granted to
+the shell's one origin in `capabilities/default.json`. `list_dir`/`read_head` refuse any path
+outside `AllowedRoots`, the set of paths a dialog has actually returned this session (issue
+#580's fix — an earlier, discarded attempt at this ticket had no such check). `web/lib/native.ts`
+wraps the bridge; `web/lib/selection.ts`'s `fromNativeFolder`/`fromNativeFiles` reuse
+`add-source.ts`'s existing `flatten`/`MAX_FILES` walk so a native folder pick is counted and
+capped exactly like a browser drop. Wired into `components/settings/folders.tsx` (root
+registration), `components/documents/viewer-shared.tsx`'s `MovedFileNotice` (relocation, hash
+check unchanged), and `components/add/add-screen.tsx`'s `FilesRoute` (the browse alternative) —
+each keeps its typed-path fallback for a browser. `docs/ux/add-source.md` §7 gained the macOS
+permission-prompt copy the ticket's own edge case names. `path_string()` refuses a genuinely
+non-UTF-8 path at the dialog itself rather than mangling it with `to_string_lossy()` (issue
+#499). `Changed`: `web/lib/selection.ts`'s `HOST_GIVES_PATHS` now reads `isNative()` instead of
+a hardcoded `false`. **Not run end-to-end
+this session** — no system webview libraries and no `sudo` to install them (issue #497, still
+open); the frontend's own 24 new tests (`native.test.ts`, `selection.test.ts`) did run, alongside
+the existing 411. See `docs/manual-tests/M7-TAURI-FE-182.md` for the unverified walkthrough and
+`docs/decisions.md` for the scoping design and why `native.ts` does not use `@tauri-apps/api`.
+
 ## 0.7.5 - 2026-09-22
 
 `M7-PERF-TEST-167` — measure the answer-path performance budgets on a realistic corpus. `Added`:
