@@ -4,6 +4,33 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.2 - 2026-09-22
+
+`M7-PACK-DEPLOY-139` — the Linux installer. `Fixed`: `deploy/linux/install.sh` looked for the
+desktop shell binary at `web/src-tauri/target/release/askwell`; every build path actually
+produces `askwell-shell` (`web/src-tauri/Cargo.toml`'s crate name, unrenamed by
+`tauri.conf.json`), so the installer's own artefact check refused every install, including one
+following the installer's own printed build instructions. Found while writing
+`docs/manual-tests/M7-PACK-DEPLOY-139.md`.
+
+## 0.7.1 - 2026-09-22
+
+`M7-PACK-DEPLOY-139` — the Linux installer. `Added`: `deploy/linux/install.sh` checks for or
+installs Podman (real `sudo`, allowed to prompt for a password — the fix for issue #503, where
+`sudo -n true` told a normal desktop account it had no administrative rights at all), refuses
+before copying anything if disk space is short or the runtime version is too old, detects a
+previous install and upgrades application files in place without touching its data, places the
+stack, the native inference binary and the probe, runs the probe, creates and reports the data
+directory (overridable via `--data-dir`/`ASKWELL_DATA_DIR`), writes an applications-menu entry
+and a `systemd --user` unit so Askwell starts with the session, writes an install record, and
+launches the desktop shell — never a browser tab. `deploy/linux/uninstall.sh` removes
+application files and registration; the data directory, and therefore the user's own indexed
+material, is left alone unless `--purge-data` is given and confirmed. The one artefact this
+repository does not yet produce — the compiled Tauri shell binary — is a named, honest refusal
+rather than a silent stub or a browser fallback; full reasoning in `docs/decisions.md`, this
+date. 31 new tests (`deploy/linux/install.test.sh`), plus a real end-to-end run against this
+checkout (`docs/manual-tests/M7-PACK-DEPLOY-139.md`).
+
 ## 0.7.0 - 2026-09-22
 
 `M6.5-WEB-OBS-193` — trace flagging of fetched content, and the escalation on the record. This

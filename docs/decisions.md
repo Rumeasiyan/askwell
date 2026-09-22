@@ -6,6 +6,87 @@ Append-only. **Newest first.** Never edit an entry to change its meaning — if 
 
 **The *Why* should be longer than the *Decision*.** What was built is readable from the code. What was rejected, and the trade-off accepted, is not, and is exactly what gets lost. Name the rejected option.
 
+## 2026-09-22 — The Linux installer looked for the shell binary under the wrong name
+
+**Decision:** `deploy/linux/install.sh`'s `SHELL_BIN` pointed at
+`web/src-tauri/target/release/askwell`. Fixed to
+`web/src-tauri/target/release/askwell-shell`, matching what `cargo` actually produces.
+
+**Why:** `web/src-tauri/Cargo.toml` names the crate `askwell-shell`
+(`[package] name = "askwell-shell"`), and neither `Cargo.toml` nor `tauri.conf.json` (no
+`mainBinaryName`) renames the output. Every build path — `scripts/dev.sh tauri build` and
+`cargo tauri build --no-bundle`, the exact command `install.sh` itself prints when the
+artefact is missing — produces `askwell-shell`. The check written against `askwell` would
+therefore refuse every install, forever, even one following the installer's own instructions
+to the letter: not a missing-artefact edge case but a bug in the check itself, found while
+writing `docs/manual-tests/M7-PACK-DEPLOY-139.md` and confirmed by building on a host with
+`cargo` present (packaging via `cargo tauri build` itself still fails here on missing
+`gdk-pixbuf-2.0`, an unrelated host-library gap, not this bug — the crate name alone settles
+the filename regardless of whether the build completes). Re-verified end to end with a
+stand-in executable: install places and runs it, uninstall leaves data in place by default and
+removes it under `--purge-data`, and the refusal path with no binary present now names the
+correct missing file.
+
+**Consequences:** none beyond the fix — `SHELL_BIN`, the header comment naming the expected
+artefact, and the manual-test doc's stand-in filename and expected refusal message all now
+agree with what a real build produces. Issue #559 (no release pipeline builds this binary at
+all yet) is unaffected and still open; this only fixes what `install.sh` looks for once that
+pipeline exists.
+
+**Refs:** `deploy/linux/install.sh`; `web/src-tauri/Cargo.toml`;
+`docs/manual-tests/M7-PACK-DEPLOY-139.md`; issue #559.
+
+## 2026-09-22 — The Linux installer's bundle is a trimmed export of the repository, not a new format; the shell binary and image/model artefacts are release-packaging's job, not this ticket's
+
+**Decision:** `deploy/linux/install.sh` (`M7-PACK-DEPLOY-139`) expects to find `compose.yaml`,
+`.env.example`, `deploy/postgres`, `deploy/sandbox`, `deploy/probe/askwell-probe` and
+`deploy/inference/askwell-inference` two directories above itself — i.e. at the root of
+whatever tree it ships in, whether that is this repository checked out directly or a release
+tarball with the same layout. It looks for one additional artefact this repository does not
+yet produce, `web/src-tauri/target/release/askwell` (the compiled Tauri shell binary), and
+**refuses installation by name if it is missing**, printing the build command that produces
+it, rather than falling back to opening a browser tab. The runtime-install permission check
+uses `command -v sudo` (real sudo, allowed to prompt) rather than `sudo -n true`
+(passwordless-only), fixing issue #503 before it ever shipped.
+
+**Why:** the ticket's dependencies (`M7-TAURI-DEPLOY-181`/`183`, `M0-STACK-DEPLOY-009`,
+`M0-MODEL-DEPLOY-018`, `M7-PROBE-DEPLOY-137`) are all real, but none of them has ever produced
+a *distributable* artefact — no CI workflow builds the Tauri bundle (`bundle.active: false` in
+`web/src-tauri/tauri.conf.json`, and `.github/workflows/` has no `cargo tauri build` step
+anywhere), and no packaging step exports pre-built container images or bundles model weights.
+`M7-OFFLINE-DEPLOY-144` — which explicitly depends on this ticket, not the other way round —
+is where the model-bundling half of that gap is scoped to close. Two options existed for what
+this ticket does about the other half, the shell binary: (1) have `install.sh` invoke `cargo
+tauri build` itself when the binary is missing, or (2) treat the binary as an input the
+installer consumes and refuse cleanly when it is absent. (1) was rejected because the whole
+point of this ticket is a Linux user who has never used containers, let alone the Rust
+toolchain — asking their machine to compile a desktop shell during "installation" is a
+correctness bug wearing a convenience feature's clothes, and a multi-minute silent compile on
+first run is a worse experience than an honest, immediate refusal naming exactly what is
+missing. (2) is what shipped: `install.sh` is complete and independently testable
+(`deploy/linux/install.test.sh`, and a real end-to-end run in
+`docs/manual-tests/M7-PACK-DEPLOY-139.md` Part 2 using a stand-in executable in place of the
+real binary) *today*, and it will consume the real artefact the moment a release pipeline
+produces one, with zero changes to this script. Building that pipeline — cross-compiling the
+Tauri binary and producing an installable bundle of images and weights — is release-packaging
+work with its own shape and its own ticket, not a thing to improvise inside a 4–6 hour
+installer-logic ticket. Filed as a follow-up rather than left implicit.
+
+**Consequences:** the full cold-start walkthrough this ticket's own acceptance criteria
+describe (`docs/backlog/M7-someone-else-can-install-it.md`) cannot run end to end until that
+release pipeline exists — stated as a known gap in the manual-test doc's Part 4, not silently
+skipped. Everything this ticket actually owns — runtime detection and the sudo fix, disk-space
+refusal before copying, previous-install detection preserving data, data-directory creation
+with a shown and overridable location, the applications-menu entry, `systemd --user`
+session-start registration, the install record, and an uninstall that removes application
+files but never data without `--purge-data` and a confirmation — is real, tested, and verified
+against this checkout.
+
+**Refs:** `docs/backlog/M7-someone-else-can-install-it.md` (`M7-PACK-DEPLOY-139`); issue #503
+(fixed); issue #559 (the release-pipeline gap, filed rather than fixed here);
+`deploy/linux/install.sh`, `deploy/linux/uninstall.sh`, `deploy/linux/lib.sh`,
+`deploy/linux/install.test.sh`; `docs/manual-tests/M7-PACK-DEPLOY-139.md`.
+
 Template:
 
 ```markdown
