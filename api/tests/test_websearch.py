@@ -27,11 +27,14 @@ from askwell.websearch import (
     WEB_SEARCH_GRANT_CLOSED,
     WEB_SEARCH_GRANT_OPENED,
     FixtureWebSearchProvider,
+    WebCitationRecord,
     WebSearchOutcome,
     WebSearchResult,
     WebSearchUnavailable,
     build_web_search_provider,
     escalate_web_search,
+    record_web_citations,
+    web_citation_record,
 )
 
 from .test_ask_api import (
@@ -526,3 +529,149 @@ def test_the_full_answer_path_never_calls_the_provider(
             assert done["status"] == "completed"
 
     assert _escalations(database_url) == []
+
+
+# --- `web_citations`: the record shape stored with the turn -----------------
+# `M6.5-WEB-BE-189`.
+
+
+@pytest.fixture
+def owner(database_url: str):
+    """Connected as the table owner, for setting up rows and inserting
+    directly — `test_invariants.py`'s own fixture, redefined locally rather
+    than imported since pytest fixtures do not cross test modules."""
+    with psycopg.connect(database_url, autocommit=True) as connection:
+        yield connection
+        connection.execute("TRUNCATE conversations CASCADE")
+
+
+def _insert_message(database_url: str) -> uuid.UUID:
+    with psycopg.connect(database_url, autocommit=True) as db:
+        conversation = db.execute(
+            "INSERT INTO conversations DEFAULT VALUES RETURNING id"
+        ).fetchone()
+        assert conversation is not None
+        message = db.execute(
+            "INSERT INTO messages (conversation_id, role, content) "
+            "VALUES (%s, 'assistant', 'The office is on the third floor.') RETURNING id",
+            (conversation[0],),
+        ).fetchone()
+        assert message is not None
+        return message[0]
+
+
+def _web_citations(database_url: str, message_id: uuid.UUID) -> list[dict[str, object]]:
+    with psycopg.connect(database_url, autocommit=True) as db:
+        rows = db.execute(
+            "SELECT claim_ordinal, domain, title, url, passage, retrieved_at "
+            "FROM web_citations WHERE message_id = %s ORDER BY claim_ordinal",
+            (message_id,),
+        ).fetchall()
+    columns = ("claim_ordinal", "domain", "title", "url", "passage", "retrieved_at")
+    return [dict(zip(columns, row, strict=True)) for row in rows]
+
+
+def test_web_citation_record_carries_the_result_tied_to_its_claim() -> None:
+    record = web_citation_record(_result(), claim_ordinal=2)
+    assert record == WebCitationRecord(
+        claim_ordinal=2,
+        domain="example.com",
+        title="Office locations",
+        url="https://example.com/offices",
+        passage="The office is on the third floor.",
+        retrieved_at=RETRIEVED_AT,
+    )
+
+
+@pytest.mark.requires_db
+async def test_a_web_citation_round_trips_with_no_network_involved(
+    factory: async_sessionmaker[AsyncSession], database_url: str
+) -> None:
+    """Reading a stored web result back returns exactly what was written —
+    the ticket's own headline acceptance criterion — using only a database
+    connection, nothing that could reach a network."""
+    message_id = _insert_message(database_url)
+    record = web_citation_record(_result(), claim_ordinal=0)
+    async with factory() as db:
+        await record_web_citations(db, message_id=message_id, records=[record])
+        await db.commit()
+
+    (stored,) = _web_citations(database_url, message_id)
+    assert stored["domain"] == "example.com"
+    assert stored["title"] == "Office locations"
+    assert stored["url"] == "https://example.com/offices"
+    assert stored["passage"] == "The office is on the third floor."
+    assert stored["retrieved_at"] == RETRIEVED_AT
+    assert stored["claim_ordinal"] == 0
+
+
+@pytest.mark.requires_db
+async def test_two_results_from_the_same_domain_are_stored_separately(
+    factory: async_sessionmaker[AsyncSession], database_url: str
+) -> None:
+    message_id = _insert_message(database_url)
+    first = web_citation_record(_result("The office opens at nine."), claim_ordinal=0)
+    second = web_citation_record(_result("The office closes at five."), claim_ordinal=1)
+    async with factory() as db:
+        await record_web_citations(db, message_id=message_id, records=[first, second])
+        await db.commit()
+
+    stored = _web_citations(database_url, message_id)
+    assert [row["passage"] for row in stored] == [
+        "The office opens at nine.",
+        "The office closes at five.",
+    ]
+    assert [row["url"] for row in stored] == [
+        "https://example.com/offices",
+        "https://example.com/offices",
+    ]
+
+
+@pytest.mark.requires_db
+async def test_a_result_not_used_in_any_claim_is_never_written(
+    factory: async_sessionmaker[AsyncSession], database_url: str
+) -> None:
+    """`record_web_citations` only ever writes what the caller hands it —
+    the caller's own job (not built by this ticket) is to hand it nothing
+    for a fetched-but-uncited result."""
+    message_id = _insert_message(database_url)
+    async with factory() as db:
+        await record_web_citations(db, message_id=message_id, records=[])
+        await db.commit()
+
+    assert _web_citations(database_url, message_id) == []
+
+
+@pytest.mark.requires_db
+def test_retrieved_at_is_mandatory_at_the_database_itself(
+    owner: psycopg.Connection[tuple[object, ...]], database_url: str
+) -> None:
+    """The ticket's own Validation Rule: a web result without a retrieval
+    timestamp may not be rendered. Enforced at the row's own shape, not left
+    to every reader to check, so a caller bypassing `record_web_citations`
+    entirely still cannot produce an undated row."""
+    message_id = _insert_message(database_url)
+    with pytest.raises(psycopg.errors.NotNullViolation):
+        owner.execute(
+            "INSERT INTO web_citations (message_id, claim_ordinal, domain, title, url, passage) "
+            "VALUES (%s, 0, 'example.com', 'Title', 'https://example.com', 'passage')",
+            (message_id,),
+        )
+
+
+@pytest.mark.requires_db
+def test_a_web_citation_is_cascade_deleted_with_its_message(
+    owner: psycopg.Connection[tuple[object, ...]], database_url: str
+) -> None:
+    """Same lifecycle as `citations` — a web citation belongs to the turn
+    that produced it and has no independent existence once the turn is
+    gone."""
+    message_id = _insert_message(database_url)
+    owner.execute(
+        "INSERT INTO web_citations "
+        "(message_id, claim_ordinal, domain, title, url, passage, retrieved_at) "
+        "VALUES (%s, 0, 'example.com', 'Title', 'https://example.com', 'passage', now())",
+        (message_id,),
+    )
+    owner.execute("DELETE FROM messages WHERE id = %s", (message_id,))
+    assert _web_citations(database_url, message_id) == []

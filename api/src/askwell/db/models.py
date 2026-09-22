@@ -841,6 +841,43 @@ class Citation(Base):
     quoted_span: Mapped[str | None] = mapped_column(Text)
 
 
+class WebCitation(Base):
+    """A claim in an answer sourced from an escalated web search, and the
+    page it came from. `M6.5-WEB-BE-189`.
+
+    **Structurally distinct from `Citation`, not a flag on it** — `docs/
+    backlog/M6.5-it-can-look-outside.md` ticket `M6.5-WEB-BE-189`'s own
+    Assumption: C10 requires a web result never shares a rendering with a
+    document citation, and the cleanest guarantee of that is that they never
+    share a record shape. There is no foreign key to `chunks` here on
+    purpose — a web result was never a chunk and chunking it is exactly what
+    `M6.5-WEB-BE-188` forbids.
+
+    Written once, alongside the answer, in the same transaction as the
+    `messages` row and the `citations`/`fact_usage` rows it sits beside.
+    Never updated afterward: `retrieved_at` is what the machine said when the
+    page was fetched, and re-checking the URL later to refresh it would
+    replace what happened with what is happening (`docs/web-search.md` §4).
+    """
+
+    __tablename__ = "web_citations"
+    __table_args__ = (Index("ix_web_citations_message_id", "message_id"),)
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    message_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("messages.id", ondelete="CASCADE"), nullable=False
+    )
+    claim_ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    domain: Mapped[str] = mapped_column(String(255), nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    passage: Mapped[str] = mapped_column(Text, nullable=False)
+    # Mandatory, not nullable — the ticket's own Validation Rule: a web
+    # result without a retrieval timestamp may not be rendered, and the
+    # cheapest place to guarantee that is at the row's own shape.
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class FactUsage(Base):
     """Which remembered facts an answer used.
 

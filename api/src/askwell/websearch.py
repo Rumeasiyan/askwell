@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Protocol
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from askwell import egress
@@ -288,3 +289,80 @@ async def escalate_web_search(
         status=outcome.status,
     )
     return outcome
+
+
+@dataclass(frozen=True, slots=True)
+class WebCitationRecord:
+    """One web result that was actually used in a claim, ready to write to
+    `web_citations`. `M6.5-WEB-BE-189`.
+
+    Deliberately not `WebSearchResult` itself: a result the provider returned
+    and a result a claim actually cited are different things — `docs/backlog/
+    M6.5-it-can-look-outside.md` ticket `M6.5-WEB-BE-189`'s own edge case, "a
+    result retrieved but ultimately not used in any claim — not stored as a
+    citation." `claim_ordinal` is what ties this row to the sentence that
+    used it, the same role `Citation.claim_ordinal` plays for a document
+    citation — `askwell.agent.claims.segment_claims`/`M1-CITE-BE-042`.
+    """
+
+    claim_ordinal: int
+    domain: str
+    title: str
+    url: str
+    passage: str
+    retrieved_at: datetime
+
+
+def web_citation_record(result: WebSearchResult, claim_ordinal: int) -> WebCitationRecord:
+    """Build the row a cited `WebSearchResult` writes to `web_citations` —
+    the domain, title, URL, passage and retrieval timestamp the provider
+    already returned, tied to the claim that used it."""
+    return WebCitationRecord(
+        claim_ordinal=claim_ordinal,
+        domain=result.source,
+        title=result.title,
+        url=result.url,
+        passage=result.passage,
+        retrieved_at=result.retrieved_at,
+    )
+
+
+async def record_web_citations(
+    db: AsyncSession,
+    *,
+    message_id: uuid.UUID,
+    records: Sequence[WebCitationRecord],
+) -> None:
+    """Write `records` to `web_citations`, in whatever transaction `db` is
+    already part of — the same one the caller writes the `messages` row and
+    `citations` rows in, so a web citation is never left standing for a turn
+    whose own answer failed to save (`docs/backlog/M6.5-it-can-look-outside
+    .md` ticket `M6.5-WEB-BE-189`'s own Scope: "written in the same
+    transaction as the answer they support").
+
+    **Never called again for the same message.** `web_citations` has no
+    update path anywhere in this codebase — a stored web result is written
+    once and stands as the record of what was read and when, not what a page
+    says now (`docs/web-search.md` §4). Reading it back later touches no
+    network at all: every value this writes is already what the caller has
+    in hand.
+    """
+    for row in records:
+        await db.execute(
+            text(
+                "INSERT INTO web_citations "
+                "(id, message_id, claim_ordinal, domain, title, url, passage, retrieved_at) "
+                "VALUES (:id, :message_id, :claim_ordinal, :domain, :title, :url, :passage, "
+                ":retrieved_at)"
+            ),
+            {
+                "id": uuid.uuid4(),
+                "message_id": message_id,
+                "claim_ordinal": row.claim_ordinal,
+                "domain": row.domain,
+                "title": row.title,
+                "url": row.url,
+                "passage": row.passage,
+                "retrieved_at": row.retrieved_at,
+            },
+        )

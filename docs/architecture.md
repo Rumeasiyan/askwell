@@ -264,6 +264,8 @@ conversations      id, title, mode(text|voice), ai_backend(local|online), create
 messages           id, conversation_id, role, content, trace jsonb, created_at
 
 citations          id, message_id, chunk_id, claim_ordinal, quoted_span     -- NEW TABLE
+web_citations      id, message_id, claim_ordinal, domain, title, url,
+                   passage, retrieved_at                                   -- NEW TABLE
 fact_usage         id, message_id, fact_kind(memory|schema_note), fact_id   -- NEW TABLE
 
 audit_decisions    id, kind, payload jsonb, prev_hash, hash, occurred_at
@@ -275,6 +277,8 @@ audit_interactions id, kind, payload jsonb, prev_hash, hash, occurred_at
 **`documents.path` and `missing_since`** (#20). Askwell indexes files **in place** rather than copying them, so a moved or renamed file is not an edge case — it is the normal consequence of that choice. Without the original path there is no way to distinguish moved from deleted, and `ux/source-viewer.md` §4 requires that distinction because treating a moved file as deleted is both wrong and alarming.
 
 **`citations` as a real table, not a field in `trace` jsonb.** C4 says every factual claim carries a citation. A constraint that cannot be queried cannot be enforced or measured — with citations buried in a JSON blob, "did any answer contain an uncited claim?" is unanswerable, and `success-metrics.md` §2 makes exactly that a tracked counter-metric at 100%. It also gives `ux/source-viewer.md` its next/previous-citation navigation without parsing JSON.
+
+**`web_citations` (2026-09-22, `M6.5-WEB-BE-189`), a table of its own rather than a nullable `chunk_id` and a `kind` flag on `citations`.** A web result was never a chunk, so `citations.chunk_id` — a `NOT NULL` foreign key into `chunks` — cannot hold one without either making it nullable (which weakens the guarantee for every document citation) or inventing a sentinel chunk. C10 requires a web result never share a rendering with a document citation, and the cheapest way to guarantee that structurally, rather than by convention, is for the two to never share a record shape either. Written once, in the same transaction as the `messages` row it belongs to, and never updated — `retrieved_at` is mandatory at the column level, matching the ticket's own rule that an undated web citation may not be rendered.
 
 **`fact_usage`** (#20). Feeds the "used in N answers" count that makes `ux/memory.md` worth opening — a wrong belief used once is a nuisance, used in forty answers it has been corrupting results for weeks. A counter on `memory` would have been cheaper and would not survive a deletion or answer a "which answers used this?" question, so it is a join table.
 
