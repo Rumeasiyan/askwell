@@ -30,8 +30,8 @@ Retention targets are lower than a paid product would carry, deliberately. A fre
 
 | Metric | Target | Why | Source |
 | ------ | ------ | --- | ------ |
-| Question → answer complete, text, p50 | **< 20s** on `standard` | Below this it competes with opening the file yourself; above it, people stop | *assumed* |
-| Same, p95 | **< 60s** | p50 hides the tail that drives abandonment. Looser than a server product would allow — it is one laptop | *assumed* |
+| Question → answer complete, text, p50 | **< 20s** on `standard` | Below this it competes with opening the file yourself; above it, people stop | *measured, missed* — 27.6s cold / 26.4s warm, `standard`, 40-doc corpus, 2026-09-21 (`M7-PERF-TEST-167`, `docs/BRAIN.md`) |
+| Same, p95 | **< 60s** | p50 hides the tail that drives abandonment. Looser than a server product would allow — it is one laptop | *measured, missed* — 101.6s cold / 100.9s warm, same run. Dominant stage: `retrieve` |
 | Voice: end of speech → first audio, `accelerated` | **≤ 3.5s** | Latency budget | *derived* |
 | Same, `standard` | **≤ 8s** | Latency budget | *derived* |
 | **Abstention rate** | **5–20% band** | See below | *assumed band* |

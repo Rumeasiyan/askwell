@@ -28,6 +28,10 @@
 #   scripts/dev.sh voice-latency ...
 #                               the voice latency harness against the running
 #                               stack (e.g. `voice-latency --fixture ... --profile standard`)
+#   scripts/dev.sh answer-latency ...
+#                               the answer-path latency harness against the
+#                               running stack (e.g. `answer-latency --profile
+#                               standard --corpus-dir ... --questions-file ...`)
 #   scripts/dev.sh build       rebuild both images (build-api / build-web for one)
 #   scripts/dev.sh shell       an interactive shell in the image
 #   scripts/dev.sh run ...     any command inside the image
@@ -347,6 +351,35 @@ case "$cmd" in
             -w /app/api \
             -e PYTHONDONTWRITEBYTECODE=1 \
             "$IMAGE" python /app/eval/voice_latency.py --host api --port 8000 "$@"
+        ;;
+
+    answer-latency)
+        # Against the real `api` service over HTTP only — every measurement
+        # (the four budgets, the ingestion throughput, the per-stage
+        # breakdown) goes through `POST /ask`, `POST /roots`/`POST /sources`
+        # and `GET /ask/{id}/trace`, never the database directly, so this
+        # needs `askwell_internal` (to reach `api` by name) and nothing else.
+        # `ASKWELL_DATABASE_URL`/`ASKWELL_SANDBOX_*` are still required by
+        # `load_settings()` (used only for the hardware probe and the
+        # inference state file's model name) even though nothing here opens
+        # either connection — the same latent gap `egress-proxy` and
+        # `inference-bridge` carry in `compose.yaml` (issue #439/#524) — so
+        # they are set to placeholder-shaped values rather than joining
+        # `askwell_sandbox` for a connection this harness never makes.
+        [ "$#" -gt 0 ] || die "answer-latency needs a profile, a corpus dir and a questions file, e.g. $SELF answer-latency --profile standard --corpus-dir /tmp/askwell-perf-corpus --questions-file /tmp/askwell-perf-questions.json"
+        image_exists || build_image
+        "$CONTAINER" run --rm "${TTY_FLAGS[@]}" \
+            --network "${ASKWELL_COMPOSE_NETWORK:-askwell_internal}" \
+            -e ASKWELL_DATABASE_URL="postgresql://$(_db_user):$(_db_password)@$(_db_host):5432/$(_db_name)" \
+            -e ASKWELL_SANDBOX_DATABASE_URL="postgresql://unused:unused@localhost:5432/postgres" \
+            -e ASKWELL_SANDBOX_OWNER_PASSWORD="unused" \
+            -e ASKWELL_SANDBOX_READONLY_PASSWORD="unused" \
+            -e ASKWELL_ROOTS_MOUNT="${ASKWELL_ROOTS_MOUNT:-/tmp}" \
+            -v "$REPO_ROOT":/app:z \
+            -v "${ASKWELL_RUN_DIR:-$REPO_ROOT/.run}":/run/askwell:z \
+            -w /app/api \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            "$IMAGE" python /app/eval/answer_latency.py --host api --port 8000 "$@"
         ;;
 
     inference)
