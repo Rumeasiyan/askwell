@@ -32,6 +32,13 @@ function Confirm-Askwell {
 }
 
 function Main {
+    # M7-PACK-DEPLOY-142: unregister the stack and inference scheduled tasks
+    # before the `podman compose down` fallback below — that fallback exists
+    # for the case where the tasks were never registered at all (e.g.
+    # Podman/Python were missing at install time), not as the primary stop
+    # path.
+    Unregister-ScheduledTask -TaskName (Get-AskwellInferenceTaskName) -Confirm:$false -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName (Get-AskwellStackTaskName) -Confirm:$false -ErrorAction SilentlyContinue
     Remove-Item -Path (Join-Path $StartMenuDir 'Askwell.lnk') -Force -ErrorAction SilentlyContinue
     Remove-Item -Path (Join-Path $StartupDir 'Askwell.lnk') -Force -ErrorAction SilentlyContinue
     Remove-Item -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Askwell' -Recurse -Force -ErrorAction SilentlyContinue

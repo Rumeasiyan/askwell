@@ -252,6 +252,32 @@ register_session_start() {
   fi
 }
 
+# The platform half of M7-PACK-DEPLOY-142: the stack and native inference
+# process, each as their own LaunchAgent, running for the session whether or
+# not the app itself is ever opened. `podman` is resolved to its absolute
+# path here rather than left as a bare command name: a LaunchAgent's default
+# PATH is `/usr/bin:/bin:/usr/sbin:/sbin`, which never includes Homebrew's
+# `/opt/homebrew/bin` or `/usr/local/bin` — a bare `podman` would fail to
+# launch with no useful error the moment it left this script.
+register_stack_and_inference() {
+  local podman_bin plist_stack plist_inference
+  podman_bin="$(command -v podman)"
+  plist_stack="$LAUNCH_AGENTS_DIR/com.askwell.stack.plist"
+  plist_inference="$LAUNCH_AGENTS_DIR/com.askwell.inference.plist"
+
+  launch_agent_stack_plist_contents "$podman_bin" "$INSTALL_PREFIX/compose.yaml" "$INSTALL_PREFIX/.env" "$INSTALL_PREFIX" "$DATA_DIR/logs" \
+    > "$plist_stack"
+  launch_agent_inference_plist_contents "$INSTALL_PREFIX/askwell-inference" "$DATA_DIR/logs" > "$plist_inference"
+
+  launchctl unload "$plist_stack" >/dev/null 2>&1 || true
+  launchctl unload "$plist_inference" >/dev/null 2>&1 || true
+  if launchctl load "$plist_stack" >/dev/null 2>&1 && launchctl load "$plist_inference" >/dev/null 2>&1; then
+    askwell_say "Askwell's container stack and native inference process registered to run with your session, independent of the app window (LaunchAgent)."
+  else
+    askwell_say "Wrote the stack and inference LaunchAgents but could not load one of them. Load them yourself with: launchctl load $plist_stack $plist_inference"
+  fi
+}
+
 record_install() {
   local method="install"
   is_previous_install "$DATA_DIR" && method="upgrade"
@@ -278,6 +304,7 @@ main() {
   place_files
   create_data_dirs
   run_probe
+  register_stack_and_inference
   register_session_start
   record_install
   launch

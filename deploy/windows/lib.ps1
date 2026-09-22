@@ -241,6 +241,43 @@ function Set-AskwellEnvPasswords {
     Set-Content -Path $EnvFile -Value $lines -Encoding utf8
 }
 
+# ---------------------------------------------------------------- supervision (M7-PACK-DEPLOY-142)
+
+# Task names as their own functions, not inline literals, so install.ps1,
+# uninstall.ps1 and this file's own tests all name the same two Scheduled
+# Tasks and cannot drift apart.
+function Get-AskwellStackTaskName {
+    return 'AskwellStack'
+}
+
+function Get-AskwellInferenceTaskName {
+    return 'AskwellInference'
+}
+
+# The argument string `New-ScheduledTaskAction -Argument` passes to the
+# resolved `podman.exe`. Built as its own pure function — same reasoning as
+# `Get-AskwellStackTaskArguments`'s Linux/macOS counterparts
+# (`systemd_stack_unit_contents`, `launch_agent_stack_plist_contents`):
+# `podman compose up -d` returns immediately, leaving nothing for the
+# scheduled task's restart-on-failure to watch, so this runs compose in the
+# foreground and relies on `--abort-on-container-exit` to turn "a container
+# died" into "the task's own process exited non-zero".
+function Get-AskwellStackTaskArguments {
+    param([string]$ComposePath, [string]$EnvPath)
+    return "compose -f `"$ComposePath`" --env-file `"$EnvPath`" up --abort-on-container-exit"
+}
+
+# The argument string passed to the resolved Python interpreter to run
+# `deploy/inference/askwell-inference` (a standard-library-only script, same
+# as Linux/macOS — see that file's own header). This task restarts the outer
+# Python process if it is killed or crashes outright; the script's own
+# five-step backoff for a failed llama.cpp spawn happens inside that process
+# and is unaffected by whether this task ever fires.
+function Get-AskwellInferenceTaskArguments {
+    param([string]$ScriptPath)
+    return "`"$ScriptPath`""
+}
+
 # ---------------------------------------------------------------- quarantine
 
 # Whether a file that should exist after a plain copy is missing is, on its

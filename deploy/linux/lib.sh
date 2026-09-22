@@ -272,11 +272,102 @@ EOF
 # `graphical-session.target` is the more precise target but is not reliably
 # reached on every desktop environment this ships to; `default.target` is the
 # one every systemd --user instance has.
+#
+# `Wants=`/`After=` the two platform-level services below (M7-PACK-DEPLOY-142)
+# so a session login starts the stack and inference first — the shell's own
+# supervisor (`M7-TAURI-DEPLOY-183`, `web/src-tauri/src/supervisor.rs`) then
+# adopts whatever is already up via `state.json`'s heartbeat rather than
+# racing to spawn a second copy. `Wants=`, not `Requires=`: the shell must
+# still open (to show the starting page and its own causes) even if one of
+# the platform services has already hit its restart cap.
 systemd_unit_contents() {
   local exec_path="$1"
   cat <<EOF
 [Unit]
 Description=Askwell
+Wants=askwell-stack.service askwell-inference.service
+After=askwell-stack.service askwell-inference.service
+
+[Service]
+Type=simple
+ExecStart=$exec_path
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+}
+
+# The container stack, supervised as its own systemd --user unit so it is up
+# for the session whether or not the shell is ever opened
+# (M7-PACK-DEPLOY-142's "survive the shell being closed").
+#
+# `podman compose up -d` returns immediately once containers are started,
+# which would leave `Restart=on-failure` nothing to watch — so this runs
+# compose in the foreground instead. `--abort-on-container-exit` makes that
+# foreground process exit non-zero the moment any container in the stack
+# dies, which is what turns "a container was killed" into "the unit exited
+# and systemd restarts it" — the stack half of "killing either results in a
+# supervised restart".
+#
+# `StartLimitIntervalSec=300`/`StartLimitBurst=5` (in `[Unit]`, verified
+# against `man systemd.unit` on this host's systemd 258 — the rate-limit
+# keys live there, not in `[Service]`) is the backoff cap: past 5 restarts in
+# 5 minutes systemd stops trying and the unit settles into `failed`,
+# queryable with `systemctl --user status askwell-stack.service` — "backoff
+# caps and the state becomes failed with the last reason" for the container
+# half. `ExecStop` runs `compose down` explicitly so `systemctl --user stop`
+# (and a session logout, which stops `WantedBy=default.target` units) leaves
+# no orphaned container, matching this ticket's own Validation Rule.
+systemd_stack_unit_contents() {
+  local compose_path="$1" env_path="$2" working_dir="$3"
+  cat <<EOF
+[Unit]
+Description=Askwell container stack
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=$working_dir
+ExecStart=podman compose -f $compose_path --env-file $env_path up --abort-on-container-exit
+ExecStop=podman compose -f $compose_path --env-file $env_path down
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+}
+
+# The native inference supervisor (`deploy/inference/askwell-inference`,
+# M0-MODEL-DEPLOY-018), as its own systemd --user unit for the same
+# survives-the-shell-closing reason as the stack unit above.
+#
+# That script already retries a failed llama.cpp spawn on its own five-step
+# backoff and gives up with a reason recorded in `state.json` — this unit is
+# a different, rarer layer above that: it restarts the *outer* Python
+# process itself if something kills it outright (OOM, an uncaught
+# exception), which the script's own internal backoff cannot cover because
+# there is no script left running to do the retrying.
+#
+# `After=askwell-stack.service` orders it behind the stack (the bridge
+# container the inference socket connects through needs to exist first, see
+# `docs/decisions.md`), but `Wants=`, not `Requires=`, so a stack that has
+# hit its own restart cap does not also block inference from being tried —
+# the two failure causes stay independently reported, per this ticket's own
+# Acceptance Criteria.
+systemd_inference_unit_contents() {
+  local exec_path="$1"
+  cat <<EOF
+[Unit]
+Description=Askwell native inference supervisor
+After=askwell-stack.service
+Wants=askwell-stack.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple

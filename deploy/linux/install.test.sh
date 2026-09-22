@@ -189,6 +189,32 @@ case "$out" in *"WantedBy=default.target"*) ok "systemd unit starts with the use
                *) bad "systemd unit starts with the user session" ;; esac
 case "$out" in *"ExecStart=/home/x/.local/bin/askwell"*) ok "systemd unit execs the real binary" ;;
                *) bad "systemd unit execs the real binary" ;; esac
+case "$out" in *"Wants=askwell-stack.service askwell-inference.service"*) ok "shell unit wants the platform-level stack and inference units" ;;
+               *) bad "shell unit wants the platform-level stack and inference units" ;; esac
+
+# --- M7-PACK-DEPLOY-142: stack + inference supervision units ------------------
+out="$(systemd_stack_unit_contents "/data/compose.yaml" "/data/.env" "/data")"
+case "$out" in *"ExecStart=podman compose -f /data/compose.yaml --env-file /data/.env up --abort-on-container-exit"*)
+                 ok "stack unit runs compose in the foreground so systemd can supervise it" ;;
+               *) bad "stack unit runs compose in the foreground so systemd can supervise it" ;; esac
+case "$out" in *"ExecStop=podman compose -f /data/compose.yaml --env-file /data/.env down"*)
+                 ok "stack unit stops by tearing the compose stack down" ;;
+               *) bad "stack unit stops by tearing the compose stack down" ;; esac
+case "$out" in *"Restart=on-failure"*) ok "stack unit restarts on failure" ;;
+               *) bad "stack unit restarts on failure" ;; esac
+case "$out" in *"StartLimitIntervalSec=300"*"StartLimitBurst=5"*)
+                 ok "stack unit caps restarts (StartLimitIntervalSec/StartLimitBurst)" ;;
+               *) bad "stack unit caps restarts (StartLimitIntervalSec/StartLimitBurst)" ;; esac
+
+out="$(systemd_inference_unit_contents "/data/askwell-inference")"
+case "$out" in *"ExecStart=/data/askwell-inference"*) ok "inference unit execs the real supervisor script" ;;
+               *) bad "inference unit execs the real supervisor script" ;; esac
+case "$out" in *"After=askwell-stack.service"*"Wants=askwell-stack.service"*)
+                 ok "inference unit orders itself after the stack, without requiring it" ;;
+               *) bad "inference unit orders itself after the stack, without requiring it" ;; esac
+case "$out" in *"StartLimitIntervalSec=300"*"StartLimitBurst=5"*)
+                 ok "inference unit caps restarts (StartLimitIntervalSec/StartLimitBurst)" ;;
+               *) bad "inference unit caps restarts (StartLimitIntervalSec/StartLimitBurst)" ;; esac
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

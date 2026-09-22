@@ -53,9 +53,18 @@ confirm() {
 
 main() {
   if command -v systemctl >/dev/null 2>&1; then
+    # M7-PACK-DEPLOY-142: the stack and inference units stop first — the
+    # stack unit's own ExecStop runs `podman compose down`, so stopping it
+    # here (rather than relying only on the `podman compose down` fallback
+    # below) is what leaves no orphaned container when a unit is disabled
+    # without ever being started via the manual fallback path.
     systemctl --user disable --now askwell.service >/dev/null 2>&1 || true
+    systemctl --user disable --now askwell-inference.service >/dev/null 2>&1 || true
+    systemctl --user disable --now askwell-stack.service >/dev/null 2>&1 || true
   fi
   rm -f "$SYSTEMD_USER_DIR/askwell.service"
+  rm -f "$SYSTEMD_USER_DIR/askwell-stack.service"
+  rm -f "$SYSTEMD_USER_DIR/askwell-inference.service"
   rm -f "$DESKTOP_DIR/askwell.desktop"
   rm -f "$BIN_DIR/askwell"
 

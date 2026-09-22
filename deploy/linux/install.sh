@@ -219,6 +219,29 @@ register_session_start() {
   fi
 }
 
+# The platform half of M7-PACK-DEPLOY-142: the container stack and the native
+# inference process are registered as their own systemd --user units, started
+# and restarted independently of whether the shell (askwell.service above) is
+# ever opened. The shell's own in-process supervisor (M7-TAURI-DEPLOY-183)
+# still runs while the shell is open — it attaches to whatever these units
+# already have running via state.json's heartbeat rather than racing them.
+register_stack_and_inference() {
+  systemd_stack_unit_contents "$INSTALL_PREFIX/compose.yaml" "$INSTALL_PREFIX/.env" "$INSTALL_PREFIX" \
+    > "$SYSTEMD_USER_DIR/askwell-stack.service"
+  systemd_inference_unit_contents "$INSTALL_PREFIX/askwell-inference" > "$SYSTEMD_USER_DIR/askwell-inference.service"
+
+  if ! command -v systemctl >/dev/null 2>&1 || ! systemctl --user daemon-reload 2>/dev/null; then
+    askwell_say "Wrote $SYSTEMD_USER_DIR/askwell-stack.service and askwell-inference.service but could not enable them (no systemd --user session available right now). Enable them with: systemctl --user enable --now askwell-stack.service askwell-inference.service"
+    return 0
+  fi
+
+  if systemctl --user enable --now askwell-stack.service 2>/dev/null && systemctl --user enable --now askwell-inference.service 2>/dev/null; then
+    askwell_say "Askwell's container stack and native inference process registered to run with your session, independent of the app window (systemd --user)."
+  else
+    askwell_say "Wrote the stack and inference unit files but could not enable one of them. Check with: systemctl --user status askwell-stack.service askwell-inference.service"
+  fi
+}
+
 # ---------------------------------------------------------------- 9. install record + launch
 
 record_install() {
@@ -245,6 +268,7 @@ main() {
   create_data_dirs
   run_probe
   register_desktop_entry
+  register_stack_and_inference
   register_session_start
   record_install
   launch
