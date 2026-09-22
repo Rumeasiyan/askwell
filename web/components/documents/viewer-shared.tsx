@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 
+import { type NativePick, isNative, pickFile } from "@/lib/native";
+
 /**
  * Pieces the source viewer's PDF, converted-text and spreadsheet renderers
  * all need. `M1-VIEW-FE-047`.
@@ -133,10 +135,12 @@ export function DeletedSourceNotice({
  * `moved`/`root_unavailable` split exists to keep this component from ever
  * having to guess between.
  *
- * The typed path is the same seam `add-screen.tsx`'s `Locate` form uses for
- * nominating a folder: `M7-TAURI-FE-182` replaces the text field with the
- * platform's own file dialog without this component's request or its
- * hash-mismatch handling changing at all.
+ * The typed path was the seam `M7-TAURI-FE-182` was built to replace: in the
+ * desktop shell, `pickFile()` opens the platform's own file dialog and hands
+ * the chosen path straight to `relocate()` — the request and the hash-mismatch
+ * handling below are exactly what a typed path already went through. A
+ * browser has no file dialog to offer, so the typed field stays as the
+ * fallback there, and stays visible in the shell too.
  */
 export function MovedFileNotice({
   documentId,
@@ -153,15 +157,14 @@ export function MovedFileNotice({
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
 
-  async function submit(event: React.FormEvent): Promise<void> {
-    event.preventDefault();
+  async function relocate(candidatePath: string): Promise<void> {
     setBusy(true);
     setProblem(null);
     try {
       const response = await fetch(`/documents/${documentId}/relocate`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ path: candidate }),
+        body: JSON.stringify({ path: candidatePath }),
       });
       const body = (await response.json()) as { error?: string; relocated?: boolean };
       if (response.ok && body.relocated === true) {
@@ -176,6 +179,26 @@ export function MovedFileNotice({
     }
   }
 
+  async function submit(event: React.FormEvent): Promise<void> {
+    event.preventDefault();
+    await relocate(candidate);
+  }
+
+  async function chooseNativeReplacement(): Promise<void> {
+    let picked: NativePick | null;
+    try {
+      picked = await pickFile();
+    } catch (error) {
+      setProblem(error instanceof Error ? error.message : "That file could not be chosen.");
+      return;
+    }
+    // Cancelled: nothing changed, no error (this ticket's own cancel edge
+    // case) — a native dialog does not make a chosen file trustworthy either
+    // way, `relocate()` still runs the same hash check.
+    if (picked === null) return;
+    await relocate(picked.path);
+  }
+
   return (
     <section className="flex flex-col gap-3 p-4">
       <h1 style={{ fontSize: "var(--t-title)", lineHeight: "var(--t-title-lh)" }}>{filename}</h1>
@@ -183,9 +206,20 @@ export function MovedFileNotice({
         {filename} has moved. Askwell last found it at <code>{path}</code>, but that path no
         longer resolves. Nothing was deleted.
       </p>
+      {isNative() ? (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void chooseNativeReplacement()}
+          className="ask-action-primary px-4 w-fit"
+          style={{ fontSize: "var(--t-ui)" }}
+        >
+          Choose the file
+        </button>
+      ) : null}
       <form onSubmit={(event) => void submit(event)} className="flex flex-col gap-2">
         <label htmlFor={`relocate-${documentId}`} style={{ fontSize: "var(--t-ui)" }}>
-          Where is it now?
+          {isNative() ? "Or type the path directly" : "Where is it now?"}
         </label>
         <div className="flex gap-2">
           <input

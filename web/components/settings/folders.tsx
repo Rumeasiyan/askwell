@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { isMacOS, isNative, pickFolder } from "@/lib/native";
 import type { Registry, Removal, Root } from "@/lib/roots";
 import {
   STATE_LABELS,
@@ -26,10 +27,13 @@ import {
  * none — someone removing a folder from a list has every reason to fear they
  * are deleting their own files.
  *
- * The path is typed. Until the desktop shell ships `M7-TAURI-FE-182` a browser
- * cannot offer a directory dialog, and this is stated on the screen as a known
- * gap rather than left to be discovered. It is deliberately not a file input:
- * that would upload a copy, and Askwell copies nothing.
+ * In the desktop shell (`M7-TAURI-FE-182`), `pickFolder()` opens the
+ * platform's own directory dialog and the chosen directory registers exactly
+ * as a typed path did — no code path between "a path string" and `nominate()`
+ * changes. A browser has no directory dialog to offer, so the typed field
+ * stays as the fallback there, and stays visible in the shell too rather than
+ * disappearing the moment a native picker exists. It is deliberately not a
+ * file input: that would upload a copy, and Askwell copies nothing.
  */
 export function Folders() {
   const [registry, setRegistry] = useState<Registry | null>(null);
@@ -53,12 +57,11 @@ export function Folders() {
     return () => clearTimeout(first);
   }, [load]);
 
-  async function add(event: React.FormEvent): Promise<void> {
-    event.preventDefault();
+  async function registerRoot(candidate: string): Promise<void> {
     setBusy(true);
     setRefusal(null);
     try {
-      await nominate(path);
+      await nominate(candidate);
       setPath("");
       await load();
     } catch (error) {
@@ -66,6 +69,27 @@ export function Folders() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function add(event: React.FormEvent): Promise<void> {
+    event.preventDefault();
+    await registerRoot(path);
+  }
+
+  async function chooseNativeFolder(): Promise<void> {
+    let chosen: string | null;
+    try {
+      chosen = await pickFolder();
+    } catch (error) {
+      // A genuinely non-UTF-8 path (issue 499) refuses at the dialog itself
+      // rather than registering something that cannot be represented.
+      setRefusal(error instanceof Error ? error.message : "That folder could not be chosen.");
+      return;
+    }
+    // Cancelled: the screen returns to where it was, nothing changed, no error
+    // (this ticket's own cancel edge case).
+    if (chosen === null) return;
+    await registerRoot(chosen);
   }
 
   async function askToRemove(root: Root): Promise<void> {
@@ -209,6 +233,25 @@ export function Folders() {
         >
           Nominate a folder
         </label>
+        {isNative() ? (
+          <div className="flex flex-col gap-1">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void chooseNativeFolder()}
+              className="ask-action-primary px-4 w-fit"
+              style={{ fontSize: "var(--t-ui)" }}
+            >
+              Choose a folder
+            </button>
+            {isMacOS() ? (
+              <p className="ask-micro">
+                macOS is the one asking here — it checks every app, not just this one. Askwell
+                only ever sees the folder you choose.
+              </p>
+            ) : null}
+          </div>
+        ) : null}
         <div className="flex gap-2">
           <input
             id="root-path"
@@ -231,8 +274,9 @@ export function Folders() {
           </button>
         </div>
         <p className="ask-micro">
-          Type the whole path. Choosing a folder from a system dialog arrives with the
-          desktop application.
+          {isNative()
+            ? "Or type the whole path directly."
+            : "Type the whole path. Choosing a folder from a system dialog arrives with the desktop application."}
         </p>
         {refusal === null ? null : (
           <Note tone="alarm" heading="That folder was not accepted">

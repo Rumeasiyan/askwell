@@ -7,7 +7,7 @@
 
 **What is being checked.** `web/src-tauri/src/main.rs`: `is_allowed_navigation` (only the bundled `starting.html` asset origin and the local API's own origin, by full `Origin` including port, may load), `starting_page_url` + `web/src-tauri/shell-assets/starting.html` (offline starting page that polls `{api}/health` and hands off once it answers), `tauri_plugin_window_state` (size/position persistence), `tauri_plugin_single_instance` (second launch focuses the first window), `on_new_window` returning `Deny` (no popup window for `window.open()`/`target="_blank"`), and `log_event`/`spawn_api_version_watcher` (shell start/stop and API-connected lines on stdout, each carrying `shell_version` and, once known, `api_version`). Also `web/components/shell/shell.tsx`'s `RailDrawer`, mounted at `#askwell-chrome-start` in the app's own header — the narrow-window menu control from `M0-SHELL-FE-017a` that this ticket's chrome bar hosts.
 
-**Where this stops on purpose.** No native file dialogs (`M7-TAURI-FE-182` — the browser-provided file picker is still what nominating a root or relocating a file uses). No process supervision — the API/containers/inference are started by hand exactly as in every other manual test, the shell does not start them (`M7-TAURI-DEPLOY-183`). No signing — every platform will show an unsigned-binary warning (`M7-TAURI-DEPLOY-184`); accept it, that warning is not a defect this ticket introduces.
+**Where this stops on purpose.** No process supervision — the API/containers/inference are started by hand exactly as in every other manual test, the shell does not start them (`M7-TAURI-DEPLOY-183`). No signing — every platform will show an unsigned-binary warning (`M7-TAURI-DEPLOY-184`); accept it, that warning is not a defect this ticket introduces.
 
 ---
 
@@ -143,7 +143,7 @@ Launch `askwell-shell` there.
 ## Known gaps
 
 - **No installed application bundle.** `tauri.conf.json`'s `bundle.active` is `false`; there is no `.app`, `.exe`/MSI, or `.deb`/AppImage yet, so this walkthrough launches the built binary directly rather than from an applications menu or dock. That gap is real (packaging is `M7-PACK-DEPLOY-139` through `141`) and is not this ticket's scope.
-- **No native file dialogs.** Adding a source or relocating a file still uses the browser-provided picker inside the webview — `capabilities/default.json` grants the webview no Tauri command at all, by design, so no native dialog could appear yet even if requested. `M7-TAURI-FE-182`.
+- **Native file dialogs shipped separately.** At the time this ticket was built, `capabilities/default.json` granted the webview no Tauri command at all, by design. `M7-TAURI-FE-182` is what added the five commands and the matching capability grant — see that ticket's own manual test.
 - **No process supervision.** The shell does not start or stop the containers or the inference process — Part A above starts them by hand, exactly as in a browser-only walkthrough. `M7-TAURI-DEPLOY-183`.
 - **Unsigned binary.** Expect an OS-level "unidentified developer"/SmartScreen/unsigned-binary warning on every platform when launching the release build. `M7-TAURI-DEPLOY-184`.
 - **Launch counter has no display surface.** `record_launch` writes a count to the app-data directory but nothing in the interface shows it yet (tracked as issue #482 per the code comment in `main.rs`) — this is expected, not a defect to report.
