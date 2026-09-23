@@ -1,30 +1,23 @@
-# M8 — The paid upgrade
+# M8 — Online AI, with your own key
 
-**Goal:** Optional online AI, chosen per conversation, paid by credit, with the user told exactly what will be sent before anything is sent.
+**Goal:** Optional online AI, chosen per conversation, paid for by the user directly to their own provider with their own key, and Askwell tells them exactly what will be sent before anything is sent.
 
-**Phase:** 7 (`../build-plan.md`) · **Depends on:** M6.5 · **Tickets:** 8 · **Estimated:** 17–25 hours of unblocked work, plus an unestimated remainder behind two open decisions
+**Phase:** 7 (`../build-plan.md`) · **Depends on:** M6.5 · **Tickets:** 8 · **Estimated:** 20–28 hours
 
-**Exit condition:** Cannot be defined until the two open decisions are answered. The unblocked portion ends with a conversation able to route to exactly one authorised destination, with the disclosure shown first, the local log unchanged, and a fallback to local mode that never blocks the user.
+**Exit condition:** A conversation can route to exactly one authorised destination, using a key the user supplied, with the disclosure shown before the first send, the local log unchanged, and a fall back to local that never blocks the user.
 
-> **This milestone is beyond the story milestones in `../stories/README.md`, which end at M7.** It is numbered M8 here because the roadmap has a seventh stage and the tickets have to live somewhere. It is also the revenue line, and everything before it is free.
+> **This milestone is beyond the story milestones in `../stories/README.md`, which end at M7.** It is numbered M8 here because the roadmap has a seventh stage and the tickets have to live somewhere.
 
-## Blocked work — do not start
+**The credit model was dropped on 2026-09-23** (`../decisions.md`). Askwell sells nothing. Anyone who wants a larger model brings a key from a provider they already pay, and the relationship is between them and that provider. Nothing in this milestone is blocked any more: the two decisions that gated it — credit pricing, and what online mode transmits for billing — both stopped existing with the model they served. Nothing is transmitted for billing, because there is no billing.
 
-Two decisions in the business case's open list gate most of this milestone.
-
-| Decision | What it blocks | Tickets |
-| -------- | -------------- | ------- |
-| **Credit pricing** — rate, minimum purchase, margin over provider cost | The entire purchase and balance path, and therefore the revenue model | M8-CREDIT-BLOCKED-173, M8-CREDIT-BLOCKED-174 |
-| **What online mode transmits** — the precise payload for billing and limits | Online-mode logging, and the pre-send disclosure's exact wording | M8-ONLINE-OBS-172, and the disclosure half of M8-ONLINE-FE-171 |
-
-The constraint already recorded for the second is that local logging continues in full regardless, that online mode adds a record and never replaces one, and that what leaves should be the minimum for billing and limits — token counts, timestamps, model — never question content, answers or retrieved material. **That is a constraint, not the decision.** The precise shape still has to be written down before this work starts.
+The constraint that survives, unchanged: local logging continues in full regardless, online mode **adds** a record and never replaces one, and a key is a secret — never logged, never in a trace, never in an export, never committed (C8).
 
 ## Included epics
 
 | Epic | Code | Covers |
 | ---- | ---- | ------ |
 | Online routing | `ONLINE` | Per-conversation authorisation, the provider abstraction, the marker and disclosure, logging |
-| Credits | `CREDIT` | Purchase, balance, limits, exhaustion |
+| The user's own key | `KEY` | Storing it, entering it, and what happens when the provider refuses |
 
 ---
 
@@ -231,116 +224,127 @@ The constraint already recorded for the second is that local logging continues i
 
 ---
 
-### M8-CREDIT-BLOCKED-173 — Credit purchase **[UNBLOCKED 2026-08-26]**
+### M8-KEY-BE-173 — Hold the user's provider key, as a secret
 
-**Type:** Spike
+**Type:** Task
 
 **User Story**
-- **Actor:** someone who wants to buy a small amount of online AI.
-- **User Need:** to buy credits without a subscription and without handing over an API key.
-- **Business Value:** this is the entire revenue line, and everything before it is free.
-- *As someone who occasionally needs a bigger model, I want to buy a small amount of credit, so that I pay for what I use rather than subscribing.*
+- **Actor:** someone who already pays a provider and wants to use that account here.
+- **User Need:** to give Askwell the key once and have it kept properly.
+- **Business Value:** this is what replaced the credit system. It is the whole of the online path's commercial arrangement: there isn't one.
+- *As someone with my own provider account, I want Askwell to hold my key the way it holds everything else about me, so that using a bigger model costs me nothing extra and tells nobody anything.*
 
 **Context / Background**
-**Detailed Description:** **Blocked on the open credit-pricing decision** — rate, minimum purchase, and margin over provider cost. That decision determines whether the free-first bet works, and building the purchase path against a guessed price means building the wrong thing. The one thing already settled is that credits are bought from the service, which holds the provider relationship and the usage limits, so a stolen third-party key never becomes the user's problem.
+**Detailed Description:** Store one provider key, encrypted at rest with the same mechanism as every other credential (`M7-SEC-BE-152`), and hand it to the provider abstraction (`M8-ONLINE-BE-170`) at send time. It never appears in a log line, a trace, an audit record, an error message or an export. Replacing it replaces it; removing it removes it and online mode becomes unavailable rather than silently failing at the next question.
 
 **Scope**
-- Nothing while blocked.
-- When unblocked: account creation, purchase, receipt, and the relationship between an account and a local install.
+- One key, encrypted at rest, decrypted only at send.
+- Which provider it belongs to, so the destination the egress proxy authorises matches it (`M8-ONLINE-SEC-169`).
+- Replace and remove, both taking effect immediately.
+- Redaction everywhere: logs, traces, audit records, error text, exports.
 
 **Out of Scope**
-- Any implementation while blocked. Any account requirement for the free product — there is none and there must never be one.
+- Entering it (`M8-KEY-FE-174`).
+- Several keys or several providers at once — one is enough until somebody asks for two.
+- Validating the key with the provider at entry time; that is a network call before the user has agreed to one.
 
 **Acceptance Criteria**
-- **Acceptance Criteria:** Cannot be accepted while blocked. When unblocked: purchase must not require an account for the free product, must state the price before purchase, and must not make the local product depend on the service in any way.
-- **Edge Cases:** Deferred, except one already fixed: the free product must continue to work identically for someone who never buys anything, forever.
-- **Permissions / Roles:** Single user — no roles. Not applicable. A credit account is not a product role.
-- **UI States:** `../ux/settings.md` §3.
-- **Validation Rules:** No licence key, no seat cap, no trial, ever.
-- **Audit / Logging Requirements:** Purchases are decisions records locally.
-- **Analytics Events:** Paying users are observable by necessity, and that observation says nothing about the free majority — which must be stated wherever those numbers are used.
+- **Acceptance Criteria:** A stored key survives a restart, is used for an online turn, and appears nowhere in any log, trace, audit record or export — proved by a test that stores a known sentinel and greps every one of those outputs for it. Removing it makes online mode unavailable, stated plainly.
+- **Edge Cases:** A key the provider rejects — reported as the provider rejecting it, never as Askwell being broken, and never with the key in the message. Online attempted with no key — unavailable with the reason, not an error at send. A passphrase-locked install (`M7-SEC-BE-151`) — the key is not readable until unlock, same as everything else encrypted.
+- **Permissions / Roles:** Single user — no roles.
+- **UI States:** None here; `M8-KEY-FE-174` owns them.
+- **Validation Rules:** The key is a secret (C8). It is never a default, never in `.env.example` as a value, and never echoed back to the screen after entry.
+- **Audit / Logging Requirements:** Storing, replacing or removing a key is a decisions record — the fact of it, never the value.
+- **Analytics Events:** None. Nothing is transmitted about the key or its use (C1).
 
 **Real-World Example Scenarios**
-- Deferred with the decision.
+- A user pastes a key from a provider they already pay, asks two hard questions with it that month, and Askwell never learns, reports or charges anything for it.
 
 **Dependencies & Assumptions**
-- **Dependencies:** **Blocked on the open credit-pricing decision.**
-- **API / Data Touchpoints:** The credit service.
-- **Assumptions:** None may be made. A guessed price would shape the purchase flow, the minimum, and the limit interface all at once.
+- **Dependencies:** M7-SEC-BE-152, M8-ONLINE-BE-170.
+- **API / Data Touchpoints:** The credential store; the provider abstraction; the egress proxy's authorised destination.
+- **Assumptions:** One key covers one provider, and the provider abstraction already knows how to present it.
 
 **Testing Notes / Scenarios**
-- **Cold-start manual walkthrough:** Not applicable while blocked. When unblocked it must begin with a fresh install that has never bought anything and confirm the free product is unaffected.
-- **Known gaps:** Everything.
+- **Cold-start manual walkthrough:** Store a key, restart the stack, run an online turn, then read every log, trace and export for the sentinel. It must appear in none.
+- **Other scenarios:** Remove the key and confirm online mode says it is unavailable rather than failing at the next question.
+- **Known gaps:** No provider-side validation at entry, deliberately.
 
 **Effort & Granularity Check**
-- **Estimate:** Not estimable while blocked. · **Priority:** High
-- **Labels / Component:** `phase:7`, `blocked:decision`
-- **Granularity:** Blocked. Do not start.
+- **Estimate:** 3–4 hours · **Priority:** High
+- **Labels / Component:** `phase:7`, `constraint:local-first`, backend
+- **Granularity:** One secret, stored and redacted.
 
 ---
 
-### M8-CREDIT-BLOCKED-174 — Spending limit and balance **[UNBLOCKED 2026-08-26]**
-
-**Type:** Spike
-
-**User Story**
-- **Actor:** someone worried about an unexpected bill.
-- **User Need:** a limit they set, so a bad afternoon cannot produce a surprise.
-- **Business Value:** credits are bought in advance with a limit the user sets, which is what makes the cost predictable.
-- *As someone who has been surprised by a usage bill before, I want a limit I set myself, so that the worst case is bounded by my own number.*
-
-**Context / Background**
-**Detailed Description:** **Blocked on the open credit-pricing decision.** The balance display, the limit, and the behaviour as the limit approaches all depend on the unit of pricing, which is undecided. The one settled behaviour is what happens at exhaustion, which is unblocked and is its own ticket.
-
-**Scope**
-- Nothing while blocked.
-- When unblocked: balance display, the user-set limit, and warnings as it approaches.
-
-**Out of Scope**
-- Any implementation while blocked.
-
-**Acceptance Criteria**
-- **Acceptance Criteria:** Cannot be accepted while blocked. When unblocked: the limit is set by the user, is honoured, and its approach is warned about before it is reached rather than at it.
-- **Edge Cases:** Deferred.
-- **Permissions / Roles:** Single user — no roles. Not applicable.
-- **UI States:** `../ux/settings.md` §3.
-- **Validation Rules:** A limit the user sets is never exceeded.
-- **Audit / Logging Requirements:** Limit changes are decisions records.
-- **Analytics Events:** Local only.
-
-**Real-World Example Scenarios**
-- Deferred with the decision.
-
-**Dependencies & Assumptions**
-- **Dependencies:** **Blocked on the open credit-pricing decision**, and on M8-CREDIT-BLOCKED-173.
-- **API / Data Touchpoints:** The credit service.
-- **Assumptions:** None may be made.
-
-**Testing Notes / Scenarios**
-- **Cold-start manual walkthrough:** Not applicable while blocked.
-- **Known gaps:** Everything.
-
-**Effort & Granularity Check**
-- **Estimate:** Not estimable while blocked. · **Priority:** High
-- **Labels / Component:** `phase:7`, `blocked:decision`
-- **Granularity:** Blocked. Do not start.
-
----
-
-### M8-CREDIT-FE-175 — Credits exhausted falls back to local and keeps working
+### M8-KEY-FE-174 — Enter, replace and remove the key, with what it is for
 
 **Type:** Story
 
 **Human review:** copy — this ticket renders wording a user reads, specified in `docs/ux/`. The runner stops and quotes it before the pull request is merged.
 
 **User Story**
-- **Actor:** someone whose credit ran out mid-session.
-- **User Need:** the conversation to continue locally, saying so.
-- **Business Value:** refusing to answer because credit ran out, on a product that works offline for free, would be absurd.
-- *As someone who has run out of credit, I want the conversation to carry on with the local model, so that running out is a downgrade rather than a wall.*
+- **Actor:** someone deciding whether to hand over a key at all.
+- **User Need:** to know what it will be used for, when, and what leaves the machine, before pasting it.
+- **Business Value:** a key is the most sensitive thing the product will ever be handed, on a product whose entire pitch is that it is handed nothing.
+- *As someone about to paste a provider key into a local-first product, I want to be told precisely what it will do, so that the one exception to 'nothing leaves this machine' is one I made on purpose.*
 
 **Context / Background**
-**Detailed Description:** When credit is exhausted, the conversation falls back to local AI, says so plainly, and nothing is lost. The marker on the conversation updates to reflect that later turns were local. This behaviour is settled and does not depend on the pricing decision, so it can be built and tested against a simulated exhaustion.
+**Detailed Description:** The settings surface for the key: enter it, see that one is set without ever seeing it again, replace it, remove it. Beside it, in plain words: what the key is used for, that it is used only for a conversation the user has explicitly switched to online, that Askwell never sends anything with it without saying so first, and that the cost is between the user and their provider.
+
+**Scope**
+- Entry, masked, with no echo back after saving.
+- Set-or-not-set state, never the value.
+- Replace and remove.
+- The statement of what it is for, and of Askwell's own non-involvement in the billing.
+
+**Out of Scope**
+- Storage and redaction (`M8-KEY-BE-173`).
+- The per-conversation disclosure before a send (`M8-ONLINE-FE-171`), which is a different moment and a different sentence.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** A key can be entered, is never displayed again, and the screen states clearly that one is set. Replace and remove both work and are stated. The explanation names what is sent, when, and that Askwell takes no part in the cost.
+- **Edge Cases:** Pasting whitespace or an obviously malformed value — refused at entry with the reason. Removing while a conversation is in online mode — that conversation falls back to local, saying so (`M8-KEY-FE-175`). Entering a key on a passphrase-locked install before unlock — asks for the passphrase first.
+- **Permissions / Roles:** Single user — no roles.
+- **UI States:** `../ux/settings.md` §9 online AI. The section already exists and is visible-and-disabled from `M7-SET-FE-150`; this fills it in.
+- **Validation Rules:** The value is never rendered back, never placed in a URL, and never in a screenshot-able field after save.
+- **Audit / Logging Requirements:** Each of entry, replacement and removal is a decisions record — the fact, never the value.
+- **Analytics Events:** None (C1).
+
+**Real-World Example Scenarios**
+- A cautious user reads the section, decides the explanation is honest, pastes a key, and later removes it in one click when they stop needing it.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M8-KEY-BE-173, M7-SET-FE-150.
+- **API / Data Touchpoints:** The credential store; the settings surface.
+- **Assumptions:** `M7-SET-FE-150` left the section in place to be filled rather than requiring a new one.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** Cold start, open settings, read the section as a first-time reader would, enter a key, reload, and confirm it says one is set and never shows it. Remove it and confirm the section returns to its unset state.
+- **Other scenarios:** Enter whitespace and confirm the refusal names the reason.
+- **Known gaps:** No provider-side validation, matching `M8-KEY-BE-173`.
+
+**Effort & Granularity Check**
+- **Estimate:** 3 hours · **Priority:** High
+- **Labels / Component:** `phase:7`, frontend
+- **Granularity:** One settings section with three actions.
+
+---
+
+### M8-KEY-FE-175 — The provider refusing falls back to local and keeps working
+
+**Type:** Story
+
+**Human review:** copy — this ticket renders wording a user reads, specified in `docs/ux/`. The runner stops and quotes it before the pull request is merged.
+
+**User Story**
+- **Actor:** someone whose provider account ran out of quota, or whose key was revoked, mid-session.
+- **User Need:** the conversation to continue locally, saying so.
+- **Business Value:** refusing to answer because somebody else's provider said no, on a product that works offline for free, would be absurd.
+- *As someone whose provider just said no, I want the conversation to carry on with the local model, so that it is a downgrade rather than a wall.*
+
+**Context / Background**
+**Detailed Description:** When the provider refuses — quota exhausted, key revoked, rate limited, unreachable — the conversation falls back to local AI, says so plainly in the conversation, and nothing is lost. The marker updates so later turns read as local. The reason is named: it matters to the user whether their quota ran out or their key stopped working, because the two have different fixes, and neither is Askwell's fault to claim as its own error.
 
 **Scope**
 - Fallback on exhaustion with a plain statement in the conversation.
