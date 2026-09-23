@@ -54,6 +54,15 @@ release** — this is a gate, not an aside (`M7-BACKUP-TEST-159`; `AGENTS.md` §
 a failed restore test does not ship"). Do not proceed to step 4 without a `pass` entry for this
 exact version.
 
+## 3a. The offline gate
+
+Also before checksumming or publishing, run `docs/offline-release-test.md` for this `VERSION`
+and record the result in `docs/offline-test-log.md`. **A failed run blocks the release** — C1
+is the product's central claim, and this gate is what verifies it holds rather than asserting
+it (`M7-OFFLINE-TEST-145`; `AGENTS.md` §3, C1). Do not proceed to step 4 without a `pass` entry
+for this exact version. `scripts/verify-no-egress.sh` covers the automatable half; the physical
+cable-pull and voice steps stay manual, per that document's own §2.
+
 ## 4. Generate checksums
 
 ```

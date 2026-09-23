@@ -4,6 +4,26 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.16 - 2026-09-23
+
+`M7-OFFLINE-TEST-145` — the cable-unplugged release test, documented and partly automated.
+`Added`: `docs/offline-release-test.md`, the full walkthrough (first run, every source kind,
+ask, abstain, clarify, correct, database query, voice, backup, log export) run with the
+network physically disconnected, verified two independent ways — the egress proxy's own
+`GET /network` counters and an external packet capture — because a counter produced by the
+system under test is not sufficient evidence on its own. `scripts/verify-no-egress.sh`
+automates the HTTP-reachable half against a running stack (add the eval fixture corpus, ask a
+grounded question, abstain, correct a fact, back up, export the log) and asserts the proxy's
+`permitted` count does not move; voice, a SQL dump import and the physical disconnect itself
+stay manual, named explicitly rather than silently skipped. `docs/offline-test-log.md`, the
+retained per-release record, `docs/restore-test-log.md`'s own shape. `Changed`:
+`docs/release-procedure.md` gains step 3a, wiring this in as a release-blocking gate alongside
+the existing restore gate. `docs/decisions.md`, this date, has the full reasoning, including
+why the grounded-question check in the automated script checks that a turn completed rather
+than its exact wording (issue #220's `<think>`-block flakiness, already disclosed by
+`docs/restore-release-test.md` §4.3, would otherwise fail this gate for a reason that has
+nothing to do with the network claim it exists to test).
+
 ## 0.7.15 - 2026-09-23
 
 `M7-OFFLINE-DEPLOY-144` — manual model placement, judged by checksum against the whole catalog
