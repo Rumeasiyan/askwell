@@ -22,6 +22,7 @@ from askwell.audit import Store, verify
 from askwell.config import Settings
 from askwell.inference.state import ProcessState
 from askwell.model_select import (
+    SETTING_ACTIVE_SHIPPED_DISPLAY_NAME,
     SETTING_ACTIVE_SOURCE,
     SETTING_USER_MODEL_PATH,
     ModelSource,
@@ -32,6 +33,7 @@ from askwell.model_select import (
     select_user_model,
     validate_model_file,
 )
+from askwell.models_catalog import CATALOG
 from askwell.settings_store import get_setting, set_setting
 
 TABLES = "settings, audit_decisions"
@@ -138,6 +140,66 @@ async def test_a_successful_swap_persists_the_selection_and_records_a_decision(
 
         result = await verify(db, Store.DECISIONS)
         assert result.intact
+
+
+async def test_a_swap_to_a_catalog_recognised_alternative_is_marked_shipped(
+    factory: async_sessionmaker[AsyncSession], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #632: `available_alternatives` only ever lists sha256-verified
+    shipped files, so swapping to one via that list (or by typing its exact
+    path) is a shipped model, whichever tier it belongs to — not
+    `user_supplied`, and the settings screen's persistent unverified warning
+    must not follow it.
+    """
+    settings = _settings(tmp_path)
+    model = _gguf(tmp_path)
+    alternative_spec = next(iter(CATALOG.values()))
+
+    async def fake_perform_swap(_settings: Settings, path: Path) -> SwapOutcome:
+        return SwapOutcome(ok=True, reason=None, model_path=path)
+
+    monkeypatch.setattr("askwell.model_select._perform_swap", fake_perform_swap)
+    monkeypatch.setattr("askwell.model_select._catalog_match", lambda _path: alternative_spec)
+
+    async with factory() as db:
+        outcome = await select_user_model(db, settings, model)
+        await db.commit()
+
+    assert outcome.ok is True
+
+    async with factory() as db:
+        assert await get_setting(db, SETTING_ACTIVE_SOURCE) == str(ModelSource.SHIPPED)
+        assert (
+            await get_setting(db, SETTING_ACTIVE_SHIPPED_DISPLAY_NAME)
+            == alternative_spec.display_name
+        )
+
+        _write_state(tmp_path, state="ready", model=alternative_spec.filename)
+        identity = await active_model_identity(db, settings)
+        assert identity["source"] == str(ModelSource.SHIPPED)
+        assert identity["display_name"] == alternative_spec.display_name
+
+
+async def test_a_swap_to_a_path_that_matches_nothing_in_the_catalog_stays_unverified(
+    factory: async_sessionmaker[AsyncSession], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path)
+    model = _gguf(tmp_path)
+
+    async def fake_perform_swap(_settings: Settings, path: Path) -> SwapOutcome:
+        return SwapOutcome(ok=True, reason=None, model_path=path)
+
+    monkeypatch.setattr("askwell.model_select._perform_swap", fake_perform_swap)
+    monkeypatch.setattr("askwell.model_select._catalog_match", lambda _path: None)
+
+    async with factory() as db:
+        outcome = await select_user_model(db, settings, model)
+        await db.commit()
+
+    assert outcome.ok is True
+    async with factory() as db:
+        assert await get_setting(db, SETTING_ACTIVE_SOURCE) == str(ModelSource.USER_SUPPLIED)
+        assert await get_setting(db, SETTING_ACTIVE_SHIPPED_DISPLAY_NAME) is None
 
 
 # --- selection: failure restores the previous model -------------------------

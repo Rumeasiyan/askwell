@@ -1,6 +1,7 @@
 import { About } from "@/components/settings/about";
 import { Folders } from "@/components/settings/folders";
 import { HardwareProfile } from "@/components/settings/hardware-profile";
+import { ModelSwap } from "@/components/settings/model-swap";
 import { PrivacySecurity } from "@/components/settings/privacy-security";
 import { RetrievalThresholdControl } from "@/components/settings/retrieval-threshold";
 import { Storage } from "@/components/settings/storage";
@@ -12,15 +13,19 @@ import { VerifyLog } from "@/components/settings/verify-log";
  * The folders Askwell may read arrive here in M1 because that is where the
  * cold-start walkthrough looks for them: nominate a folder while adding a
  * source, then open settings and see it listed. Connected databases arrives
- * the same way in `M4-CONN-FE-096`. The retrieval threshold arrives with
- * `M5-TRACE-FE-122` — one setting brought forward ahead of the general M7
- * settings surface, the same way the two before it were, because
- * `docs/ux/settings.md` §2 requires it reachable here with the same warning
- * the abstention trace's own near-miss control uses
- * (`web/components/settings/retrieval-threshold.tsx`, shared by both). The
- * hardware profile override arrives with `M7-PROBE-FE-138` — the welcome
- * screen's warn-and-continue's other half, so a profile chosen (or fallen
- * back to) at install can be changed afterwards. Storage arrives with
+ * the same way in `M4-CONN-FE-096`. "Model and speed" is `docs/ux/settings.md`
+ * §2's first section, assembled by `M7-SET-FE-146` from three controls that
+ * arrived separately: the hardware profile override (`M7-PROBE-FE-138` — the
+ * welcome screen's warn-and-continue's other half, so a profile chosen or
+ * fallen back to at install can be changed afterwards), the model swap this
+ * ticket adds (`web/components/settings/model-swap.tsx`, against
+ * `M7-SET-BE-145a`'s `GET`/`POST /model` — no throughput figure yet, since
+ * nothing in the backend measures it from a real turn; see that file's own
+ * comment), and the retrieval threshold (`M5-TRACE-FE-122`, brought forward
+ * ahead of the general M7 settings surface because `docs/ux/settings.md` §2
+ * requires it reachable here with the same warning the abstention trace's
+ * own near-miss control uses, `web/components/settings/retrieval-threshold.tsx`,
+ * shared by both). Storage arrives with
  * `M7-SET-FE-148` (`web/components/settings/storage.tsx`) — per-source
  * index size, the log budget and its current use, the retention window, and
  * the at-the-limit statement; export and prune is a stated, disabled entry
@@ -72,21 +77,16 @@ export default function SettingsPage() {
         </p>
       </section>
 
-      <section className="flex flex-col gap-3">
+      <section className="flex flex-col gap-6">
         <h2 style={{ fontSize: "var(--t-title)", lineHeight: "var(--t-title-lh)" }}>
-          Hardware profile
+          Model and speed
         </h2>
         <HardwareProfile />
+        <ModelSwap />
+        <RetrievalThresholdControl />
       </section>
 
       <Folders />
-
-      <section className="flex flex-col gap-3">
-        <h2 style={{ fontSize: "var(--t-title)", lineHeight: "var(--t-title-lh)" }}>
-          Retrieval threshold
-        </h2>
-        <RetrievalThresholdControl />
-      </section>
 
       <Storage />
 

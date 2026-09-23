@@ -312,7 +312,7 @@ class ModelDownloadManager:
                 error=f"No file found at {self._target_path}.",
             )
         else:
-            digest = _sha256_file(self._target_path)
+            digest = sha256_file(self._target_path)
             if digest == spec.sha256:
                 result = DownloadProgress(
                     status=DownloadStatus.READY,
@@ -369,7 +369,7 @@ class ModelDownloadManager:
             path = self._models_dir / filename
             if path == self._target_path or not path.is_file():
                 continue
-            if _sha256_file(path) != spec.sha256:
+            if sha256_file(path) != spec.sha256:
                 continue
             alternatives.append(
                 {
@@ -439,7 +439,7 @@ class ModelDownloadManager:
             return
 
         self._set_progress(tier, DownloadStatus.VERIFYING, spec, downloaded)
-        digest = _sha256_file(part)
+        digest = sha256_file(part)
         if digest != spec.sha256:
             part.unlink(missing_ok=True)
             self._set_progress(
@@ -491,7 +491,7 @@ def _as_int(value: object) -> int:
         return 0
 
 
-def _sha256_file(path: Path) -> str:
+def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
         while chunk := handle.read(_CHUNK_SIZE):

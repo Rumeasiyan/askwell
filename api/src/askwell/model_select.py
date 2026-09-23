@@ -47,8 +47,8 @@ from askwell.db.engine import session_scope
 from askwell.inference.state import ProcessState
 from askwell.inference.state import read as read_inference_state
 from askwell.logging import get_logger
-from askwell.model_download import ModelDownloadManager
-from askwell.models_catalog import spec_for_tier
+from askwell.model_download import DownloadStatus, ModelDownloadManager, sha256_file
+from askwell.models_catalog import ModelSpec, spec_for_sha256, spec_for_tier
 from askwell.settings_store import get_setting, set_setting
 
 log = get_logger(__name__)
@@ -69,6 +69,11 @@ SWAP_POLL_SECONDS = 0.5
 
 SETTING_USER_MODEL_PATH = "model.user_model_path"
 SETTING_ACTIVE_SOURCE = "model.active_source"
+# Set only alongside SETTING_ACTIVE_SOURCE=shipped, and only when the swap
+# target was a *different* shipped tier than `settings.profile` configures
+# (issue #632's fix): read back here rather than re-hashing a multi-GB file
+# on every turn just to learn its display name again.
+SETTING_ACTIVE_SHIPPED_DISPLAY_NAME = "model.active_shipped_display_name"
 
 GGUF_MAGIC = b"GGUF"
 
@@ -230,6 +235,21 @@ async def _perform_swap(settings: Settings, model_path: Path) -> SwapOutcome:
     )
 
 
+def _catalog_match(path: Path) -> ModelSpec | None:
+    """Whether a swap target is a shipped model by content, not by name or
+    which control reached it (issue #632). The same check
+    `ModelDownloadManager.available_alternatives` already computes to build
+    the swap-candidate list this ticket's settings screen renders — a path
+    typed by hand that happens to match a catalog entry's bytes is just as
+    validated as one reached via that list.
+    """
+    try:
+        digest = sha256_file(path)
+    except OSError:
+        return None
+    return spec_for_sha256(digest)
+
+
 async def select_user_model(session: AsyncSession, settings: Settings, path: Path) -> SwapOutcome:
     """Validate, swap, persist. In that order — nothing is persisted unless
     the swap that follows validation actually succeeded (`docs/audit-log.md`
@@ -250,8 +270,16 @@ async def select_user_model(session: AsyncSession, settings: Settings, path: Pat
     )
 
     if outcome.ok:
+        # Hashing a multi-GB file is the same cost `available_alternatives`
+        # already pays to build the list this swap likely came from — off
+        # the event loop for the same reason `GET /model` already guards.
+        matched = await asyncio.to_thread(_catalog_match, validated)
         await set_setting(session, SETTING_USER_MODEL_PATH, str(validated))
-        await set_setting(session, SETTING_ACTIVE_SOURCE, str(ModelSource.USER_SUPPLIED))
+        if matched is not None:
+            await set_setting(session, SETTING_ACTIVE_SOURCE, str(ModelSource.SHIPPED))
+            await set_setting(session, SETTING_ACTIVE_SHIPPED_DISPLAY_NAME, matched.display_name)
+        else:
+            await set_setting(session, SETTING_ACTIVE_SOURCE, str(ModelSource.USER_SUPPLIED))
 
     return outcome
 
@@ -273,6 +301,13 @@ async def active_model_identity(session: AsyncSession, settings: Settings) -> di
             "source": str(ModelSource.USER_SUPPLIED),
             "display_name": Path(user_path).name if user_path else state.model,
         }
+
+    # A swap to a shipped alternative (issue #632) may be a different tier
+    # than `settings.profile` configures — its own recorded display name
+    # takes precedence over guessing from the configured profile.
+    swapped_display_name = await get_setting(session, SETTING_ACTIVE_SHIPPED_DISPLAY_NAME)
+    if swapped_display_name:
+        return {"source": str(ModelSource.SHIPPED), "display_name": swapped_display_name}
 
     shipped = spec_for_tier(str(settings.profile))
     return {"source": str(ModelSource.SHIPPED), "display_name": shipped.display_name}
@@ -357,9 +392,34 @@ def register_model_select(
             user_path = await get_setting(db, SETTING_USER_MODEL_PATH)
 
         manager: ModelDownloadManager = request.app.state.model_download
-        # Hashes any sibling model files; off the event loop for the same
-        # reason `askwell.setup`'s poll path already guards against it.
-        alternatives = await asyncio.to_thread(manager.available_alternatives)
+        # Same guard `askwell.setup._model_dict` already uses: a transfer
+        # that is `DOWNLOADING`/`VERIFYING` gets polled repeatedly, and
+        # hashing every catalog-recognised sibling file on each of those
+        # polls costs far more than the answer is worth while nothing about
+        # the directory is likely changing (#612). Off the event loop the
+        # rest of the time, same reason as `setup`'s.
+        progress = manager.snapshot(str(settings.profile))
+        alternatives = (
+            await asyncio.to_thread(manager.available_alternatives)
+            if progress.status not in (DownloadStatus.DOWNLOADING, DownloadStatus.VERIFYING)
+            else []
+        )
+
+        # Memory footprint, `M7-SET-FE-146`: the file size of whichever
+        # model is actually active — real and already on disk, not a rating.
+        # Not the resident RAM `llama-server` holds once loaded (this
+        # process has no way to read that), but the honest number available
+        # without adding a probe to the inference bridge for it. `user_path`
+        # is set by any successful swap regardless of source label — a
+        # swap to a shipped alternative (issue #632) still changes which
+        # file is active, so it takes precedence over `manager.target_path`
+        # (the *configured profile's* default) the same as a user-supplied
+        # swap does.
+        active_path = Path(user_path) if user_path else manager.target_path
+        try:
+            size_gb: float | None = active_path.stat().st_size / (1024**3)
+        except OSError:
+            size_gb = None
 
         return JSONResponse(
             {
@@ -367,6 +427,7 @@ def register_model_select(
                 "user_model_path": user_path,
                 "expected_path": str(manager.target_path),
                 "alternatives": alternatives,
+                "active_model_size_gb": size_gb,
             }
         )
 
