@@ -195,8 +195,18 @@ fi
 git reset -q --hard origin/main >/dev/null 2>&1
 rm -f "$REPO/.build-runner/STOP"
 
+# Opus for every lineage, with Sonnet underneath it. Sonnet built M0 through
+# most of M7 and its audits caught real bugs — the `sudo -n true` check that
+# breaks a normal Linux install, the Tauri nav-port gap, a reset that
+# truncates nothing — so this is not a correction. With roughly two dozen
+# tickets left, the remaining work is the fiddly end of a milestone and the
+# screen fixes, which is where judgement earns more than throughput.
+#
+# The fallback is the part that makes it safe: an overloaded or exhausted
+# primary drops to Sonnet for that agent rather than failing the ticket and
+# parking everything behind it. Reverting is one word in each of these three.
 setsid nohup env SPEND_CEILING="$SPEND_CEILING" \
-  BUILD_MODEL=sonnet AUDIT_MODEL=sonnet DOC_MODEL=sonnet \
+  BUILD_MODEL=opus AUDIT_MODEL=opus DOC_MODEL=opus FALLBACK_MODEL=sonnet \
   "$REPO/.build-runner/supervise.sh" --milestone "$MILESTONE" \
   >> "$QUEUE_LOG" 2>&1 < /dev/null &
 disown
