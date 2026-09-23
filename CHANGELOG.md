@@ -4,6 +4,31 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.18 - 2026-09-23
+
+`M7-SEC-TEST-166` — the pre-release security review: every constraint (C1–C10) checked against
+its actual enforcement point on the real running stack, not read off the code and assumed.
+`Added`: `docs/security-review.md` (the repeatable per-release checklist, wired into
+`docs/release-procedure.md` as step 3c) and `docs/security-review-log.md` (this run's dated
+findings, `docs/restore-test-log.md`'s own append-only shape). `Fixed`: `Security` —
+`POST /ask/{message_id}/escalate/web` (`api/src/askwell/websearch.py`) checked
+`messages.content == ""` as its abstention signal, which has been structurally unsatisfiable for
+any real abstained turn since `M2-ABSTAIN-BE-054` started writing the composed abstention
+message into `content` — found live-testing C10 against the real stack, where a genuinely
+abstained turn's own escalation attempt 409'd. Now also recognises the `{"kind": "abstain"}`
+trace step `_run_generation` actually writes; a new test
+(`test_escalating_a_real_abstained_turn_succeeds`) seeds a row the way the real system writes
+one, rather than the pre-fix, now-stale shape the existing test used. `Security` — `sharp`
+(a transitive `next.js` optional dependency) carried a high-severity libheif vulnerability
+(GHSA-rgj7-g3m4-5g8c and related); pinned to `>=0.35.4` via a `pnpm-workspace.yaml` override
+(`web/`), `NOTICES.md` regenerated to match. **Filed, not fixed here:** issue #623 (`main` has no
+GitHub branch protection at all), #624 (the "no connections configured" database-override turn
+cannot be escalated to web search — a narrower gap than the one fixed above), #625
+(`abstention.v1`'s score is unmeasured for this release; `docs/BRAIN.md`'s Eval baseline table
+has read the Phase-1 placeholder since Phase 1). C9's `NOTICES.md` gate remains known-red
+(`phonemizer`, GPL-3.0-or-later via `kokoro-onnx`) — pre-existing, tracked as issue #619,
+confirmed still blocking and correctly so, not addressed by this ticket.
+
 ## 0.7.17 - 2026-09-23
 
 `M7-DOC-DOC-163` — a generated third-party notices file covering every bundled model and code

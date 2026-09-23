@@ -75,6 +75,14 @@ Commit the regenerated `NOTICES.md` if it changed. As of 2026-09-23 this gate is
 not release until it passes or the exception is deliberately, visibly recorded here and in
 `docs/decisions.md`, not silently bypassed.
 
+## 3c. The security review gate
+
+Also before checksumming or publishing, run `docs/security-review.md` for this `VERSION` and
+record the result in `docs/security-review-log.md`. **A failed run blocks the release** — a
+constraint whose enforcement point turns out to be a convention rather than a mechanism is a
+release blocker, not an aside (`M7-SEC-TEST-166`; `AGENTS.md` §3). Do not proceed to step 4
+without a `pass` entry for this exact version.
+
 ## 4. Generate checksums
 
 ```

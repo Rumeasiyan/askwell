@@ -4,6 +4,59 @@ Append-only. **Newest first.** Never edit an entry to change its meaning — if 
 
 **Bar for an entry:** something a competent person would later ask *"why is it like this?"* about. Architecture changes, dependency choices, resolved `docs/PRD.md` §11 questions, reversals. **Not** routine implementation choices — those are visible in the diff.
 
+## 2026-09-23 — `M7-SEC-TEST-166`: the security review is a release gate with its own two-file shape, matched to the restore/offline gates already there, not a one-off document
+
+**Decision:** `docs/security-review.md` (the checklist, one section per constraint plus
+dependency review) and `docs/security-review-log.md` (append-only, newest-first, one dated entry
+per release) — the exact split `docs/restore-release-test.md`/`docs/restore-test-log.md` and
+`docs/offline-release-test.md`/`docs/offline-test-log.md` already established, rather than a
+single findings document that would need restructuring the first time a second release needed
+one. Wired into `docs/release-procedure.md` as step 3c, alongside 3/3a/3b.
+
+**Why every check in the log's first entry had to be run live, not read off the source.** The
+ticket's own Acceptance Criteria are explicit that a convention masquerading as an enforcement
+point is a release blocker — and this review proved that instinct correct on its own first pass:
+reading `websearch.py`'s `ask_escalate_web` gave no reason to doubt the `content == ""` check,
+because it reads exactly like a reasonable abstention test. It has been wrong since
+`M2-ABSTAIN-BE-054` started writing composed text into `messages.content` — five tickets and
+several weeks before `M6.5-WEB-SEC-187` wrote the check that assumed the old shape. Nothing in
+either ticket's own review caught it, because neither ticket had a reason to re-examine the
+other's assumption; only asking a real abstained turn to escalate, live, surfaced the 409.
+`docs/security-review.md` §0 and its C6/C10 sections now say explicitly not to trust
+`scripts/dev.sh psql`'s connection as proof of anything about the app role, and not to trust a
+green CI check on `eval.yml` as proof C5 ran — both for the identical reason: the thing that
+looks like the check is not always the check.
+
+**Why the fix kept the stale `content == ""` half of the condition rather than replacing it.**
+The correct, current signal is the `{"kind": "abstain"}` trace step `_run_generation` writes.
+Dropping the old check entirely was considered and rejected: a future caller, or a row written by
+a code path this review did not audit, might still leave `content` empty the old way, and an
+`or` costs nothing to keep both working. The narrower, more tempting fix — treating any non-null
+`trace["reason"]` as abstention — was rejected for a concrete reason found while tracing the
+code: `reason` is also set for unrelated failure paths ("Askwell could not save this answer",
+"Reached the answer length limit"), so that check alone would have offered web escalation on an
+*error* turn, which is a worse bug than the one being fixed.
+
+**Why the "no connections configured" database-override gap (issue #624) was filed rather than
+folded into the same fix.** It is a different trace shape entirely (`M4-RESULT-FE-111`'s own SQL
+step, not an abstain step), and deciding whether it should carry the same marker is a real
+product question — does a "no databases configured" turn deserve the same web offer as "nothing
+in your documents" does? — not a mechanical extension of the bug just found. Scope creep here
+would have turned a one-line proxy-boundary fix into a second, less-tested change in the same
+commit.
+
+**Why `sharp` was fixed outright instead of only logged as an accepted risk, despite being
+unreachable today.** `images.unoptimized: true` means the vulnerable code path never runs in
+this product — a legitimate reason to accept many findings as documented residual risk. This one
+differs because the fix cost was near zero: the patched version already satisfies `next`'s own
+declared range, so no `next` upgrade, no behavioural change, no re-test surface beyond
+`web-check` (which passed). Accepting a free fix "because it's unreachable anyway" would be
+optimising for looking thorough over being correct; the bar this review actually applied was
+"does fixing it cost more than the residual risk of not fixing it," and here it plainly did not.
+Discovered along the way: pnpm 11 silently ignores a `pnpm.overrides` key left in `package.json`
+(a warning, not an error) — the real setting moved to `pnpm-workspace.yaml`'s own top-level
+`overrides` key, undocumented anywhere in this repository before this change.
+
 ## 2026-09-23 — `M7-DOC-DOC-163`: the notices check is a release gate, not a per-commit one, because it is already red on real, not hypothetical, dependency drift
 
 **Decision:** `scripts/dev.sh notices` (`scripts/generate_notices.py`) regenerates `NOTICES.md` from what is actually installed in the built API and web images — `importlib.metadata` walked against `api/uv.lock`'s own resolved dependency graph on the Python side, `pnpm licenses list --json --prod` on the JavaScript side — plus a static, hand-verified table of the seven bundled model roles (`api/src/askwell/notices.py`), and fails if anything shipped carries a licence on a narrow, explicit disallow list (strong copyleft — GPL, AGPL, SSPL — non-commercial and no-derivatives terms, and "unlicensed"/proprietary). It is **not** wired into `scripts/dev.sh check` or CI's per-commit run. It is documented as release-procedure step 3b instead, alongside the restore and offline gates, and it is not what makes this ticket's tests pass — `api/tests/test_notices.py` covers only the static model table and the pure matching function, both of which are clean today.
