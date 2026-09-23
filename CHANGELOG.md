@@ -4,6 +4,23 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.19 - 2026-09-23
+
+`Fixed`: the shipped generation model reasons inside a `<think>` block before writing anything,
+and nothing stripped it (issue #220). The reasoning was stored as `messages.content`, shown to
+the reader, and — the part that broke a guarantee rather than looking untidy — segmented for
+citations: `[index]` markers inside a draft became claims the model never asserted, and a line
+the model rehearsed while drafting was counted once per rehearsal, so `split_partial_answer`
+reported the same uncovered aspect three times. It also burned most of `generation_max_tokens`
+before the answer began, which on CPU-only inference meant a question could return nothing but
+reasoning. New `askwell.agent.think.ThinkStripper` drops the block at the single point tokens
+are consumed in `askwell.ask._run_generation`, so the stored answer, the reader and
+`segment_claims` all see the same text. It is stateful because either tag can be split across
+two stream chunks. Output that does not begin with `<think>` passes through untouched — a
+mid-answer tag is content, and swallowing a real answer would be worse than the bug. A block
+that never closes yields nothing and marks the turn truncated, rather than presenting a draft
+as an answer. 11 new tests in `api/tests/test_think.py`.
+
 ## 0.7.18 - 2026-09-23
 
 `M7-SEC-TEST-166` — the pre-release security review: every constraint (C1–C10) checked against

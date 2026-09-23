@@ -94,6 +94,7 @@ from askwell.agent.sql_generate import (
     list_database_sources,
 )
 from askwell.agent.summarize import fallback_summary, summarize_turn
+from askwell.agent.think import ThinkStripper
 from askwell.audit import AuditError, Store, record
 from askwell.config import Settings
 from askwell.connections import Engine
@@ -1869,14 +1870,21 @@ async def _run_generation(
             prompt = f"{composed.system_prompt}\n\n{composed.user_content}"
             compose_started = time.monotonic()
             stream = client.stream_generate(prompt, max_tokens=settings.generation_max_tokens)
+            # The shipped model reasons in a `<think>` block before writing
+            # anything. Strip it here, at the one point tokens are consumed,
+            # so the stored answer, the reader and `segment_claims` all see
+            # the same text — issue #220, where a rehearsed line inside the
+            # reasoning was counted as a real claim.
+            stripper = ThinkStripper()
             async for chunk in stream:
                 if turn.stop_requested:
                     await stream.aclose()
                     status = "stopped"
                     break
-                if chunk.text:
-                    turn.text += chunk.text
-                    turn.emit("token", {"text": chunk.text})
+                visible = stripper.feed(chunk.text) if chunk.text else ""
+                if visible:
+                    turn.text += visible
+                    turn.emit("token", {"text": visible})
                     claims = segment_claims(turn.text)
                     for claim in claims[claims_emitted:]:
                         _cite_claim(
@@ -1891,6 +1899,28 @@ async def _run_generation(
                     claims_emitted = len(claims)
                 if chunk.done:
                     truncated = chunk.truncated
+
+            tail = stripper.flush()
+            if tail:
+                turn.text += tail
+                turn.emit("token", {"text": tail})
+                claims = segment_claims(turn.text)
+                for claim in claims[claims_emitted:]:
+                    _cite_claim(
+                        turn,
+                        claim,
+                        candidates,
+                        citation_rows,
+                        relevant_memory.facts,
+                        relevant_memory.notes,
+                        fact_usage_rows,
+                    )
+                claims_emitted = len(claims)
+            elif stripper.thinking:
+                # The whole budget went on reasoning and no answer followed.
+                # Treat it as the truncation it is rather than storing a
+                # draft as the answer.
+                truncated = True
 
             if appended_note is not None:
                 turn.text += appended_note
