@@ -4,6 +4,16 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.23 - 2026-09-23
+
+`Fixed`: `M7-FIX-FE-171` — the provenance margin mounted on every screen and showed the Ask
+screen's own empty copy ("sources appear here, beside the claims they support") on Library,
+Clarifications, Memory and Settings too — actively misleading on Clarifications, whose cards
+already carry source evidence beside a margin pointing elsewhere. `web/components/shell/shell.tsx`
+now mounts `ProvenanceMargin` (and its leader-line canvas) only on the Ask route (`/`); the other
+four screens get the freed width back. Ask's own behaviour — reserved, never collapsible — is
+unchanged.
+
 ## 0.7.22 - 2026-09-23
 
 `Added`: `M7-SET-FE-146a` — a persistent marker on every answer a user-supplied model produced,

@@ -18,15 +18,22 @@ import { fetchSetupState } from "@/lib/setup";
 import { useStatus } from "@/lib/use-status";
 
 /**
- * The three-column shell. `docs/ux/design-system.md` §4.
+ * The shell. `docs/ux/design-system.md` §4.
  *
- *   sources 240px | conversation, 68–75ch | provenance 300px
+ *   sources 240px | conversation, 68–75ch | provenance 300px (Ask only)
  *
- * **The margin is reserved even when empty.** It is not a popover, a drawer or
- * a toggle — its permanence is what makes an uncited claim visibly wrong: the
- * claim sits in the column with nothing beside it and nothing pointing at it.
- * The layout enforces C4 rather than trusting the model to. Collapsing it when
- * empty would remove exactly the signal it exists to give.
+ * **On Ask, the margin is reserved even when empty.** It is not a popover, a
+ * drawer or a toggle — its permanence is what makes an uncited claim visibly
+ * wrong: the claim sits in the column with nothing beside it and nothing
+ * pointing at it. The layout enforces C4 rather than trusting the model to.
+ * Collapsing it when empty would remove exactly the signal it exists to give.
+ *
+ * Elsewhere the margin does not mount at all (`M7-FIX-FE-171`): its empty
+ * copy is Ask's own claim ("sources appear here, beside the claims they
+ * support"), which is false on Library, Clarifications, Memory and Settings —
+ * on Clarifications, actively misleading, since that screen's own cards
+ * already carry source evidence. Those four screens get the freed width back
+ * rather than an empty column pointing at nothing.
  *
  * Askwell is a desktop application, so there is no phone. The breakpoints here
  * serve a resized window on a laptop, which is a normal thing to do. Container
@@ -130,6 +137,9 @@ function ShellFrame({
   status: ReturnType<typeof useStatus>;
   children: ReactNode;
 }) {
+  const pathname = usePathname();
+  const isAsk = pathname === "/";
+
   return (
     <div className="@container flex h-dvh flex-col" style={{ background: "var(--paper)" }}>
       <header
@@ -164,26 +174,31 @@ function ShellFrame({
           </div>
         </div>
 
-        {/* Reserved, always. Below the breakpoint it stops being a column and
-            reflows inline under each answer — never removed, because that
-            would make citations conditional on window width. */}
-        <aside
-          aria-label="Provenance"
-          className="hidden shrink-0 overflow-y-auto @5xl:block"
-          style={{
-            width: "var(--margin-rail)",
-            borderLeft: "1px solid var(--rule)",
-            background: "var(--surface)",
-          }}
-        >
-          <ProvenanceMargin />
-        </aside>
+        {/* Reserved, always, but only on Ask (`M7-FIX-FE-171`) — the margin's
+            empty copy is Ask's own ("sources appear here, beside the claims
+            they support"), which is wrong on every other screen. Below the
+            breakpoint it stops being a column and reflows inline under each
+            answer — never removed there, because that would make citations
+            conditional on window width. */}
+        {isAsk && (
+          <aside
+            aria-label="Provenance"
+            className="hidden shrink-0 overflow-y-auto @5xl:block"
+            style={{
+              width: "var(--margin-rail)",
+              borderLeft: "1px solid var(--rule)",
+              background: "var(--surface)",
+            }}
+          >
+            <ProvenanceMargin />
+          </aside>
+        )}
       </div>
 
       {/* Outside the scrolling columns: the drop affordance covers the window,
           because the window is what the user is dropping onto. */}
       <DropTarget />
-      <LiveLeaderCanvas />
+      {isAsk && <LiveLeaderCanvas />}
     </div>
   );
 }
