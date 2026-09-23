@@ -215,12 +215,12 @@ emulating a device, then repeat the click-through.
 | ----- | ---------- | --------- |
 | **1440** | Laptop, the design target | Left rail and provenance margin both visible beside the content |
 | **1024** | Small laptop, split screen | Margin may move below the answer; nothing is clipped and nothing overlaps |
-| **768** | Tablet | Left rail becomes a drawer **with a visible control to reopen it**. §1 "Narrow window" |
-| **390** | Phone | Single column. Composer reachable, no horizontal scroll, citations still openable |
+| **768** | Tablet | Left rail still a column (the drawer starts **below** 768); margin relocated under the answer |
+| **390** | Phone | Single column. Left rail is a drawer **with a visible control to open it and one to close it**, §1 "Narrow window". Composer reachable, no horizontal scroll, citations still openable |
 
 | # | At each width | Expect | Status |
 | - | ------------- | ------ | ------ |
-| G1 | Every rail destination | Reachable. At 768 and below, through the drawer control | |
+| G1 | Every rail destination | Reachable. Below 768, through the drawer control; the drawer closes on selection | |
 | G2 | Ask | Composer and send reachable without horizontal scroll | |
 | G3 | An answer with citations | Margin visible or relocated — never clipped, never overlapping the answer | |
 | G4 | Trace panel | Opens, is readable, and closes | |

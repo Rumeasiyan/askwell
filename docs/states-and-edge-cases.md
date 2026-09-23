@@ -37,7 +37,7 @@ Apply on every surface.
 | **Decisions store cannot be written** | The action fails, with a clear reason and what to free up | Issue #10, Option A — the only place a write failure stops an action |
 | **Disk full** | Adding sources refused with a clear message. Existing material stays queryable | Never accept a source that cannot be durably written |
 
-| **Narrow window** | Left rail becomes a drawer, reachable from a control in the app's own chrome | Hiding navigation without a way back strands the user in a product where the library is the only route to sources, memory and settings |
+| **Narrow window** | Left rail becomes a drawer, reachable from a control in the app's own chrome. Open, it carries its own close control (it covers the one that opened it) and holds keyboard focus; the scrim, `Escape` and choosing a destination all close it. Widened past the breakpoint while open, it closes into the ordinary column rather than staying an overlay | Hiding navigation without a way back strands the user in a product where the library is the only route to sources, memory and settings |
 | **Native file dialog open** | The Tauri shell's own picker, for nominating a root directory or relocating a moved file | Indexing in place makes both core paths, and neither works well in a browser tab |
 
 There is no licence state, no seat cap, no session expiry and no permission denial. The product is free, single-user and local — none of those states exist.

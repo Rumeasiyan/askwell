@@ -107,7 +107,7 @@ Answer prose sets at a **68–75 character measure**. Wider is measurably harder
 
 Below the breakpoint the provenance rail moves under each answer as an inline block, with a `--rule-strong` edge carrying the relationship the leader carried at width. **It is never removed** — that would make citations conditional on window width.
 
-**The left rail becomes a drawer** at the same breakpoint: a menu control in the app's own chrome, a scrim that dismisses it, and selecting a destination closes it. It is reachable, not removed — the library is the only route to sources, memory and settings, and hiding it without a way back strands the user.
+**The left rail becomes a drawer** below its own, narrower breakpoint (a container narrower than `48rem`; the margin reflows below `64rem`): a menu control in the app's own chrome, a close control inside the open drawer (it covers the menu control), a scrim that dismisses it, `Escape`, and selecting a destination closes it. Focus is held inside while it is open. Widening past the breakpoint while it is open closes it into the ordinary column. It is reachable, not removed — the library is the only route to sources, memory and settings, and hiding it without a way back strands the user. Why the two breakpoints differ: `docs/decisions.md`, 2026-09-23, `M7-FIX-FE-173`.
 
 Askwell installs as a desktop application, so **there is no phone**. Responsiveness serves a resized window on a laptop, which is a normal thing to do, rather than a small screen.
 
