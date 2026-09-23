@@ -4,6 +4,26 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.17 - 2026-09-23
+
+`M7-SET-FE-146` — Settings' "Model and speed" section: profile, model swap, memory footprint
+and the retrieval threshold, in one place. `Added`: `web/components/settings/model-swap.tsx`
+and `web/lib/model.ts` against `GET`/`POST /model` (`M7-SET-BE-145a`) — the model in use marked
+**Validated** (shipped) or **Unverified** (user-supplied), the unverified statement and the
+briefly-unavailable-during-swap statement shown at every swap this control performs and never
+suppressible, a memory-footprint figure (the active model file's real size on disk), and a
+swap control offering discovered alternatives or a manual path. `web/app/settings/page.tsx`
+now groups the hardware profile override (`M7-PROBE-FE-138`), the new model swap and the
+retrieval threshold (`M5-TRACE-FE-122`) under one "Model and speed" heading, matching
+`docs/ux/settings.md` §2's shape. `Fixed`: `GET /model` (`api/src/askwell/model_select.py`) now
+skips re-hashing every sibling model file while a transfer is downloading or verifying, the
+same guard `GET /setup` already had — closes #612. **Deferred, not stubbed**: no throughput
+(tokens/second) figure ships here. Nothing in the backend yet records a turn's token count or
+duration anywhere an endpoint can read it back from, so the ticket's own assumption that
+"throughput can be measured from real turns" does not hold against current code; the settings
+screen says so plainly rather than inventing a number. Filed as a follow-up issue rather than
+guessed at, per `AGENTS.md` §4. `docs/decisions.md`, this date, has the full reasoning.
+
 ## 0.7.16 - 2026-09-23
 
 `M7-OFFLINE-TEST-145` — the cable-unplugged release test, documented and partly automated.

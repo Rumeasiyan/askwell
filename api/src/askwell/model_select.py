@@ -47,7 +47,7 @@ from askwell.db.engine import session_scope
 from askwell.inference.state import ProcessState
 from askwell.inference.state import read as read_inference_state
 from askwell.logging import get_logger
-from askwell.model_download import ModelDownloadManager
+from askwell.model_download import DownloadStatus, ModelDownloadManager
 from askwell.models_catalog import spec_for_tier
 from askwell.settings_store import get_setting, set_setting
 
@@ -357,9 +357,33 @@ def register_model_select(
             user_path = await get_setting(db, SETTING_USER_MODEL_PATH)
 
         manager: ModelDownloadManager = request.app.state.model_download
-        # Hashes any sibling model files; off the event loop for the same
-        # reason `askwell.setup`'s poll path already guards against it.
-        alternatives = await asyncio.to_thread(manager.available_alternatives)
+        # Same guard `askwell.setup._model_dict` already uses: a transfer
+        # that is `DOWNLOADING`/`VERIFYING` gets polled repeatedly, and
+        # hashing every catalog-recognised sibling file on each of those
+        # polls costs far more than the answer is worth while nothing about
+        # the directory is likely changing (#612). Off the event loop the
+        # rest of the time, same reason as `setup`'s.
+        progress = manager.snapshot(str(settings.profile))
+        alternatives = (
+            await asyncio.to_thread(manager.available_alternatives)
+            if progress.status not in (DownloadStatus.DOWNLOADING, DownloadStatus.VERIFYING)
+            else []
+        )
+
+        # Memory footprint, `M7-SET-FE-146`: the file size of whichever
+        # model is actually active — real and already on disk, not a rating.
+        # Not the resident RAM `llama-server` holds once loaded (this
+        # process has no way to read that), but the honest number available
+        # without adding a probe to the inference bridge for it.
+        active_path = (
+            Path(user_path)
+            if identity["source"] == str(ModelSource.USER_SUPPLIED) and user_path
+            else manager.target_path
+        )
+        try:
+            size_gb: float | None = active_path.stat().st_size / (1024**3)
+        except OSError:
+            size_gb = None
 
         return JSONResponse(
             {
@@ -367,6 +391,7 @@ def register_model_select(
                 "user_model_path": user_path,
                 "expected_path": str(manager.target_path),
                 "alternatives": alternatives,
+                "active_model_size_gb": size_gb,
             }
         )
 

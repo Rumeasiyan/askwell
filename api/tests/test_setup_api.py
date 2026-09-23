@@ -211,6 +211,54 @@ def test_get_model_names_the_expected_path_and_other_files_present(
     body = response.json()
     assert body["expected_path"].endswith("model.gguf")
     assert body["alternatives"] == []
+    # `M7-SET-FE-146`'s memory-footprint figure: the active model file's
+    # real size on disk (8192 bytes, `db_client`'s wrong-profile fixture
+    # file), not a rating.
+    assert body["active_model_size_gb"] == pytest.approx(8192 / (1024**3))
+
+    with psycopg.connect(database_url, autocommit=True) as clean:
+        clean.execute("TRUNCATE settings, audit_decisions CASCADE")
+
+
+@pytest.mark.requires_db
+def test_get_model_skips_hashing_alternatives_during_an_active_transfer(
+    db_client: TestClient, database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same guard `GET /setup` already applies (`docs/decisions.md`,
+    `M7-OFFLINE-DEPLOY-144`): hashing every sibling model file on every poll
+    during a `downloading`/`verifying` transfer costs far more than the
+    answer is worth. `GET /model` had no such guard (#612) until this.
+    """
+    import psycopg
+
+    from askwell.model_download import DownloadProgress, DownloadStatus
+
+    with psycopg.connect(database_url, autocommit=True) as setup:
+        setup.execute("TRUNCATE settings, audit_decisions CASCADE")
+
+    with db_client as client:
+        with_session(client)
+        manager = client.app.state.model_download
+
+        def fake_snapshot(tier: str) -> DownloadProgress:
+            return DownloadProgress(
+                tier=tier,
+                status=DownloadStatus.DOWNLOADING,
+                display_name="Test model",
+                downloaded_bytes=1,
+                total_bytes=2,
+            )
+
+        def fail_if_called() -> list[dict[str, object]]:
+            raise AssertionError("available_alternatives must not run during a transfer")
+
+        monkeypatch.setattr(manager, "snapshot", fake_snapshot)
+        monkeypatch.setattr(manager, "available_alternatives", fail_if_called)
+
+        response = client.get("/model")
+
+    assert response.status_code == 200
+    assert response.json()["alternatives"] == []
 
     with psycopg.connect(database_url, autocommit=True) as clean:
         clean.execute("TRUNCATE settings, audit_decisions CASCADE")
