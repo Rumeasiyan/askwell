@@ -36,7 +36,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -47,6 +47,7 @@ from askwell.db.engine import session_scope
 from askwell.inference.state import ProcessState
 from askwell.inference.state import read as read_inference_state
 from askwell.logging import get_logger
+from askwell.model_download import ModelDownloadManager
 from askwell.models_catalog import spec_for_tier
 from askwell.settings_store import get_setting, set_setting
 
@@ -350,11 +351,24 @@ def register_model_select(
     """
 
     @app.get("/model")
-    async def model_state() -> JSONResponse:
+    async def model_state(request: Request) -> JSONResponse:
         async with session_scope(factory) as db:
             identity = await active_model_identity(db, settings)
             user_path = await get_setting(db, SETTING_USER_MODEL_PATH)
-        return JSONResponse({**identity, "user_model_path": user_path})
+
+        manager: ModelDownloadManager = request.app.state.model_download
+        # Hashes any sibling model files; off the event loop for the same
+        # reason `askwell.setup`'s poll path already guards against it.
+        alternatives = await asyncio.to_thread(manager.available_alternatives)
+
+        return JSONResponse(
+            {
+                **identity,
+                "user_model_path": user_path,
+                "expected_path": str(manager.target_path),
+                "alternatives": alternatives,
+            }
+        )
 
     @app.post("/model/select")
     async def model_select(body: SelectModelRequest) -> JSONResponse:

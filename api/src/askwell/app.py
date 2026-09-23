@@ -39,7 +39,7 @@ from askwell.restore import register_restore
 from askwell.retrieve import register_retrieval_threshold, register_search
 from askwell.review import register_review
 from askwell.roots import register_roots
-from askwell.setup import register_setup
+from askwell.setup import register_setup, run_startup_discovery
 from askwell.sources import register_sources
 from askwell.suggestions import register_suggestions
 from askwell.update_check import register_update_check
@@ -99,6 +99,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         reapply_task = asyncio.create_task(reapply_user_model(app.state.sessions, settings))
         app.state.model_reapply_task = reapply_task
 
+        # Model discovery and validation, logged, before anyone asks a
+        # question (`M7-OFFLINE-DEPLOY-144`). Backgrounded for the same
+        # reason as `reapply_task` above — it hashes a multi-GB file.
+        discovery_task = asyncio.create_task(
+            run_startup_discovery(app.state.sessions, app.state.model_download, settings)
+        )
+        app.state.model_discovery_task = discovery_task
+
     try:
         yield
     finally:
@@ -107,6 +115,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             pending_reapply.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await pending_reapply
+        pending_discovery: asyncio.Task[None] | None
+        pending_discovery = getattr(app.state, "model_discovery_task", None)
+        if pending_discovery is not None:
+            pending_discovery.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pending_discovery
         log.info("shutdown", version=__version__)
         await app.state.engine.dispose()
 

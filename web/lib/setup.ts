@@ -28,6 +28,13 @@ export type ModelDownloadStatus =
   | "ready"
   | "failed";
 
+export interface ModelAlternative {
+  tier: string;
+  display_name: string;
+  filename: string;
+  path: string;
+}
+
 export interface ModelDownloadState {
   status: ModelDownloadStatus;
   tier: string;
@@ -37,6 +44,12 @@ export interface ModelDownloadState {
   fraction: number;
   error: string | null;
   target_path: string;
+  /** Set only when a manually placed file matched a *different* tier's
+   * catalog entry than the one requested — accepted, with the profile
+   * adjusted, per `docs/backlog/M7-someone-else-can-install-it.md`
+   * (`M7-OFFLINE-DEPLOY-144`). */
+  resolved_tier: string | null;
+  alternatives: ModelAlternative[];
 }
 
 export interface SetupState {

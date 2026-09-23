@@ -4,6 +4,30 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.15 - 2026-09-23
+
+`M7-OFFLINE-DEPLOY-144` — manual model placement, judged by checksum against the whole catalog
+rather than only the requested tier. `Added`: `askwell.models_catalog.spec_for_sha256` — which
+catalog entry, if any, a file's own bytes belong to. `askwell.model_download.verify_manual` now
+falls back to it when the configured tier's own checksum does not match: a model manually placed
+for a *different* profile is accepted (`DownloadProgress.resolved_tier`), not refused, and only a
+digest matching nothing in the catalog is named as corrupt — with the file's own path in the
+message. New `ModelDownloadManager.available_alternatives` scans the models directory for any
+other catalog-recognised, checksum-verified file besides the one configured, so "several models
+present" lists the rest as swap candidates instead of leaving them for the user to notice
+unaided; surfaced on both `GET /setup` (skipped while a transfer is actively downloading or
+verifying, to avoid re-hashing a multi-GB sibling file every second of a poll) and the new
+`expected_path`/`alternatives` fields on `GET /model`. New `askwell.setup.run_startup_discovery`,
+backgrounded from application startup the same way `askwell.model_select.reapply_user_model`
+already is: discovery and validation are logged (`model_startup_discovery`) once at boot, before
+anyone asks a question, and a wrong-profile file found there is accepted and adjusted the same
+way the manual-verify endpoint accepts one, recorded as `model_profile_adjusted` in the decisions
+store either way. `Changed`: `web/lib/setup.ts`'s `ModelDownloadState` gains `resolved_tier` and
+`alternatives`; the first-run welcome screen states when a placed file was accepted for a
+different profile than requested. Does not touch the separate, still-open gap issue #559 tracks
+(no packaging step yet produces the container images or shell binary a model bundle would sit
+beside) — commented there to state the boundary rather than leaving it implicit.
+
 ## 0.7.14 - 2026-09-23
 
 `M7-PACK-FE-143` — a supervision surface: start, stop, repair, and what is wrong. `Added`:

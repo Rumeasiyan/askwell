@@ -39,6 +39,21 @@ _SPEC = ModelSpec(
     sha256=hashlib.sha256(_CONTENT).hexdigest(),
 )
 
+# A second, distinct catalog entry — a different tier, a different file, a
+# different checksum — for the "wrong profile placed manually" and "several
+# models present" edge cases (`M7-OFFLINE-DEPLOY-144`), which need more than
+# one real model in the catalog to exercise at all.
+_CONTENT_OTHER = b"y" * 8192
+_SPEC_OTHER = ModelSpec(
+    tier="accelerated",
+    display_name="Test model (bigger)",
+    repo="test/repo-bigger",
+    filename="other.gguf",
+    url="https://example.invalid/other.gguf",
+    size_bytes=len(_CONTENT_OTHER),
+    sha256=hashlib.sha256(_CONTENT_OTHER).hexdigest(),
+)
+
 
 @pytest.fixture(autouse=True)
 def _patch_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -48,6 +63,8 @@ def _patch_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
     # mismatch `test_snapshot_after_failure_uses_the_requested_tier_not_the_catalog_spec`
     # exists to catch.
     monkeypatch.setitem(CATALOG, "standard", _SPEC)
+    monkeypatch.setitem(CATALOG, "accelerated", _SPEC_OTHER)
+    monkeypatch.setitem(CATALOG, "workstation", _SPEC_OTHER)
 
 
 def _manager(tmp_path: Path) -> ModelDownloadManager:
@@ -202,3 +219,78 @@ def test_verify_manual_with_no_file_says_where_to_put_it(tmp_path: Path) -> None
     # upstream filename — the two can differ (`docs/decisions.md`), and a
     # user placing a file by the wrong name would never satisfy this check.
     assert "model.gguf" in (result.error or "")
+
+
+# --- M7-OFFLINE-DEPLOY-144: wrong profile, corruption, and what else is there ---
+
+
+def test_verify_manual_accepts_a_model_for_a_different_tier(tmp_path: Path) -> None:
+    """A real, checksum-verified model for another tier, placed at the
+    configured path, is accepted rather than refused — the profile is
+    reported as adjusted (`resolved_tier`) instead of failing the check.
+    """
+    target = tmp_path / "model.gguf"
+    target.write_bytes(_CONTENT_OTHER)
+    manager = _manager(tmp_path)
+
+    result = manager.verify_manual("light")
+
+    assert result.status == DownloadStatus.READY
+    assert result.resolved_tier == "accelerated"
+    assert result.display_name == _SPEC_OTHER.display_name
+
+
+def test_verify_manual_names_a_file_that_matches_no_catalog_entry_as_corrupt(
+    tmp_path: Path,
+) -> None:
+    """Neither the requested tier's checksum nor any other tier's — a
+    genuinely corrupt or unrelated file, named with its path rather than a
+    generic failure."""
+    target = tmp_path / "model.gguf"
+    target.write_bytes(b"not a real model, and not a truncated one either")
+    manager = _manager(tmp_path)
+
+    result = manager.verify_manual("light")
+
+    assert result.status == DownloadStatus.FAILED
+    assert result.resolved_tier is None
+    assert str(target) in (result.error or "")
+
+
+def test_available_alternatives_lists_other_catalog_files_present(tmp_path: Path) -> None:
+    (tmp_path / "model.gguf").write_bytes(_CONTENT)
+    (tmp_path / "other.gguf").write_bytes(_CONTENT_OTHER)
+    manager = _manager(tmp_path)
+
+    alternatives = manager.available_alternatives()
+
+    assert len(alternatives) == 1
+    assert alternatives[0]["tier"] == "accelerated"
+    assert alternatives[0]["path"] == str(tmp_path / "other.gguf")
+
+
+def test_available_alternatives_excludes_the_configured_target(tmp_path: Path) -> None:
+    """The active model is never also listed as its own alternative — even
+    when its filename happens to be a catalog filename."""
+    manager = ModelDownloadManager(tmp_path / "other.gguf")
+    (tmp_path / "other.gguf").write_bytes(_CONTENT_OTHER)
+
+    assert manager.available_alternatives() == []
+
+
+def test_available_alternatives_ignores_a_file_whose_checksum_does_not_match(
+    tmp_path: Path,
+) -> None:
+    """Named by a catalog filename but not the catalog's own bytes — not
+    offered as a swap candidate, since that file is not actually usable."""
+    (tmp_path / "other.gguf").write_bytes(b"wrong bytes entirely")
+    manager = _manager(tmp_path)
+
+    assert manager.available_alternatives() == []
+
+
+def test_available_alternatives_is_empty_when_the_models_dir_does_not_exist(
+    tmp_path: Path,
+) -> None:
+    manager = ModelDownloadManager(tmp_path / "missing-dir" / "model.gguf")
+    assert manager.available_alternatives() == []

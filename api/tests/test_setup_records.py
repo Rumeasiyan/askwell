@@ -8,6 +8,7 @@ records (`docs/decisions.md`'s pattern every other decision-writing ticket
 already follows), so the chain is checked too, not just the settings row.
 """
 
+import hashlib
 import json
 import time
 from collections.abc import AsyncIterator
@@ -20,9 +21,18 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from askwell.audit import Store, verify
 from askwell.config import Settings
-from askwell.probe import apply_override
+from askwell.model_download import ModelDownloadManager
+from askwell.models_catalog import CATALOG, ModelSpec
+from askwell.probe import PROFILE_SETTING_KEY, apply_override
 from askwell.settings_store import get_setting, set_setting
-from askwell.setup import PASSPHRASE_DECIDED, PROFILE_SELECTED, SKIPPED, _resolve_profile
+from askwell.setup import (
+    PASSPHRASE_DECIDED,
+    PROFILE_ADJUSTED,
+    PROFILE_SELECTED,
+    SKIPPED,
+    _resolve_profile,
+    run_startup_discovery,
+)
 
 TABLES = "settings, audit_decisions"
 
@@ -248,3 +258,128 @@ async def test_resolve_profile_honours_a_settings_override(
         profile = await _resolve_profile(db, probed_settings)
 
     assert profile["tier"] == "workstation"
+
+
+# --- M7-OFFLINE-DEPLOY-144: startup discovery, and profile adjustment -------
+
+
+def _catalog_pair(monkeypatch: pytest.MonkeyPatch) -> tuple[ModelSpec, ModelSpec]:
+    light_content = b"x" * 4096
+    other_content = b"y" * 8192
+    light = ModelSpec(
+        tier="light",
+        display_name="Light test model",
+        repo="test/light",
+        filename="model.gguf",
+        url="https://example.invalid/light",
+        size_bytes=len(light_content),
+        sha256=hashlib.sha256(light_content).hexdigest(),
+    )
+    accelerated = ModelSpec(
+        tier="accelerated",
+        display_name="Accelerated test model",
+        repo="test/accelerated",
+        filename="other.gguf",
+        url="https://example.invalid/accelerated",
+        size_bytes=len(other_content),
+        sha256=hashlib.sha256(other_content).hexdigest(),
+    )
+    monkeypatch.setitem(CATALOG, "light", light)
+    monkeypatch.setitem(CATALOG, "standard", light)
+    monkeypatch.setitem(CATALOG, "accelerated", accelerated)
+    monkeypatch.setitem(CATALOG, "workstation", accelerated)
+    return light, accelerated
+
+
+async def test_startup_discovery_accepts_a_wrong_profile_file_and_adjusts_the_profile(
+    factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A model manually placed for a different profile is accepted, and the
+    adjustment is both persisted (so the next `_resolve_profile` sees it) and
+    recorded as a decision — `M7-OFFLINE-DEPLOY-144`'s own edge case and its
+    own audit requirement, in one pass.
+    """
+    _light, accelerated = _catalog_pair(monkeypatch)
+
+    probe_path = tmp_path / "probe.json"
+    probe_path.write_text(json.dumps(_probe_payload(profile="light")), encoding="utf-8")
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    target = models_dir / "model.gguf"
+    target.write_bytes(b"y" * 8192)  # the accelerated spec's own bytes
+
+    probed_settings = settings.model_copy(
+        update={"probe_result_path": probe_path, "inference_model_path": target}
+    )
+    manager = ModelDownloadManager(target)
+
+    await run_startup_discovery(factory, manager, probed_settings)
+
+    async with factory() as db:
+        assert await get_setting(db, PROFILE_SETTING_KEY) == "accelerated"
+
+        row = (
+            await db.execute(
+                text(
+                    "SELECT payload FROM audit_decisions WHERE kind = :kind "
+                    "ORDER BY occurred_at DESC LIMIT 1"
+                ),
+                {"kind": PROFILE_ADJUSTED},
+            )
+        ).one()
+        assert row[0]["requested_tier"] == "light"
+        assert row[0]["resolved_tier"] == "accelerated"
+
+        result = await verify(db, Store.DECISIONS)
+        assert result.intact
+
+    # And the adjustment is visible to the next resolution, not only in the
+    # decision record — `_resolve_profile` reads the same override key.
+    async with factory() as db:
+        profile = await _resolve_profile(db, probed_settings)
+    assert profile["tier"] == accelerated.tier
+
+
+async def test_startup_discovery_does_not_adjust_when_the_file_already_matches(
+    factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ordinary case — the configured file matches the configured tier
+    — writes no decision at all. A decision record for every successful
+    boot would drown the one that actually matters."""
+    _catalog_pair(monkeypatch)
+
+    probe_path = tmp_path / "probe.json"
+    probe_path.write_text(json.dumps(_probe_payload(profile="light")), encoding="utf-8")
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    target = models_dir / "model.gguf"
+    target.write_bytes(b"x" * 4096)  # the light spec's own bytes
+
+    probed_settings = settings.model_copy(
+        update={"probe_result_path": probe_path, "inference_model_path": target}
+    )
+    manager = ModelDownloadManager(target)
+
+    await run_startup_discovery(factory, manager, probed_settings)
+
+    async with factory() as db:
+        # `_resolve_profile` itself records the real probe's own reading
+        # (`sync_probe_result`) regardless of this ticket's code — what this
+        # test actually guards is that *this* ticket's own adjustment path
+        # never fires when nothing needs adjusting.
+        assert await get_setting(db, PROFILE_SETTING_KEY) == "light"
+        count = (
+            await db.execute(
+                text("SELECT count(*) FROM audit_decisions WHERE kind = :kind"),
+                {"kind": PROFILE_ADJUSTED},
+            )
+        ).scalar_one()
+        assert count == 0

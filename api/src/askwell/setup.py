@@ -11,6 +11,8 @@ in-memory snapshot, not the file on every call.
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -21,7 +23,12 @@ from askwell.config import Settings
 from askwell.db.engine import session_scope
 from askwell.hardware import probe as probe_hardware
 from askwell.logging import get_logger
-from askwell.model_download import DownloadProgress, ModelDownloadManager, NoDiskSpace
+from askwell.model_download import (
+    DownloadProgress,
+    DownloadStatus,
+    ModelDownloadManager,
+    NoDiskSpace,
+)
 from askwell.probe import PROFILE_SETTING_KEY, PROFILES, ProbeResult, sync_probe_result
 from askwell.settings_store import get_setting, set_setting
 
@@ -34,6 +41,7 @@ _PASSPHRASE_OFFERED_KEY = "welcome.passphrase_offered"
 SKIPPED = "welcome_skipped"
 PASSPHRASE_DECIDED = "passphrase_decided"
 PROFILE_SELECTED = "profile_selected"
+PROFILE_ADJUSTED = "model_profile_adjusted"
 
 
 class StartModelRequest(BaseModel):
@@ -51,6 +59,15 @@ def _true(value: str | None) -> bool:
 def _model_dict(manager: ModelDownloadManager, progress: DownloadProgress) -> dict[str, object]:
     body = progress.as_dict()
     body["target_path"] = str(manager.target_path)
+    # Skipped while a transfer is actively moving: `GET /setup` is polled
+    # every second during exactly that state, and hashing another multi-GB
+    # sibling file on every one of those polls would cost far more than the
+    # answer is worth while nothing about the directory is likely changing.
+    body["alternatives"] = (
+        manager.available_alternatives()
+        if progress.status not in (DownloadStatus.DOWNLOADING, DownloadStatus.VERIFYING)
+        else []
+    )
     return body
 
 
@@ -106,6 +123,57 @@ async def _setup_state(
         "welcome_skipped": _true(await get_setting(session, _WELCOME_SKIPPED_KEY)),
         "passphrase_offered": _true(await get_setting(session, _PASSPHRASE_OFFERED_KEY)),
     }
+
+
+async def run_startup_discovery(
+    factory: async_sessionmaker[AsyncSession],
+    manager: ModelDownloadManager,
+    settings: Settings,
+) -> None:
+    """Model discovery and validation, run once at boot and logged.
+
+    `M7-OFFLINE-DEPLOY-144`'s own audit requirement: a missing or corrupt
+    model file is named in the log before anyone asks a question, not only
+    discovered the first time someone does. Backgrounded from application
+    startup, the same shape `askwell.model_select.reapply_user_model`
+    already established, and for the same reason — this hashes a multi-GB
+    file, and startup must not wait on that.
+
+    Reuses `verify_manual` rather than a second checking path: it already
+    does exactly what "discovery" means here (present/missing/corrupt, and
+    a wrong-profile file accepted and named), so a second implementation
+    would only be a second place for the two to drift apart.
+    """
+    async with session_scope(factory) as db:
+        resolved = await _resolve_profile(db, settings)
+    tier = str(resolved["tier"])
+
+    progress = await asyncio.to_thread(manager.verify_manual, tier)
+    alternatives = manager.available_alternatives()
+
+    log.info(
+        "model_startup_discovery",
+        tier=tier,
+        status=str(progress.status),
+        target_path=str(manager.target_path),
+        resolved_tier=progress.resolved_tier,
+        alternatives=[a["filename"] for a in alternatives],
+        error=progress.error,
+    )
+
+    if progress.resolved_tier is not None and progress.resolved_tier != tier:
+        async with session_scope(factory) as db:
+            await set_setting(db, PROFILE_SETTING_KEY, progress.resolved_tier)
+            await record(
+                db,
+                Store.DECISIONS,
+                PROFILE_ADJUSTED,
+                {
+                    "requested_tier": tier,
+                    "resolved_tier": progress.resolved_tier,
+                    "model_path": str(manager.target_path),
+                },
+            )
 
 
 def register_setup(
@@ -174,7 +242,40 @@ def register_setup(
 
     @app.post("/setup/model/verify-manual")
     async def verify_manual(request: Request, body: StartModelRequest) -> JSONResponse:
-        progress = manager.verify_manual(body.tier)
+        # Hashes a multi-GB file; never block the loop for it.
+        progress = await asyncio.to_thread(manager.verify_manual, body.tier)
+
+        if progress.resolved_tier is not None and progress.resolved_tier != body.tier:
+            # The file placed is a real, checksum-verified model — just not
+            # the one this tier expects. Accepted rather than refused, with
+            # the profile adjusted to match and the adjustment stated in the
+            # decisions record (`M7-OFFLINE-DEPLOY-144`'s own edge case).
+            async with session_scope(factory) as db:
+                await set_setting(db, PROFILE_SETTING_KEY, progress.resolved_tier)
+                await record(
+                    db,
+                    Store.DECISIONS,
+                    PROFILE_ADJUSTED,
+                    {
+                        "requested_tier": body.tier,
+                        "resolved_tier": progress.resolved_tier,
+                        "model_path": str(manager.target_path),
+                    },
+                )
+            log.info(
+                "model_profile_adjusted",
+                requested_tier=body.tier,
+                resolved_tier=progress.resolved_tier,
+                model_path=str(manager.target_path),
+            )
+
+        log.info(
+            "model_manual_verify",
+            tier=body.tier,
+            status=str(progress.status),
+            resolved_tier=progress.resolved_tier,
+            error=progress.error,
+        )
         return JSONResponse(_model_dict(manager, progress))
 
     @app.post("/setup/skip")
