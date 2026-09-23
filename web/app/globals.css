@@ -306,6 +306,26 @@
     max-width: var(--measure);
   }
 
+  /* The answer measure as a box, for a block that is not all prose — the
+     composer's input, scope line and action row (`M7-FIX-FE-169`). `ch`
+     resolves against the element's own font, so the box takes prose
+     metrics to measure exactly what `.ask-prose` measures, then hands the
+     machinery face back to its children. `:where` keeps that reset at zero
+     specificity so a child's own class (`.ask-prose` on the input,
+     `.ask-micro`) still wins. */
+  .ask-measure {
+    width: 100%;
+    max-width: var(--measure);
+    font-family: var(--font-text);
+    font-size: var(--t-body);
+  }
+
+  :where(.ask-measure) > * {
+    font-family: var(--font-app);
+    font-size: var(--t-ui);
+    line-height: var(--t-ui-lh);
+  }
+
   .ask-micro {
     font-size: var(--t-micro);
     line-height: var(--t-micro-lh);

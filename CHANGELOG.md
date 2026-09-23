@@ -4,6 +4,17 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.25 - 2026-09-23
+
+`Fixed`: `M7-FIX-FE-169` — the Ask screen read backwards: the composer sat above the
+conversation, so every answer landed further from the box that asked it. The composer is
+now last in the column, as `docs/ux/screens-reference.html` draws it, pinned to the bottom
+of the scrolling column so a long conversation or a long answer never pushes it off-screen,
+and asking scrolls to the end so the new turn sits directly above it. Input, action row and
+answers now share one right edge — the composer is a single box at the answer measure
+(`.ask-measure`, `web/app/globals.css`). Focus stays in the composer after submitting by the
+**Ask** button, not only by `Enter`. Closes #652 and #653.
+
 ## 0.7.24 - 2026-09-23
 
 `Fixed`: `M7-FIX-FE-174` — the abstention surface's "Ask a larger model" offer read

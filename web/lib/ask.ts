@@ -351,6 +351,18 @@ export function liveTurnId<T extends { id: string; status: string }>(
 }
 
 /**
+ * Whether the Ask column should scroll to its end, bringing the newest turn
+ * up against the composer below it (`M7-FIX-FE-169`). Only when a turn was
+ * added — never on a token streaming into one, which would yank somebody
+ * reading an earlier answer back down on every chunk, and never on the first
+ * render, where "back to answer" (`M1-VIEW-FE-048`) may already be scrolling
+ * to a specific claim.
+ */
+export function followsNewTurn(previousCount: number | null, nextCount: number): boolean {
+  return previousCount !== null && nextCount > previousCount;
+}
+
+/**
  * Turns kept collapsed before the rest page in on scroll (`conversation.md`
  * §7, settled: "twenty turns, then page" — a starting value, not a finding).
  * `M1-CONV-FE-179`.

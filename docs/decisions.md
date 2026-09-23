@@ -4,6 +4,47 @@ Append-only. **Newest first.** Never edit an entry to change its meaning — if 
 
 **Bar for an entry:** something a competent person would later ask *"why is it like this?"* about. Architecture changes, dependency choices, resolved `docs/PRD.md` §11 questions, reversals. **Not** routine implementation choices — those are visible in the diff.
 
+## 2026-09-23 — `M7-FIX-FE-169`: the composer is a sticky bottom bar on `--paper`, not the mockup's `--sunk`, and measures its width in prose metrics
+
+**Decision:** The composer is the last child of the Ask column (product owner, 2026-09-23 —
+not reopened here), `position: sticky; bottom: 0` inside the shell's scrolling column, with
+`screens-reference.html`'s top rule but a `--paper` band instead of its `--sunk`. Its contents
+sit in one `.ask-measure` box (`web/app/globals.css`) that sets the prose face and size on
+itself, takes `max-width: var(--measure)`, and resets its children to the mono face at zero
+specificity. A new turn scrolls the column to its end; streamed tokens do not.
+
+**Why sticky rather than in-flow.** In flow, the composer is simply the last node of a growing
+list: after a few turns, or one long answer, it is below the fold and the user scrolls down to
+ask — the ticket's own edge case, and issue #653. Scrolling it into view after each submit was
+rejected as the sole fix because it does nothing mid-stream when the answer itself outgrows the
+window. Sticky keeps it reachable in every case with no script; the scroll-on-new-turn is added
+only so the new question lands above the box rather than out of sight behind earlier answers,
+and is deliberately not repeated per token — following the stream would yank somebody reading
+an earlier answer back down on every chunk.
+
+**Why `--paper`, departing from the mockup.** The mockup's field is `--surface` on a `--sunk`
+band. The shipped input is `--sunk` by `design-system.md`'s own rule (an input is inset), and
+its contrast table measures placeholder and typed text on `--sunk`. A `--sunk` band would make
+the input indistinguishable from the bar around it; switching the input to `--surface` would
+break the inset rule and move text onto a background the contrast table never measured.
+`--paper` is the column's own ground, so the bar reads as the column's floor with a rule above
+it, which is what the mockup's `border-top` was for. The band must be opaque either way, so
+answers scroll under it rather than showing through.
+
+**Why a width class rather than `max-width` on a wrapper.** `--measure` is `72ch`, and `ch`
+resolves against the element's own font. `.ask-prose` measures it in the serif at body size; a
+wrapper in the mono default at UI size resolves `72ch` to a different width — the ticket's
+"three right edges" would have become a different three. The box takes prose metrics to size
+itself and hands the machinery face back to its children, so the action row stays mono while
+input, buttons and answers share one edge (verified: 858px for all three at 1600px wide).
+
+**Consequences:** anything else that needs "the answer measure" around mixed content should use
+`.ask-measure`, not a bare `max-width`. The composer is now in tab order after the conversation;
+it still receives focus on mount, so the first keystroke still lands in it.
+
+**Refs:** `M7-FIX-FE-169`, #652, #653, `docs/ux/screens-reference.html` `.composer`,
+`docs/ux/design-system.md` §2 contrast table.
+
 ## 2026-09-23 — `M7-SET-FE-146a`: the marker reads `messages.model_identity` directly rather than waiting on `M7-SET-FE-146`'s settings screen, because nothing in its own scope actually imports from it
 
 **Decision:** Built the persistent unvalidated-model marker (`docs/ux/ask.md` §5) against
