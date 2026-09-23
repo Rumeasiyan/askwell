@@ -70,3 +70,17 @@ CATALOG: dict[str, ModelSpec] = {
 
 def spec_for_tier(tier: str) -> ModelSpec:
     return CATALOG.get(tier, _QWEN_4B)
+
+
+def spec_for_sha256(digest: str) -> ModelSpec | None:
+    """Which catalog entry a file's own bytes belong to, if any.
+
+    Identity by checksum rather than by filename or by the tier the caller
+    happened to ask about — `M7-OFFLINE-DEPLOY-144`'s own validation rule:
+    a manually placed model is judged by what it actually is, never by what
+    it was expected to be.
+    """
+    for spec in CATALOG.values():
+        if spec.sha256 == digest:
+            return spec
+    return None

@@ -478,9 +478,17 @@ function StepModel({
         ) : null}
 
         {model.status === "ready" ? (
-          <p className="ask-prose" style={{ color: "var(--provenance)" }}>
-            Ready.
-          </p>
+          <>
+            <p className="ask-prose" style={{ color: "var(--provenance)" }}>
+              Ready.
+            </p>
+            {model.resolved_tier !== null && model.resolved_tier !== tier ? (
+              <p className="ask-micro">
+                The file you placed is {model.display_name} — Askwell adjusted your
+                profile to match it.
+              </p>
+            ) : null}
+          </>
         ) : null}
 
         {actionError !== null ? (

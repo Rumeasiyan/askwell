@@ -34,7 +34,7 @@ from shutil import disk_usage
 import httpx
 
 from askwell.logging import get_logger
-from askwell.models_catalog import ModelSpec, spec_for_tier
+from askwell.models_catalog import CATALOG, ModelSpec, spec_for_sha256, spec_for_tier
 
 log = get_logger(__name__)
 
@@ -70,6 +70,12 @@ class DownloadProgress:
     downloaded_bytes: int
     total_bytes: int
     error: str | None = None
+    resolved_tier: str | None = None
+    """Set only by `verify_manual` when the file at the target path checks
+    out against a *different* tier's catalog entry than the one requested —
+    a model for the wrong profile, placed manually. `M7-OFFLINE-DEPLOY-144`'s
+    own edge case: accepted, with the profile adjusted and stated, rather
+    than refused."""
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -80,6 +86,7 @@ class DownloadProgress:
             "total_bytes": self.total_bytes,
             "fraction": (self.downloaded_bytes / self.total_bytes) if self.total_bytes else 0.0,
             "error": self.error,
+            "resolved_tier": self.resolved_tier,
         }
 
 
@@ -281,6 +288,13 @@ class ModelDownloadManager:
         against — `docs/ux/first-run.md` §6's settled decision that a
         correctly-named file is not assumed to be the right one.
 
+        A checksum that does not match the *requested* tier is not an
+        automatic refusal: it is checked against every other catalog entry
+        first, because a file for the wrong profile placed manually is
+        accepted with the profile adjusted (`resolved_tier`), per
+        `M7-OFFLINE-DEPLOY-144`'s own edge case. Only a checksum that
+        matches nothing in the catalog is named as corrupt or wrong.
+
         Writes the result into `self._progress`, the same as `_run` does for
         an automated download — without this, a poll immediately after
         calling this (`GET /setup`, which reads `snapshot()`) would keep
@@ -299,17 +313,7 @@ class ModelDownloadManager:
             )
         else:
             digest = _sha256_file(self._target_path)
-            if digest != spec.sha256:
-                result = DownloadProgress(
-                    status=DownloadStatus.FAILED,
-                    tier=tier,
-                    display_name=spec.display_name,
-                    downloaded_bytes=self._target_path.stat().st_size,
-                    total_bytes=spec.size_bytes,
-                    error="This file does not match the model Askwell expects. Re-download it "
-                    "or replace it with the correct file.",
-                )
-            else:
+            if digest == spec.sha256:
                 result = DownloadProgress(
                     status=DownloadStatus.READY,
                     tier=tier,
@@ -317,8 +321,65 @@ class ModelDownloadManager:
                     downloaded_bytes=spec.size_bytes,
                     total_bytes=spec.size_bytes,
                 )
+            else:
+                matched = spec_for_sha256(digest)
+                if matched is not None:
+                    result = DownloadProgress(
+                        status=DownloadStatus.READY,
+                        tier=tier,
+                        display_name=matched.display_name,
+                        downloaded_bytes=matched.size_bytes,
+                        total_bytes=matched.size_bytes,
+                        resolved_tier=matched.tier,
+                    )
+                else:
+                    result = DownloadProgress(
+                        status=DownloadStatus.FAILED,
+                        tier=tier,
+                        display_name=spec.display_name,
+                        downloaded_bytes=self._target_path.stat().st_size,
+                        total_bytes=spec.size_bytes,
+                        error=(
+                            f"The file at {self._target_path} does not match any model "
+                            "Askwell recognises — it may be corrupt, incomplete, or the "
+                            "wrong file. Re-download it, or replace it with the correct file."
+                        ),
+                    )
         self._progress = result
         return result
+
+    def available_alternatives(self) -> list[dict[str, object]]:
+        """Other catalog-recognised model files already sitting in the
+        models directory, besides the one currently configured.
+
+        `M7-OFFLINE-DEPLOY-144`'s "several models present" edge case: the
+        configured file is what loads, and everything else found here is
+        named as available for swapping — via `POST /model/select` — rather
+        than left for the user to notice by opening a file browser.
+        """
+        alternatives: list[dict[str, object]] = []
+        if not self._models_dir.is_dir():
+            return alternatives
+
+        seen_filenames: dict[str, ModelSpec] = {}
+        for spec in CATALOG.values():
+            seen_filenames.setdefault(spec.filename, spec)
+
+        for filename, spec in seen_filenames.items():
+            path = self._models_dir / filename
+            if path == self._target_path or not path.is_file():
+                continue
+            if _sha256_file(path) != spec.sha256:
+                continue
+            alternatives.append(
+                {
+                    "tier": spec.tier,
+                    "display_name": spec.display_name,
+                    "filename": spec.filename,
+                    "path": str(path),
+                }
+            )
+        return alternatives
 
     async def _run(self, tier: str, spec: ModelSpec) -> None:
         part = self._part_path()
