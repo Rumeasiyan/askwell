@@ -64,7 +64,14 @@ pick_milestone() {
 }
 
 MILESTONE="${ASKWELL_MILESTONE:-$(pick_milestone)}"
-SPEND_CEILING="${SPEND_CEILING:-900}"
+# 900 was set when the backlog was shorter. The ledger reads 726h spent with
+# 19 tickets and ~78 estimated hours still to build, and a rebuilt ticket
+# spends again — a ticket that fails its audit and is retried costs its
+# estimate twice. Hitting the ceiling stops the queue, silently, which is the
+# failure this whole supervisor exists to prevent, so the headroom is worth
+# more than the guard's precision. The guard still exists; it is just set
+# where it can only catch a runaway rather than an ordinary finish.
+SPEND_CEILING="${SPEND_CEILING:-1200}"
 
 say() { printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M')" "$*" >> "$LOG"; }
 
