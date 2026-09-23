@@ -277,6 +277,12 @@ services:
       ASKWELL_LOG_LEVEL: ${ASKWELL_LOG_LEVEL:-INFO}
       ASKWELL_WEB_ASSETS_DIR: /app/web/out
       ASKWELL_INFERENCE_SOCKET: /run/askwell/inference.sock
+      # `M7-SET-FE-146`, issue #660: the models directory, mounted below, so
+      # Settings can list the model files placed there and name one to the
+      # host supervisor by file name. `_DISPLAY` is the same directory as the
+      # user knows it — `/models` means nothing on their machine.
+      ASKWELL_MODELS_DIR: /models
+      ASKWELL_MODELS_DIR_DISPLAY: ${ASKWELL_MODELS_DIR_DISPLAY:-${ASKWELL_MODELS_DIR:-~/.local/share/askwell/models}}
       # `M6-STT-BE-127`: where the voice WebSocket channel (mounted here, not
       # on `voice`) calls `/transcribe`. Same value as `voice`'s own
       # `ASKWELL_VOICE_PORT` below — one number, two roles, same shape as
@@ -341,6 +347,11 @@ services:
       # The built interface, read-only: the API serves these files and has no
       # reason to be able to change them.
       - ./web/out:/app/web/out:ro,z
+      # The model files, read-only (`M7-SET-FE-146`, issue #660). The API
+      # lists and checksums what is here; it never writes a model — the swap
+      # itself happens in the host supervisor, which owns `llama-server`.
+      # Same directory, same options, as `voice`'s own mount below.
+      - ${ASKWELL_MODELS_DIR:-~/.local/share/askwell/models}:/models:ro,z
       # The user's own files. Askwell indexes in place and copies nothing, so
       # the containers need a route to the folders being indexed — and this is
       # deliberately one narrow route rather than open filesystem access.

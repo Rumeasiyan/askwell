@@ -150,6 +150,8 @@ def db_client(
                     "database_url": SecretStr(app_database_url),
                     "web_assets_dir": built,
                     "inference_model_path": model_dir / "model.gguf",
+                    "models_dir": model_dir,
+                    "models_dir_display": "~/askwell-models",
                 }
             )
         )
@@ -192,25 +194,61 @@ def test_verify_manual_accepts_a_wrong_profile_file_and_adjusts_the_profile(
 
 
 @pytest.mark.requires_db
-def test_get_model_names_the_expected_path_and_other_files_present(
+def test_get_model_lists_the_models_present_and_names_the_folder_on_the_users_machine(
     db_client: TestClient, database_url: str, tmp_path: Path
 ) -> None:
-    """`GET /model` — the endpoint `M7-SET-FE-146`'s settings screen will
-    call — states where the active model lives and lists any other
-    catalog-recognised file sitting beside it, not just the one selected.
-    """
+    """`GET /model` — Settings → Model and speed (`M7-SET-FE-146`). Every
+    model file in the models directory is a candidate, marked validated only
+    by its bytes; the folder is named as the user knows it, never `/models`;
+    and with no inference process and no question asked, nothing is
+    reported as measured."""
     import psycopg
 
     with psycopg.connect(database_url, autocommit=True) as setup:
         setup.execute("TRUNCATE settings, audit_decisions CASCADE")
+    (tmp_path / "models" / "mine.gguf").write_bytes(b"GGUF" + b"\x00" * 16)
 
     with db_client as client:
         with_session(client)
         response = client.get("/model")
     assert response.status_code == 200
     body = response.json()
-    assert body["expected_path"].endswith("model.gguf")
-    assert body["alternatives"] == []
+    assert body["models_dir"] == "~/askwell-models"
+    candidates = {c["file"]: c for c in body["candidates"]}
+    assert candidates["model.gguf"]["validated"] is True
+    assert candidates["model.gguf"]["display_name"] == "Accelerated test model"
+    assert candidates["mine.gguf"]["validated"] is False
+    assert body["source"] == "none"
+    assert body["memory_bytes"] is None
+    assert body["acceleration"] is None
+    assert body["throughput"]["turns"] == 0
+    assert body["throughput"]["tokens_per_second"] is None
+    assert "not guaranteed" in body["unverified_statement"]
+    assert body["swap_timeout_seconds"] == 300
 
     with psycopg.connect(database_url, autocommit=True) as clean:
+        clean.execute("TRUNCATE settings, audit_decisions CASCADE")
+
+
+@pytest.mark.requires_db
+def test_selecting_an_unverified_model_without_the_statement_is_refused(
+    db_client: TestClient, database_url: str, tmp_path: Path
+) -> None:
+    import psycopg
+
+    with psycopg.connect(database_url, autocommit=True) as setup:
+        setup.execute("TRUNCATE settings, audit_decisions CASCADE")
+    (tmp_path / "models" / "mine.gguf").write_bytes(b"GGUF" + b"\x00" * 16)
+
+    with db_client as client:
+        with_session(client)
+        response = client.post("/model/select", json={"model_file": "mine.gguf"})
+    assert response.status_code == 422
+    assert response.json()["unverified_statement_required"] is True
+
+    with psycopg.connect(database_url, autocommit=True) as clean:
+        count = clean.execute(
+            "SELECT count(*) FROM audit_decisions WHERE kind = 'model_swap_requested'"
+        ).fetchone()
+        assert count == (0,)
         clean.execute("TRUNCATE settings, audit_decisions CASCADE")

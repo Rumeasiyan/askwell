@@ -99,7 +99,12 @@ from askwell.audit import AuditError, Store, record
 from askwell.config import Settings
 from askwell.connections import Engine
 from askwell.db.engine import session_scope
-from askwell.inference.client import InferenceClient, InferenceFailed, InferenceUnavailable
+from askwell.inference.client import (
+    GenerationTimings,
+    InferenceClient,
+    InferenceFailed,
+    InferenceUnavailable,
+)
 from askwell.ingest import coverage
 from askwell.inline_clarify import default_assumption, find_blocking
 from askwell.logging import get_logger
@@ -1267,6 +1272,10 @@ async def _run_generation(
     injection_flagged = False
     injection_patterns: tuple[str, ...] = ()
     truncated = False
+    # llama.cpp's own measurement of this turn's generation, read off the
+    # final stream event. `M7-SET-FE-146`: Settings' throughput is a rolling
+    # figure over these, from real turns only (issue #617).
+    generation_timings: GenerationTimings | None = None
     partial_coverage = False
     uncovered_aspects: tuple[str, ...] = ()
     conflict_detected = False
@@ -1923,6 +1932,7 @@ async def _run_generation(
                     claims_emitted = len(claims)
                 if chunk.done:
                     truncated = chunk.truncated
+                    generation_timings = chunk.timings
 
             tail = stripper.flush()
             if tail:
@@ -2031,6 +2041,15 @@ async def _run_generation(
         "schema_note_ids": [str(i) for i in schema_note_ids],
         "memory_used": len(memory_fact_ids) + len(schema_note_ids),
         "db_state": db_state,
+        # `M7-SET-FE-146`: what Settings → Model and speed averages. Only a
+        # completed turn counts — a stopped one's partial timing would drag
+        # the figure towards whatever the user was impatient with — and a
+        # turn llama.cpp sent no timings for records `None`, never zeros.
+        "generation": (
+            {**generation_timings.as_dict(), "duration_ms": duration_ms}
+            if generation_timings is not None and status == "completed"
+            else None
+        ),
     }
 
     # `M1-CONV-BE-177`: the summary and source count a collapsed past turn
@@ -2357,7 +2376,7 @@ def register_ask(
             # and fail on the next startup, rather than nothing at all.
             #
             # The model identity is captured in the same step (`M7-SET-BE-
-            # 145a`): `askwell.model_select.select_user_model` holds every
+            # 145a`): `askwell.model_select.select_model` holds every
             # `generation_semaphore` permit for the duration of a swap, and
             # this insert runs before the background task ever requests one
             # — a swap racing the exact instant a question is asked is a

@@ -69,6 +69,9 @@ class InferenceState:
     reason: str | None = None
     restarts: int = 0
     consecutive_failures: int = 0
+    memory_bytes: int | None = None
+    """Resident memory of the running process, as the supervisor measured it
+    (`M7-SET-FE-146`). `None` whenever it was not measured — never zero."""
     roles: dict[str, "InferenceState"] = field(default_factory=dict)
     """The other two processes.
 
@@ -165,6 +168,7 @@ def read(state_path: Path) -> InferenceState:
         reason=payload.get("reason"),
         restarts=int(payload.get("restarts", 0)),
         consecutive_failures=int(payload.get("consecutive_failures", 0)),
+        memory_bytes=_memory(payload),
         roles=roles,
     )
 
@@ -190,4 +194,12 @@ def _one(entry: dict[str, Any]) -> InferenceState:
         reason=entry.get("reason"),
         restarts=int(entry.get("restarts", 0)),
         consecutive_failures=int(entry.get("consecutive_failures", 0)),
+        memory_bytes=_memory(entry),
     )
+
+
+def _memory(entry: dict[str, Any]) -> int | None:
+    value = entry.get("memory_bytes")
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value

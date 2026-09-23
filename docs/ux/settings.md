@@ -30,7 +30,7 @@ No search, no sub-navigation. If this needs a search box it has too many setting
   > This model has not been tested against Askwell's checks. Citations and "I don't know" are behaviours Askwell verifies for the models it ships. With your own model, they are not guaranteed.
 
   Swapping is allowed. Answers produced by an unvalidated model carry a persistent marker (`ask.md`), so the state is visible where it matters rather than only in settings. Same pattern as the retrieval threshold — permit it, state the consequence, never make it frictionless.
-- Memory footprint and measured tokens/second — real numbers, not a rating.
+- Memory footprint and measured tokens/second — real numbers, not a rating. Where the model runs partly on a graphics card, the memory figure says it counts system memory only and leaves out the graphics card's share, rather than presenting a partial figure as the whole footprint.
 - **Retrieval threshold**, with the same warning as `trace.md` §4. Reachable here, never frictionless.
 
 ---
@@ -104,6 +104,9 @@ An open-source product whose users never learn about a security fix is a real pr
 | **Passphrase being set** | Strength, and the no-recovery warning before confirming |
 | **Passphrase forgotten** | No recovery. Reset destroys the library. Said clearly, with export offered while still unlocked |
 | **Model swapping** | Progress; retrieval unaffected |
+| **No other model present** | That there is none, and the folder to place a `.gguf` file in |
+| **Model swap failed** | The failure named; the previous model restored and in use |
+| **Throughput not yet measured** | Says so. Never a zero |
 | **Model file missing** | Which file, where it should be, manual install path (`first-run.md` §6) |
 | **Log over budget** | Prominent, with prune and export |
 | **Export running** | Background, with progress and a download when ready |

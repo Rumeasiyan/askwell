@@ -369,7 +369,7 @@ class ModelDownloadManager:
             path = self._models_dir / filename
             if path == self._target_path or not path.is_file():
                 continue
-            if _sha256_file(path) != spec.sha256:
+            if sha256_cached(path) != spec.sha256:
                 continue
             alternatives.append(
                 {
@@ -489,6 +489,26 @@ def _as_int(value: object) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+# `(path, size, mtime_ns)` -> digest. Issue #669: a listing that decides
+# validated-versus-unverified by the file's bytes would otherwise re-read a
+# multi-gigabyte file every time Settings opens. Keyed on size and mtime so a
+# file replaced in place is hashed again — the bytes, never a remembered
+# name, still decide. In process memory only: nothing persisted can go stale
+# across a restart, and a restart pays for one hash per file, once.
+_DIGESTS: dict[tuple[str, int, int], str] = {}
+
+
+def sha256_cached(path: Path) -> str:
+    """`_sha256_file`, paid at most once per version of a file."""
+    stat = path.stat()
+    key = (str(path), stat.st_size, stat.st_mtime_ns)
+    digest = _DIGESTS.get(key)
+    if digest is None:
+        digest = _sha256_file(path)
+        _DIGESTS[key] = digest
+    return digest
 
 
 def _sha256_file(path: Path) -> str:

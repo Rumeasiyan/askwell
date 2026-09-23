@@ -4,6 +4,37 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.27 - 2026-09-24
+
+`Added`: `M7-SET-FE-146` — Settings → Model and speed, now the first settings section. It
+shows the hardware profile with what that profile means, and a re-probe. It shows the model
+in use, marked **Validated** or **Unverified**, with its measured memory. Speed is measured
+from real answers: the typical answer time, how fast passages are read, and how fast the
+answer is written. Before any answer it says "not measured yet". It lists every other model
+file in the models folder as a swap target. It also holds the retrieval threshold, with the
+trace panel's own warning. A swap states first that the assistant is briefly unavailable, for
+up to the backend's own swap timeout, and that search keeps working; the same
+expected duration stays on screen while it runs. Swapping to an unverified model shows the statement that
+citations and "I don't know" are not guaranteed, every time. The API refuses that swap
+unless the statement was shown. A failed swap names the failure and stays on the previous
+model. With no other model present, the section names the folder to place one in.
+
+`Fixed`: the API could not see the models directory, so a swap could never reach a real
+file. It now mounts the directory read-only and names a model by file name (#660). A swap
+target is marked validated by its checksum, not its name, and each file is hashed at most
+once per version (#669). The model already loaded is no longer offered as a swap target
+(#662). After every swap the inference supervisor started a second `llama-server` on the
+same port, which failed to bind and restarted about once a second while the swapped model
+answered. It now starts one. The model in use is marked validated only when its own bytes
+are a shipped model's — a default file with other bytes is unverified and its answers carry
+the marker (#672) — and a supervisor that restarted onto its default is no longer named as
+the swapped model (#670, in part). Measuring memory on macOS no longer blocks the
+supervisor's heartbeat (#671). When the model runs on a graphics card, the memory figure
+says it is system memory only and leaves out the graphics card's share, rather than
+presenting a partial figure as the model's whole footprint (#674). A second model swap
+requested while one is running is refused and names why, instead of both swaps waiting on each
+other forever and every answer hanging with them (#675).
+
 ## 0.7.26 - 2026-09-23
 
 `Fixed`: `M7-FIX-FE-173` — in a narrow window the open navigation drawer covered the

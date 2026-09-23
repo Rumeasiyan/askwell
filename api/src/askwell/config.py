@@ -116,6 +116,18 @@ class Settings(BaseSettings):
     reranker_model_path: Path = Path("~/.local/share/askwell/models/reranker.gguf")
     reranker_port: Port = 8082
 
+    # `M7-SET-FE-146`, issue #660: the models directory *as the API sees
+    # it*. In the stack that is `/models`, the host's `ASKWELL_MODELS_DIR`
+    # mounted read-only (`compose.yaml`); outside a container it is the host
+    # directory itself. The API names a model to the host supervisor only by
+    # a file name inside this directory, never by a path — the two sides see
+    # the same directory at different places.
+    models_dir: Path = Path("~/.local/share/askwell/models")
+    # The same directory as the user knows it on their own machine, for
+    # "place a model file here". Set by compose from the host variable; when
+    # unset, `models_dir` is already the host path and is shown as-is.
+    models_dir_display: str | None = None
+
     egress_proxy_host: str = "egress-proxy"
     egress_proxy_port: Port = 3128
 
@@ -552,6 +564,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "inference_model_path",
+        "models_dir",
         "inference_socket",
         "trace_dir",
         "export_dir",
@@ -573,6 +586,11 @@ class Settings(BaseSettings):
         "no model file" message pointing at a path that looks correct.
         """
         return value.expanduser()
+
+    @property
+    def models_dir_shown(self) -> str:
+        """Where to tell the user to place a model file."""
+        return self.models_dir_display or str(self.models_dir)
 
     @property
     def database_host_port(self) -> tuple[str, int]:
