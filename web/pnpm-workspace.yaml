@@ -18,3 +18,13 @@ allowBuilds:
 # network it is a call C1 has no reason to make during a build. Verification
 # belongs to `install`, which is the one command allowed to reach an index.
 verifyDepsBeforeRun: false
+
+# next@16.3.3 declares an optionalDependency on sharp@^0.35.3, which resolves
+# to 0.35.3 by default — vulnerable to the libheif issues in GHSA-rgj7-g3m4-5g8c
+# (M7-SEC-TEST-166). unreachable at runtime today (`next.config.ts` sets
+# `images.unoptimized: true`, so `next/image` never calls into sharp), but the
+# patched version satisfies next's own range, so there is no reason to carry
+# the vulnerable one. Drop this once next's own lockfile-pinned optional
+# dependency moves past 0.35.4 on its own.
+overrides:
+  sharp: ">=0.35.4"

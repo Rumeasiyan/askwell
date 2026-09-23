@@ -172,6 +172,43 @@ def test_escalating_an_abstained_turn_succeeds_and_is_recorded(
     assert len(interactions) == 1
 
 
+def test_escalating_a_real_abstained_turn_succeeds(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    database_url: str,
+    grant_calls: _GrantCalls,  # noqa: F811 — parameter shadows the fixture import
+) -> None:
+    """`M7-SEC-TEST-166`: since `M2-ABSTAIN-BE-054`, `messages.content` carries
+    the full composed abstention message for a real abstained turn, never
+    `""` — the shape the row above seeds directly. A row built the way
+    `askwell.ask._run_generation` actually writes one (non-empty content, an
+    `{"kind": "abstain"}` trace step) must escalate too, not just the older,
+    already-stale fixture shape."""
+    _truncate(database_url)
+    client = _fixture_client(settings, monkeypatch, tmp_path, database_url)
+    conversation_id = _seed_conversation(database_url)
+    message_id = _seed_message(
+        database_url,
+        conversation_id,
+        content=(
+            "Nothing in your files answers this.\n"
+            "I searched 0 passages across 0 documents.\n"
+            "Add the source you'd expect this in, and ask again."
+        ),
+        trace={
+            "status": "completed",
+            "reason": "Nothing in your files answers this.",
+            "partial_coverage": False,
+            "steps": [{"kind": "abstain", "reason_code": "empty_corpus"}],
+        },
+    )
+    response = client.post(
+        f"/ask/{message_id}/escalate/web", json={"question": "what changed in 2026?"}
+    )
+    assert response.status_code == 200
+
+
 def test_escalating_a_partial_answer_succeeds(
     settings: Settings,
     monkeypatch: pytest.MonkeyPatch,

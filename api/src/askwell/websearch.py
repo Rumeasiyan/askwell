@@ -717,7 +717,27 @@ def register_web_search(
                 return JSONResponse({"error": "Askwell has no turn with that id."}, status_code=404)
             conversation_id, content, trace = row
             trace = trace if isinstance(trace, dict) else {}
-            abstained = content == "" and trace.get("reason") is not None
+            # `content == ""` was the abstention signal before `M2-ABSTAIN-
+            # BE-054`/`-FE-055` started writing the composed abstention text
+            # into `messages.content` — since then a genuinely abstained
+            # turn's content is never empty, so that check alone always
+            # refused a real abstained turn's escalation (`M7-SEC-TEST-166`,
+            # found live-testing this route against the running stack: an
+            # abstained turn's own escalation attempt 409'd). The reliable
+            # signal is `_run_generation`'s own `{"kind": "abstain"}` trace
+            # step, which only the below-threshold/empty-corpus path ever
+            # appends — `content == ""` is kept alongside it rather than
+            # replaced, so a row from before this fix (or a future caller
+            # that still leaves content empty) is not newly excluded. A
+            # `db_override` turn (`M4-RESULT-FE-111`'s "no connections
+            # configured" state) does not append this step and stays
+            # unaffected by this fix either way — that gap is #624, not
+            # fixed here.
+            abstain_steps = trace.get("steps", [])
+            abstained_step = isinstance(abstain_steps, list) and any(
+                isinstance(step, dict) and step.get("kind") == "abstain" for step in abstain_steps
+            )
+            abstained = (content == "" or abstained_step) and trace.get("reason") is not None
             partial = bool(trace.get("partial_coverage"))
             if not (abstained or partial):
                 return JSONResponse(

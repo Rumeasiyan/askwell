@@ -144,8 +144,8 @@ Verified against the model's own registry entry before being written here (`AGEN
 | @babel/traverse | 7.29.8 | MIT |
 | @babel/types | 7.29.8 | MIT |
 | @img/colour | 1.1.0 | MIT |
-| @img/sharp-libvips-linux-x64 | 1.3.2 | LGPL-3.0-or-later |
-| @img/sharp-linux-x64 | 0.35.3 | Apache-2.0 |
+| @img/sharp-libvips-linux-x64 | 1.3.3 | LGPL-3.0-or-later |
+| @img/sharp-linux-x64 | 0.35.4 | Apache-2.0 |
 | @jridgewell/gen-mapping | 0.3.13 | MIT |
 | @jridgewell/remapping | 2.3.5 | MIT |
 | @jridgewell/resolve-uri | 3.1.2 | MIT |
@@ -191,7 +191,7 @@ Verified against the model's own registry entry before being written here (`AGEN
 | scheduler | 0.27.0 | MIT |
 | semver | 6.3.1 | ISC |
 | semver | 7.8.5 | ISC |
-| sharp | 0.35.3 | Apache-2.0 |
+| sharp | 0.35.4 | Apache-2.0 |
 | source-map-js | 1.2.1 | BSD-3-Clause |
 | styled-jsx | 5.1.6 | MIT |
 | supports-color | 7.2.0 | MIT |
