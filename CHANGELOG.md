@@ -4,6 +4,32 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.17 - 2026-09-23
+
+`M7-DOC-DOC-163` — a generated third-party notices file covering every bundled model and code
+dependency, and a release gate that fails on a disallowed licence. `Added`: `NOTICES.md`
+(repository root, alongside `LICENSE`), regenerated — never hand-edited — by
+`scripts/generate_notices.py`, invoked as `scripts/dev.sh notices`. Lists all seven bundled
+model roles (generation, embedding, reranker, transcription, voice activity detection,
+synthesis, OCR engine and traineddata) with source, licence and verification date — `api/src/
+askwell/notices.py` is where that table and the disallowed-licence matcher live, covered by
+`api/tests/test_notices.py`. Python dependencies come from `importlib.metadata` inside the
+built API image, split into shipped versus dev-only by walking `api/uv.lock`'s own resolved
+graph (not `Requires-Dist` markers, which get optional extras wrong); JavaScript dependencies
+come from `pnpm licenses list --json --prod`. `web/components/settings/about.tsx` is the new
+About section (`docs/ux/settings.md` §7) — version, licence, a link to the source, a link to
+report a problem, and a link to the notices file, copied into `public/notices.md` at build
+time (`web/scripts/copy-notices.mjs`) so the product and the repository never carry two copies
+that could drift. `web/scripts/check-offline.mjs` gained a narrow fix: it now treats a
+user-initiated `<a href>` to an external host as inert (reported, never a failure) rather than
+the same automatic-fetch violation as a `<link>`/`<img>`/`<script src>`, since C1 is about the
+app reaching out on its own, not a link the user chose to click. `Changed`:
+`docs/release-procedure.md` gains step 3b, the notices gate, release-blocking. `Found`:
+`kokoro-onnx` unconditionally requires `phonemizer` (GPLv3+) — a real, currently-shipped
+licence conflict the new check exists to catch, left red rather than silently allow-listed;
+filed as issue #619, not fixed here (out of this ticket's own scope, a documentation and
+tooling ticket, not a dependency swap).
+
 ## 0.7.16 - 2026-09-23
 
 `M7-OFFLINE-TEST-145` — the cable-unplugged release test, documented and partly automated.

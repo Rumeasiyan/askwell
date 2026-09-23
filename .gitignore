@@ -39,6 +39,10 @@ web/node_modules/
 web/.next/
 web/out/
 
+# Copied from the repository's own NOTICES.md at build time
+# (web/scripts/copy-notices.mjs) — generated, not a second source.
+web/public/notices.md
+
 # Eval run output: machine- and timestamp-specific, not source. A before/after
 # comparison quotes the numbers into docs/BRAIN.md; the raw JSON is not the
 # record of the record.
@@ -49,3 +53,7 @@ web/tsconfig.tsbuildinfo
 # The host-side inference socket, bind-mounted into the containers
 .run/
 api/.venv-host/
+
+# scripts/dev.sh notices' handoff file between the web and API containers —
+# regenerated every run, not the record; NOTICES.md itself is committed.
+.notices/
