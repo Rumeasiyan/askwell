@@ -124,6 +124,22 @@ Discovered along the way: pnpm 11 silently ignores a `pnpm.overrides` key left i
 
 ---
 
+## 2026-09-23 — The credit system is dropped; online AI uses the user's own provider key
+
+**Decision:** Askwell sells nothing. The paid credit tier is cancelled. Anyone who wants a larger cloud model for a hard question brings an API key from a provider they already pay; Askwell stores it encrypted, uses it only for a conversation the user has deliberately switched to online, and takes no part in the cost. `docs/PRD.md` §6's promise that "you never hand Askwell an API key" is amended in the same change, because this breaks it deliberately rather than quietly. M8 is retitled and its three credit tickets (`M8-CREDIT-BLOCKED-173`, `M8-CREDIT-BLOCKED-174`, `M8-CREDIT-FE-175`) become `M8-KEY-BE-173`, `M8-KEY-FE-174` and `M8-KEY-FE-175`.
+
+**Why:** The product owner cancelled the paid tier in conversation earlier in this session, in the same breath as asking why the build was taking days — the credit path was a revenue line nobody had asked for yet, sitting in front of a product that is free and works without it. Against that, the original promise was genuinely good: a key the user never hands over cannot be stolen from them, and credits bought in advance bound the cost. What loses it is everything that promise drags in — an account system, a purchase flow, a balance, a spending limit, a provider relationship held by a project with no company behind it, and a pricing decision that blocked a whole milestone for a month. A key the user already has costs nothing to support and ships now.
+
+The trade-off accepted knowingly: a stolen key is now the user's problem rather than ours, and the cost is unpredictable in the way any metered provider account is. That is why `M8-KEY-BE-173` treats the key as a secret on the same footing as a database credential, and why the settings copy has to say plainly that the billing relationship is not ours.
+
+**What this entry is really about:** the decision was made on 2026-09-23 and was not written down until the end of the same day, when a screenshot of the abstention surface showed *"Ask a larger model — USES CREDITS · YOU HAVE NONE"* still on screen. Between those two points the milestone still described a credit tier, `docs/PRD.md` §6 still promised the opposite of what had been decided, and three tickets sat blocked on a pricing decision that no longer needed answering. That is exactly the failure `AGENTS.md` §8 opens with — *"an item raised only in conversation is lost"* — and it was lost by the person who wrote that rule down. A decision acted on but unrecorded is worse than one never made, because the code and the documents drift apart while everyone believes they agree.
+
+**Consequences:** M8 is no longer blocked on anything; both decisions that gated it stopped existing with the model they served. Nothing is transmitted for billing because there is no billing, which also removes the second blocked decision ("what online mode transmits"). The stale "USES CREDITS · YOU HAVE NONE" copy on the abstention surface is now wrong and is tracked separately. Reversing this means rebuilding the account and purchase path from nothing — the tickets describing it are gone, not merely deferred.
+
+**Refs:** `docs/PRD.md` §6; `docs/backlog/M8-the-paid-upgrade.md`; `docs/ux/settings.md` §9; `AGENTS.md` §8; product owner's decision, 2026-09-23.
+
+---
+
 ## 2026-09-23 — The `<think>` block is dropped where tokens are consumed, and only when the output opens with it
 
 **Decision:** `askwell.agent.think.ThinkStripper` removes a reasoning model's `<think>…</think>` block inside `askwell.ask._run_generation`'s stream loop, before the text reaches `turn.text`, `turn.emit("token", …)` or `segment_claims`. It only treats a block as reasoning when the output *begins* with `<think>` (leading whitespace aside); a tag appearing later is content and passes through. A block that never closes emits nothing and marks the turn truncated.

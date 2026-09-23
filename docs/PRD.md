@@ -94,13 +94,13 @@ That stays true now that Askwell can search the web. **Searching is something yo
 
 **Two things can reach outside, and both are deliberate acts.**
 
-*Online AI* — a larger cloud model for a hard question. Bought with credits, enabled per conversation, and Askwell tells you exactly what will be sent before it sends anything.
+*Online AI* — a larger cloud model for a hard question, using an API key from a provider you already pay. Enabled per conversation, and Askwell tells you exactly what will be sent before it sends anything.
 
 *Web search* — asked for per question, from the screen where Askwell has just told you your files do not cover it. What goes out is your question. What comes back is shown separately from your own material, labelled, and dated, because a web page can change after the answer and a document on your disk cannot.
 
 Neither is sticky. Neither happens on its own. Turning one on for a question does not turn it on for the next.
 
-**You never hand Askwell an API key from another provider**, and Askwell never asks for one. Credits are bought from us; we handle the provider relationship and the usage limits. That keeps a stolen key from becoming your problem and keeps the cost predictable.
+**If you want a larger model, you bring your own key.** Askwell sells nothing and takes no part in what it costs — the account is yours, the provider is yours, and the bill is between the two of you. The key is stored encrypted on your machine, never logged, never exported, and used only for a conversation you have deliberately switched to online. Askwell works completely without one; this is an escape hatch for a hard question, not a tier.
 
 **Local mode remains the default forever.** Online is an upgrade you choose per question, not a direction the product drifts in.
 
