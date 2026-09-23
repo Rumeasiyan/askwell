@@ -4,6 +4,15 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.24 - 2026-09-23
+
+`Fixed`: `M7-FIX-FE-174` — the abstention surface's "Ask a larger model" offer read
+"uses credits · you have none", a paywall on a product with no credit tier since the
+2026-09-23 decision to drop it. Rewritten to name the actual mechanism: a provider
+key the user supplies, currently unset because M8 has not built anywhere to set one
+yet. `web/components/ask/ask-screen.tsx`, `docs/ux/web-search.md` §2, `docs/ux/settings.md`
+§9. `docs/ux/settings.md` §3 still specs the old credit flow — tracked separately, #658.
+
 ## 0.7.23 - 2026-09-23
 
 `Fixed`: `M7-FIX-FE-171` — the provenance margin mounted on every screen and showed the Ask
