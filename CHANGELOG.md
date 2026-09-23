@@ -4,6 +4,18 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.20 - 2026-09-23
+
+`Fixed`: the other half of issue #220. Stripping the `<think>` block stopped the reasoning being
+read as the answer, but the model still spent its whole token budget producing it: a nine-source
+question against the real stack ran for three minutes and returned "Reached the answer length
+limit" with no answer at all. New `ASKWELL_GENERATION_THINKING_DIRECTIVE` (default `/no_think`)
+is appended to the composed prompt, telling a reasoning model to answer directly. Measured on
+this machine's CPU with the real `answer_composition.v1` prompt: 30s and 73 tokens without it,
+6s and 47 with, the same citations either way. It is configuration rather than code because the
+token belongs to the model, not to Askwell (`AGENTS.md` §4), and a model that does not recognise
+it reads it as part of the question; set it empty to send nothing.
+
 ## 0.7.19 - 2026-09-23
 
 `Fixed`: the shipped generation model reasons inside a `<think>` block before writing anything,
