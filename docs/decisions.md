@@ -77,6 +77,20 @@ Discovered along the way: pnpm 11 silently ignores a `pnpm.overrides` key left i
 
 ---
 
+## 2026-09-23 — The `<think>` block is dropped where tokens are consumed, and only when the output opens with it
+
+**Decision:** `askwell.agent.think.ThinkStripper` removes a reasoning model's `<think>…</think>` block inside `askwell.ask._run_generation`'s stream loop, before the text reaches `turn.text`, `turn.emit("token", …)` or `segment_claims`. It only treats a block as reasoning when the output *begins* with `<think>` (leading whitespace aside); a tag appearing later is content and passes through. A block that never closes emits nothing and marks the turn truncated.
+
+**Why:** Issue #220 is a C4 crack, not a cosmetic one. The model rehearses lines while drafting — verified live, `Not covered: termination notice period.` written three times inside the block and once for real — so `split_partial_answer` returned three identical uncovered aspects, and `[index]` markers inside a draft were segmented as claims that were never asserted. Option 1 of that issue (strip at the chokepoint) was taken because there is exactly one place tokens are consumed, so the stored answer, the reader and the claim segmenter cannot drift apart; a per-chunk `str.replace` was rejected outright because either tag routinely splits across two stream chunks (`</thi` then `nk>`), which is why the stripper is stateful. Option 2 (`/no_think` in the prompt) was not taken *instead* — it may still be worth adding for the token budget, but it depends on the GGUF's own chat template and `AGENTS.md` §4 forbids asserting that without verifying it against the registry; it also cannot protect against a model that reasons anyway, which a stream-level strip can. Option 3 (store the reasoning in its own field) adds schema surface for no reader.
+
+The conservative "must open with the tag" rule is the deliberate trade: the failure mode of guessing wrong is swallowing a whole real answer, which is worse than the bug being fixed. A model that does not reason this way is unaffected, and so is an answer that merely contains the word.
+
+**Consequences:** An unclosed block now produces an empty answer plus `truncated`, which is the honest report of "the budget went on reasoning" and routes into the existing empty-answer handling rather than showing a draft. Anything later that genuinely wants the reasoning — a trace field, say — has to capture it here, because after this point it no longer exists. If a future bundled model uses different delimiters, this is the one place to teach.
+
+**Refs:** issue #220; `api/src/askwell/agent/think.py`; `api/src/askwell/ask.py` `_run_generation`; `api/tests/test_think.py`; `AGENTS.md` §3 C4.
+
+---
+
 ## 2026-09-23 — `M7-OFFLINE-TEST-145`: the offline gate is two independent checks plus a manual walkthrough, not one automated script
 
 **Decision:** the C1 release gate (`docs/offline-release-test.md`) is a manual, physical-cable-pull walkthrough covering every feature, checked two independent ways throughout — the egress proxy's own `GET /network` counters (`askwell.egress`, `docs/architecture.md` §5) and an external packet capture on a second machine or a second interface. `scripts/verify-no-egress.sh` automates only the HTTP-reachable subset (add the eval fixture corpus, ask a grounded question, abstain, correct a memory fact, take a backup, export the audit log) against an already-running stack, asserting the proxy's `permitted` counter does not move across the run. It does not attempt voice, a SQL dump import, or the disconnect itself. Wired into `docs/release-procedure.md` as a new step 3a, release-blocking, alongside the existing restore gate (`M7-BACKUP-TEST-159`).
