@@ -28,7 +28,7 @@ Three options, equal weight, each with its cost stated:
 | Option | Stated as |
 | ------ | --------- |
 | **Search the web** | sends your question out · this question only |
-| **Ask a larger model** | uses credits · you have none |
+| **Ask a larger model** | your own API key · not set up yet |
 | **Add a source instead** | keeps the answer in your own material |
 
 **"Add a source" is listed deliberately.** It is the option that makes the next answer better permanently, and omitting it would make escalation look like the only way forward.

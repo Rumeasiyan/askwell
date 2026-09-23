@@ -1477,9 +1477,13 @@ function EscalationOffer({
           onClick={searchWeb}
           disabled={available === false || status === "sending" || turn.serverId === null}
         />
+        {/* `M7-FIX-FE-174`: the credit tier is gone (`../../docs/decisions.md`,
+           * 2026-09-23) — online AI is a provider key the user supplies. M8
+           * has not built anywhere to set one yet, so this stays disabled
+           * and says so honestly rather than naming a balance of zero. */}
         <EscalationOption
           label="Ask a larger model"
-          cost="uses credits · you have none"
+          cost="your own API key · not set up yet"
           onClick={() => {}}
           disabled
         />

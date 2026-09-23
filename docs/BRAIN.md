@@ -46,6 +46,28 @@ Since `M1-ASK-FE-039` a question can be typed and watched, for the first time: t
 
 ## Last completed
 
+**`0.7.24` — `M7-FIX-FE-174`**: the abstention surface's "Ask a larger model" offer read
+"uses credits · you have none" (`web/components/ask/ask-screen.tsx`), a paywall on a product
+whose credit tier was cancelled 2026-09-23 (`docs/decisions.md`). Rewritten to
+`"your own API key · not set up yet"` — the actual mechanism (PRD §6 as amended) is a
+provider key the user supplies, and nothing today stores one since M8 has not built
+anywhere to set one yet, so there is no meaningful distinction yet between "no key" and
+"key set but the path unbuilt" — both read as "not set up yet". `docs/ux/web-search.md`
+§2's offer table and `docs/ux/settings.md` §9 (a new settled item, #3) updated in the same
+change. Closes issue #649. `docs/ux/settings.md` §3 itself still specs the old credit flow
+(balance, purchase, spending limit) — out of this ticket's stated scope (copy-only, two
+named doc sections), filed separately as issue #658 for whoever designs M8's real key
+storage. No automated test added: this repo's frontend test suite (`web/package.json`'s
+`test` script) is `node --test` over pure functions in `lib/*.ts` only — no `.tsx`
+component-rendering harness exists anywhere in the repo to extend, and inventing one for a
+single string literal would be scope creep beyond a copy ticket. Verified with
+`scripts/dev.sh web-check` (lint, typecheck, unit tests, build, contrast, offline-egress
+check — all clean) and a grep confirming no remaining "credits"/"you have none" string
+anywhere under `web/` or `docs/ux/`. **Found, not fixed here:** this file had no entry for
+`M7-FIX-FE-171` (the provenance-margin-on-every-screen fix, `0.7.23`) despite `VERSION` and
+`CHANGELOG.md` both already carrying it — left as found per this file's own precedent
+(the `M3-REVIEW-FE-075` note above) rather than backfilled from outside this session.
+
 **`0.7.22` — `M7-SET-FE-146a`**: the persistent per-answer marker for a turn a user-supplied
 model produced (`docs/ux/ask.md` §5, `docs/ux/settings.md` §2). `M7-SET-BE-145a`'s
 `messages.model_identity` (already merged, `28cbe10f`) was written on every turn but never
