@@ -19,6 +19,8 @@ import {
   conversationOf,
   isAbstained,
   isFirstAnswer,
+  isUnvalidatedModelTurn,
+  type AskModelIdentity,
   type AskTurnState,
   CONVERSATION_PAGE_SIZE,
   conversationWindow,
@@ -550,6 +552,32 @@ test("a running or failed turn never reads as abstained, whatever its answer", (
     isAbstained({ status: "failed", answer: "", reason: "Askwell could not reach the assistant." }),
     false,
   );
+});
+
+// --- isUnvalidatedModelTurn (M7-SET-FE-146a) ----------------------------------
+
+function modelIdentity(
+  source: AskModelIdentity["source"],
+  displayName: string | null = null,
+): AskModelIdentity {
+  return { source, display_name: displayName };
+}
+
+test("a turn a user-supplied model answered carries the marker", () => {
+  assert.equal(
+    isUnvalidatedModelTurn({ modelIdentity: modelIdentity("user_supplied", "my-model.gguf") }),
+    true,
+  );
+});
+
+test("a turn a shipped default answered does not carry the marker", () => {
+  assert.equal(isUnvalidatedModelTurn({ modelIdentity: modelIdentity("shipped", "askwell-7b") }), false);
+});
+
+test("no model loaded, or nothing captured yet, does not carry the marker", () => {
+  assert.equal(isUnvalidatedModelTurn({ modelIdentity: modelIdentity("none") }), false);
+  assert.equal(isUnvalidatedModelTurn({ modelIdentity: modelIdentity("unknown") }), false);
+  assert.equal(isUnvalidatedModelTurn({ modelIdentity: null }), false);
 });
 
 // --- addSourceActionLabel (M4-RESULT-FE-111) ----------------------------------

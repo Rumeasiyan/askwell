@@ -304,6 +304,10 @@ def test_a_question_streams_steps_then_tokens_then_a_citation_then_done(
         done = next(data for kind, data in events if kind == "done")
         assert done["status"] == "completed"
         assert uuid.UUID(done["message_id"]) == message_id
+        # `M7-SET-FE-146a`: present on every `done` event, matching `sql_result`/
+        # `db_state`'s own "never absent" contract. No inference process is
+        # running in this test, so `active_model_identity` reports `"none"`.
+        assert done["model_identity"] == {"source": "none", "display_name": None}
 
     with psycopg.connect(database_url, autocommit=True) as db:
         message = db.execute(
@@ -1775,10 +1779,51 @@ async def test_load_finished_reads_a_completed_turn_back_from_the_database(
     loaded = await ask_module._load_finished(factory, message_id)
     # The conversation id comes back with it: a browser reconnecting to a
     # finished turn has no other way to learn which conversation it is in (#156).
-    assert loaded == ("Ninety days.", "completed", None, None, str(conversation_id), None, None)
+    # `model_identity` is the column's own default (`unknown`/`None`) — this
+    # insert predates `M7-SET-FE-146a` and never set it, same as a real row
+    # written before that migration.
+    assert loaded == (
+        "Ninety days.",
+        "completed",
+        None,
+        None,
+        str(conversation_id),
+        None,
+        None,
+        {"source": "unknown", "display_name": None},
+    )
 
     missing = await ask_module._load_finished(factory, uuid.uuid4())
     assert missing is None
+
+
+async def test_load_finished_round_trips_a_stored_model_identity(
+    database_url: str, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """`M7-SET-FE-146a`: which model produced a finished turn survives a
+    reopen — the persistent marker's own data, read back exactly as `ask()`
+    wrote it at question time (`askwell.model_select.active_model_identity`),
+    not recomputed against whatever model happens to be active now."""
+    _truncate(database_url)
+    message_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    model_identity = {"source": "user_supplied", "display_name": "my-model.gguf"}
+    with psycopg.connect(database_url, autocommit=True) as db:
+        db.execute("INSERT INTO conversations (id) VALUES (%s)", (conversation_id,))
+        db.execute(
+            "INSERT INTO messages (id, conversation_id, role, content, trace, model_identity) "
+            "VALUES (%s, %s, 'assistant', 'Ninety days.', %s, %s)",
+            (
+                message_id,
+                conversation_id,
+                json.dumps({"status": "completed", "steps": []}),
+                json.dumps(model_identity),
+            ),
+        )
+
+    loaded = await ask_module._load_finished(factory, message_id)
+    assert loaded is not None
+    assert loaded[7] == model_identity
 
 
 async def test_load_finished_round_trips_a_stored_sql_result(

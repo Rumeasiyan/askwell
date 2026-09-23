@@ -15,6 +15,7 @@ import {
   conversationOf,
   applyAskEvent,
   type AskEvent,
+  type AskModelIdentity,
   type BlockingClarification,
   liveTurnId,
   looksNonEnglish,
@@ -106,6 +107,12 @@ export interface AskTurn {
    * the `done` event, same lifecycle as `sqlResult`/`sqlQuery`.
    * `M4-RESULT-FE-111`. */
   dbState: string | null;
+  /** Which model produced this turn, `null` until the `done` event carries
+   * it — same lifecycle as `sqlResult`/`dbState`. `M7-SET-FE-146a`'s own
+   * source for the persistent unvalidated-model marker: captured once, at
+   * question time, so a turn's marking never changes after the fact even if
+   * the active model is swapped again before the next question. */
+  modelIdentity: AskModelIdentity | null;
   /** `M3-INLINE-FE-085`: set from a `clarification` event while this turn is
    * paused waiting for it to be answered or skipped, `null` the rest of the
    * time — including once a `clarification_resolved` event clears it and
@@ -203,6 +210,7 @@ function blankTurn(
     sqlResult: null,
     sqlQuery: null,
     dbState: null,
+    modelIdentity: null,
     blocking: null,
     webAnswer: null,
     webCitations: [],
@@ -278,6 +286,7 @@ export function AskProvider({ children }: { children: ReactNode }) {
       let finalSqlResult: SqlResultData | null = null;
       let finalSqlQuery: SqlQueryDisclosure | null = null;
       let finalDbState: string | null = null;
+      let finalModelIdentity: AskModelIdentity | null = null;
       try {
         await streamAsk(
           next.question,
@@ -292,6 +301,7 @@ export function AskProvider({ children }: { children: ReactNode }) {
               finalSqlResult = event.data.sql_result ?? null;
               finalSqlQuery = event.data.sql_query ?? null;
               finalDbState = event.data.db_state ?? null;
+              finalModelIdentity = event.data.model_identity ?? null;
               return;
             }
             // Derived from the previous turn inside the updater, never from a ref.
@@ -341,6 +351,7 @@ export function AskProvider({ children }: { children: ReactNode }) {
         sqlResult: finalSqlResult,
         sqlQuery: finalSqlQuery,
         dbState: finalDbState,
+        modelIdentity: finalModelIdentity,
       });
       dispatching.current = false;
     })();

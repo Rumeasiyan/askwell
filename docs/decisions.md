@@ -4,6 +4,53 @@ Append-only. **Newest first.** Never edit an entry to change its meaning — if 
 
 **Bar for an entry:** something a competent person would later ask *"why is it like this?"* about. Architecture changes, dependency choices, resolved `docs/PRD.md` §11 questions, reversals. **Not** routine implementation choices — those are visible in the diff.
 
+## 2026-09-23 — `M7-SET-FE-146a`: the marker reads `messages.model_identity` directly rather than waiting on `M7-SET-FE-146`'s settings screen, because nothing in its own scope actually imports from it
+
+**Decision:** Built the persistent unvalidated-model marker (`docs/ux/ask.md` §5) against
+`M7-SET-BE-145a`'s already-merged backend (`api/src/askwell/model_select.active_model_identity`,
+`messages.model_identity`) rather than stopping for `M7-SET-FE-146` (the settings screen) to
+merge first, even though the ticket lists `146` as a dependency. `messages.model_identity` was
+written on every turn since `145a` landed but never returned to the browser anywhere —
+`_run_generation`'s three `done`-event call sites, `_run_sql_turn`'s, and `_load_finished`'s
+`SELECT`/replay path all omitted it. This change adds it to all of them (`api/src/askwell/ask.py`)
+and threads it into `AskDoneData`/`AskTurn` (`web/lib/ask.ts`, `web/components/ask/ask-state.tsx`),
+then renders it in `ask-screen.tsx` — as a compact badge in a collapsed turn's row (mirroring
+`WebMarker`) and a full sentence beside a live or expanded one, never dismissible, `--muted`
+rather than an alarm colour (`design-system.md` §47: a disclosed, deliberate choice is not a
+failure state).
+
+**Why the dependency on `146` turned out not to be a code dependency.** `146` builds
+`web/components/settings/model-and-speed.tsx`, the screen where a user actually performs the
+swap — real and verified (branch `feat/m7-set-fe-146`, PR #634, open, not yet merged into `main`
+as of this entry) but a different component tree that `ask-screen.tsx` never imports from. The
+marker only needs to know, per turn, what `active_model_identity` already decided at question
+time; it does not need the control that triggered the decision to exist in the same tree. Verified
+live against the running stack rather than assumed: rebuilt and restarted the `api` container off
+this branch, confirmed a real `POST /ask` returns `"model_identity": {"source": "shipped", ...}` by
+default, then set `settings.model.active_source = 'user_supplied'` directly (the same key
+`select_user_model` writes) and confirmed the next answer returned `"source": "user_supplied"` —
+reverted immediately after. `146`'s own settings UI remains the only way a real user performs a
+swap; this only means `146a` did not have to wait for it to exist as code.
+
+**Why this matters given `docs/decisions.md`'s own recent history on this exact ticket pair.**
+Issue #490 (this ticket's tracker) accumulated several "landed" comments in the prior 48 hours
+claiming `146`/`146a` work that did not exist in the tree (issue #561: "fabricated closing
+comment"), each caught by a later comment that actually read the files. This entry's own claims
+are limited to what was directly verified this session: `git log` for the merge SHA of `145a`
+(`28cbe10f`), a live `curl` round trip through the real session-cookie flow for both branches of
+`model_identity`, and the full local test matrix (`scripts/dev.sh check`, 1018 passed; `test-db`,
+826 passed; `pnpm test`, 414 passed). `146` itself is not claimed as merged, because it is not.
+
+**Consequences.** `146a`'s own manual test story ("open settings, swap, ask again") cannot be
+walked end-to-end through the UI until `146` merges — substituted here with the direct-`settings`-
+row swap above, which exercises the same `active_model_identity` read path `146`'s real swap
+would leave behind. `#490` re-owned rather than closed (still labelled `blocked:decision`, which
+predates this entry and no longer describes its state — left for whoever merges to correct
+alongside the label). `#559` (no release pipeline) and the general fabrication risk `#561` names
+are unaffected by this change and re-owned unchanged.
+
+**Refs:** #490, #561, #559, #632, `M7-SET-BE-145a` (28cbe10f), `M7-SET-FE-146` (PR #634, open).
+
 ## 2026-09-23 — `M7-SEC-TEST-166`: the security review is a release gate with its own two-file shape, matched to the restore/offline gates already there, not a one-off document
 
 **Decision:** `docs/security-review.md` (the checklist, one section per constraint plus

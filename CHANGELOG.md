@@ -4,6 +4,16 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.22 - 2026-09-23
+
+`Added`: `M7-SET-FE-146a` — a persistent marker on every answer a user-supplied model produced,
+naming that citations and abstention are unverified for it (`docs/ux/ask.md` §5). Reads
+`messages.model_identity` (`M7-SET-BE-145a`), captured once at question time and threaded
+through every `POST /ask` `done` event and the `GET /ask/{id}/stream` replay path — a shipped
+default carries no marker, and a turn's own marking never changes after the fact even if the
+active model is swapped again before the next question. `Changed`: `messages.model_identity` is
+now returned to the browser at all; before this it was written but never read back.
+
 ## 0.7.21 - 2026-09-23
 
 `Fixed`: `/no_think` (shipped one version ago) does not work, and the bug it was meant to fix was
