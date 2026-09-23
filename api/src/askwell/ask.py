@@ -1868,8 +1868,9 @@ async def _run_generation(
             turn.emit("step", {"label": "Writing your answer.", "kind": "compose"})
 
             prompt = f"{composed.system_prompt}\n\n{composed.user_content}"
-            if settings.generation_thinking_directive:
-                prompt = f"{prompt}\n\n{settings.generation_thinking_directive}"
+            # No separator: the directive is a prefill that has to sit
+            # exactly where the model's own output would begin.
+            prompt = f"{prompt}{settings.generation_thinking_directive}"
             compose_started = time.monotonic()
             stream = client.stream_generate(prompt, max_tokens=settings.generation_max_tokens)
             # The shipped model reasons in a `<think>` block before writing

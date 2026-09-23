@@ -285,18 +285,21 @@ class Settings(BaseSettings):
     # silently — `docs/ux/ask.md` §5's "very long answer" state requires that
     # reaching this be stated, not just that generation stop. `M1-ASK-API-038`.
     generation_max_tokens: int = Field(default=1024, ge=1, le=8192)
-    # Appended to the composed prompt to tell a reasoning model not to think
-    # first. Configuration rather than code because the token is the model's,
-    # not Askwell's (`AGENTS.md` §4 — no model specifics in application
-    # logic), and a model that does not recognise it simply reads it as part
-    # of the question. Set empty to send nothing.
+    # Appended to the composed prompt so a reasoning model writes the answer
+    # instead of thinking first. It is an already-closed, empty `<think>`
+    # block: the prompt ends where the model's own reasoning would have
+    # ended, so its next token is the answer. Configuration rather than code
+    # because the delimiters belong to the model, not to Askwell
+    # (`AGENTS.md` §4); set empty to send nothing.
     #
-    # Measured against the shipped model on this machine's own CPU with the
-    # real `answer_composition.v1` prompt: 30s and 73 tokens without it, 6s
-    # and 47 with, same citations either way. Without it a nine-source
-    # question spent its whole budget reasoning and returned no answer at
-    # all — the visible half of issue #220.
-    generation_thinking_directive: str = "/no_think"
+    # `/no_think`, the documented directive, was tried first and does not
+    # work here — the inference bridge sends a raw completion, not a chat
+    # turn, so the model never sees it as an instruction. Measured against
+    # the shipped model on this machine's CPU with the real
+    # `answer_composition.v1` prompt and nine retrieved blocks: `/no_think`
+    # spent the whole 1024-token budget reasoning and returned no answer in
+    # 141s; this prefill answered with its citation in 5s and 38 tokens.
+    generation_thinking_directive: str = "\n\n<think>\n\n</think>\n\n"
 
     # How many answers may generate at once. Two, the same figure and the
     # same reason as `ingest_concurrency`: this laptop is also running the
