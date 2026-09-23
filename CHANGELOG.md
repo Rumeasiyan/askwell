@@ -4,6 +4,18 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.21 - 2026-09-23
+
+`Fixed`: `/no_think` (shipped one version ago) does not work, and the bug it was meant to fix was
+still live. The inference bridge sends a raw completion rather than a chat turn, so the model
+never reads the directive as an instruction. Measured against the shipped model on CPU with the
+real `answer_composition.v1` prompt and nine retrieved blocks: `/no_think` spent the entire
+1024-token budget reasoning and returned no answer in 141 seconds — which is exactly what the
+running stack did, "Reached the answer length limit" with an empty answer. `Changed`:
+`ASKWELL_GENERATION_THINKING_DIRECTIVE` now defaults to an already-closed, empty `<think>` block
+appended as a prefill, so the prompt ends where the model's own reasoning would have ended and
+its next token is the answer. Same question, same machine: 5 seconds, 38 tokens, cited.
+
 ## 0.7.20 - 2026-09-23
 
 `Fixed`: the other half of issue #220. Stripping the `<think>` block stopped the reasoning being
