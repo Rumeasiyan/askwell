@@ -2233,7 +2233,7 @@ Fix the geometry in the same change: the input and its action row currently end 
 - **Edge Cases:** First run, no turns — the composer is still reachable without scrolling. A long conversation — the composer stays reachable, and a new answer does not push it off-screen. Keyboard focus after submitting — still on the composer.
 - **Permissions / Roles:** Single user — no roles.
 - **UI States:** `../ux/ask.md` §2 and §5; `../ux/screens-reference.html`.
-- **Validation Rules:** If this is built the other way — composer kept on top — then `screens-reference.html` and `design-system.md` §4 are corrected in the same change and a decisions entry says why. The build and the reference must not be left disagreeing, which is the actual defect.
+- **Validation Rules:** **The composer goes at the bottom. This was confirmed by the product owner on 2026-09-23 and is not a choice this ticket reopens** — the reference mockup already drew it that way and the build drifted. Do not "fix" the disagreement by editing `screens-reference.html` or `design-system.md` §4 to match the code; the code is the thing that is wrong.
 - **Audit / Logging Requirements:** None.
 - **Analytics Events:** None (C1).
 
