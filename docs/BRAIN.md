@@ -46,6 +46,35 @@ Since `M1-ASK-FE-039` a question can be typed and watched, for the first time: t
 
 ## Last completed
 
+**`0.7.26` — `M7-FIX-FE-173`**: the rail drawer at narrow widths. On `main`, the rail
+was already a drawer below `@3xl` (48rem). The reported "rail stuck over content,
+…atabases, no way to dismiss it" was the drawer **open**: its panel sits at the top-left
+over the only control that opens and closes it, and the scrim was undiscoverable.
+`web/components/shell/rail-drawer.tsx` now has a close control inside the panel in the same
+corner. It focuses the current destination on open and traps `Tab`/`Shift+Tab` via
+`trapTab` (`web/lib/drawer.ts`, 7 tests in `lib/drawer.test.ts`, wired into
+`web/package.json`). When widened past the breakpoint while open, it closes: a
+`ResizeObserver` watches the menu control, which loses its box to the shell's own
+`@3xl:hidden` container query, and panel and scrim carry `@3xl:hidden` too. This resolves
+#657 without `matchMedia` and without a second copy of 48rem. The ticket's breakpoint
+assumption was wrong: the margin reflows at `@5xl` (64rem) and the rail stays at `@3xl`,
+because 768 is out of scope and correct. `docs/ux/design-system.md` §4, master sheet Part G's
+768/390 rows and states §1 "Narrow window" were corrected, with the reasoning in
+`docs/decisions.md`, this date. **Verified** over CDP in headless Chrome against the live
+stack (`--force-recreate api` after the build). Every screen at 1440/1024/768/390 had no
+horizontal scroll and no element past the viewport. At 390 the composer spans 24–366px, and
+the drawer closes on its close control, scrim, `Escape` and selection, with every destination
+reached through it. Nine `Tab` and nine `Shift+Tab` stayed inside. Opened at 390 and widened
+to 1024, the drawer was gone and the column shown, with no reappearance on narrowing again.
+A real cited answer ("store opening hours", conflicting sources) at 390 rendered its source
+cards inline with nothing clipped, and nothing overflowed at 768/1024/1440. The same walk
+on the pre-change build showed the escaping focus and the stuck overlay. `scripts/dev.sh
+web-check` clean, 425 tests. **Found, not fixed:** the first rail click in a freshly loaded
+tab is dropped, with no request (column or drawer, any width, reproduced on `main` too;
+headless-only not yet ruled out), filed as #665. The trace panel is `aria-modal` with no
+focus trap, filed as #666. **Next**: #665 deserves a five-minute manual check in a real
+window, since if real it is the first click anyone makes.
+
 **`0.7.25` — `M7-FIX-FE-169`**: the composer moved below the conversation
 (`web/components/ask/ask-screen.tsx`, `AskScreen`): last child of the column, `sticky
 bottom-0` with the reference's top rule, band `--paper` rather than the mockup's `--sunk`

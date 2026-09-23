@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Rail } from "@/components/shell/rail";
+import { controlShowing, trapTab } from "@/lib/drawer";
 
 /**
  * The rail, reachable when it is not a column.
@@ -19,6 +20,11 @@ import { Rail } from "@/components/shell/rail";
  * The control sits in the application's own chrome rather than the browser's,
  * because M7 hosts this in a Tauri window where there is no browser chrome to
  * borrow.
+ *
+ * `M7-FIX-FE-173`: open, the panel covers that control — it sits in the same
+ * top-left corner — so the panel carries its own close control in the same
+ * place. Without it the only way out was a scrim nobody is told about, which
+ * is how a 390px window came to look like a rail stuck over the content.
  */
 export function RailDrawer() {
   const [open, setOpen] = useState(false);
@@ -36,17 +42,43 @@ export function RailDrawer() {
   useEffect(() => {
     if (!open) return;
 
-    // Focus moves in on open, so the first Tab is inside the drawer rather
-    // than behind it.
-    const first = panel.current?.querySelector<HTMLElement>("a, button");
-    first?.focus();
+    // Focus moves in on open, onto where you are, so the first Tab is inside
+    // the drawer rather than behind it.
+    const here =
+      panel.current?.querySelector<HTMLElement>('a[aria-current="page"]') ??
+      panel.current?.querySelector<HTMLElement>("a");
+    here?.focus();
 
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") close();
+      if (event.key !== "Tab" || !panel.current) return;
+      // `aria-modal` tells assistive technology the rest is inert; it does
+      // not stop Tab walking into the screen underneath. This does.
+      const stops = [...panel.current.querySelectorAll<HTMLElement>("a[href], button")];
+      const current = stops.indexOf(document.activeElement as HTMLElement);
+      const next = trapTab(stops.length, current, event.shiftKey);
+      if (next === null) return;
+      event.preventDefault();
+      stops[next]?.focus();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [open, close]);
+
+  useEffect(() => {
+    if (!open || !control.current) return;
+    // Widened past the breakpoint while open: the rail is a column again, so
+    // the drawer resolves rather than staying a stuck overlay. The trigger is
+    // the control itself losing its box to `@3xl:hidden` — the shell's own
+    // container query, not `matchMedia` on the viewport, which is not what
+    // changes in a Tauri window (issue 657). The panel and scrim are hidden by
+    // the same query too, so there is no frame where they overlay the column.
+    const observer = new ResizeObserver(([entry]) => {
+      if (!controlShowing(entry?.contentRect)) setOpen(false);
+    });
+    observer.observe(control.current);
+    return () => observer.disconnect();
+  }, [open]);
 
   return (
     <>
@@ -82,7 +114,7 @@ export function RailDrawer() {
             // keyboard.
             aria-hidden
             onClick={close}
-            className="fixed inset-0 z-40"
+            className="fixed inset-0 z-40 @3xl:hidden"
             style={{ background: "var(--drop)" }}
           />
           <div
@@ -91,7 +123,7 @@ export function RailDrawer() {
             role="dialog"
             aria-modal="true"
             aria-label="Navigation"
-            className="fixed top-0 bottom-0 left-0 z-50 overflow-y-auto"
+            className="fixed top-0 bottom-0 left-0 z-50 overflow-y-auto @3xl:hidden"
             style={{
               width: "var(--rail)",
               background: "var(--paper)",
@@ -99,6 +131,35 @@ export function RailDrawer() {
               boxShadow: `2px 0 8px var(--drop)`,
             }}
           >
+            {/* The chrome bar's own inset, so the close control sits in the
+                corner the open control was in. */}
+            <div className="flex items-center px-3 py-2">
+              <button
+                type="button"
+                className="ask-navigates px-2 py-1"
+                aria-label="Close navigation"
+                onClick={close}
+                style={{ border: "1px solid var(--rule)", color: "var(--muted)" }}
+              >
+                {/* Two of the menu control's rules, crossed. */}
+                <span aria-hidden className="relative block" style={{ width: 14, height: 10.5 }}>
+                  {[45, -45].map((angle) => (
+                    <span
+                      key={angle}
+                      style={{
+                        position: "absolute",
+                        top: 4.5,
+                        left: 0,
+                        width: 14,
+                        height: 1.5,
+                        background: "currentColor",
+                        transform: `rotate(${angle}deg)`,
+                      }}
+                    />
+                  ))}
+                </span>
+              </button>
+            </div>
             {/* Same contents, nothing removed or reordered — a drawer that
                 shows a different set of destinations is a second navigation
                 to keep in step with the first. */}

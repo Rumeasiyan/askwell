@@ -4,6 +4,17 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.26 - 2026-09-23
+
+`Fixed`: `M7-FIX-FE-173` — in a narrow window the open navigation drawer covered the
+only control that closes it, so the rail looked stuck over the content with the composer
+clipped to "…atabases". The drawer now has its own close control in the same corner.
+Keyboard focus stays inside while it is open, and `Tab` no longer walks into the screen
+underneath. Widening the window past the breakpoint while it is open closes it into the
+ordinary rail column instead of leaving an overlay. The scrim, `Escape` and choosing a
+destination still close it. The widen check follows the shell's container query, not the
+viewport, so it also holds in a Tauri window. Closes #657.
+
 ## 0.7.25 - 2026-09-23
 
 `Fixed`: `M7-FIX-FE-169` — the Ask screen read backwards: the composer sat above the

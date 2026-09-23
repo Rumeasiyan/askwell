@@ -4,6 +4,52 @@ Append-only. **Newest first.** Never edit an entry to change its meaning — if 
 
 **Bar for an entry:** something a competent person would later ask *"why is it like this?"* about. Architecture changes, dependency choices, resolved `docs/PRD.md` §11 questions, reversals. **Not** routine implementation choices — those are visible in the diff.
 
+## 2026-09-23 — `M7-FIX-FE-173`: the rail drawer keeps its own breakpoint (48rem, not the margin's 64rem), and learns about a widened window from its own control
+
+**Decision:** The rail stays a column down to a `48rem` container (`@3xl`) and is a drawer
+only below that. The provenance margin keeps reflowing inline below `64rem` (`@5xl`). The
+two do not share a breakpoint, and `docs/ux/design-system.md` §4 now says so instead of "at
+the same breakpoint". The open drawer closes when its own menu control stops rendering. A
+`ResizeObserver` watches that control, which is hidden by the same `@3xl:hidden` container
+query that shows the column. The panel and scrim carry `@3xl:hidden` too.
+
+**Why different breakpoints.** The ticket assumed the margin's breakpoint was right for the
+rail as well, and asked to be told if not. It is not. Moving the rail to `64rem` would make
+768–1023px a drawer, but the ticket puts everything from 768 up out of scope as already
+correct. The widths also argue for it. At 768 the column costs 240px and leaves about 528px
+of content, which is enough for the conversation measure once the margin has moved inline.
+The margin is 300px of cards that only make sense beside a full-width answer, so it has to
+go first. The rail is the only route to the rest of the product, so it should stay visible
+as long as the content still fits. Collapsing both at once would hide navigation in exactly
+the split-screen widths where people use it.
+
+**Why the control, rather than `matchMedia` or a second threshold.** An earlier, unmerged
+attempt closed the drawer on `window.matchMedia("(min-width: 48rem)")`. Issue 657 caught the
+problem: `shell.tsx` chose container queries because in a Tauri window the viewport is not
+the thing that changes. A `ResizeObserver` on the `@container` element with a hand-copied
+48rem would fix that, but it puts the breakpoint in two places, CSS and script, that can
+drift. Observing the control avoids both. The question "is the rail a column now?" is answered
+by the same container query that decides it, and the script contains no number.
+`controlShowing` in `web/lib/drawer.ts` is the pure half. The `@3xl:hidden` on the panel and
+scrim covers the frame before the observer fires, so the drawer never overlays the column,
+even for an instant.
+
+**Why a close control inside the drawer.** The drawer opens from the top-left corner, over
+the menu control. So the reported bug ("no control anywhere to dismiss it") was literally
+true: the scrim closed it, but nothing said so. A second control in the drawer, in the same
+corner, was chosen over starting the panel below the chrome bar. Starting it lower would
+leave the theme toggle and status reachable beside a modal the rest of the screen is inert
+behind, and `aria-modal` would be lying.
+
+**Consequences:** No change at 768 and above. Focus is trapped with `trapTab` (pure, tested).
+The trace panel has the same untrapped `aria-modal` and is filed as issue 666, not fixed here.
+A widen-close does not return focus to the menu control, because that control has just
+disappeared. Focus falls to the document, which is acceptable for an unusual keyboard path
+and should be revisited if a real user reports it.
+
+**Refs:** `M7-FIX-FE-173`; issues 657, 665, 666; `web/components/shell/rail-drawer.tsx`,
+`web/lib/drawer.ts`, `web/components/shell/shell.tsx`.
+
 ## 2026-09-23 — `M7-FIX-FE-169`: the composer is a sticky bottom bar on `--paper`, not the mockup's `--sunk`, and measures its width in prose metrics
 
 **Decision:** The composer is the last child of the Ask column (product owner, 2026-09-23 —
