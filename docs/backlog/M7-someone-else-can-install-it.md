@@ -1824,9 +1824,9 @@ Cold start. Ask a question on the shipped model — no marker. Open settings, pl
 
 ---
 
-### M7-TAURI-DEPLOY-184a — Code signing and Apple notarisation
+### M7-TAURI-DEPLOY-184a — Code signing and Apple notarisation **[BLOCKED]**
 
-> **Deferred: not scheduled.** Blocked on a purchase, not on engineering. Do not start it until certificates exist.
+> **Deferred: not scheduled.** Blocked on a purchase, not on engineering. Do not start it until certificates exist. The `[BLOCKED]` marker keeps the build runner from scheduling it (`scripts/build-runner.sh`, `ticket_is_blocked`); when both certificates exist, change it to `[UNBLOCKED <date>]` as the M8 credit tickets did. Tracked in #636.
 
 **Type:** Task
 
@@ -1864,7 +1864,7 @@ Cold start. Ask a question on the shipped model — no marker. Open settings, pl
 - Someone downloads Askwell on a work Mac with default security settings and it opens on the first try.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M7-TAURI-DEPLOY-184.
+- **Dependencies:** M7-TAURI-DEPLOY-184. Issue #559 producing native bundles (`.app`/`.dmg`, `.msi`/`.exe`) with `llama-server` inside — without them there is nothing signable on Windows and no inference binary to sign (#676).
 - **API / Data Touchpoints:** None.
 - **Assumptions:** An Apple Developer enrolment and a Windows certificate exist. **Neither can be obtained by any build session** — both are purchases on the owner's identity, with lead times measured in days to weeks.
 
