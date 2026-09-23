@@ -34,7 +34,12 @@ from askwell import ask as ask_module
 from askwell import session as sessions
 from askwell.app import create_app
 from askwell.config import Settings
-from askwell.inference.client import Completion, InferenceUnavailable, StreamChunk
+from askwell.inference.client import (
+    Completion,
+    GenerationTimings,
+    InferenceUnavailable,
+    StreamChunk,
+)
 
 from .conftest import drive_and_disconnect
 from .test_ingest_records import TABLES as INGEST_TABLES
@@ -66,7 +71,9 @@ class _FakeInferenceClient:
         fail_after: int | None = None,
         delay: float = 0.0,
         rerank_score: float | None = None,
+        timings: GenerationTimings | None = None,
     ) -> None:
+        self.timings = timings
         self.tokens = tokens
         self.vector = vector
         self.truncated = truncated
@@ -108,7 +115,7 @@ class _FakeInferenceClient:
             if self.delay:
                 await asyncio.sleep(self.delay)
             yield StreamChunk(text=piece, done=False)
-        yield StreamChunk(text="", done=True, truncated=self.truncated)
+        yield StreamChunk(text="", done=True, truncated=self.truncated, timings=self.timings)
 
     async def generate(
         self,
@@ -556,6 +563,69 @@ def test_an_unavailable_assistant_ends_the_turn_as_failed(
         assert done["status"] == "failed"
         assert "not running" in done["reason"]
         assert not any(kind == "token" for kind, _ in events)
+
+
+def test_a_completed_answer_records_llama_cpps_own_timings_for_settings(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """`M7-SET-FE-146`, issue #617: Settings' throughput is averaged over
+    real turns, so each completed answer must carry what llama.cpp measured
+    for it — and the whole turn's duration, issue #661's answer time."""
+    _truncate(database_url)
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "Notice is ninety days.", vector)
+    fake = _FakeInferenceClient(
+        settings,
+        tokens=["The notice period is ninety days [1]."],
+        vector=vector,
+        timings=GenerationTimings(
+            predicted_tokens=40, predicted_ms=4000.0, prompt_tokens=900, prompt_ms=30000.0
+        ),
+    )
+    _patch_client(monkeypatch, fake)
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "How long is the notice period?"})
+        done = next(data for kind, data in _events(response.text) if kind == "done")
+        assert done["status"] == "completed"
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        row = db.execute(
+            "SELECT trace FROM messages WHERE id = %s", (done["message_id"],)
+        ).fetchone()
+    assert row is not None
+    generation = row[0]["generation"]
+    assert generation["predicted_tokens"] == 40
+    assert generation["predicted_ms"] == 4000.0
+    assert generation["prompt_tokens"] == 900
+    assert generation["prompt_ms"] == 30000.0
+    assert generation["duration_ms"] >= 0
+
+
+def test_an_answer_with_no_timings_records_none_rather_than_zero(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """A missing measurement stays missing — a zero would drag the average."""
+    _truncate(database_url)
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "Notice is ninety days.", vector)
+    fake = _FakeInferenceClient(
+        settings, tokens=["The notice period is ninety days [1]."], vector=vector
+    )
+    _patch_client(monkeypatch, fake)
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "How long is the notice period?"})
+        done = next(data for kind, data in _events(response.text) if kind == "done")
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        row = db.execute(
+            "SELECT trace FROM messages WHERE id = %s", (done["message_id"],)
+        ).fetchone()
+    assert row is not None
+    assert row[0]["generation"] is None
 
 
 def test_a_truncated_answer_says_it_hit_the_limit(

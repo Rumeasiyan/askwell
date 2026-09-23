@@ -37,6 +37,7 @@ import os
 import shutil
 import threading
 import signal
+import subprocess
 import sys
 import time
 import urllib.request
@@ -133,6 +134,9 @@ class Supervisor:
         self.restarts = 0
         self.consecutive = 0
         self.acceleration = "cpu"
+        # The last measured resident memory, refreshed off the event loop
+        # (`_measure_memory`) so `_write` never blocks on `ps` (issue #671).
+        self._memory: int | None = None
         self._write(STOPPED)
 
     # --- what the API reads -------------------------------------------------
@@ -151,10 +155,15 @@ class Supervisor:
         it — and read-modify-written under a lock, because three supervisors
         share it.
         """
+        if state != READY:
+            # A figure measured for the process that just stopped must not
+            # be published for the next one.
+            self._memory = None
         mine = {
             "state": state,
             "model": self.model.name if self.model.name else None,
             "acceleration": self.acceleration if state == READY else None,
+            "memory_bytes": self._memory if state == READY else None,
             "reason": reason,
             "restarts": self.restarts,
             "consecutive_failures": self.consecutive,
@@ -188,6 +197,43 @@ class Supervisor:
             f"askwell-inference[{self.role}]: {state}" + (f" — {reason}" if reason else ""),
             flush=True,
         )
+
+    async def _measure_memory(self) -> None:
+        """Refresh `_memory` in a thread: on macOS it runs `ps`, which can
+        take seconds under load, and this loop also carries every role's
+        heartbeat and the swap and fetch watchers (issue #671)."""
+        self._memory = await asyncio.to_thread(self._memory_bytes)
+
+    def _memory_bytes(self) -> int | None:
+        """Resident memory of the running `llama-server`, measured.
+        `M7-SET-FE-146`.
+
+        Settings shows this as the model's memory footprint — a real number,
+        not a figure derived from the file size. Only the supervisor can
+        measure it: the process is its child, on the host, and the API in its
+        container cannot see host processes. Refreshed by the heartbeat, so
+        it follows the model as it pages in. `None` wherever it cannot be
+        read, which the screen states as unmeasured rather than as zero.
+        """
+        process = self.process
+        if process is None or process.returncode is not None:
+            return None
+        status = Path(f"/proc/{process.pid}/status")
+        try:
+            for line in status.read_text(encoding="utf-8").splitlines():
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) * 1024
+        except (OSError, ValueError, IndexError):
+            pass
+        # macOS has no /proc; `ps` reports the same figure in KiB there.
+        try:
+            out = subprocess.run(
+                ["ps", "-o", "rss=", "-p", str(process.pid)],
+                capture_output=True, text=True, timeout=5, check=False,
+            ).stdout.strip()
+            return int(out) * 1024 if out else None
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return None
 
     # --- the process --------------------------------------------------------
 
@@ -266,6 +312,7 @@ class Supervisor:
                         return False
                     if await self._answers():
                         self._detect_acceleration(recent)
+                        await self._measure_memory()
                         self._write(READY)
                         return True
                     await asyncio.sleep(0.5)
@@ -341,12 +388,24 @@ class Supervisor:
 
     async def supervise(self) -> None:
         self._supervising = True
+        # Set when the swap branch below has already started a process and
+        # seen it answer. Without it the loop's own start below launched a
+        # *second* `llama-server` on the same port after every swap: it
+        # failed to bind and exited 1, while the readiness check was answered
+        # by the first — a crash loop behind a working model, found running
+        # `M7-SET-FE-146` against the real stack.
+        started = False
         try:
             while True:
-                if not await self.start_once():
-                    return
+                if started:
+                    started = False
+                    ready = True
+                else:
+                    if not await self.start_once():
+                        return
+                    ready = await self.wait_until_ready()
 
-                if await self.wait_until_ready():
+                if ready:
                     self.consecutive = 0
                     heartbeat = asyncio.create_task(self._heartbeat())
                     try:
@@ -373,6 +432,7 @@ class Supervisor:
 
                     if ok:
                         self.consecutive = 0
+                        started = True
                         outcome: tuple[bool, str | None] = (True, None)
                     else:
                         reason = (
@@ -387,10 +447,11 @@ class Supervisor:
                                 restored = await self.wait_until_ready()
                         if restored:
                             self.consecutive = 0
+                            started = True
                         else:
                             reason += (
-                                " The previous model also failed to reload; this role is "
-                                "down until the supervisor is restarted."
+                                " The previous model also failed to reload. Askwell retries "
+                                "it a few times; the assistant is unavailable until it loads."
                             )
                         outcome = (False, reason)
 
@@ -471,6 +532,7 @@ class Supervisor:
         """
         while True:
             await asyncio.sleep(HEARTBEAT_SECONDS)
+            await self._measure_memory()
             self._write(READY)
 
     async def stop(self) -> None:
@@ -630,8 +692,22 @@ async def watch_for_fetch_requests(models_dir: Path, stopping: asyncio.Event) ->
             await asyncio.wait_for(stopping.wait(), timeout=FETCH_POLL_SECONDS)
 
 
+def _model_in(models_dir: Path, name: str) -> Path | None:
+    """A bare file name inside the models directory, or nothing.
+
+    `M7-SET-FE-146`, issue #660: the API cannot name a host path — it sees
+    the models directory mounted at a different place — so it names a file
+    in the one directory both sides share, and this side resolves it. A
+    name carrying a directory is refused rather than resolved, so a request
+    file cannot point this process at anything outside that directory.
+    """
+    if not name or name in (".", "..") or Path(name).name != name or "\\" in name:
+        return None
+    return models_dir / name
+
+
 async def watch_for_swap_requests(
-    supervisor: Supervisor, run_dir: Path, stopping: asyncio.Event
+    supervisor: Supervisor, run_dir: Path, stopping: asyncio.Event, models_dir: Path
 ) -> None:
     """Do what the API asked, when it asks, and nothing when it does not.
 
@@ -647,12 +723,18 @@ async def watch_for_swap_requests(
             if request_path.is_file():
                 request = json.loads(request_path.read_text(encoding="utf-8"))
                 request_path.unlink(missing_ok=True)
-                model_path = Path(str(request["model_path"]))
-                ok, reason = await supervisor.swap_model(model_path)
+                model_file = str(request["model_file"])
+                model_path = _model_in(models_dir, model_file)
+                if model_path is None:
+                    ok, reason = False, (
+                        f"{model_file!r} is not a file name in the models directory."
+                    )
+                else:
+                    ok, reason = await supervisor.swap_model(model_path)
                 _write_json_atomic(
                     result_path,
                     {
-                        "model_path": str(model_path),
+                        "model_file": model_file,
                         "ok": ok,
                         "reason": reason,
                         "updated_at": time.time(),
@@ -684,12 +766,14 @@ async def main() -> int:
     running = [asyncio.create_task(s.supervise()) for s in supervisors]
     models_dir = Path(
         env("ASKWELL_MODELS_DIR", os.path.expanduser("~/.local/share/askwell/models"))
-    )
+    ).expanduser()
     running.append(asyncio.create_task(watch_for_fetch_requests(models_dir, stopping)))
 
     generation = next(s for s in supervisors if s.role == "generation")
     run_dir = generation.socket_path.parent
-    running.append(asyncio.create_task(watch_for_swap_requests(generation, run_dir, stopping)))
+    running.append(
+        asyncio.create_task(watch_for_swap_requests(generation, run_dir, stopping, models_dir))
+    )
 
     waiting = asyncio.create_task(stopping.wait())
 

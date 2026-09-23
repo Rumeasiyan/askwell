@@ -56,6 +56,53 @@ class Completion:
 
 
 @dataclass(frozen=True, slots=True)
+class GenerationTimings:
+    """What llama.cpp measured about one generation, read off its final
+    stream event. `M7-SET-FE-146`.
+
+    The throughput Settings shows is these numbers from real turns, never a
+    synthetic benchmark (issue #617). `predicted_*` is the model writing the
+    answer; `prompt_*` is it reading the composed prompt first, which on a
+    CPU machine with a full retrieved context is most of the wait (issue
+    #661) — kept separate so neither is passed off as the other.
+    """
+
+    predicted_tokens: int
+    predicted_ms: float
+    prompt_tokens: int
+    prompt_ms: float
+
+    def as_dict(self) -> dict[str, float | int]:
+        return {
+            "predicted_tokens": self.predicted_tokens,
+            "predicted_ms": self.predicted_ms,
+            "prompt_tokens": self.prompt_tokens,
+            "prompt_ms": self.prompt_ms,
+        }
+
+
+def _timings(chunk: dict[str, Any]) -> GenerationTimings | None:
+    """The `timings` object of a final event, or nothing if it is absent or
+    malformed. A missing measurement is recorded as missing, never as zero.
+    """
+    raw = chunk.get("timings")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        timings = GenerationTimings(
+            predicted_tokens=int(raw["predicted_n"]),
+            predicted_ms=float(raw["predicted_ms"]),
+            prompt_tokens=int(raw["prompt_n"]),
+            prompt_ms=float(raw["prompt_ms"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    if timings.predicted_tokens < 0 or timings.predicted_ms < 0 or timings.prompt_ms < 0:
+        return None
+    return timings
+
+
+@dataclass(frozen=True, slots=True)
 class StreamChunk:
     """One piece of a streamed completion.
 
@@ -71,6 +118,8 @@ class StreamChunk:
     text: str
     done: bool
     truncated: bool = False
+    timings: GenerationTimings | None = None
+    """Only on the final chunk, and only when llama.cpp sent it."""
 
 
 class InferenceClient:
@@ -227,6 +276,7 @@ class InferenceClient:
                         text=piece if isinstance(piece, str) else "",
                         done=stopping,
                         truncated=bool(chunk.get("truncated")) if stopping else False,
+                        timings=_timings(chunk) if stopping else None,
                     )
                     if stopping:
                         return

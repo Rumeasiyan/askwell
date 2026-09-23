@@ -1,8 +1,7 @@
 import { About } from "@/components/settings/about";
 import { Folders } from "@/components/settings/folders";
-import { HardwareProfile } from "@/components/settings/hardware-profile";
+import { ModelAndSpeed } from "@/components/settings/model-and-speed";
 import { PrivacySecurity } from "@/components/settings/privacy-security";
-import { RetrievalThresholdControl } from "@/components/settings/retrieval-threshold";
 import { Storage } from "@/components/settings/storage";
 import { VerifyLog } from "@/components/settings/verify-log";
 
@@ -41,7 +40,11 @@ import { VerifyLog } from "@/components/settings/verify-log";
  * source and a link to `NOTICES.md`, copied into `public/` at build time
  * (`web/scripts/copy-notices.mjs`) rather than duplicated; `docs/ux/settings.md`
  * §7's own update-check opt-in has no frontend yet and is not stubbed here,
- * the same honesty every section above already practises. The rest of the
+ * the same honesty every section above already practises. Model and speed
+ * arrives with `M7-SET-FE-146` (`web/components/settings/model-and-speed.tsx`)
+ * as the first section, per `docs/ux/settings.md` §1's order — it gathers the
+ * hardware profile and retrieval threshold above under one heading, beside
+ * the model in use, its measured memory and throughput, and the swap. The rest of the
  * screen is still its empty state, because `docs/states-and-edge-cases.md`
  * requires every surface to have one and a route stub with nothing in it
  * teaches the next person that empty states are optional.
@@ -72,21 +75,9 @@ export default function SettingsPage() {
         </p>
       </section>
 
-      <section className="flex flex-col gap-3">
-        <h2 style={{ fontSize: "var(--t-title)", lineHeight: "var(--t-title-lh)" }}>
-          Hardware profile
-        </h2>
-        <HardwareProfile />
-      </section>
+      <ModelAndSpeed />
 
       <Folders />
-
-      <section className="flex flex-col gap-3">
-        <h2 style={{ fontSize: "var(--t-title)", lineHeight: "var(--t-title-lh)" }}>
-          Retrieval threshold
-        </h2>
-        <RetrievalThresholdControl />
-      </section>
 
       <Storage />
 

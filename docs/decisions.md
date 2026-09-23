@@ -4,6 +4,173 @@ Append-only. **Newest first.** Never edit an entry to change its meaning — if 
 
 **Bar for an entry:** something a competent person would later ask *"why is it like this?"* about. Architecture changes, dependency choices, resolved `docs/PRD.md` §11 questions, reversals. **Not** routine implementation choices — those are visible in the diff.
 
+## 2026-09-24 — `M7-SET-FE-146`: a second model swap while one runs is refused, not queued
+
+**Decision.** One swap at a time, enforced by a module-level `asyncio.Lock` in
+`askwell.model_select._perform_swap`. A swap requested while another holds it is refused before
+it touches anything — no generation permit taken, no request file written, no decisions record —
+and `POST /model/select` answers 409 with "Another model swap is already running. Nothing was
+changed by this request." A startup reapply that finds a user's swap running steps aside and
+writes nothing (issue #675).
+
+**Why.** `_perform_swap` takes every generation permit one at a time. Two overlapping swaps — two
+Settings tabs, or a user's swap during `reapply_user_model` at startup — could each take one of
+the two default permits and wait forever for the other's. Neither ever released, so every
+question hung too, until the API restarted, with no failure named anywhere. The two swaps would
+also have overwritten each other's request and result files in the run directory even without the
+deadlock. Settings puts a swap button in front of the user for the first time, so this stopped
+being theoretical.
+
+Queueing the second swap behind the first (the lock alone, `async with`) was rejected. A second
+swap request while one is running is almost always a second tab or a stale click; queueing it
+would make the assistant unavailable a second time and silently swap again, possibly back to the
+model the user just left. A refusal is explainable, and the Settings screen already shows the
+first swap in progress, and names the refusal through the same failure line as any other failed
+swap. The refused request is not recorded in the decisions log because nothing was decided: the
+model did not change and no swap was attempted.
+
+For the startup reapply, stepping aside is right because the user's own swap is the later,
+explicit choice and records its own outcome; reapply writing "reapply failed" or re-persisting
+the old selection would contradict it.
+
+**Consequences.** The lock is per API process. There is one API process by design (one user, one
+machine), so this is sufficient; a second API process would need the lock moved to the host
+supervisor, which is noted here rather than built. Verified live: a second `POST /model/select`
+issued one second into a running swap returned 409 in 5 ms, the first completed (200), `/search`
+answered during it, and a following swap back acquired every permit and succeeded.
+
+**Refs:** #675, `api/src/askwell/model_select.py`,
+`test_a_second_swap_while_one_runs_is_refused_and_every_permit_comes_back`.
+
+## 2026-09-23 — `M7-SET-FE-146`: a model is named across the container boundary by file name; "validated" is decided by bytes; speed is llama.cpp's own timing of real answers
+
+**Decision.** Seven linked choices, made while building Settings → Model and speed.
+
+1. **The API mounts the models directory read-only at `/models` and names a model to the
+   host supervisor by bare file name only** (issue #660, option 1). The swap request is
+   `{"model_file": "<name>"}`; the supervisor resolves it against its own
+   `ASKWELL_MODELS_DIR` and refuses any name carrying a directory. `POST /model/select`
+   takes `model_file`, not a path. The folder is shown to the user as the host path
+   (`ASKWELL_MODELS_DIR_DISPLAY`, set by compose), never `/models`.
+2. **Validated versus unverified is decided by the file's sha256 against
+   `models_catalog`, under any file name.** Only a file whose size equals a catalog entry's
+   is hashed, and each hash is cached per `(path, size, mtime_ns)` in process memory
+   (issue #669, option 1). The cache is shared with `ModelDownloadManager.available_alternatives`.
+3. **Throughput comes from llama.cpp's own `timings` on the final stream event of real
+   answers.** It is stored on `messages.trace["generation"]` with the turn's `duration_ms`
+   and averaged over the last 20 completed answers from the model in use (issue #617,
+   option 1). Settings shows three figures: the typical end-to-end answer time, the
+   prompt-reading rate and the writing rate (issue #661, option 1).
+4. **Memory is the resident size of the running `llama-server`, measured by the host
+   supervisor** (`/proc/<pid>/status`, or `ps` on macOS). It is measured in a thread on every
+   heartbeat and published from that cached figure, so `ps` never blocks the supervisor's
+   one event loop (#671). It is never the file size relabelled.
+5. **`POST /model/select` refuses an unverified model unless the request says the statement
+   was shown** (`acknowledged_unverified`). Nothing stores that flag.
+6. **`supervise()` no longer starts a second process after a swap.** This fixes a bug that
+   `M7-SET-BE-145a` introduced.
+7. **The model in use is judged by its bytes too, not assumed shipped** (issues #672, #670).
+   The record a swap writes (`SETTING_ACTIVE_SOURCE`/`_DISPLAY_NAME`) is trusted only while
+   the loaded file (`state.json`'s `model`) is the file it was written for. With no record —
+   a fresh install's default — or a record for another file, the loaded file is checksummed
+   like any swap target. A loaded file the API cannot see is `unknown`, never `shipped`.
+
+**Why file names, not paths.** The API and the host see the same directory at different
+places. `M7-SET-BE-145a` passed paths, and every one broke at that boundary, as #660 lists:
+a host path failed validation inside the container, and a container path reached a host that
+could not open it. Mounting at the same absolute path (#660 option 2) was rejected. Compose
+cannot expand `~` in a mount target, so every existing `.env` would need an absolute path. A
+bare name inside one known directory is the narrowest contract. It also stops a request file
+pointing `llama-server` at anything outside that directory. The cost is that a user-supplied
+model has to be *placed in* the models folder rather than pointed at anywhere on disk. The
+ticket already requires that ("models are bundled or placed manually"), and the empty state
+names the folder.
+
+**Why bytes, not names or the persisted flag alone.** The ticket forbids guessing
+"validated" from a name. A shipped model copied under another name is still the tested
+model, and a file with a shipped model's name and other bytes is not. The record a swap
+writes is now decided by the checksum. Before, it was written as `user_supplied` for every
+swap, so swapping to another tier's shipped model was wrongly marked unverified.
+`SETTING_ACTIVE_DISPLAY_NAME` came in for the same reason, because the display name used to
+be derived from the profile. The cache has no persistence because nothing persisted can go
+stale across a restart, and a restart costs one hash per file.
+
+**Why the model in use is checked as well (choice 7).** The first build trusted the
+record and, with none, named the profile's catalog model as shipped without opening the
+file. That put **Validated** on this development machine's default, whose bytes are not the
+catalog's, while a byte-identical copy of the same file was listed beneath it as
+**Unverified** (#672). It also left the record naming a swapped model after the host
+supervisor restarted on its own and booted the default (#670). The costly direction is a
+user-supplied default read as shipped: its answers lose the unverified marker, and C4/C5
+are claimed as verified for a model nobody checked. Two alternatives were rejected. Stating
+"assumed shipped" in Settings (#672 option 2) keeps the wrong claim on every answer's
+marker, which is where it matters. Persisting the default's verdict like a swap (#672
+option 1 as written) would write `SETTING_USER_MODEL_PATH`, and reapply would then pin
+that file across a later profile change. Comparing the recorded file name with the
+loaded one only withdraws the record; the bytes still make the claim, so the ticket's
+"never guessed from a name" rule holds. The cost is one hash of the default per file
+version per API process. Reapply pays it in the background at startup when the model is
+already loaded; otherwise the first question does. #670's other half — the supervisor
+putting the swap back itself — is not done here; until the API restarts, answers are
+correctly attributed to the default, but the user's swap is not in effect.
+
+**Why real turns and three figures.** A synthetic benchmark was rejected in #617. It would
+need re-running after every swap, and it measures a prompt nobody asked. The walkthrough for
+this ticket shows why tokens/second alone would mislead. On this machine one answer took
+**199 s**. It generated at **8.5 tokens/s**, but read its 3,810-token retrieved prompt at
+**51 tokens/s**: 75 s reading, 121 s writing. A user choosing between models needs the answer
+time to judge, and the two rates to see where that time goes. The figures are weighted by
+tokens (the sum of tokens over the sum of milliseconds), so a two-token answer does not count
+as much as a two-hundred-token one. Only turns in the exact shape `askwell.ask` writes are
+counted. Stopped, abstained and database-answered turns carry no `generation` entry, and a
+missing measurement is `None`, never 0. The ticket's edge case is "states that rather than
+showing zero". The window is filtered by `messages.model_identity`'s display name, so a swap
+starts a fresh measurement.
+
+**Why the endpoint enforces the statement.** The validation rule is that the unverified
+statement "cannot be suppressed or remembered-dismissed". A rule that exists only in one
+component is suppressed by the next client. Enforcing it costs one boolean, and no
+acknowledgement is stored, so every unverified swap needs it again. The swap is still never
+*blocked*. The only thing refused is a request that skips the statement.
+
+**The supervisor bug.** After a swap, `supervise()` started the new model, waited for it to
+answer, then `continue`d to the top of its loop. The top of the loop started *another*
+`llama-server` on the same port. The second one failed to bind and exited 1, and the
+readiness check was answered by the first. The result was `crashed` → `ready` → `crashed`
+about once a second behind a model that was actually answering, with a stray process no one
+tracked. Its unit tests passed because the fakes cannot collide on a port. It was found by
+running the swap against the real stack, and is fixed with a `started` flag. The regression
+test counts starts, and it fails against the old loop.
+
+**Added after the audit: the memory figure is labelled, not extended, when the model runs on
+a graphics card** (issue #674, option 1). The figure is `llama-server`'s resident memory,
+which leaves out every layer llama.cpp offloaded to the graphics card, so on the
+`accelerated` and `workstation` profiles it understates the model by most of its weights —
+exactly the number someone weighing a bigger model is reading. `GET /model` now passes the
+supervisor's own `acceleration` through, and under `gpu` the line reads "N GB of system
+memory … The part of the model on the graphics card is not included." Measuring video memory
+was rejected for now: it means parsing llama.cpp's startup log (`CUDA0 buffer size` and
+similar lines, not a stable interface) or a per-platform tool (`nvidia-smi`, Metal), and
+this build host has no graphics card to verify any of it against. A partial figure stated
+as partial is honest; a partial figure presented as the footprint is the overclaim C6
+already warns about. Revisit only if Phase 7 hardware measurement shows users need the
+video-memory number itself.
+
+**Consequences.** `SETTING_USER_MODEL_PATH` now holds a file name. A value from before this
+change is a path, and reapply uses only its name. Reapply also skips the swap when the
+persisted file is already the one loaded. `GET /model`'s `expected_path` and `alternatives`
+are replaced by `candidates` (every `.gguf` in the directory except the three loaded roles,
+issue #662) and `models_dir`. No frontend read the old fields. First-run's
+`ModelDownloadManager` still uses `inference_model_path` unchanged (#668 stays open). On a
+machine whose default model file is not byte-identical to the catalog's, such as this
+development machine's `Qwen3.5-4B-Q4_K_M.gguf`, 2.74 GB against the catalog's 3.01 GB
+`Qwen_Qwen3.5-4B-Q4_K_M.gguf`, that file is correctly listed as unverified when offered as a
+swap target.
+
+**Refs:** issues #617, #660, #661, #662, #669, #670, #671, #672, #674; `api/src/askwell/model_select.py`,
+`api/src/askwell/inference/client.py` (`GenerationTimings`), `deploy/inference/askwell-inference`,
+`compose.yaml`, `web/components/settings/model-and-speed.tsx`.
+
 ## 2026-09-23 — `M7-FIX-FE-173`: the rail drawer keeps its own breakpoint (48rem, not the margin's 64rem), and learns about a widened window from its own control
 
 **Decision:** The rail stays a column down to a `48rem` container (`@3xl`) and is a drawer

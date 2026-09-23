@@ -25,6 +25,7 @@ import {
   type Profile,
   type ProbeState,
 } from "@/lib/probe";
+import { PROFILE_EXPECTATIONS } from "@/lib/model";
 
 const PROFILE_LABELS: Record<Profile, string> = {
   light: "Light",
@@ -104,6 +105,9 @@ export function HardwareProfile() {
       <p className="ask-prose" style={{ margin: 0 }}>
         Current profile: <strong>{PROFILE_LABELS[state.profile]}</strong>
         {state.overridden ? ` (measured as ${PROFILE_LABELS[state.detected_profile]})` : ""}
+      </p>
+      <p className="ask-micro" style={{ textTransform: "none" }}>
+        {PROFILE_EXPECTATIONS[state.profile]}
       </p>
       <p className="ask-micro" style={{ textTransform: "none" }}>
         {state.reason}

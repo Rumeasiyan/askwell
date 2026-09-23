@@ -136,6 +136,44 @@ async def test_generation_returns_the_text_and_the_token_count(serving: Any) -> 
     assert stub.requests[0]["n_predict"] == 64
 
 
+def _sse(*events: dict[str, Any]) -> bytes:
+    return b"".join(b"data: " + json.dumps(event).encode() + b"\n\n" for event in events)
+
+
+async def test_the_final_stream_event_carries_llama_cpps_timings(serving: Any) -> None:
+    """`M7-SET-FE-146`, issue #617: throughput from real turns. The field
+    names are llama.cpp's own, read off a real `/completion` stream."""
+    start, _ = serving
+    final = {
+        "content": "",
+        "stop": True,
+        "truncated": False,
+        "timings": {
+            "prompt_n": 900,
+            "prompt_ms": 30000.5,
+            "predicted_n": 40,
+            "predicted_ms": 4000.25,
+            "predicted_per_second": 10.0,
+        },
+    }
+    client = await start(Stub(raw=_sse({"content": "Ninety", "stop": False}, final)))
+
+    chunks = [chunk async for chunk in client.stream_generate("q")]
+    assert chunks[0].timings is None
+    timings = chunks[-1].timings
+    assert timings is not None
+    assert (timings.predicted_tokens, timings.predicted_ms) == (40, 4000.25)
+    assert (timings.prompt_tokens, timings.prompt_ms) == (900, 30000.5)
+
+
+async def test_a_final_event_without_timings_is_unmeasured_not_zero(serving: Any) -> None:
+    start, _ = serving
+    client = await start(Stub(raw=_sse({"content": "Ninety", "stop": True})))
+
+    chunks = [chunk async for chunk in client.stream_generate("q")]
+    assert chunks[-1].done and chunks[-1].timings is None
+
+
 async def test_an_answer_with_no_text_is_a_failure_not_an_empty_answer(serving: Any) -> None:
     """Coercing this to "" produces an answer the user will believe."""
     start, _ = serving
