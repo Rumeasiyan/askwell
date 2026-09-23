@@ -24,8 +24,10 @@ import { CONVERSATION_PAGE_SIZE, conversationWindow, dividerLabel, liveTurnId,
   addSourceActionLabel,
   isAbstained,
   isFirstAnswer,
+  isUnvalidatedModelTurn,
   recordInlineClarificationShown,
   resolveInlineClarification,
+  UNVALIDATED_MODEL_NOTE,
   type BlockingClarification,
 } from "@/lib/ask";
 import {
@@ -814,6 +816,7 @@ function CollapsedTurn({ turn }: { turn: AskTurn }) {
           {turn.summary ?? ""}
         </p>
         {turn.webCitations.length > 0 ? <WebMarker /> : null}
+        {isUnvalidatedModelTurn(turn) ? <UnvalidatedModelBadge /> : null}
         <SourceCountBadge
           count={turn.sourceCount}
           onClick={turn.sourceCount !== null ? expandAndScrollToMargin : undefined}
@@ -824,6 +827,7 @@ function CollapsedTurn({ turn }: { turn: AskTurn }) {
         <div className="flex flex-col gap-2">
           {isAbstained(turn) ? <AbstentionState turn={turn} /> : null}
           {!isAbstained(turn) && turn.answer !== "" ? <AnsweredContent turn={turn} /> : null}
+          {isUnvalidatedModelTurn(turn) ? <UnvalidatedModelNote /> : null}
           {turn.status === "failed" && turn.reason !== null ? (
             <p className="ask-prose" style={{ color: "var(--muted)" }}>
               {turn.reason}
@@ -895,6 +899,54 @@ function WebMarker() {
       </svg>
       Web
     </span>
+  );
+}
+
+/**
+ * The persistent per-answer marker for a turn a user-supplied model
+ * produced (`M7-SET-FE-146a`, `docs/ux/ask.md` §5 "Unvalidated model",
+ * `docs/ux/settings.md` §2). `isUnvalidatedModelTurn` reads
+ * `turn.modelIdentity` — captured once, at question time, from the
+ * interaction record — rather than tracking any state of its own, matching
+ * the ticket's own Audit/Logging Requirement. Both live in `lib/ask.ts`
+ * rather than here so `lib/ask.test.ts` can cover the predicate directly.
+ *
+ * Not an error colour (`design-system.md` §47: this is a disclosed,
+ * deliberate choice the user made, same as abstention itself is not a
+ * failure) and cannot be dismissed — no close control, ever, per the
+ * ticket's own Validation Rule that this is a fact about the answer, not a
+ * notification.
+ */
+
+/** The compact form, shown even while a past turn is collapsed — same
+ * pattern as `WebMarker` beside it in the row. */
+function UnvalidatedModelBadge() {
+  return (
+    <span
+      className="ask-micro flex items-center gap-1"
+      style={{ textTransform: "none", whiteSpace: "nowrap", color: "var(--muted)" }}
+      title={UNVALIDATED_MODEL_NOTE}
+    >
+      <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+        <path
+          d="M5 1 L9 8.5 L1 8.5 Z"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.2"
+          strokeLinejoin="round"
+        />
+      </svg>
+      Unverified model
+    </span>
+  );
+}
+
+/** The full statement, shown alongside a live or expanded turn's answer. */
+function UnvalidatedModelNote() {
+  return (
+    <p className="ask-micro" style={{ textTransform: "none", color: "var(--muted)" }}>
+      {UNVALIDATED_MODEL_NOTE}
+    </p>
   );
 }
 
@@ -1001,6 +1053,10 @@ function LiveTurn({ turn }: { turn: AskTurn }) {
       {isAbstained(turn) ? <AbstentionState turn={turn} /> : null}
 
       {!isAbstained(turn) && turn.answer !== "" ? <AnsweredContent turn={turn} /> : null}
+
+      {(turn.status === "completed" || turn.status === "stopped") && isUnvalidatedModelTurn(turn) ? (
+        <UnvalidatedModelNote />
+      ) : null}
 
       {/* Below the three-column breakpoint the margin `<aside>` is
           CSS-hidden (`shell.tsx`) — these are the same cards, inline,

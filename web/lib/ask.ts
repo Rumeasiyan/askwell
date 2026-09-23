@@ -112,6 +112,16 @@ export interface BlockingClarification {
 
 export type AskStatus = "completed" | "stopped" | "failed";
 
+/** Which model produced a turn, captured once at question time
+ * (`askwell.model_select.active_model_identity`, `M7-SET-BE-145a`) and
+ * unchanged for that turn's whole life — `M7-SET-FE-146a`'s own source for
+ * the persistent unvalidated-model marker. `"none"` when nothing was loaded
+ * when the question was asked; `display_name` is `null` only then. */
+export interface AskModelIdentity {
+  source: "shipped" | "user_supplied" | "none" | "unknown";
+  display_name: string | null;
+}
+
 export interface AskDoneData {
   message_id: string;
   status: AskStatus;
@@ -143,6 +153,10 @@ export interface AskDoneData {
    * abstained turn; a document-grounded or SQL-answered turn always
    * carries `null`. */
   db_state?: string | null;
+  /** `M7-SET-FE-146a`: which model produced this turn. `undefined` only in
+   * hand-written test fixtures predating this field; the server always
+   * sends it. */
+  model_identity?: AskModelIdentity | null;
 }
 
 export type AskEvent =
@@ -525,6 +539,24 @@ export function isAbstained<T extends { status: string; answer: string; reason: 
 ): boolean {
   return turn.status === "completed" && turn.answer === "" && turn.reason !== null;
 }
+
+/** `M7-SET-FE-146a`: whether this turn's persistent unvalidated-model marker
+ * should render — reads `modelIdentity` captured once at question time,
+ * never re-derived from whatever model happens to be active now. */
+export function isUnvalidatedModelTurn<T extends { modelIdentity: AskModelIdentity | null }>(
+  turn: T,
+): boolean {
+  return turn.modelIdentity?.source === "user_supplied";
+}
+
+/** Copy for the marker itself (`docs/ux/ask.md` §5, `docs/ux/settings.md`
+ * §2's own statement at swap time) — names what is unverified, citations
+ * and abstention, rather than saying "unverified model" and leaving the
+ * user to guess what that costs. */
+export const UNVALIDATED_MODEL_NOTE =
+  "This answer came from a model Askwell hasn't tested. Citations and " +
+  "“I don't know” (abstention) are behaviours Askwell verifies for " +
+  "the models it ships; with your own model, they are not guaranteed.";
 
 /**
  * The conversation id the server used for this turn.

@@ -170,6 +170,12 @@ class _Turn:
     text: str = ""
     status: Status = "running"
     stop_requested: bool = False
+    # `M7-SET-FE-146a`: captured once, at question time (`ask()`'s own
+    # `active_model_identity` call), and carried unchanged through every
+    # `done` event this turn emits — never recomputed mid-generation, so a
+    # swap that lands while this turn is still running does not relabel an
+    # answer it never touched.
+    model_identity: dict[str, Any] | None = None
     # `M3-INLINE-FE-085`: set while this turn is paused on an inline
     # clarification, `None` the rest of the time. `clarify_event` is what
     # `POST /ask/{id}/clarify/resolve` sets once the browser has answered or
@@ -290,9 +296,17 @@ async def _tail(turn: _Turn, request: Request) -> AsyncIterator[str]:
         await asyncio.sleep(STREAM_INTERVAL_SECONDS)
 
 
-# content, status, summary, source_count, conversation_id, sql_result, sql_query
+# content, status, summary, source_count, conversation_id, sql_result, sql_query,
+# model_identity
 _FinishedTurn = tuple[
-    str, str, str | None, int | None, str, dict[str, Any] | None, dict[str, Any] | None
+    str,
+    str,
+    str | None,
+    int | None,
+    str,
+    dict[str, Any] | None,
+    dict[str, Any] | None,
+    dict[str, Any] | None,
 ]
 
 
@@ -305,7 +319,8 @@ async def _load_finished(
         row = (
             await db.execute(
                 text(
-                    "SELECT content, trace, summary, source_count, conversation_id, sql_result "
+                    "SELECT content, trace, summary, source_count, conversation_id, sql_result, "
+                    "model_identity "
                     "FROM messages WHERE id = :id AND role = 'assistant'"
                 ),
                 {"id": message_id},
@@ -313,7 +328,7 @@ async def _load_finished(
         ).first()
     if row is None:
         return None
-    content, trace, summary, source_count, conversation_id, sql_result = row
+    content, trace, summary, source_count, conversation_id, sql_result, model_identity = row
     status = trace.get("status", "completed") if isinstance(trace, dict) else "completed"
     # The conversation id comes back with it: a browser reconnecting to a
     # finished turn needs it as much as one watching a live turn, and after a
@@ -334,6 +349,7 @@ async def _load_finished(
         str(conversation_id),
         sql_result,
         sql_query,
+        model_identity,
     )
 
 
@@ -1460,6 +1476,10 @@ async def _run_generation(
                 # document turn's own abstention branch below, never from a
                 # turn `_run_sql_turn` itself answered.
                 "db_state": None,
+                # `M7-SET-FE-146a`: the persistent per-answer marker's own
+                # data, present on every `done` event regardless of branch —
+                # same "never absent" contract as `sql_result`/`db_state`.
+                "model_identity": turn.model_identity,
             },
         )
         turn.status = status
@@ -1680,6 +1700,7 @@ async def _run_generation(
                 "sql_result": None,
                 "sql_query": None,
                 "db_state": None,
+                "model_identity": turn.model_identity,
                 # `M5-LOOP-BE-116`: the browser's own signal to render the
                 # "stopped after 8 steps" state and, when `can_continue`, a
                 # **Continue** action posting `continue_from` back as this
@@ -2239,6 +2260,7 @@ async def _run_generation(
             # document abstention. Present on every `done` event regardless,
             # matching `sql_result`/`sql_query`'s own "never absent" contract.
             "db_state": db_state,
+            "model_identity": turn.model_identity,
         },
     )
     turn.status = status
@@ -2359,7 +2381,9 @@ def register_ask(
                 },
             )
 
-        turn = _Turn(message_id=message_id, conversation_id=conversation_id)
+        turn = _Turn(
+            message_id=message_id, conversation_id=conversation_id, model_identity=model_identity
+        )
         _turns[turn.message_id] = turn
         asyncio.create_task(  # noqa: RUF006 — deliberately outlives this request; see module docstring
             _generate(settings, factory, turn, body.question, body.source_id, body.continue_from)
@@ -2382,7 +2406,16 @@ def register_ask(
         stored = await _load_finished(factory, message_id)
         if stored is None:
             return JSONResponse({"error": "Askwell has no turn with that id."}, status_code=404)
-        content, status, summary, source_count, conversation_id, sql_result, sql_query = stored
+        (
+            content,
+            status,
+            summary,
+            source_count,
+            conversation_id,
+            sql_result,
+            sql_query,
+            model_identity,
+        ) = stored
 
         async def replay() -> AsyncIterator[str]:
             if content:
@@ -2405,6 +2438,7 @@ def register_ask(
                     "source_count": source_count,
                     "sql_result": sql_result,
                     "sql_query": sql_query,
+                    "model_identity": model_identity,
                 },
             )
 
