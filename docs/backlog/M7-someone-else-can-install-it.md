@@ -2187,3 +2187,330 @@ Cold start. Ask a question on the shipped model — no marker. Open settings, pl
 - **Estimate:** 4–6 hours · **Priority:** Critical
 - **Labels / Component:** `phase:6`, test, documentation
 - **Granularity:** One checklist and one script. Upper bound; executing it is separate from writing it and takes longer.
+
+---
+
+## Surfaces as seen, not as specified
+
+Six tickets from the first pass of `../manual-tests/master-sheet.md` against
+the running product on `0.7.22` — the first time anybody looked at every
+screen with real content in it rather than checking one ticket's acceptance
+criteria. Each one is a place the build and its own specification disagree.
+None is architectural; all six are what a person actually sees.
+
+They are listed here rather than left as tracker issues because **the runner
+builds this file, not the tracker.** An issue nobody turns into a ticket is a
+finding that never gets built.
+
+---
+
+### M7-FIX-FE-169 — The composer belongs below the conversation
+
+**Type:** Task
+
+**User Story**
+- **Actor:** anyone reading an answer they just asked for.
+- **User Need:** the conversation to read top to bottom, with the box that produced it underneath.
+- **Business Value:** the Ask screen decides whether anyone keeps Askwell, and it currently reads backwards.
+- *As someone reading my own answer, I want the newest one nearest the box I typed in, so that asking and reading are one motion instead of two.*
+
+**Context / Background**
+**Detailed Description:** `web/components/ask/ask-screen.tsx` renders `<Composer />` before `<TurnList />`, so the input sits at the top of the centre column and answers appear beneath it. The approved reference does the opposite: in `../ux/screens-reference.html` the `.composer` is the **last** child of the conversation panel, styled `border-top: 1px solid var(--rule)` — a top border only makes sense at the bottom of what it follows. Both screens in that file are drawn that way, and `../ux/design-system.md` §4's layout diagram runs question then answer down the column.
+
+Fix the geometry in the same change: the input and its action row currently end at different x-positions, and the suggestion list at a third, so the column has three right edges. Constrain the whole composer to the answer measure so it has one.
+
+**Scope**
+- `<Composer />` moved below the turn list, last in the column.
+- Input and action row constrained to one width, matching the answer measure.
+- The leader geometry re-checked once the margin cards are no longer anchored beside an empty composer.
+
+**Out of Scope**
+- Any change to what the composer does.
+- The provenance margin's own placement (`M7-FIX-FE-171`).
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** The conversation reads top to bottom with the composer last. A new answer appears directly above the box that produced it. Input, buttons and suggestions share one right edge. A leader from a claim to its card runs roughly horizontally rather than diagonally across an empty gap.
+- **Edge Cases:** First run, no turns — the composer is still reachable without scrolling. A long conversation — the composer stays reachable, and a new answer does not push it off-screen. Keyboard focus after submitting — still on the composer.
+- **Permissions / Roles:** Single user — no roles.
+- **UI States:** `../ux/ask.md` §2 and §5; `../ux/screens-reference.html`.
+- **Validation Rules:** If this is built the other way — composer kept on top — then `screens-reference.html` and `design-system.md` §4 are corrected in the same change and a decisions entry says why. The build and the reference must not be left disagreeing, which is the actual defect.
+- **Audit / Logging Requirements:** None.
+- **Analytics Events:** None (C1).
+
+**Real-World Example Scenarios**
+- A user asks three questions in a row and never once has to scroll up past an empty input to find what they just asked for.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M1-ASK-FE-039.
+- **API / Data Touchpoints:** `web/components/ask/ask-screen.tsx`.
+- **Assumptions:** Nothing else depends on the composer being first in the DOM; if screen-reader order turns out to, say so rather than working around it.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** Cold start, ask two questions, and read the column top to bottom. Confirm one right edge and the composer last.
+- **Other scenarios:** Tab from the top of the screen and confirm the order still makes sense.
+- **Known gaps:** None.
+
+**Effort & Granularity Check**
+- **Estimate:** 2–3 hours · **Priority:** High
+- **Labels / Component:** `phase:7`, frontend
+- **Granularity:** One reorder and one width.
+
+---
+
+### M7-FIX-FE-170 — Conflicting sources, as two records rather than one run-on sentence
+
+**Type:** Story
+
+**Human review:** copy — this ticket renders wording a user reads, specified in `../ux/`. The runner stops and quotes it before the pull request is merged.
+
+**User Story**
+- **Actor:** someone whose files contain two versions of the same fact.
+- **User Need:** to see both, told apart, with enough to judge which is current.
+- **Business Value:** catching the conflict at all is the hard part and already works. Presenting it as one confused sentence throws that away at the last step.
+- *As someone holding two versions of a document, I want the disagreement laid out plainly, so that I can settle it rather than wonder whether the answer is broken.*
+
+**Context / Background**
+**Detailed Description:** A conflicting-sources answer currently renders both positions as one unbroken paragraph with no separator — `…close at 9 PM on weekdays.Meridian Loom retail stores close at 8 PM on weekdays.` — and with no dates anywhere. `../ux/ask.md` §5 specifies "Both presented with both citations **and their dates**." Two of those three are missing, and a reader skimming sees one statement contradicting itself rather than a product being careful.
+
+Render each position as its own block: the claim, its source, and the **document's own date** — not the ingest date, which is what the cards show today and is exactly the wrong thing for deciding which version is current. The existing "Which one is current?" control and the memory fact it writes are correct and stay.
+
+**Scope**
+- Each conflicting position in its own block, visually parallel so neither reads as preferred.
+- The document's own date beside each.
+- The existing resolution control unchanged.
+
+**Out of Scope**
+- Conflict detection, which works.
+- The resolution writing a memory fact, which works.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** Two conflicting claims render as two distinct blocks, each with its source and that document's date, neither styled as the default. The conflict is legible at a glance without reading the margin.
+- **Edge Cases:** Three or more sources disagreeing — all shown, still parallel. A document with no extractable date — says the date is unknown rather than falling back to the ingest date, which would be a wrong fact presented as a right one. Two positions from the *same* document — still rendered as a conflict, since that is one too.
+- **Permissions / Roles:** Single user — no roles.
+- **UI States:** `../ux/ask.md` §5 'Conflicting sources'; `../states-and-edge-cases.md` §2.
+- **Validation Rules:** The ingest date is never shown as the document's date. Neither position may be visually preferred (C4).
+- **Audit / Logging Requirements:** Unchanged.
+- **Analytics Events:** None (C1).
+
+**Real-World Example Scenarios**
+- A user sees the 2026 handbook says 9 PM and the 2025 one says 8 PM, with both dates, and settles it in one click instead of opening both files.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M2-CONFLICT-BE-058, M1-CITE-FE-044.
+- **API / Data Touchpoints:** `api/src/askwell/agent/conflict.py`; the conflict renderer in `web/components/ask/`; whatever carries a document date.
+- **Assumptions:** A per-document date exists or can be extracted. **If it does not, stop and say so** — that is its own ticket, not something to improvise inside this one.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** Ask "What are the store hours?" with `eval/fixtures/corpus` added — it contains `store_hours_2025.pdf` and `store_hours_2026.pdf` disagreeing on this exact fact. Confirm two blocks, two dates, no run-on.
+- **Other scenarios:** A document with no date, confirming it says so rather than substituting the ingest date.
+- **Known gaps:** None.
+
+**Effort & Granularity Check**
+- **Estimate:** 3–4 hours · **Priority:** High
+- **Labels / Component:** `phase:7`, `constraint:grounding`, frontend
+- **Granularity:** One renderer and one date.
+
+---
+
+### M7-FIX-FE-171 — The provenance margin belongs to the Ask screen
+
+**Type:** Task
+
+**User Story**
+- **Actor:** anyone on Library, Clarifications, Memory or Settings.
+- **User Need:** the width back, and no instruction that cannot come true here.
+- **Business Value:** an empty margin on Ask means "this answer cited nothing". It only means that if an empty margin is not also the normal state of four other screens.
+- *As someone reading my settings, I do not want three hundred pixels telling me sources will appear beside claims that do not exist on this screen.*
+
+**Context / Background**
+**Detailed Description:** The margin renders on every screen and shows the Ask screen's own empty copy — "SOURCES APPEAR HERE, BESIDE THE CLAIMS THEY SUPPORT" — on all four others. On Clarifications it is actively misleading: that screen shows source evidence, in the card, while the margin beside it points elsewhere. `../ux/ask.md` §2 defines the margin as part of the Ask screen, and its never-hidden rule is about Ask, where emptiness carries meaning.
+
+**Scope**
+- The margin renders on Ask only.
+- The four other screens use the full width.
+
+**Out of Scope**
+- Any change to the margin's behaviour on Ask, where it is correct.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** Library, Clarifications, Memory and Settings use the full content width and show no margin copy. On Ask the margin is unchanged — present, populated or explicitly empty, never collapsible.
+- **Edge Cases:** Navigating Ask → Settings → Ask — no layout flash, and the margin returns populated for the live turn. Below the breakpoint, where the margin already reflows inline under each answer — unaffected.
+- **Permissions / Roles:** Single user — no roles.
+- **UI States:** `../ux/ask.md` §2; `../ux/design-system.md` §4.
+- **Validation Rules:** The margin is never conditional on anything but which screen it is.
+- **Audit / Logging Requirements:** None.
+- **Analytics Events:** None (C1).
+
+**Real-World Example Scenarios**
+- Someone opens Settings on a laptop and reads a full-width page instead of a narrow one beside an empty column.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M1-CITE-FE-044.
+- **API / Data Touchpoints:** `web/app/layout.tsx` and the margin component.
+- **Assumptions:** The margin is mounted by the shared layout rather than by Ask; if a screen turns out to depend on the column for its own width, name it rather than working around it.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** Visit all five screens in turn and confirm the margin appears on exactly one.
+- **Other scenarios:** Ask a question, navigate away and back, and confirm the margin returns with its cards.
+- **Known gaps:** None.
+
+**Effort & Granularity Check**
+- **Estimate:** 2 hours · **Priority:** Medium
+- **Labels / Component:** `phase:7`, frontend
+- **Granularity:** One conditional mount.
+
+---
+
+### M7-FIX-BE-172 — A clarification has to be worth asking
+
+**Type:** Task
+
+**User Story**
+- **Actor:** someone being asked a question by their own software.
+- **User Need:** to be asked only things worth their attention.
+- **Business Value:** the clarification loop is the differentiator, and its entire budget is the user's willingness to answer. It is spent the first time they are asked something a competent tool should already know.
+- *As someone who would happily explain my own jargon, I do not want to be asked what "PM" means, because then I stop reading the queue.*
+
+**Context / Background**
+**Detailed Description:** Against the fixture corpus the only clarification generated is *"'PM' appears throughout. What does it mean?"* — citing two passages that make the meaning unambiguous. Worse, those same two passages disagree about the closing time, which is exactly the kind of thing only the user can settle, and that was not asked. The ranking chose a term definition over a live factual conflict drawn from the identical lines.
+
+`../memory-and-clarification.md` §8 caps how many questions a source may raise. Nothing decides whether a candidate is worth raising at all.
+
+**Scope**
+- A floor a term-definition candidate must clear before it is queued: not common English, not resolvable from the surrounding passage, and it actually changes an answer.
+- A detected conflict ranked above a term definition.
+
+**Out of Scope**
+- The clarifications screen, which is correct.
+- The per-source cap, which already works.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** Against `eval/fixtures/corpus`, "PM" is not asked and the store-hours conflict is. A candidate that fails the floor is dropped rather than deferred, and nothing is asked that the passage it cites already answers.
+- **Edge Cases:** A genuine domain abbreviation (`st_cd`) — still asked; the floor must not silence the thing the loop exists for. A corpus with no conflicts and no qualifying terms — an empty queue, which is a correct outcome and must not be padded. A term common in English but domain-specific in context — asked, and this is the case to write a test for, since it is where the floor will be wrong.
+- **Permissions / Roles:** Single user — no roles.
+- **UI States:** `../ux/clarifications.md` empty state, which already exists.
+- **Validation Rules:** Do not raise the floor until the queue is empty — an empty queue is a valid state and a suspiciously convenient way to make this ticket pass.
+- **Audit / Logging Requirements:** Unchanged.
+- **Analytics Events:** Local counters only (C1).
+
+**Real-World Example Scenarios**
+- A user opens the queue for the first time and the first question is one only they can answer — which is the one impression that decides whether they ever open it again.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M3-RAISE-BE-071, M2-CONFLICT-BE-058.
+- **API / Data Touchpoints:** `api/src/askwell/clarify.py` and the candidate ranking.
+- **Assumptions:** Conflict detection already produces something the ranker can see. If it does not, wiring that is part of this ticket.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** Re-index `eval/fixtures/corpus` on a cleared queue and read what it asks first.
+- **Other scenarios:** A fixture with a real domain abbreviation, confirming it is still asked.
+- **Known gaps:** The floor is a heuristic and will be wrong at the edges; the tests should pin the two cases above so a later change cannot silently drop the useful half.
+
+**Effort & Granularity Check**
+- **Estimate:** 3–4 hours · **Priority:** High
+- **Labels / Component:** `phase:7`, `constraint:grounding`, backend
+- **Granularity:** One floor and one ordering.
+
+---
+
+### M7-FIX-FE-173 — The rail becomes a drawer at narrow widths
+
+**Type:** Task
+
+**User Story**
+- **Actor:** someone with the window resized narrow, or looking at it on a phone-sized screen.
+- **User Need:** to read the content, and still be able to reach everything.
+- **Business Value:** at 390px the product is unusable, and that is the width someone uses when showing it to somebody else.
+- *As someone who has made the window small, I want the navigation out of the way but still reachable, so that the screen is worth looking at.*
+
+**Context / Background**
+**Detailed Description:** At 390×844 the rail renders at its full fixed width as an overlay on top of the content. Roughly 240px of a 390px viewport is rail, the content underneath is clipped — the composer placeholder reads "…atabases" — and there is no control anywhere to dismiss it. 1440, 1024 and 768 are all correct.
+
+`../states-and-edge-cases.md` §1 and `../ux/design-system.md` §4 both already specify the answer: a drawer, a menu control in the app's own chrome, a scrim that dismisses it, and selecting a destination closes it. No new decision is needed.
+
+**Scope**
+- The rail collapses to a drawer below the breakpoint.
+- A menu control in the chrome that opens it; a scrim and a selection that close it.
+- The provenance margin's existing inline reflow re-checked at the same widths.
+
+**Out of Scope**
+- Any change at 768 and above, which is correct.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** At 390 no content is clipped, the composer is fully reachable, there is no horizontal scroll, and every rail destination can still be reached by clicking. The drawer closes on selection and on the scrim.
+- **Edge Cases:** Drawer open when the window is widened past the breakpoint — it becomes the ordinary rail rather than staying a stuck overlay. Keyboard only — the drawer opens, traps focus while open, and `Escape` closes it. A destination selected from the drawer — it closes rather than sitting over the screen just navigated to.
+- **Permissions / Roles:** Single user — no roles.
+- **UI States:** `../states-and-edge-cases.md` §1 'Narrow window'; `../ux/design-system.md` §4.
+- **Validation Rules:** Navigation is never removed, only moved behind a control — the library is the only route to sources, memory and settings.
+- **Audit / Logging Requirements:** None.
+- **Analytics Events:** None (C1).
+
+**Real-World Example Scenarios**
+- Someone turns a laptop round to show a colleague with the window half-width and the screen is readable.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M1-ASK-FE-039.
+- **API / Data Touchpoints:** `web/app/layout.tsx` and the rail component.
+- **Assumptions:** The breakpoint the margin already reflows at is the right one for the rail too; if not, say which and why.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** Walk `../manual-tests/master-sheet.md` Part G at 1440, 1024, 768 and 390 and confirm every row.
+- **Other scenarios:** Open the drawer, widen the window past the breakpoint, and confirm it resolves rather than sticking.
+- **Known gaps:** None.
+
+**Effort & Granularity Check**
+- **Estimate:** 3 hours · **Priority:** High
+- **Labels / Component:** `phase:7`, frontend
+- **Granularity:** One breakpoint and one drawer.
+
+---
+
+### M7-FIX-FE-174 — The online offer describes the model that exists
+
+**Type:** Story
+
+**Human review:** copy — this ticket renders wording a user reads, specified in `../ux/`. The runner stops and quotes it before the pull request is merged.
+
+**User Story**
+- **Actor:** someone who has just been told their files cannot answer the question.
+- **User Need:** to know what the larger-model option actually needs from them.
+- **Business Value:** this is a paywall on a product that has none, shown at the moment someone decides whether to keep it.
+- *As someone reading an honest abstention, I want the escalation beside it to be equally honest, so that the one moment the product admits a limit is not also the moment it looks like it is selling me something.*
+
+**Context / Background**
+**Detailed Description:** The abstention surface's second escalation reads "Ask a larger model / USES CREDITS · YOU HAVE NONE". The credit tier was dropped on 2026-09-23 (`../decisions.md`) and online AI now uses a key the user supplies from their own provider. There are no credits to have none of, and "YOU HAVE NONE" reads as a locked feature.
+
+**Scope**
+- The offer's label and sub-label rewritten to the key model.
+- With no key set: says so, with a path to where one is set — not a balance of zero.
+- `../ux/web-search.md` §2 and `../ux/settings.md` §9 updated to match, in the same change.
+
+**Out of Scope**
+- The online path itself (M8), which is not built. This ticket corrects what is on screen today.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** The offer never mentions credits. With no key set it says a key is needed and offers the route to set one. The wording matches `../ux/` after this change rather than contradicting it.
+- **Edge Cases:** A key set but the online path unbuilt — the offer says the capability is not available yet rather than failing when pressed. Web search available but online not — the two offers read as independent, which they are.
+- **Permissions / Roles:** Single user — no roles.
+- **UI States:** `../ux/web-search.md` §2; `../ux/settings.md` §9; `../states-and-edge-cases.md` §2 abstention.
+- **Validation Rules:** No wording implies Askwell sells anything or holds a balance. The abstention itself is unchanged — it is correct and is the most important copy in the product (C5).
+- **Audit / Logging Requirements:** None.
+- **Analytics Events:** None (C1).
+
+**Real-World Example Scenarios**
+- A user abstained on their first real question, reads the three offers, and understands exactly what each costs them before touching any of them.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M2-ABSTAIN-FE-055.
+- **API / Data Touchpoints:** the abstention escalation offers in `web/components/ask/`.
+- **Assumptions:** Whether a key is set is readable from configuration. If nothing stores one yet — M8 is unbuilt — the offer states the capability is not available, which is true and is better than naming a balance.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** Ask something the corpus cannot answer and read all three offers as a first-time reader.
+- **Other scenarios:** Confirm the abstention text above them is untouched.
+- **Known gaps:** The real behaviour is M8's.
+
+**Effort & Granularity Check**
+- **Estimate:** 2 hours · **Priority:** Medium
+- **Labels / Component:** `phase:7`, frontend
+- **Granularity:** One offer's copy, plus the two docs that specify it.
