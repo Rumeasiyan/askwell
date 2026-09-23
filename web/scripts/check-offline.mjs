@@ -108,6 +108,19 @@ const FETCHING = [
 /** Any host-shaped string, for the inert count. */
 const ANY_URL = new RegExp(String.raw`\bhttps?://` + EXTERNAL_HOST + String.raw`[^\s"'\`)>\\]*`, "gi");
 
+/**
+ * An `<a href>` is a user click away from the app, not the browser fetching
+ * something on page load the way `<link>`/`<img>`/`<script src>` are. C1's
+ * promise is "disconnect the machine and Askwell works identically" — a
+ * disconnected machine still renders the About screen with its source and
+ * issue-tracker links; clicking one simply fails to load, same as any
+ * external link in any desktop app. Stripped out before the generic markup
+ * scan below runs, so it is reported here (never a failure) instead of
+ * double-counted as a `href` asset reference.
+ */
+const ANCHOR_TAG = /<a\b[^>]*>/gi;
+const ANCHOR_HREF = new RegExp(String.raw`\bhref\s*=\s*["'](?:https?:)?//` + EXTERNAL_HOST, "i");
+
 function walk(directory) {
   const found = [];
   for (const entry of readdirSync(directory)) {
@@ -128,12 +141,21 @@ try {
 
 const failures = [];
 const inert = new Map();
+const anchorLinks = [];
 
 for (const file of files) {
   const extension = extname(file);
   if (!TEXTUAL.has(extension)) continue;
-  const content = readFileSync(file, "utf8");
+  const rawContent = readFileSync(file, "utf8");
   const where = relative(OUT, file);
+
+  // Pull anchor tags out before the generic markup scan, recording any
+  // external href separately, so <a href="https://...expected...">
+  // is never treated the same as <link>/<img>/<script src> auto-fetching.
+  const content = rawContent.replace(ANCHOR_TAG, (tag) => {
+    if (ANCHOR_HREF.test(tag)) anchorLinks.push({ where, tag: tag.slice(0, 140) });
+    return "<a>";
+  });
 
   for (const { name, files: applies, regex } of FETCHING) {
     if (!applies.includes(extension)) continue;
@@ -166,6 +188,11 @@ console.log(
     ? "No font files bundled — the type stack is system faces only, as intended (§3)."
     : `${bundledFonts.length} bundled font file(s), served from the output itself.`,
 );
+
+if (anchorLinks.length > 0) {
+  console.log(`\n${anchorLinks.length} user-initiated <a href> link(s) to an external host:`);
+  for (const { where, tag } of anchorLinks) console.log(`  ${where}\n    ${tag}`);
+}
 
 const total = [...inert.values()].reduce((a, b) => a + b, 0);
 console.log(

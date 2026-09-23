@@ -1,3 +1,4 @@
+import { About } from "@/components/settings/about";
 import { Folders } from "@/components/settings/folders";
 import { HardwareProfile } from "@/components/settings/hardware-profile";
 import { PrivacySecurity } from "@/components/settings/privacy-security";
@@ -6,7 +7,7 @@ import { Storage } from "@/components/settings/storage";
 import { VerifyLog } from "@/components/settings/verify-log";
 
 /**
- * Settings — six real sections so far.
+ * Settings — seven real sections so far.
  *
  * The folders Askwell may read arrive here in M1 because that is where the
  * cold-start walkthrough looks for them: nominate a folder while adding a
@@ -35,10 +36,15 @@ import { VerifyLog } from "@/components/settings/verify-log";
  * `docs/ux/settings.md` §6's six actions: export everything, export the log
  * alone, delete a source, delete all memory and reset Askwell have no
  * backend yet and are not stubbed here, the same honesty `storage.tsx`
- * already uses for export and prune. The rest of the screen is still its
- * empty state, because `docs/states-and-edge-cases.md` requires every
- * surface to have one and a route stub with nothing in it teaches the next
- * person that empty states are optional.
+ * already uses for export and prune. About arrives with `M7-DOC-DOC-163`
+ * (`web/components/settings/about.tsx`) — version, licence, a link to the
+ * source and a link to `NOTICES.md`, copied into `public/` at build time
+ * (`web/scripts/copy-notices.mjs`) rather than duplicated; `docs/ux/settings.md`
+ * §7's own update-check opt-in has no frontend yet and is not stubbed here,
+ * the same honesty every section above already practises. The rest of the
+ * screen is still its empty state, because `docs/states-and-edge-cases.md`
+ * requires every surface to have one and a route stub with nothing in it
+ * teaches the next person that empty states are optional.
  */
 export default function SettingsPage() {
   return (
@@ -90,6 +96,8 @@ export default function SettingsPage() {
         <h2 style={{ fontSize: "var(--t-title)", lineHeight: "var(--t-title-lh)" }}>Your data</h2>
         <VerifyLog />
       </section>
+
+      <About />
     </div>
   );
 }

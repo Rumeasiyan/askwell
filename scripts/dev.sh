@@ -35,6 +35,9 @@
 #   scripts/dev.sh build       rebuild both images (build-api / build-web for one)
 #   scripts/dev.sh shell       an interactive shell in the image
 #   scripts/dev.sh run ...     any command inside the image
+#   scripts/dev.sh notices     regenerate NOTICES.md and fail on a disallowed
+#                               dependency or model licence (release gate,
+#                               not part of `check` — see the script itself)
 
 set -euo pipefail
 
@@ -447,6 +450,20 @@ case "$cmd" in
     psql)
         "$CONTAINER" compose exec "${TTY_FLAGS[@]}" postgres \
             psql -U "$(_db_user)" -d "$(_db_name)" "$@"
+        ;;
+
+    notices)
+        # Two containers, one handoff: the web image has no Python and the
+        # API image has no Node, so `pnpm licenses list` runs first and
+        # writes into the one thing both mount — the checkout itself — for
+        # `generate_notices.py` to read a moment later. Not wired into
+        # `check`: see `scripts/generate_notices.py`'s own module docstring
+        # for why this is a release gate, not a per-commit one.
+        mkdir -p "$REPO_ROOT/.notices"
+        note "web dependency licences"
+        in_web "$WEB_IMAGE" pnpm licenses list --json --prod > "$REPO_ROOT/.notices/web-licenses.json"
+        note "regenerating NOTICES.md and checking for a disallowed licence"
+        in_image "$IMAGE" python /app/scripts/generate_notices.py "/app/.notices/web-licenses.json"
         ;;
 
     build)     build_image; build_web_image ;;

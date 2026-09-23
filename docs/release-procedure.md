@@ -63,6 +63,18 @@ it (`M7-OFFLINE-TEST-145`; `AGENTS.md` §3, C1). Do not proceed to step 4 withou
 for this exact version. `scripts/verify-no-egress.sh` covers the automatable half; the physical
 cable-pull and voice steps stay manual, per that document's own §2.
 
+## 3b. The notices gate
+
+Also before checksumming or publishing, run `scripts/dev.sh notices`. It regenerates
+`NOTICES.md` from what is actually installed in the built images (never hand-edited) and fails
+if any shipped Python package, JavaScript package, or bundled model carries a licence on
+`askwell.notices`'s disallowed list — C9's redistribution/commercial-use/ungated requirement,
+evidenced rather than merely asserted (`M7-DOC-DOC-163`). **A failed run blocks the release.**
+Commit the regenerated `NOTICES.md` if it changed. As of 2026-09-23 this gate is known red —
+`kokoro-onnx` pulls in `phonemizer` (GPLv3+) — tracked in issue #619 and not yet resolved; do
+not release until it passes or the exception is deliberately, visibly recorded here and in
+`docs/decisions.md`, not silently bypassed.
+
 ## 4. Generate checksums
 
 ```
