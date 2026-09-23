@@ -20,7 +20,7 @@ import {
   recordConflictPresented,
 } from "@/lib/answer-annotations";
 import type { CitationCard } from "@/lib/citations";
-import { CONVERSATION_PAGE_SIZE, conversationWindow, dividerLabel, liveTurnId,
+import { CONVERSATION_PAGE_SIZE, conversationWindow, dividerLabel, followsNewTurn, liveTurnId,
   addSourceActionLabel,
   isAbstained,
   isFirstAnswer,
@@ -120,6 +120,18 @@ export function AskScreen() {
   // actually knows).
   const assistantDown = status.kind === "reporting" && !status.assistant.available;
 
+  // The composer is sticky, so it never leaves the screen — but a new turn
+  // lands below whatever the reader was looking at. Scrolling to the end
+  // when one is added puts it directly above the box that produced it.
+  const endRef = useRef<HTMLDivElement>(null);
+  const turnCount = useRef<number | null>(null);
+  useEffect(() => {
+    if (followsNewTurn(turnCount.current, turns.length)) {
+      endRef.current?.scrollIntoView({ block: "end" });
+    }
+    turnCount.current = turns.length;
+  }, [turns.length]);
+
   return (
     <section className="flex flex-col gap-6">
       {/* Rendered unconditionally, statically — not only inside `FirstRun` —
@@ -143,10 +155,16 @@ export function AskScreen() {
       ) : (
         <>
           {assistantDown ? <DegradedSearch /> : null}
-          <Composer />
           {turns.length === 0 && corpus === "indexing" ? <IndexingNotice /> : null}
           {turns.length === 0 && corpus === "ready" ? <SuggestedQuestions /> : null}
           {turns.length > 0 ? <TurnList turns={turns} liveId={liveId} /> : null}
+          {/* Last, below what it produced (`M7-FIX-FE-169`, confirmed by the
+              product owner 2026-09-23): the conversation reads top to bottom
+              into the box that asked it, as `docs/ux/screens-reference.html`
+              draws it. Tab order follows — through the conversation, then
+              into the composer, which is also where focus starts. */}
+          <Composer />
+          <div ref={endRef} aria-hidden="true" />
         </>
       )}
     </section>
@@ -658,50 +676,66 @@ function Composer() {
     ask(value, scope?.sourceId ?? null);
     setValue("");
     setScope(null);
+    // Clicking "Ask" would otherwise leave focus on the button; the next
+    // question starts here, the same as after `Enter`.
+    textarea.current?.focus();
   };
 
+  // Sticky to the bottom of the scrolling column, so a long conversation or
+  // a long streamed answer never pushes it off-screen. The top rule is
+  // `screens-reference.html`'s own `.composer`; the band is `--paper`, not
+  // the mockup's `--sunk`, because the input inside is already `--sunk`
+  // (`design-system.md`: an input is inset) and would vanish into it. Opaque
+  // either way, so the answer scrolls under it rather than through it.
+  // Everything inside is one `.ask-measure` box, so input, action row and
+  // the answers above share one right edge.
   return (
-    <div className="flex flex-col gap-2">
-      {scope !== null ? (
-        <p className="ask-micro flex items-center gap-2">
-          Scoped to {scope.filename}
+    <div
+      className="sticky bottom-0 z-10 pt-3 pb-3"
+      style={{ background: "var(--paper)", borderTop: "1px solid var(--rule)" }}
+    >
+      <div className="ask-measure flex flex-col gap-2">
+        {scope !== null ? (
+          <p className="ask-micro flex items-center gap-2">
+            Scoped to {scope.filename}
+            <button
+              type="button"
+              onClick={() => setScope(null)}
+              className="ask-navigates px-0"
+              style={{ background: "none", border: "none" }}
+            >
+              Clear
+            </button>
+          </p>
+        ) : null}
+        <textarea
+          ref={textarea}
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              submit();
+            }
+          }}
+          placeholder="Ask about your own files and databases"
+          rows={3}
+          className="ask-input ask-prose w-full px-3 py-2"
+          style={{ resize: "none" }}
+          aria-label="Ask a question"
+        />
+        <div className="flex justify-end items-center gap-2">
+          <MicControl />
           <button
             type="button"
-            onClick={() => setScope(null)}
-            className="ask-navigates px-0"
-            style={{ background: "none", border: "none" }}
+            onClick={submit}
+            disabled={value.trim() === ""}
+            className="ask-action-primary px-4"
+            style={{ fontSize: "var(--t-ui)", opacity: value.trim() === "" ? 0.5 : 1 }}
           >
-            Clear
+            Ask
           </button>
-        </p>
-      ) : null}
-      <textarea
-        ref={textarea}
-        value={value}
-        onChange={(event) => setValue(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" && !event.shiftKey) {
-            event.preventDefault();
-            submit();
-          }
-        }}
-        placeholder="Ask about your own files and databases"
-        rows={3}
-        className="ask-input ask-prose w-full px-3 py-2"
-        style={{ resize: "none" }}
-        aria-label="Ask a question"
-      />
-      <div className="flex justify-end items-center gap-2">
-        <MicControl />
-        <button
-          type="button"
-          onClick={submit}
-          disabled={value.trim() === ""}
-          className="ask-action-primary px-4"
-          style={{ fontSize: "var(--t-ui)", opacity: value.trim() === "" ? 0.5 : 1 }}
-        >
-          Ask
-        </button>
+        </div>
       </div>
     </div>
   );

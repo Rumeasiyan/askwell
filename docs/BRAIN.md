@@ -46,6 +46,33 @@ Since `M1-ASK-FE-039` a question can be typed and watched, for the first time: t
 
 ## Last completed
 
+**`0.7.25` — `M7-FIX-FE-169`**: the composer moved below the conversation
+(`web/components/ask/ask-screen.tsx`, `AskScreen`): last child of the column, `sticky
+bottom-0` with the reference's top rule, band `--paper` rather than the mockup's `--sunk`
+because the input inside is itself `--sunk` and would vanish into it. `followsNewTurn`
+(`web/lib/ask.ts`, four tests in `lib/ask.test.ts`) scrolls to the end only when a turn is
+added — never per streamed token, never on first render (so "back to answer" keeps its
+claim). One right edge: new `.ask-measure` in `globals.css` takes prose metrics to measure
+`72ch` exactly as `.ask-prose` does (`ch` resolves against the element's own font, which is
+why a plain `max-width: var(--measure)` wrapper in the mono default would have given a
+fourth edge), then hands the mono face back to its children at zero specificity. `ask-prose`
+kept on the textarea, so #652 (a regression in an earlier, unmerged attempt at this ticket)
+does not occur; #653 (reachability) is the sticky + scroll above. Focus returns to the
+textarea after a button submit too. States added to `docs/ux/ask.md` §5. **Verified** in
+headless Chrome over CDP against the live stack (`podman compose up -d --force-recreate
+api` first — the bind-mounted `web/out` goes stale on rebuild): cold start composer at
+y=258 of 1000, textarea/action row/answer prose all right edge 858px; after two questions
+(one by `Enter`, one by button) `document.activeElement` is the textarea both times; at a
+560px viewport the composer stays pinned at the bottom with the answer scrolling under it;
+tab order runs rail → conversation → composer; on a cited conflicting-sources answer leaders
+run ~470px across with ~100px of fall, no longer diagonal past an empty composer. Margin
+cards still stack from the top rather than aligning with their claims — that is placement,
+`M7-FIX-FE-171`'s concern, not this ticket's. `scripts/dev.sh web-check` clean, 418 tests.
+**Found, not fixed:** the 4B model echoes prompt templates verbatim — "Not covered: <the
+specific thing…>" and a false "Resolved by memory" with no memory fact — filed as #663
+(C4/C5). An answerable question ("firmware updates for the Mk3", in `spec.docx`) abstained;
+recorded on #625 rather than diagnosed.
+
 **`0.7.24` — `M7-FIX-FE-174`**: the abstention surface's "Ask a larger model" offer read
 "uses credits · you have none" (`web/components/ask/ask-screen.tsx`), a paywall on a product
 whose credit tier was cancelled 2026-09-23 (`docs/decisions.md`). Rewritten to

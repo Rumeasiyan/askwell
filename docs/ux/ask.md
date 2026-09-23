@@ -86,6 +86,8 @@ Every one of these ships. A screen with only the answered state is not finished.
 | **Unvalidated model** | Persistent marker on every answer produced by a user-supplied model, naming that citations and abstention are unverified for it. Not an error state — the user chose this knowingly (`settings.md` §2) |
 | **Answered from the web** | Separate region, marked as not-your-material, never in the margin (`web-search.md` §3) |
 | **Several turns** | Past turns collapse (`conversation.md`). The live turn keeps its margin |
+| **Conversation taller than the window** | The composer stays pinned to the bottom of the column, last in reading and tab order; answers scroll under it, never through it. Asking a new question scrolls to the end so the new turn sits directly above the box that asked it; tokens streaming into an answer never move the reader (`M7-FIX-FE-169`) |
+| **Just submitted** | Focus stays in the composer whether the question went by `Enter` or the **Ask** button, so the next question starts without reaching for the mouse (`M7-FIX-FE-169`) |
 | **Online mode** | Persistent marker on the conversation. Before the first send, exactly what will leave the machine |
 | **Credits exhausted** | Falls back to local, says so, continues. Never blocks — the product works offline for free |
 | **Past latency budget (voice)** | Indicator appears, only once passed (#15) |

@@ -25,6 +25,7 @@ import {
   CONVERSATION_PAGE_SIZE,
   conversationWindow,
   dividerLabel,
+  followsNewTurn,
   liveTurnId,
   looksNonEnglish,
   nextToDispatch,
@@ -593,4 +594,24 @@ test("no connections configured relabels the control rather than adding a second
 test("a source still importing or needing attention drops the control entirely", () => {
   assert.equal(addSourceActionLabel("source_importing"), null);
   assert.equal(addSourceActionLabel("source_attention"), null);
+});
+
+// --- followsNewTurn: the column follows a new turn down to the composer (M7-FIX-FE-169)
+
+test("a newly added turn scrolls the column to the composer", () => {
+  assert.equal(followsNewTurn(0, 1), true);
+  assert.equal(followsNewTurn(2, 3), true);
+});
+
+test("a question asked mid-answer still follows — it queues as a new turn", () => {
+  assert.equal(followsNewTurn(1, 2), true);
+});
+
+test("a streaming token or completed answer does not move the reader", () => {
+  assert.equal(followsNewTurn(3, 3), false);
+});
+
+test("the first render never scrolls, so back-to-answer keeps its claim", () => {
+  assert.equal(followsNewTurn(null, 0), false);
+  assert.equal(followsNewTurn(null, 4), false);
 });
