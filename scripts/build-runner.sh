@@ -42,6 +42,13 @@ cd "$RUNNER_ROOT"
 : "${AUDIT_EFFORT:=}"
 : "${DOC_MODEL:=}"
 : "${DOC_EFFORT:=}"
+# One fallback for every lineage. The build stopping has been this project's
+# largest single cost — a fortnight in August, three times in one day on 13
+# September — and one of those stops was a quota limit. A model that is
+# momentarily overloaded or out of quota should cost a slower ticket, not a
+# dead queue nobody notices until morning. Empty means no fallback, which is
+# the behaviour every run before this one had.
+: "${FALLBACK_MODEL:=}"
 : "${MAX_REPAIR:=2}"
 : "${RUN_AUDIT:=1}"
 : "${RUN_DOC:=1}"
@@ -460,6 +467,8 @@ run_agent() {   # run_agent <lineage> <prompt-file> <log-file> [model] [effort]
   # that the gate will then reject work the agent was never able to verify.
   local args; args="--print --permission-mode ${AGENT_PERMISSION_MODE:-bypassPermissions}"
   [ -n "$model" ]  && args="$args --model $model"
+  # Only meaningful alongside an explicit model, and harmless without one.
+  [ -n "$FALLBACK_MODEL" ] && args="$args --fallback-model $FALLBACK_MODEL"
   [ -n "$effort" ] && args="$args --effort $effort"
   if [ "$lineage" != "build" ] && [ -s "$sid" ]; then
     args="$args --resume $(cat "$sid")"
