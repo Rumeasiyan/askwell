@@ -285,6 +285,18 @@ class Settings(BaseSettings):
     # silently — `docs/ux/ask.md` §5's "very long answer" state requires that
     # reaching this be stated, not just that generation stop. `M1-ASK-API-038`.
     generation_max_tokens: int = Field(default=1024, ge=1, le=8192)
+    # Appended to the composed prompt to tell a reasoning model not to think
+    # first. Configuration rather than code because the token is the model's,
+    # not Askwell's (`AGENTS.md` §4 — no model specifics in application
+    # logic), and a model that does not recognise it simply reads it as part
+    # of the question. Set empty to send nothing.
+    #
+    # Measured against the shipped model on this machine's own CPU with the
+    # real `answer_composition.v1` prompt: 30s and 73 tokens without it, 6s
+    # and 47 with, same citations either way. Without it a nine-source
+    # question spent its whole budget reasoning and returned no answer at
+    # all — the visible half of issue #220.
+    generation_thinking_directive: str = "/no_think"
 
     # How many answers may generate at once. Two, the same figure and the
     # same reason as `ingest_concurrency`: this laptop is also running the
