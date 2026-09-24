@@ -7,15 +7,64 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { addedDateLabel, sortByDateAndSupersession, supersededDateLabel, type DocumentDate } from "./document-dates.ts";
+import {
+  documentDateLabel,
+  sortByDateAndSupersession,
+  supersededDateLabel,
+  type DocumentDate,
+} from "./document-dates.ts";
 
-test("no added date yet renders nothing", () => {
-  assert.equal(addedDateLabel({ addedAt: null }), null);
+/**
+ * `M7-FIX-FE-170`: the date beside each conflicting position is the
+ * document's own, at the precision it is known, with where it came from.
+ */
+
+const ADDED = "2026-09-23T10:00:00Z";
+
+function own(
+  documentDate: string | null,
+  documentDatePrecision: DocumentDate["documentDatePrecision"],
+  documentDateSource: DocumentDate["documentDateSource"],
+): DocumentDate {
+  return {
+    addedAt: ADDED,
+    documentDate,
+    documentDatePrecision,
+    documentDateSource,
+    supersededBy: null,
+    supersededAt: null,
+  };
+}
+
+test("nothing is shown while the date has not loaded", () => {
+  assert.equal(documentDateLabel(undefined), null);
 });
 
-test("an added date is labelled as when it was added", () => {
-  const label = addedDateLabel({ addedAt: "2026-08-28T00:00:00Z" });
-  assert.match(label ?? "", /^Added /);
+test("a year from a file name stays a year, never 1 January", () => {
+  assert.deepEqual(documentDateLabel(own("2026", "year", "filename"), "en-GB"), {
+    date: "2026",
+    source: "from the file name",
+  });
+});
+
+test("a month stays a month", () => {
+  assert.deepEqual(documentDateLabel(own("2026-03", "month", "filename"), "en-GB"), {
+    date: "March 2026",
+    source: "from the file name",
+  });
+});
+
+test("a day from the file's properties is a full date, not shifted by the time zone", () => {
+  assert.deepEqual(documentDateLabel(own("2026-03-01", "day", "metadata"), "en-GB"), {
+    date: "1 March 2026",
+    source: "from the file's properties",
+  });
+});
+
+test("an undated document says the date is unknown and never shows when it was added", () => {
+  const label = documentDateLabel(own(null, null, null), "en-GB");
+  assert.deepEqual(label, { date: "Date unknown", source: null });
+  assert.doesNotMatch(JSON.stringify(label), /2026|Added|23/);
 });
 
 test("a live document has no superseded label", () => {
