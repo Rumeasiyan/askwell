@@ -323,6 +323,9 @@ services:
       # for a conversation the user switches to online, one at a time.
       ASKWELL_ONLINE_AI_DESTINATION: ${ASKWELL_ONLINE_AI_DESTINATION:-}
       ASKWELL_ONLINE_AI_AUTHORISATION_TTL_SECONDS: ${ASKWELL_ONLINE_AI_AUTHORISATION_TTL_SECONDS:-14400}
+      ASKWELL_ONLINE_AI_MODEL: ${ASKWELL_ONLINE_AI_MODEL:-}
+      ASKWELL_ONLINE_AI_API_PATH: ${ASKWELL_ONLINE_AI_API_PATH:-/v1/chat/completions}
+      ASKWELL_ONLINE_AI_TIMEOUT_SECONDS: ${ASKWELL_ONLINE_AI_TIMEOUT_SECONDS:-120}
       # Anything that respects these gets refused *with a log naming it*.
       # Anything that ignores them gets no route at all, because `internal`
       # has none — refused either way, but only the first way is diagnosable,

@@ -515,6 +515,24 @@ class Settings(BaseSettings):
     # if they are still working; nothing renews it for them.
     online_ai_authorisation_ttl_seconds: float = Field(default=14400.0, gt=0, le=86400)
 
+    # The provider's model identifier, sent with each online request and
+    # recorded on every turn that used it — `M8-ONLINE-BE-170`. Configuration
+    # for the same reason as the destination above (`AGENTS.md` §4: never a
+    # model name in code). Empty means online AI is unavailable: a
+    # destination with no model to ask for is not a provider.
+    online_ai_model: str | None = None
+
+    # The chat-completions path on the destination. The OpenAI-compatible
+    # shape is the one the local server already speaks; providers differ in
+    # where they mount it, not in what it takes.
+    online_ai_api_path: str = Field(default="/v1/chat/completions", pattern=r"^/[A-Za-z0-9/._-]*$")
+
+    # How long one online answer may take before it counts as failed and the
+    # turn answers locally instead. Shorter than the local timeout: a
+    # provider that has not answered in two minutes is not coming back, and
+    # the user is waiting.
+    online_ai_timeout_seconds: float = Field(default=120.0, gt=0, le=600)
+
     # `askwell.webfetch.fetch_pages`'s three caps, `M6.5-WEB-BE-188`.
     # Configuration, not constants — the ticket's own assumption that these
     # are first guesses, tuned with real use, and that a change is a
@@ -553,7 +571,13 @@ class Settings(BaseSettings):
     # its result across the same bind mount.
     probe_result_path: Path = Path("/run/askwell/probe.json")
 
-    @field_validator("roots_mount", "web_search_provider", "online_ai_destination", mode="before")
+    @field_validator(
+        "roots_mount",
+        "web_search_provider",
+        "online_ai_destination",
+        "online_ai_model",
+        mode="before",
+    )
     @classmethod
     def _optional_path(cls, value: object) -> object:
         """An empty value means "no window", not a directory named "".

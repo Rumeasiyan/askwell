@@ -2,7 +2,7 @@
 
 C1 permits one deliberate exception to "nothing leaves this machine": the
 user switching one conversation to online AI. This module is that switch's
-authorisation, and nothing else — no provider (`M8-ONLINE-BE-170`), no key
+authorisation, and nothing else — no provider (`askwell.inference.provider`), no key
 (`M8-KEY-BE-173`), no disclosure (`M8-ONLINE-FE-171`).
 
 **The egress proxy's grant is the authority; `conversations.ai_backend` is
@@ -101,6 +101,13 @@ class OnlineState:
         }
 
 
+def configured(settings: Settings) -> bool:
+    """Whether there is a provider to go online to: a destination to
+    authorise and a model to ask it for (`M8-ONLINE-BE-170`). Either alone
+    is not one."""
+    return settings.online_ai_destination is not None and settings.online_ai_model is not None
+
+
 def proxy_credentials(conversation_id: uuid.UUID) -> tuple[str, str] | None:
     """The `(username, password)` a request on this conversation's behalf
     presents to the egress proxy, or None when it is not online in this
@@ -170,7 +177,7 @@ async def _set_local(
 def _state(
     settings: Settings, conversation_id: uuid.UUID, grant: egress.ConversationGrant | None
 ) -> OnlineState:
-    available = settings.online_ai_destination is not None
+    available = configured(settings)
     return OnlineState(
         conversation_id=str(conversation_id),
         online=grant is not None,
@@ -233,7 +240,7 @@ async def enable(db: AsyncSession, settings: Settings, conversation_id: uuid.UUI
     if current.online:
         return current
     destination = settings.online_ai_destination
-    if destination is None:
+    if destination is None or not configured(settings):
         raise OnlineUnavailable(NOT_CONFIGURED)
 
     token = secrets.token_urlsafe(32)

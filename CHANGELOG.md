@@ -4,6 +4,21 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.40 - 2026-09-24
+
+`Added`: `M8-ONLINE-BE-170`. A conversation switched to online AI now has its answer written by
+the online provider. Everything else stays the same: the same search of your files, the same
+refusal to answer when nothing in them covers the question, and the same source cards. Only the
+writing of the answer moves. If the provider cannot answer, the local model answers instead. The
+answer then ends with a line saying so and why: the network is unavailable, the provider refused,
+the provider is limiting requests, or online AI is no longer authorised. You are never left
+without an answer. If the provider stops partway through, what it wrote is withdrawn and the
+local model answers from the start. Every answer records which backend and model wrote it, and
+the record of a local answer now names the local model file. Before, it said only "model".
+Questions that use a database, and web-search answers, are still answered locally. Nothing is
+sent in a fresh install: online AI needs a provider and a model configured, and neither is set
+by default. Askwell does not ask for or hold a provider key yet.
+
 ## 0.7.39 - 2026-09-24
 
 `Security`: `M8-ONLINE-SEC-169`. Askwell can now authorise online AI for one conversation at a
