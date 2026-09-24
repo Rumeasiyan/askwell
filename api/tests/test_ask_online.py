@@ -306,7 +306,7 @@ def test_an_uncited_online_answer_is_treated_as_an_uncited_local_one(
             False,
         ),
         (lambda _r: httpx.Response(429), provider.RATE_LIMITED, "limiting requests", True),
-        (lambda _r: httpx.Response(401), provider.REFUSED, "rejected your key", True),
+        (lambda _r: httpx.Response(401), provider.KEY_REJECTED, "rejected your key", True),
     ],
 )
 def test_a_failure_before_the_answer_falls_back_to_local_and_says_so(
@@ -392,6 +392,168 @@ def test_a_failure_mid_answer_starts_again_locally_and_keeps_nothing_online(
     assert fallback_steps[0]["reason_code"] == provider.INTERRUPTED
     assert fallback_steps[0]["mid_answer"] is True
     assert audit["online_fallback"] == provider.INTERRUPTED
+
+
+def test_an_empty_account_answers_locally_ends_online_and_loses_nothing(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """`M8-KEY-FE-175`'s walkthrough, through the routes the interface uses:
+    two questions answered online, then the account runs out of quota. The
+    third is answered locally and says so, and the conversation goes local
+    with the reason recorded, so the fourth is local without being sent
+    anywhere. Every turn is stored with the backend that wrote it, and none
+    of the four questions is refused."""
+    import redis.asyncio as redis
+
+    store: dict[str, str] = {}
+    monkeypatch.setattr(redis, "Redis", lambda **_kwargs: FakeRedis(store, {}))
+    monkeypatch.setattr(online, "DISCLOSURE", online.Disclosure(version="1", text="What goes."))
+    online._credentials.clear()
+    _truncate(database_url)
+    settings = _online_settings(settings, tmp_path)
+    vector = _vector(0.0)
+    _document_id, chunk_id = _seed_chunk(database_url, "Notice is ninety days.", vector)
+    _patch_client(
+        monkeypatch, _FakeInferenceClient(settings, tokens=["Ninety days [1]."], vector=vector)
+    )
+
+    def _respond(_request: httpx.Request) -> httpx.Response:
+        if len(fake.requests) <= 2:
+            return httpx.Response(200, content=_sse("Online: ninety days [1]."))
+        return httpx.Response(
+            429, json={"error": {"code": "insufficient_quota", "message": "Out of credit."}}
+        )
+
+    fake = _Provider(_respond)
+    real_client = provider.OnlineClient
+
+    def _through_fake(settings: Settings, online_target: OnlineTarget) -> OnlineClient:
+        return real_client(settings, online_target, transport=httpx.MockTransport(fake.handler))
+
+    monkeypatch.setattr(provider, "OnlineClient", _through_fake)
+
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    message_ids: list[uuid.UUID] = []
+    turn_events: list[list[tuple[str, dict[str, Any]]]] = []
+    try:
+        with client:
+            _with_session(client)
+            assert (
+                client.put(
+                    "/settings/online-key",
+                    json={"destination": DESTINATION, "model": MODEL, "api_key": "sk-test-key"},
+                ).status_code
+                == 200
+            )
+            conversation_id = client.post("/conversations").json()["conversation_id"]
+            assert client.post(f"/conversations/{conversation_id}/online").status_code == 200
+            assert (
+                client.post(
+                    f"/conversations/{conversation_id}/online/disclosure", json={"version": "1"}
+                ).status_code
+                == 200
+            )
+            for n in range(4):
+                answered = client.post(
+                    "/ask",
+                    json={"question": f"Notice period, {n}?", "conversation_id": conversation_id},
+                )
+                assert answered.status_code == 200, "the user is never blocked from asking"
+                events = _events(answered.text)
+                turn_events.append(events)
+                done = next(data for kind, data in events if kind == "done")
+                assert done["status"] == "completed"
+                message_ids.append(uuid.UUID(done["message_id"]))
+            state = client.get(f"/conversations/{conversation_id}/online").json()
+            # Quota restored later: nothing switches it back on by itself.
+            fake.respond = lambda _r: httpx.Response(200, content=_sse("Online again [1]."))
+            still = client.get(f"/conversations/{conversation_id}/online").json()
+    finally:
+        online._credentials.clear()
+        _forget_key(database_url)
+        with psycopg.connect(database_url, autocommit=True) as db:
+            db.execute("UPDATE conversations SET ai_backend = 'local'")
+
+    assert len(fake.requests) == 3, "the fourth question was never sent to a provider"
+
+    stored = [_stored(database_url, message_id) for message_id in message_ids]
+    first, second, third, fourth = stored
+    for content, trace, citations, audit in (first, second):
+        assert content == "Online: ninety days [1]."
+        assert trace["backend"]["mode"] == "online" and audit["backend"] == "online"
+        assert citations == [chunk_id]
+
+    content, trace, citations, audit = third
+    assert content.startswith("Ninety days [1].\n\nAnswered by the local model. ")
+    assert "run out of quota (429)" in content
+    assert content.endswith(ask_module.ONLINE_ENDED_NOTE)
+    assert citations == [chunk_id]
+    assert trace["backend"]["mode"] == "local" and audit["backend"] == "local"
+    assert trace["backend"]["fallback"]["reason_code"] == provider.QUOTA_EXHAUSTED
+    assert audit["online_fallback"] == provider.QUOTA_EXHAUSTED
+    (fallback_step,) = [s for s in trace["steps"] if s["kind"] == "online_fallback"]
+    assert fallback_step["online_ended"] is True
+    steps = [d for kind, d in turn_events[2] if kind == "step" and d["kind"] == "backend"]
+    assert len(steps) == 1 and "run out of quota" in steps[0]["label"]
+
+    content, trace, citations, audit = fourth
+    assert content == "Ninety days [1].", "an ordinary local answer, nothing to explain"
+    assert trace["backend"] == {"mode": "local", "model": settings.inference_model_path.stem}
+    assert audit["backend"] == "local" and audit["online_fallback"] is None
+    assert citations == [chunk_id]
+
+    for marker in (state, still):
+        assert marker["ai_backend"] == "local"
+        assert marker["used_online"] is True
+        assert marker["ended_reason"] == online.REVOKED_PROVIDER_QUOTA_EXHAUSTED
+    with psycopg.connect(database_url, autocommit=True) as db:
+        (questions,) = db.execute(
+            "SELECT count(*) FROM messages WHERE conversation_id = %s AND role = 'user'",
+            (conversation_id,),
+        ).fetchone() or (None,)
+        revoked = db.execute(
+            "SELECT payload FROM audit_decisions WHERE kind = 'online_ai_revoked' "
+            "AND payload->>'conversation_id' = %s",
+            (conversation_id,),
+        ).fetchall()
+    assert questions == 4, "nothing lost"
+    assert [row[0] for row in revoked] == [
+        {
+            "conversation_id": conversation_id,
+            "destination": DESTINATION,
+            "reason": online.REVOKED_PROVIDER_QUOTA_EXHAUSTED,
+        }
+    ]
+
+
+def test_a_rate_limit_answers_locally_and_leaves_the_conversation_online(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """A 429 that is only "slow down" is worth trying again next question, so
+    the authorisation stays and the closing line does not say it ended."""
+    ended: list[object] = []
+
+    async def _end(*args: object) -> bool:
+        ended.append(args)
+        return True
+
+    monkeypatch.setattr(online, "end_after_provider_refusal", _end)
+    _truncate(database_url)
+    settings = _online_settings(settings, tmp_path)
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "Notice is ninety days.", vector)
+    _patch_client(
+        monkeypatch, _FakeInferenceClient(settings, tokens=["Ninety days [1]."], vector=vector)
+    )
+    _go_online(monkeypatch, settings, _Provider(lambda _r: httpx.Response(429)))
+
+    _events_seen, message_id = _ask(settings, monkeypatch, tmp_path, database_url)
+
+    content, trace, _citations, _audit = _stored(database_url, message_id)
+    assert ended == []
+    assert ask_module.ONLINE_ENDED_NOTE not in content
+    (fallback_step,) = [s for s in trace["steps"] if s["kind"] == "online_fallback"]
+    assert fallback_step["online_ended"] is False
 
 
 # --- which conversations go online ---------------------------------------------
