@@ -4,6 +4,23 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.35 - 2026-09-24
+
+`Added`: `M7-OPS-DOC-165`. When Askwell fails in a way it did not expect, it now saves a small
+crash report on this machine. Settings → About → Report a problem lists these reports and lets
+you download one to attach to an issue yourself. **Askwell never sends a crash report.** A
+report holds the version, your platform and profile, and where in Askwell's own code the failure
+happened. It leaves out the error message, and everything from your files, questions and
+databases, so it is safe to attach to a public issue without editing it.
+`docs/rollback-and-incidents.md` explains how to go back to a previous version and what happens
+to your data when you do. It also says what the maintainer does when a release is broken,
+including who can and cannot be told. A failure in a background task, such as model discovery at
+startup, now leaves a crash report too.
+
+`Fixed`: restoring a file that is not a readable Askwell backup (a damaged or hand-edited
+`manifest.json`) now says so and names the problem, instead of failing with "Askwell hit an error
+it did not expect".
+
 ## 0.7.34 - 2026-09-24
 
 `Added`: `M7-UPDATE-FE-162`. When Askwell knows a newer version exists, Settings → About shows

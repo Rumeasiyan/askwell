@@ -21,6 +21,7 @@ from askwell.backup import enqueue as backup_enqueue
 from askwell.backup import run_job as backup_run_job
 from askwell.config import Settings
 from askwell.restore import (
+    ArtefactInvalid,
     ExistingDataPresent,
     IncorrectPassphrase,
     PassphraseRequired,
@@ -231,6 +232,41 @@ async def test_inspect_refuses_a_newer_backup(
         archive.writestr("manifest.json", json.dumps(data))
 
     with pytest.raises(VersionRefused):
+        inspect_artefact(path)
+
+
+_VALID_MANIFEST = {
+    "askwell_version": "0.1.0",
+    "chunk_count": 1,
+    "estimated_reembed_seconds": 1.0,
+    "passphrase_protected": False,
+}
+
+
+@pytest.mark.parametrize(
+    "manifest",
+    [
+        b"{not json",
+        b"\xff\xfe not utf-8",
+        json.dumps([_VALID_MANIFEST]).encode(),
+        json.dumps({k: v for k, v in _VALID_MANIFEST.items() if k != "askwell_version"}).encode(),
+        json.dumps({**_VALID_MANIFEST, "askwell_version": "0.7"}).encode(),
+        json.dumps({**_VALID_MANIFEST, "askwell_version": 7}).encode(),
+    ],
+    ids=["not-json", "not-utf8", "a-list", "no-version", "short-version", "int-version"],
+)
+def test_inspect_names_a_malformed_manifest_instead_of_crashing(
+    tmp_path: Path, manifest: bytes
+) -> None:
+    # Issue #714: each of these escaped `inspect_artefact` unhandled, so
+    # `/restore` answered 500 mid-rollback instead of naming the problem.
+    import zipfile
+
+    path = tmp_path / "askwell-backup.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("manifest.json", manifest)
+
+    with pytest.raises(ArtefactInvalid, match="is not a readable Askwell backup"):
         inspect_artefact(path)
 
 

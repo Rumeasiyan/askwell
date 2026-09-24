@@ -46,6 +46,7 @@ The single most useful thing is something the maintainer can diagnose without as
 | **Platform** | Your operating system and its version, e.g. *macOS 15.4* or *Windows 11 24H2* or *Fedora 43* |
 | **Profile** | Settings → Model and speed → Current profile (*light*, *standard*, *accelerated* or *workstation*) |
 | **Trace** | Under the answer that went wrong, open the trace and press **Copy trace**, then paste it into the issue |
+| **Crash report**, if Askwell crashed | Settings → About → Report a problem → Crash reports → **Download**, then attach the file. Askwell saves it on your machine and never sends it. It holds the version, platform and where in Askwell's code the failure happened — no file names, questions or content from your files |
 | **What you did, what happened, what you expected** | In your own words. Paste exact error text rather than a paraphrase |
 
 **Check the trace before you paste it.** It contains your question and short passages from your own files — that is what makes it useful, and also why it is yours to review first. Remove anything you would not publish. An issue here is public.
