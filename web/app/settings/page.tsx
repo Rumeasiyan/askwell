@@ -37,7 +37,9 @@ import { YourData } from "@/components/settings/your-data";
  * to the Library rather than rebuilt here. About arrives with `M7-DOC-DOC-163`
  * (`web/components/settings/about.tsx`) — version, licence, a link to the
  * source and a link to `NOTICES.md`, copied into `public/` at build time
- * (`web/scripts/copy-notices.mjs`) rather than duplicated; `docs/ux/settings.md`
+ * (`web/scripts/copy-notices.mjs`) rather than duplicated, and
+ * `M7-DOC-DOC-164` adds the support boundary and the security route, copied
+ * the same way (`web/scripts/copy-support.mjs`); `docs/ux/settings.md`
  * §7's own update-check opt-in has no frontend yet and is not stubbed here,
  * the same honesty every section above already practises. Model and speed
  * arrives with `M7-SET-FE-146` (`web/components/settings/model-and-speed.tsx`)

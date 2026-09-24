@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest something Askwell does not do yet.
+labels: ["enhancement", "needs-triage"]
+assignees: ["Rumeasiyan"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read [`docs/PRD.md` §8](https://github.com/Rumeasiyan/askwell/blob/main/docs/PRD.md) first: it lists what Askwell deliberately is not. Every request is read; most are declined, and that is not a judgement on the idea. One maintainer — [SUPPORT.md](https://github.com/Rumeasiyan/askwell/blob/main/SUPPORT.md).
+
+        A feature that would send your material off your machine by default will be declined. Local by default is why Askwell exists.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The problem, not the solution. What do you do today instead?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Settings → About → Version.
+      placeholder: "0.7.30"
+    validations:
+      required: true
