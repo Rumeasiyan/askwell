@@ -32,12 +32,31 @@ export interface TraceStep {
 export interface TraceBackend {
   mode: string;
   model: string;
-  /** What was sent to the online backend, plain text (`docs/ux/trace.md`
-   * §5's "Online backend" state: "Marked, with what was sent"). Unreachable
-   * before M8 — nothing writes `mode: "online"` yet — this field exists so
-   * the panel is ready for it rather than needing a second change once M8
-   * lands. */
-  sent?: string;
+  /** The provider request this turn made, if it made one (`docs/ux/trace.md`
+   * §5's "Online backend" state: "Marked, with what was sent";
+   * `M8-ONLINE-OBS-172`). Present on a local answer too when the request was
+   * made and the provider then failed, because the request still left. */
+  transmission?: TraceTransmission;
+}
+
+/** `askwell.ask._transmission_record`: one provider request, by reference —
+ * never its text. */
+export interface TraceTransmission {
+  destination: string;
+  model: string;
+  sent_at: string;
+  request_bytes: number;
+  content_sent: boolean;
+  status_code: number | null;
+  outcome: string | null;
+  contents: {
+    prompt_version: string;
+    question: boolean;
+    chunk_ids: string[];
+    memory_fact_ids: string[];
+    schema_note_ids: string[];
+    clarification_answer: boolean;
+  } | null;
 }
 
 /** One call `run_tool_loop` (`M5-LOOP-BE-116`) was about to make when the
@@ -338,10 +357,67 @@ export function partialUncoveredAspects(trace: TraceData): string[] {
   return Array.isArray(trace.uncovered_aspects) ? (trace.uncovered_aspects as string[]) : [];
 }
 
-/** The online-backend state (`docs/ux/trace.md` §5) — unreachable before
- * M8, since nothing yet writes `backend.mode` as anything but `"local"`. */
+/** The online-backend state (`docs/ux/trace.md` §5): the answer came from
+ * the provider (`M8-ONLINE-BE-170`). */
 export function isOnlineBackend(trace: TraceData): boolean {
   return trace.backend?.mode === "online";
+}
+
+function plural(count: number, one: string, many: string): string {
+  return `${count} ${count === 1 ? one : many}`;
+}
+
+/** The recorded ISO time, shown as UTC without the locale deciding the
+ * format — the same instant the interaction log holds. */
+function sentAtLabel(sentAt: string): string {
+  const instant = new Date(sentAt);
+  if (Number.isNaN(instant.getTime())) return sentAt;
+  return `${instant.toISOString().slice(0, 19).replace("T", " ")} UTC`;
+}
+
+const OUTCOME_LABELS: Record<string, string> = {
+  answered: "The provider answered.",
+  stopped: "You stopped the answer after the request was sent.",
+  refused: "The provider refused the request.",
+  rate_limited: "The provider was limiting requests.",
+  failed: "The provider had an error.",
+  interrupted: "The connection was lost partway through the answer.",
+};
+
+/** What one provider request carried and how it ended, as plain lines for
+ * the trace's "show what was sent" (`M8-ONLINE-OBS-172`). A request whose
+ * connection was never made says that nothing left, and nothing else. */
+export function transmissionLines(transmission: TraceTransmission): string[] {
+  const { destination, model } = transmission;
+  if (!transmission.content_sent) {
+    return [
+      `Nothing left this machine. The connection to ${destination} was not made` +
+        `${transmission.outcome !== null ? ` (${transmission.outcome})` : ""}.`,
+    ];
+  }
+  const lines = [`Sent to ${destination} · ${model} · ${sentAtLabel(transmission.sent_at)}`];
+  const contents = transmission.contents;
+  if (contents !== null) {
+    const parts = [`Askwell's instructions (${contents.prompt_version})`];
+    if (contents.question) parts.push("your question");
+    parts.push(plural(contents.chunk_ids.length, "passage from your files", "passages from your files"));
+    if (contents.memory_fact_ids.length > 0) {
+      parts.push(plural(contents.memory_fact_ids.length, "fact you taught Askwell", "facts you taught Askwell"));
+    }
+    if (contents.schema_note_ids.length > 0) {
+      parts.push(plural(contents.schema_note_ids.length, "note on a database", "notes on a database"));
+    }
+    if (contents.clarification_answer) parts.push("your answer to the clarification");
+    lines.push(`${plural(transmission.request_bytes, "byte", "bytes")}: ${parts.join(", ")}.`);
+  } else {
+    lines.push(`${plural(transmission.request_bytes, "byte", "bytes")}.`);
+  }
+  const outcome = transmission.outcome !== null ? OUTCOME_LABELS[transmission.outcome] : undefined;
+  const status = transmission.status_code !== null && transmission.status_code >= 400
+    ? ` (${transmission.status_code})`
+    : "";
+  if (outcome !== undefined) lines.push(`${outcome.slice(0, -1)}${status}.`);
+  return lines;
 }
 
 /** A tool call's own injection flag (`M5-TOOLS-BE-114`'s `ToolStep`) —
@@ -418,6 +494,9 @@ export function buildTraceCopyText(trace: TraceData, question: string): string {
   const lines: string[] = [`Question: ${question}`];
   if (trace.backend !== undefined) {
     lines.push(`Backend: ${trace.backend.mode} · ${trace.backend.model}`);
+    if (trace.backend.transmission !== undefined) {
+      lines.push(...transmissionLines(trace.backend.transmission));
+    }
   }
   if (trace.trace_rotated) {
     lines.push("", "The detailed trace for this answer has been cleared.");

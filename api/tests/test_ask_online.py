@@ -69,9 +69,11 @@ class _Provider:
     def __init__(self, respond: Callable[[httpx.Request], httpx.Response]) -> None:
         self.respond = respond
         self.requests: list[dict[str, Any]] = []
+        self.sizes: list[int] = []
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(json.loads(request.content))
+        self.sizes.append(len(request.content))
         return self.respond(request)
 
 
@@ -117,11 +119,23 @@ def _stored(
             "SELECT chunk_id FROM citations WHERE message_id = %s", (message_id,)
         ).fetchall()
         audit = db.execute(
-            "SELECT payload FROM audit_interactions WHERE payload->>'message_id' = %s",
+            "SELECT payload FROM audit_interactions "
+            "WHERE kind = 'ask_asked' AND payload->>'message_id' = %s",
             (str(message_id),),
         ).fetchone()
         assert audit is not None
     return row[0], row[1], [c[0] for c in citations], audit[0]
+
+
+def _requests_recorded(database_url: str, message_id: uuid.UUID) -> list[dict[str, Any]]:
+    """The `online_ai_request` records for one turn (`M8-ONLINE-OBS-172`)."""
+    with psycopg.connect(database_url, autocommit=True) as db:
+        rows = db.execute(
+            "SELECT payload FROM audit_interactions "
+            "WHERE kind = %s AND payload->>'message_id' = %s",
+            (ask_module.ONLINE_AI_REQUEST, str(message_id)),
+        ).fetchall()
+    return [row[0] for row in rows]
 
 
 # --- the online answer ---------------------------------------------------------
@@ -167,12 +181,38 @@ def test_online_generation_keeps_retrieval_and_citations_and_names_the_backend(
     assert content == "The notice period is ninety days [1]."
     assert citations == [chunk_id]
     assert trace["status"] == "completed"
+    transmission = trace["backend"].pop("transmission")
     assert trace["backend"] == {"mode": "online", "model": MODEL, "destination": DESTINATION}
     assert audit["backend"] == "online"
     assert audit["model"] == MODEL
     assert audit["online_fallback"] is None
     # A provider's time is not the local model's throughput.
     assert trace["generation"] is None
+
+    # `M8-ONLINE-OBS-172`: what left, recorded locally, in the trace and as
+    # its own interaction record — the same entry in both.
+    assert transmission["destination"] == DESTINATION
+    assert transmission["model"] == MODEL
+    assert transmission["request_bytes"] == fake.sizes[0]
+    assert transmission["content_sent"] is True
+    assert transmission["status_code"] == 200
+    assert transmission["outcome"] == provider.ANSWERED
+    contents = transmission["contents"]
+    assert contents["question"] is True
+    assert contents["chunk_ids"] == [str(chunk_id)]
+    assert contents["memory_fact_ids"] == [] and contents["schema_note_ids"] == []
+    assert contents["clarification_answer"] is False
+    assert contents["prompt_version"]
+    (recorded,) = _requests_recorded(database_url, message_id)
+    assert recorded == {
+        "conversation_id": audit["conversation_id"],
+        "message_id": str(message_id),
+        **transmission,
+    }
+    # Never content: not the question, not the passage, not the answer.
+    serialised = json.dumps(recorded)
+    for text_sent in ("notice period", "Notice is ninety days", "ninety days [1]"):
+        assert text_sent not in serialised
 
 
 def test_an_uncovered_question_still_abstains_and_nothing_is_sent(
@@ -202,6 +242,8 @@ def test_an_uncovered_question_still_abstains_and_nothing_is_sent(
     assert citations == []
     assert audit["abstained"] is True
     assert trace["backend"]["mode"] == "local"
+    assert "transmission" not in trace["backend"]
+    assert _requests_recorded(database_url, message_id) == []
 
 
 def test_an_uncited_online_answer_is_treated_as_an_uncited_local_one(
@@ -211,6 +253,7 @@ def test_an_uncited_online_answer_is_treated_as_an_uncited_local_one(
     text, answered locally and online, stores the same citations — none."""
     uncited = "The notice period is ninety days."
     stored: dict[str, tuple[str, list[Any]]] = {}
+    record_keys: dict[str, set[str]] = {}
     for mode in ("local", "online"):
         _truncate(database_url)
         (tmp_path / mode).mkdir()
@@ -227,25 +270,29 @@ def test_an_uncited_online_answer_is_treated_as_an_uncited_local_one(
                 _Provider(lambda _r: httpx.Response(200, content=_sse(uncited))),
             )
         _events_seen, message_id = _ask(run_settings, monkeypatch, tmp_path / mode, database_url)
-        content, trace, citations, _audit = _stored(database_url, message_id)
+        content, trace, citations, audit = _stored(database_url, message_id)
         assert trace["backend"]["mode"] == mode
         stored[mode] = (content, citations)
+        record_keys[mode] = set(audit)
     assert stored["online"] == stored["local"] == (uncited, [])
+    # `M8-ONLINE-OBS-172`: online adds a record and never reshapes this one.
+    assert record_keys["online"] == record_keys["local"]
 
 
 # --- falling back ---------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("respond", "reason_code", "said"),
+    ("respond", "reason_code", "said", "content_sent"),
     [
         (
             lambda r: (_ for _ in ()).throw(httpx.ConnectError("no route", request=r)),
             provider.NETWORK_UNAVAILABLE,
             "the network is unavailable",
+            False,
         ),
-        (lambda _r: httpx.Response(429), provider.RATE_LIMITED, "limiting requests"),
-        (lambda _r: httpx.Response(401), provider.REFUSED, "refused the request"),
+        (lambda _r: httpx.Response(429), provider.RATE_LIMITED, "limiting requests", True),
+        (lambda _r: httpx.Response(401), provider.REFUSED, "refused the request", True),
     ],
 )
 def test_a_failure_before_the_answer_falls_back_to_local_and_says_so(
@@ -256,6 +303,7 @@ def test_a_failure_before_the_answer_falls_back_to_local_and_says_so(
     respond: Callable[[httpx.Request], httpx.Response],
     reason_code: str,
     said: str,
+    content_sent: bool,
 ) -> None:
     _truncate(database_url)
     settings = _online_settings(settings, tmp_path)
@@ -284,6 +332,14 @@ def test_a_failure_before_the_answer_falls_back_to_local_and_says_so(
     assert trace["backend"]["fallback"]["reason_code"] == reason_code
     assert audit["backend"] == "local"
     assert audit["online_fallback"] == reason_code
+    # `M8-ONLINE-OBS-172`: answered locally, but a refused request still left
+    # the machine, and says so; one that never connected says nothing did.
+    transmission = trace["backend"]["transmission"]
+    assert transmission["content_sent"] is content_sent
+    assert transmission["outcome"] == reason_code
+    assert transmission["contents"]["chunk_ids"] == [str(chunk_id)]
+    (recorded,) = _requests_recorded(database_url, message_id)
+    assert recorded["content_sent"] is content_sent
 
 
 def test_a_failure_mid_answer_starts_again_locally_and_keeps_nothing_online(

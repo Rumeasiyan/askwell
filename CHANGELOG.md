@@ -4,6 +4,20 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.42 - 2026-09-24
+
+`Added`: `M8-ONLINE-OBS-172`. Every request Askwell makes to an online provider is now recorded
+on this machine, in the interaction log, next to the record of the question it answered. The
+record says where the request went, which model, when, its exact size in bytes, what it was made
+of (Askwell's instructions, your question, how many passages from your files, which facts and
+database notes), and how it ended. It never holds the text of your question, the passages or the
+answer. In the trace for that answer, **show what was sent** reads it back. A request the
+provider refused still counts as sent, and is still shown when the local model then answered,
+because it left the machine. A request whose connection was never made says that nothing left.
+Nothing is sent to Askwell itself: the billing record this used to describe went with the credit
+tier. Online questions are still refused until what the provider receives is decided (issue
+#737), so for now these records appear only once that is settled.
+
 ## 0.7.41 - 2026-09-24
 
 `Added`: `M8-ONLINE-FE-171`. Online AI is now switched on one conversation at a time, with a

@@ -38,6 +38,14 @@ provider refuses and the turn answers locally saying the provider refused —
 which is the true state of an install with no key. A key is never put into
 an error message, a log line or the trace: a provider's own error body can
 echo part of it back, so the body is never repeated either.
+
+**Every call leaves a `Transmission` behind** (`M8-ONLINE-OBS-172`): where
+it went, which model, when, the exact size of the body it handed to the
+network, and whether it was handed over at all. The body is serialised here
+rather than by `httpx`, so the size recorded is the size of the bytes sent,
+not a re-serialisation that could differ by a separator. Its content is not
+kept: that is the question and the passages, which the turn already records
+by reference and which must not gain a second, unencrypted copy.
 """
 
 from __future__ import annotations
@@ -45,6 +53,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -61,6 +70,10 @@ REFUSED = "refused"
 RATE_LIMITED = "rate_limited"
 FAILED = "failed"
 INTERRUPTED = "interrupted"
+# A `Transmission`'s outcome when no failure applies: the provider finished
+# the answer, or the user stopped the turn while it was streaming.
+ANSWERED = "answered"
+STOPPED = "stopped"
 
 # The egress proxy's own answers to a `CONNECT` (`askwell.egress`): 403 is
 # "no authorisation covers this", 502 is "authorised, and the destination
@@ -89,6 +102,26 @@ class OnlineTarget:
     proxy_username: str
     proxy_password: str
     api_key: str | None = None
+
+
+@dataclass(slots=True)
+class Transmission:
+    """What one call handed to the network. `M8-ONLINE-OBS-172`.
+
+    `content_sent` is False only when the connection was never made — the
+    proxy refused the tunnel, or nothing answered at all — because only then
+    is it certain the body did not leave. Every other failure, a timeout
+    included, counts as sent: over-reporting what left the machine is the
+    safe direction to be wrong in.
+    """
+
+    destination: str
+    model: str
+    sent_at: datetime
+    request_bytes: int
+    content_sent: bool = True
+    status_code: int | None = None
+    outcome: str | None = None
 
 
 def target(
@@ -151,6 +184,8 @@ class OnlineClient:
         self.target = online_target
         # For tests only: a transport replaces the proxy entirely.
         self._transport = transport
+        # The most recent call's record, or None before the first.
+        self.last_transmission: Transmission | None = None
 
     @property
     def model(self) -> str:
@@ -170,7 +205,7 @@ class OnlineClient:
         return httpx.AsyncClient(proxy=proxy, timeout=timeout)
 
     def _headers(self) -> dict[str, str]:
-        headers = {"Accept": "text/event-stream"}
+        headers = {"Accept": "text/event-stream", "Content-Type": "application/json"}
         if self.target.api_key:
             headers["Authorization"] = f"Bearer {self.target.api_key}"
         return headers
@@ -202,12 +237,21 @@ class OnlineClient:
             "temperature": temperature,
             "stream": True,
         }
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        transmission = Transmission(
+            destination=self.target.destination,
+            model=self.target.model,
+            sent_at=datetime.now(UTC),
+            request_bytes=len(body),
+        )
+        self.last_transmission = transmission
         started = False
         try:
             async with (
                 self._client(timeout_seconds) as client,
-                client.stream("POST", url, json=payload, headers=self._headers()) as response,
+                client.stream("POST", url, content=body, headers=self._headers()) as response,
             ):
+                transmission.status_code = response.status_code
                 if response.status_code >= 400:
                     raise _status_failure(response.status_code)
                 async for line in response.aiter_lines():
@@ -217,6 +261,7 @@ class OnlineClient:
                     if not raw:
                         continue
                     if raw == "[DONE]":
+                        transmission.outcome = ANSWERED
                         yield StreamChunk(text="", done=True)
                         return
                     try:
@@ -233,6 +278,7 @@ class OnlineClient:
                         started = True
                         yield StreamChunk(text=piece, done=False)
                     if finish:
+                        transmission.outcome = ANSWERED
                         yield StreamChunk(text="", done=True, truncated=finish == "length")
                         return
                 # The stream ended without saying it was finished: the answer
@@ -241,24 +287,49 @@ class OnlineClient:
                 raise OnlineFailed(
                     INTERRUPTED, "The online provider stopped answering partway through."
                 )
-        except OnlineFailed:
+        except OnlineFailed as error:
+            transmission.outcome = error.reason_code
             raise
         except httpx.ProxyError as error:
-            raise _proxy_failure(error, self.target.destination) from error
+            # The proxy refused or could not open the tunnel: the body never
+            # left this machine.
+            transmission.content_sent = False
+            raise _record(transmission, _proxy_failure(error, self.target.destination)) from error
         except (httpx.ConnectError, httpx.ConnectTimeout) as error:
-            raise OnlineFailed(
-                NETWORK_UNAVAILABLE,
-                f"Online AI could not reach {self.target.destination}: the network is unavailable.",
+            transmission.content_sent = False
+            raise _record(
+                transmission,
+                OnlineFailed(
+                    NETWORK_UNAVAILABLE,
+                    f"Online AI could not reach {self.target.destination}: "
+                    "the network is unavailable.",
+                ),
             ) from error
         except httpx.TimeoutException as error:
-            raise OnlineFailed(
-                INTERRUPTED if started else FAILED,
-                f"The online provider did not answer within {timeout_seconds:g}s.",
+            raise _record(
+                transmission,
+                OnlineFailed(
+                    INTERRUPTED if started else FAILED,
+                    f"The online provider did not answer within {timeout_seconds:g}s.",
+                ),
             ) from error
         except httpx.HTTPError as error:
             # A tunnel the proxy cut — the authorisation was revoked — or a
             # connection the network dropped. Named by type, never by body.
-            raise OnlineFailed(
-                INTERRUPTED if started else FAILED,
-                f"The connection to the online provider was lost: {type(error).__name__}.",
+            raise _record(
+                transmission,
+                OnlineFailed(
+                    INTERRUPTED if started else FAILED,
+                    f"The connection to the online provider was lost: {type(error).__name__}.",
+                ),
             ) from error
+        finally:
+            # Reached only with no outcome set when the caller closed the
+            # stream partway: the user pressed Stop.
+            if transmission.outcome is None:
+                transmission.outcome = STOPPED
+
+
+def _record(transmission: Transmission, failure: OnlineFailed) -> OnlineFailed:
+    transmission.outcome = failure.reason_code
+    return failure

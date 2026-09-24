@@ -85,6 +85,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from askwell import crypto, online, passphrase
 from askwell.agent.abstain import AbstainReason, compose_abstention
 from askwell.agent.claims import Claim, locate_quoted_span, segment_claims
+from askwell.agent.compose import ComposedPrompt
 from askwell.agent.conflict import compose_conflict, split_conflict_answer
 from askwell.agent.loop import LoopContinuation, LoopResult, ToolCallEvent, run_tool_loop
 from askwell.agent.partial import split_partial_answer
@@ -106,7 +107,7 @@ from askwell.inference.client import (
     InferenceFailed,
     InferenceUnavailable,
 )
-from askwell.inference.provider import OnlineClient, OnlineFailed
+from askwell.inference.provider import OnlineClient, OnlineFailed, Transmission
 from askwell.ingest import coverage
 from askwell.inline_clarify import default_assumption, find_blocking
 from askwell.logging import get_logger
@@ -128,6 +129,10 @@ from askwell.traces import TraceRing
 log = get_logger(__name__)
 
 ASK_ASKED = "ask_asked"
+# `M8-ONLINE-OBS-172`: one per provider request, alongside the turn's own
+# `ask_asked` record rather than folded into it — online mode adds a record,
+# it never changes the shape of the one every turn already writes.
+ONLINE_AI_REQUEST = "online_ai_request"
 
 # How often a tailer re-checks a turn that has nothing new yet. Matches
 # `askwell.ingest`'s own idle interval — fast enough that a token feels live,
@@ -1296,6 +1301,53 @@ async def _online_client(
     return provider.OnlineClient(settings, online_target) if online_target else None
 
 
+def _sent_contents(
+    composed: ComposedPrompt,
+    candidates: list[Candidate],
+    *,
+    clarification_answer: bool,
+    memory_fact_ids: list[uuid.UUID],
+    schema_note_ids: list[uuid.UUID],
+) -> dict[str, Any]:
+    """What a provider request built from `composed` carries, by reference.
+    `M8-ONLINE-OBS-172`.
+
+    Identifiers, never text: the passages and facts are already stored, and
+    encrypted when a passphrase is set (`M7-SEC-BE-152`). A second copy of
+    their text in the trace or the interaction log would sit outside that
+    encryption. Every part of `compose_conflict`'s prompt is named here, so
+    a part added to that prompt without being added here is a gap a reader
+    of this function can see.
+    """
+    return {
+        "prompt_version": composed.prompt_version,
+        "question": True,
+        "chunk_ids": [str(candidate.chunk_id) for candidate in candidates],
+        "memory_fact_ids": [str(i) for i in memory_fact_ids],
+        "schema_note_ids": [str(i) for i in schema_note_ids],
+        "clarification_answer": clarification_answer,
+    }
+
+
+def _transmission_record(
+    transmission: Transmission, contents: dict[str, Any] | None
+) -> dict[str, Any]:
+    """The local record of one provider request (`M8-ONLINE-OBS-172`): where
+    it went, when, how many bytes, whether they left at all, how it ended,
+    and what they were made of. Integers and strings only, because
+    `canonical_payload` refuses floats."""
+    return {
+        "destination": transmission.destination,
+        "model": transmission.model,
+        "sent_at": transmission.sent_at.isoformat(),
+        "request_bytes": transmission.request_bytes,
+        "content_sent": transmission.content_sent,
+        "status_code": transmission.status_code,
+        "outcome": transmission.outcome,
+        "contents": contents,
+    }
+
+
 def _backend_record(
     local_model: str,
     online_client: OnlineClient | None,
@@ -1303,21 +1355,30 @@ def _backend_record(
     answered: bool,
     fallback: OnlineFailed | None,
     requested_online: bool = False,
+    transmission: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """`messages.trace.backend`: which backend and model wrote this answer,
     and — when the conversation asked for online and got local — that it
-    asked and why it did not get it. `M8-ONLINE-BE-170`."""
+    asked and why it did not get it. `M8-ONLINE-BE-170`.
+
+    `transmission` is what the provider request carried, whenever one was
+    made — on a fallback too, because a request the provider refused still
+    left the machine (`M8-ONLINE-OBS-172`)."""
+    record: dict[str, Any]
     if online_client is not None and answered:
-        return {
+        record = {
             "mode": "online",
             "model": online_client.model,
             "destination": online_client.target.destination,
         }
-    if online_client is None:
+    elif online_client is None:
         return _local_backend(local_model, requested_online=requested_online)
-    record: dict[str, Any] = {"mode": "local", "model": local_model, "requested": "online"}
-    if fallback is not None:
-        record["fallback"] = {"reason_code": fallback.reason_code, "detail": str(fallback)}
+    else:
+        record = {"mode": "local", "model": local_model, "requested": "online"}
+        if fallback is not None:
+            record["fallback"] = {"reason_code": fallback.reason_code, "detail": str(fallback)}
+    if transmission is not None:
+        record["transmission"] = transmission
     return record
 
 
@@ -1393,6 +1454,10 @@ async def _run_generation(
     online_client: OnlineClient | None = None
     online_fallback: OnlineFailed | None = None
     answered_online = False
+    # `M8-ONLINE-OBS-172`: what a provider request would carry, set once the
+    # prompt is composed, and read after the turn however it ended — a
+    # request can leave the machine and the turn still fail locally after.
+    sent_contents: dict[str, Any] | None = None
     turn_started = time.monotonic()
 
     # `M5-LOOP-BE-116`: a `Continue` click names the turn it picks up from.
@@ -1990,6 +2055,13 @@ async def _run_generation(
             )
             injection_flagged = composed.injection_flagged
             injection_patterns = composed.injection_patterns
+            sent_contents = _sent_contents(
+                composed,
+                candidates,
+                clarification_answer=memory_fact is not None,
+                memory_fact_ids=memory_fact_ids,
+                schema_note_ids=schema_note_ids,
+            )
 
             turn.emit("step", {"label": "Writing your answer.", "kind": "compose"})
 
@@ -2182,12 +2254,18 @@ async def _run_generation(
 
     duration_ms = int((time.monotonic() - turn_started) * 1000)
 
+    transmission = (
+        _transmission_record(online_client.last_transmission, sent_contents)
+        if online_client is not None and online_client.last_transmission is not None
+        else None
+    )
     backend_record = _backend_record(
         model_name,
         online_client,
         answered=answered_online,
         fallback=online_fallback,
         requested_online=turn.requested_online,
+        transmission=transmission,
     )
     bounded_steps, steps_truncated = _bound_trace_steps(trace_steps)
     trace = {
@@ -2379,6 +2457,20 @@ async def _run_generation(
                     ],
                 },
             )
+            if transmission is not None:
+                # `M8-ONLINE-OBS-172`: the request itself, in the same
+                # transaction as the turn — so a turn whose request left the
+                # machine is never stored without the record that it did.
+                await record(
+                    db,
+                    Store.INTERACTIONS,
+                    ONLINE_AI_REQUEST,
+                    {
+                        "conversation_id": str(turn.conversation_id),
+                        "message_id": str(turn.message_id),
+                        **transmission,
+                    },
+                )
     except (AuditError, SQLAlchemyError) as error:
         # Both, because `AuditError` alone does not cover the case this ticket
         # names. `record()` raises it only for a payload that will not hash; a

@@ -82,12 +82,17 @@ Exporting the interaction window is also the archive path in §3: export, verify
 
 When a conversation uses online AI (`PRD.md` §6), that fact is recorded in the interaction log — which backend, which model, and that content left the machine.
 
-Issue #10 also established that online-mode logging connects to our service, for billing and usage limits. **What is sent is not yet designed**, and it is the one place where this document's local-only assumption does not hold. Constraints:
+**Nothing is sent to Askwell.** This section used to say online mode would connect to our own service for billing and usage limits. That service was dropped with the credit tier (issue #255, `decisions.md` 2026-09-23). The user brings their own provider key, and the only thing that leaves is the provider request itself. What that request carries is issue #737.
 
-- Local logging continues in full regardless. Online mode adds a record; it never replaces one.
-- What leaves should be the minimum for billing and limits — token counts, timestamps, model. Not question content, not answers, not retrieved material.
+**Each provider request is recorded locally** (`M8-ONLINE-OBS-172`), as its own `online_ai_request` interaction record, next to the turn's `ask_asked` record and in the same transaction. The `ask_asked` record keeps its shape. Online mode adds a record and never replaces one. The record holds:
 
-This is deferred with the rest of stage 7 and needs its own decision before that work starts. Flagged here rather than left to be discovered.
+- where it went, the model, and when;
+- the exact size of the body sent, in bytes;
+- whether the body left at all. It did not only when the connection was never made. A request the provider refused still left;
+- how it ended: answered, stopped by the user, or the failure's reason code, with the provider's status code;
+- what the body was made of, **by reference**: the prompt version, that the question was included, the passage chunk ids, the memory fact and schema note ids, and whether a clarification answer was included.
+
+It never holds the text of the question, the passages or the answer. Those are already stored, encrypted when a passphrase is set, and a second plaintext copy here would sit outside that encryption. The same entry is on the turn's trace, where "show what was sent" reads it.
 
 ---
 
@@ -115,4 +120,4 @@ Two gigabytes holds a very large amount of text — years of interactions for a 
 
 ## 9. Open
 
-1. **What online mode transmits** (§6) — [#45](https://github.com/Rumeasiyan/askwell/issues/45). Deferred with Phase 8. Must be settled before that work starts — token counts, timestamps and model only, never content, but the precise shape needs writing down.
+1. ~~**What online mode transmits** (§6) — [#45](https://github.com/Rumeasiyan/askwell/issues/45).~~ Settled, then made moot: #45 fixed four billing fields, and the billing service they were for was dropped (#255). Nothing is transmitted to Askwell. The local record of each provider request is §6 (`M8-ONLINE-OBS-172`). What the provider itself receives is #737.

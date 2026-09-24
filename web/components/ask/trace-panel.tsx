@@ -27,7 +27,6 @@ import {
   fetchTrace,
   hitCitation,
   isFailedTrace,
-  isOnlineBackend,
   isPartialTrace,
   memoryFactRefs,
   partialUncoveredAspects,
@@ -39,6 +38,7 @@ import {
   toolCeilingPendingCalls,
   toolInjectionPatterns,
   traceRows,
+  transmissionLines,
   type MemoryFactRef,
   type PendingToolCall,
   type RetrievedHit,
@@ -320,28 +320,30 @@ function TraceBody({
  * "Backend" row) — never per step, since one turn has exactly one. Absent
  * rather than a placeholder when the stored trace predates this field.
  *
- * The online-backend state (`docs/ux/trace.md` §5) is this same line once
- * `backend.mode` reads `"online"` — unreachable before M8, since nothing
- * yet writes that mode, but the "what was sent" disclosure is built now so
- * landing the backend field is the only change M8 needs. */
+ * The online-backend state (`docs/ux/trace.md` §5): "show what was sent"
+ * appears whenever the turn made a provider request (`M8-ONLINE-OBS-172`),
+ * including a local answer after the provider failed, because a refused
+ * request still left the machine. */
 function BackendLine({ trace }: { trace: TraceData }) {
   if (trace.backend === undefined) return null;
+  const transmission = trace.backend.transmission;
   return (
     <div className="flex flex-col gap-1">
       <p className="ask-micro" style={{ textTransform: "none" }}>
         {trace.backend.mode} · {trace.backend.model}
       </p>
-      {isOnlineBackend(trace) && trace.backend.sent !== undefined ? (
+      {transmission !== undefined ? (
         <details>
           <summary className="ask-micro" style={{ cursor: "pointer" }}>
             show what was sent
           </summary>
-          <pre
-            className="ask-micro"
-            style={{ textTransform: "none", whiteSpace: "pre-wrap", wordBreak: "break-word", marginTop: "0.25rem" }}
-          >
-            {trace.backend.sent}
-          </pre>
+          <div className="flex flex-col gap-1" style={{ marginTop: "0.25rem" }}>
+            {transmissionLines(transmission).map((line) => (
+              <p key={line} className="ask-micro" style={{ textTransform: "none" }}>
+                {line}
+              </p>
+            ))}
+          </div>
         </details>
       ) : null}
     </div>

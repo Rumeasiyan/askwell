@@ -178,6 +178,8 @@ The constraint that survives, unchanged: local logging continues in full regardl
 
 ### M8-ONLINE-OBS-172 — Online-mode logging **[UNBLOCKED 2026-08-26]**
 
+> **Built in `0.7.42` (2026-09-24), against #255 rather than the text below.** The text below was written for the credit model. Its "transmitted record" was a billing record for Askwell's own service. That service no longer exists, so nothing is transmitted to Askwell and that record is not built. What was built is the local half: each provider request is recorded as an `online_ai_request` interaction record and on the turn's trace, by reference and never by text, and the trace's "show what was sent" shows it. The network capture stays with `M8-ONLINE-TEST-176`. Reasoning: `../decisions.md`, 2026-09-24, `M8-ONLINE-OBS-172`.
+
 **Type:** Spike
 
 **User Story**
