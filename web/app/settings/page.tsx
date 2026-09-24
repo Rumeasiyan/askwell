@@ -39,9 +39,10 @@ import { YourData } from "@/components/settings/your-data";
  * source and a link to `NOTICES.md`, copied into `public/` at build time
  * (`web/scripts/copy-notices.mjs`) rather than duplicated, and
  * `M7-DOC-DOC-164` adds the support boundary and the security route, copied
- * the same way (`web/scripts/copy-support.mjs`); `docs/ux/settings.md`
- * §7's own update-check opt-in has no frontend yet and is not stubbed here,
- * the same honesty every section above already practises. Model and speed
+ * the same way (`web/scripts/copy-support.mjs`). `M7-SET-FE-149` completes
+ * it: every bundled text shown in the page in full, addresses as copyable
+ * text, and `docs/ux/settings.md` §7's update-check opt-in, off unless the
+ * person turned it on. Model and speed
  * arrives with `M7-SET-FE-146` (`web/components/settings/model-and-speed.tsx`)
  * as the first section, per `docs/ux/settings.md` §1's order — it gathers the
  * hardware profile and retrieval threshold above under one heading, beside

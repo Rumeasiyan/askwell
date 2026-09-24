@@ -960,7 +960,7 @@ The shell is the natural supervisor because it is the thing the user launches. M
 - Version derived, never retyped.
 - Licence and notices reachable in full, including bundled model weights.
 - Source link and problem-reporting route with the support boundary stated.
-- The update-checking control, off by default, with its payload stated — **the mechanism behind it is blocked.**
+- The update-checking control, off by default, with its payload stated. *(Corrected 2026-09-24: this line said the mechanism was blocked. `docs/decisions.md` 2026-09-21 unblocked it and `M7-UPDATE-BE-161` built it, so the control is real.)*
 
 **Out of Scope**
 - Update delivery itself — `M7-UPDATE-BE-161`.
@@ -980,12 +980,12 @@ The shell is the natural supervisor because it is the thing the user launches. M
 **Dependencies & Assumptions**
 - **Dependencies:** M0-FOUND-DOC-008, M7-DOC-DOC-163, M7-DOC-DOC-164.
 - **API / Data Touchpoints:** `VERSION`; notices file.
-- **Assumptions:** The update control can exist and be off while the mechanism behind it is undecided; enabling it before the decision is made is refused with the reason.
+- **Assumptions:** The update control drives `M7-UPDATE-BE-161`'s `/settings/update-check`. *(Corrected 2026-09-24: this said enabling would be refused while the mechanism was undecided. It was decided on 2026-09-21.)*
 
 **Testing Notes / Scenarios**
 - **Cold-start manual walkthrough:** Cold start, open settings and go to about. Confirm the version matches the repository's value. Open the licence and notices and read them in full, confirming bundled model weights are listed. Read the support boundary. Confirm update checking is off and that its description states exactly what would be sent.
 - **Other scenarios:** Disconnect the network and confirm the source address is still readable as text.
-- **Known gaps:** Update checking cannot be enabled because the mechanism is blocked; the control says so.
+- **Known gaps:** No "check now" control — its result needs `M7-UPDATE-FE-162`'s marker (issue #693). *(Corrected 2026-09-24: this said update checking could not be enabled. It can.)*
 
 **Effort & Granularity Check**
 - **Estimate:** 2–3 hours · **Priority:** High

@@ -3,6 +3,7 @@
  * so Settings → About can open the support boundary and the security route
  * with no network — the same one-canonical-source reasoning
  * `copy-notices.mjs` applies to `NOTICES.md`. `M7-DOC-DOC-164`.
+ * `M7-SET-FE-149` adds `LICENSE`, so the licence reads in full there too.
  *
  * Written as `.txt`, not `.md`: the interface server picks a content type
  * from the extension, `.md` goes out as `text/markdown`, and a browser may
@@ -23,6 +24,7 @@ const ROOT = join(WEB, "..");
 const COPIES = [
   ["SUPPORT.md", "support.txt"],
   ["SECURITY.md", "security-policy.txt"],
+  ["LICENSE", "license.txt"],
 ];
 
 mkdirSync(join(WEB, "public"), { recursive: true });

@@ -21,6 +21,7 @@ SECURITY = REPO_ROOT / "SECURITY.md"
 TEMPLATES = REPO_ROOT / ".github" / "ISSUE_TEMPLATE"
 AGENTS = REPO_ROOT / "AGENTS.md"
 ABOUT = REPO_ROOT / "web" / "components" / "settings" / "about.tsx"
+ABOUT_LIB = REPO_ROOT / "web" / "lib" / "about.ts"
 COPY_SCRIPT = REPO_ROOT / "web" / "scripts" / "copy-support.mjs"
 WEB_MANIFEST = REPO_ROOT / "web" / "package.json"
 
@@ -171,12 +172,22 @@ def test_every_public_template_arrives_needing_triage() -> None:
 
 
 def test_about_reaches_the_boundary_the_templates_and_the_security_route() -> None:
+    # `M7-SET-FE-149` shows the bundled texts in the page rather than linking
+    # to them (the desktop shell opens no new windows), so the paths live in
+    # `web/lib/about.ts` and the component renders them by name.
+    lib = _read(ABOUT_LIB)
+    assert 'path: "/support.txt"' in lib
+    assert 'path: "/security-policy.txt"' in lib
+    assert "/issues/new/choose" in lib
+
     about = _read(ABOUT)
-    assert 'href="/support.txt"' in about
-    assert 'href="/security-policy.txt"' in about
-    assert "/issues/new/choose" in about
-    # The boundary row comes before the row that opens an issue.
-    assert about.index('href="/support.txt"') < about.index("/issues/new/choose")
+    report = about[about.index("function ReportAProblem") :]
+    report = report[: report.index("\n}\n")]
+    # The boundary is shown before the address that opens an issue.
+    assert report.index("text={SUPPORT_TEXT}") < report.index("url={ISSUE_URL}")
+    # The security route is its own section, never inside general reporting.
+    assert "SECURITY_TEXT" not in report
+    assert "text={SECURITY_TEXT}" in about[about.index("function SecurityProblem") :]
 
 
 def test_the_build_copies_the_boundary_rather_than_duplicating_it() -> None:
