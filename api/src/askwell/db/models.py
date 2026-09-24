@@ -18,7 +18,7 @@ can enforce.
 """
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from pgvector.sqlalchemy import Vector
@@ -26,6 +26,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -58,6 +59,10 @@ SOURCE_KINDS = ("file", "csv", "dump", "connection")
 # and rendering that as *Indexing* is a progress bar that does not move.
 SOURCE_STATUSES = ("queued", "indexing", "ready", "attention", "deleted")
 DOCUMENT_STATUSES = ("queued", "indexing", "ready", "attention", "deleted")
+# `M7-FIX-BE-170a`. Mirrored by `askwell.document_date.PRECISIONS`/`SOURCES`,
+# which cannot be imported here without a cycle through `askwell.db.engine`.
+DOCUMENT_DATE_PRECISIONS = ("day", "month", "year")
+DOCUMENT_DATE_SOURCES = ("metadata", "filename")
 NOTE_ORIGINS = ("user", "inferred")
 # `inferred` (`M3-RAISE-BE-068`) is a fact nobody was asked about: one of the
 # three tests for asking failed, so Askwell recorded its best guess instead,
@@ -221,6 +226,15 @@ class Document(Base):
     __tablename__ = "documents"
     __table_args__ = (
         _one_of("status", DOCUMENT_STATUSES, "status"),
+        _one_of("document_date_precision", DOCUMENT_DATE_PRECISIONS, "document_date_precision"),
+        _one_of("document_date_source", DOCUMENT_DATE_SOURCES, "document_date_source"),
+        # A date with no precision is a date nobody may render, and one with no
+        # source is one nobody may qualify: the three are one fact.
+        CheckConstraint(
+            "(document_date IS NULL) = (document_date_precision IS NULL) "
+            "AND (document_date IS NULL) = (document_date_source IS NULL)",
+            name="document_date_complete",
+        ),
         Index("ix_documents_source_id", "source_id"),
         Index("ix_documents_sha256", "sha256"),
         # One live version of a given content, per source. Created by the v1
@@ -283,6 +297,16 @@ class Document(Base):
     # A poor scan is flagged in the library, shown beside the image in the
     # source viewer, and can raise a clarification.
     ocr_confidence: Mapped[float | None] = mapped_column(Numeric(4, 3))
+
+    # The document's *own* date, as its metadata or filename states it — never
+    # the ingest date below, which is when Askwell happened to read it.
+    # `M7-FIX-BE-170a`; the rules are `askwell.document_date`'s docstring. The
+    # stored value is the first day of the period; the precision says how
+    # much of it is real, and the source says whose claim it is.
+    document_date: Mapped[date | None] = mapped_column(Date)
+    document_date_precision: Mapped[str | None] = mapped_column(String(8))
+    document_date_source: Mapped[str | None] = mapped_column(String(16))
+
     added_at: Mapped[datetime] = created_at()
 
 

@@ -75,7 +75,7 @@ from typing import TYPE_CHECKING
 import pypdfium2 as pdfium
 from sqlalchemy import text
 
-from askwell import extract_ocr
+from askwell import document_date, extract_ocr
 from askwell.db.engine import session_scope
 from askwell.extract_common import CorruptDocument, EmptyDocument, PasswordProtected, WrongPassword
 from askwell.logging import get_logger
@@ -146,6 +146,21 @@ def _classify_open_failure(  # type: ignore[no-any-unimported]
     return CorruptDocument(f"{filename} could not be read — its contents look corrupted.")
 
 
+def _metadata_date(  # type: ignore[no-any-unimported]
+    document: pdfium.PdfDocument, document_id: str
+) -> document_date.DocumentDate | None:
+    """`/ModDate` or `/CreationDate` from the `/Info` dictionary of the
+    document this stage already has open — `M7-FIX-BE-170a`. A metadata block
+    pdfium cannot decode is a missing date, never a failed ingest."""
+    try:
+        return document_date.from_pdf_metadata(document.get_metadata_dict())
+    except Exception as error:  # any failure here is "no metadata date"
+        log.warning(
+            "document_date_metadata_unreadable", document_id=document_id, error=type(error).__name__
+        )
+        return None
+
+
 async def run(work: "Work", report: "Report", factory: "async_sessionmaker[AsyncSession]") -> None:
     document_id = str(work.document_id)
     try:
@@ -174,6 +189,7 @@ async def run(work: "Work", report: "Report", factory: "async_sessionmaker[Async
                 ocr_used = True
                 pages.append((index + 1, ocr_text, has_text, confidence))
             await report(index + 1, page_count)
+        metadata_date = _metadata_date(document, document_id)
     finally:
         document.close()
 
@@ -226,6 +242,8 @@ async def run(work: "Work", report: "Report", factory: "async_sessionmaker[Async
                     "ocr_confidence": confidence,
                 },
             )
+
+    await document_date.record(factory, work, metadata_date)
 
     log.info(
         "extract_pdf_completed",
