@@ -4,6 +4,16 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.32 - 2026-09-24
+
+`Added`: `M7-SET-FE-150`. Settings now has an **Online AI** section, second after Model and
+speed. It is switched off and cannot be turned on yet. It explains what the feature will be: a
+larger cloud model for a hard question, chosen per conversation and never switched on
+everywhere, using an API key from a provider you already pay. Askwell sells nothing and takes no
+part in what it costs. It also says that exactly what leaves this machine will be stated before
+anything is sent. Pressing the switch says plainly that the feature is not available yet. There
+is no waiting list and no field to fill in, and nothing in the section makes a network request.
+
 ## 0.7.31 - 2026-09-24
 
 `Added`: `M7-SET-FE-149`. Settings → About now has an **Update checking** control. It is off
