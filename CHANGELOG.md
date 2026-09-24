@@ -4,6 +4,16 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.38 - 2026-09-24
+
+`Fixed`: `M7-FIX-FE-170`. When your files disagree, each version now appears in its own box.
+Each box holds the claim, the file it came from, and that file's own date, for example `2026 ·
+from the file name`. Every box is styled the same way, so none of them reads as the answer.
+Before this change the positions ran together as one sentence with no dates. A file with no date
+says "Date unknown". It never shows the date the file was added, which says nothing about which
+version is current. The source cards beside a conflicting answer show the same dates in place
+of "Added …". The "Which one is current?" choice has not changed.
+
 ## 0.7.37 - 2026-09-24
 
 `Added`: `M7-FIX-BE-170a`. Askwell now records each document's own date as well as the date it

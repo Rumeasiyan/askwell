@@ -16,8 +16,10 @@ import { EvidenceBlock } from "@/components/clarifications/clarifications-screen
 import {
   isConflict,
   isPartial,
+  layoutConflict,
   parseAnswerAnnotations,
   recordConflictPresented,
+  type ConflictLayout,
 } from "@/lib/answer-annotations";
 import type { CitationCard } from "@/lib/citations";
 import { CONVERSATION_PAGE_SIZE, conversationWindow, dividerLabel, followsNewTurn, liveTurnId,
@@ -37,6 +39,12 @@ import {
   skipClarification,
 } from "@/lib/clarifications";
 import { documentHref, pageLabel } from "@/lib/citations";
+import {
+  documentDateLabel,
+  sortByDateAndSupersession,
+  supersededDateLabel,
+  useDocumentDates,
+} from "@/lib/document-dates";
 import { followUpSuggestions, recordFollowUpUsed } from "@/lib/follow-ups";
 import { fetchIngest } from "@/lib/ingest";
 import { MemoryChip } from "@/components/ask/memory-chip";
@@ -1638,19 +1646,41 @@ function AddSourceAction({ question, label = "Add a source" }: { question: strin
  * own docstring) — and `cleanedText` is what `AnswerProse` renders instead
  * of the raw answer, so those fixed label lines become their own distinct
  * elements rather than unstyled prose sitting in the middle of the answer.
- * The cited position sentences a conflict presents stay in `cleanedText`
- * unchanged: they carry `[n]` markers and belong in the normal claim flow,
- * feeding the same provenance margin every other citation does.
+ * The cited position sentences a conflict presents are lifted out of the
+ * prose into their own records (`ConflictPositions`, `M7-FIX-FE-170`), each
+ * keeping the claim ordinal it has in the whole answer, so they still feed
+ * the same provenance margin every other citation does.
  */
 function AnsweredContent({ turn }: { turn: AskTurn }) {
   const annotations = useMemo(() => parseAnswerAnnotations(turn.answer), [turn.answer]);
   const conflict = isConflict(annotations);
   const partial = isPartial(annotations);
+  const layout = useMemo(
+    () =>
+      annotations.conflictAt === null ? null : layoutConflict(annotations.cleanedText, annotations.conflictAt),
+    [annotations],
+  );
 
   return (
     <div className="flex flex-col gap-3">
       {conflict ? <ConflictBanner topic={annotations.conflictTopic!} /> : null}
-      {annotations.cleanedText !== "" ? (
+      {layout !== null ? (
+        <>
+          {layout.before !== "" ? (
+            <AnswerProse turnId={turn.id} text={layout.before} factChips={turn.factChips} />
+          ) : null}
+          <ConflictPositions turn={turn} layout={layout} />
+          {layout.unplaced !== "" ? <p className="ask-prose">{layout.unplaced}</p> : null}
+          {layout.after !== "" ? (
+            <AnswerProse
+              turnId={turn.id}
+              text={layout.after}
+              factChips={turn.factChips}
+              ordinalOffset={layout.afterOffset}
+            />
+          ) : null}
+        </>
+      ) : annotations.cleanedText !== "" ? (
         <AnswerProse turnId={turn.id} text={annotations.cleanedText} factChips={turn.factChips} />
       ) : null}
       {turn.sqlResult !== null ? (
@@ -1709,6 +1739,102 @@ function ConflictBanner({ topic }: { topic: string }) {
     <p className="ask-micro" style={{ textTransform: "none", color: "var(--ink)" }}>
       Conflicting sources on {topic}
     </p>
+  );
+}
+
+/**
+ * Each side of a conflict as its own record: the claim, the document it
+ * came from, and that document's own date. `M7-FIX-FE-170`, issue GH-643 —
+ * before this the positions ran together as one paragraph with no date, and
+ * a reader skimming saw one statement contradicting itself rather than two
+ * sources disagreeing.
+ *
+ * Every record is styled identically, so none reads as the answer and the
+ * others as footnotes (`docs/ux/ask.md` §5, "never silently prefers one";
+ * C4). They are ordered the way the margin's cards are — newest document
+ * first, superseded last (`sortByDateAndSupersession`) — never in the order
+ * the model wrote them, which is the one ordering §5 rules out.
+ *
+ * The date is the document's own and says where it came from; a document
+ * with none says "Date unknown", never when it was added
+ * (`documentDateLabel`). Two positions from the same document are still two
+ * records: a document that contradicts itself is a conflict too.
+ *
+ * The claim text sits in a `ClaimSpan` under its original ordinal, so
+ * hovering it still raises its card in the margin and the leader line still
+ * finds it.
+ */
+function ConflictPositions({ turn, layout }: { turn: AskTurn; layout: ConflictLayout }) {
+  const sourcesFor = (ordinal: number): CitationCard[] => {
+    const seen = new Set<string>();
+    return turn.citations.filter((card) => {
+      if (!card.claimOrdinals.includes(ordinal) || seen.has(card.documentId)) return false;
+      seen.add(card.documentId);
+      return true;
+    });
+  };
+  const documentIds = [...new Set(turn.citations.map((card) => card.documentId))].sort();
+  const dates = useDocumentDates(documentIds, true);
+  const positions = sortByDateAndSupersession(
+    layout.positions.map((position) => {
+      const sources = sortByDateAndSupersession(sourcesFor(position.ordinal), dates);
+      return { ...position, sources, documentId: sources[0]?.documentId ?? "" };
+    }),
+    dates,
+  );
+
+  return (
+    <ul
+      aria-label="Conflicting positions"
+      className="flex flex-col gap-2"
+      style={{ listStyle: "none", padding: 0, margin: 0 }}
+    >
+      {positions.map((position) => (
+        <li
+          key={position.ordinal}
+          className="flex flex-col gap-1.5 p-3"
+          style={{ border: "1px solid var(--rule-strong)", borderRadius: "var(--radius)" }}
+        >
+          <p className="ask-prose">
+            <ClaimSpan turnId={turn.id} ordinal={position.ordinal}>
+              {position.text}
+            </ClaimSpan>
+            {turn.factChips
+              .filter((chip) => chip.claimOrdinal === position.ordinal)
+              .map((chip) => (
+                <MemoryChip key={`chip-${chip.claimOrdinal}-${chip.factId}`} chip={chip} />
+              ))}
+          </p>
+          {position.sources.map((card) => {
+            const date = dates.get(card.documentId);
+            const own = documentDateLabel(date);
+            const superseded = date !== undefined ? supersededDateLabel(date) : null;
+            const page = pageLabel(card);
+            return (
+              <div key={card.documentId} className="ask-micro flex flex-col" style={{ textTransform: "none" }}>
+                <span style={{ color: "var(--provenance)" }}>
+                  {card.filename}
+                  {page !== null ? ` · ${page}` : ""}
+                </span>
+                {own !== null || superseded !== null ? (
+                  <span className="flex flex-wrap gap-x-2">
+                    {own !== null ? (
+                      <span>
+                        {own.date}
+                        {own.source !== null ? (
+                          <span style={{ color: "var(--muted)" }}> · {own.source}</span>
+                        ) : null}
+                      </span>
+                    ) : null}
+                    {superseded !== null ? <span style={{ color: "var(--muted)" }}>{superseded}</span> : null}
+                  </span>
+                ) : null}
+              </div>
+            );
+          })}
+        </li>
+      ))}
+    </ul>
   );
 }
 

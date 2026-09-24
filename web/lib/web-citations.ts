@@ -102,9 +102,8 @@ export function truncatedUrl(url: string): string {
   return truncate(url, URL_TRUNCATE_AT);
 }
 
-/** "Retrieved 22 Sept 2026" — same phrasing shape as `document-dates.ts`'s
- * `addedDateLabel`, so a date reads the same way whether it names when a
- * document was added or when a web page was fetched. */
+/** "Retrieved 22 Sept 2026" — when the page was fetched, labelled as
+ * exactly that; a web page has no document date of its own here. */
 export function retrievedDateLabel(retrievedAt: string): string {
   return `Retrieved ${new Date(retrievedAt).toLocaleDateString()}`;
 }

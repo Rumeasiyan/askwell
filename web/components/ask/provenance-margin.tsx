@@ -9,11 +9,11 @@ import { anchorLabel, documentHref, pageLabel, recordCardClick, type CitationCar
 import { isAbstained } from "@/lib/ask";
 import { isConflict, parseAnswerAnnotations } from "@/lib/answer-annotations";
 import {
-  addedDateLabel,
+  documentDateLabel,
   supersededDateLabel,
   sortByDateAndSupersession,
-  useDocumentDate,
   useDocumentDates,
+  type DocumentDate,
 } from "@/lib/document-dates";
 import { isRaised } from "@/lib/pairing";
 
@@ -63,7 +63,13 @@ export function ProvenanceMargin() {
     <ul className="flex flex-col gap-3 p-4" style={{ listStyle: "none" }}>
       {cards.map((card) => (
         <li key={card.chunkId}>
-          <SourceCard turnId={turn.id} card={card} variant="margin" showDate={conflict} />
+          <SourceCard
+            turnId={turn.id}
+            card={card}
+            variant="margin"
+            showDate={conflict}
+            date={dates.get(card.documentId)}
+          />
         </li>
       ))}
     </ul>
@@ -99,7 +105,13 @@ export function InlineSourceCards({
     <ul className="flex flex-col gap-3" style={{ listStyle: "none" }}>
       {cards.map((card) => (
         <li key={card.chunkId}>
-          <SourceCard turnId={turnId} card={card} variant="inline" showDate={showDate} />
+          <SourceCard
+            turnId={turnId}
+            card={card}
+            variant="inline"
+            showDate={showDate}
+            date={dates.get(card.documentId)}
+          />
         </li>
       ))}
     </ul>
@@ -155,11 +167,15 @@ function SourceCard({
   card,
   variant,
   showDate = false,
+  date,
 }: {
   turnId: string;
   card: CitationCard;
   variant: "margin" | "inline";
   showDate?: boolean;
+  /** The list's own fetch (`useDocumentDates`), passed down rather than
+   * fetched again per card; `undefined` until it loads. */
+  date?: DocumentDate | undefined;
 }) {
   const cardKey = `${turnId}:${card.chunkId}`;
   const marginRef = useCardRef(variant === "margin" ? cardKey : "");
@@ -168,11 +184,13 @@ function SourceCard({
   const [expanded, setExpanded] = useState(false);
   const deletion = useDeletion(card.documentId);
   // `ask.md` §5's own edge case: a conflict where one source has since been
-  // superseded is labelled as such rather than shown as an equal — fetched
+  // superseded is labelled as such rather than shown as an equal — shown
   // only for a conflict's own cards (`showDate`), not on every citation.
-  const date = useDocumentDate(card.documentId, showDate);
-  const addedLabel = showDate ? addedDateLabel(date) : null;
-  const supersededLabel = showDate ? supersededDateLabel(date) : null;
+  // The date is the document's own, never when it was added
+  // (`M7-FIX-FE-170`): the added date is exactly the wrong one for deciding
+  // which version is current.
+  const ownDate = showDate ? documentDateLabel(date) : null;
+  const supersededLabel = showDate && date !== undefined ? supersededDateLabel(date) : null;
 
   if (deletion.deleted) {
     return (
@@ -232,9 +250,16 @@ function SourceCard({
         </span>
       </Link>
 
-      {showDate && (addedLabel !== null || supersededLabel !== null) ? (
-        <p className="ask-micro flex items-center gap-2" style={{ textTransform: "none" }}>
-          {addedLabel !== null ? <span>{addedLabel}</span> : null}
+      {showDate && (ownDate !== null || supersededLabel !== null) ? (
+        <p className="ask-micro flex flex-wrap items-center gap-2" style={{ textTransform: "none" }}>
+          {ownDate !== null ? (
+            <span>
+              {ownDate.date}
+              {ownDate.source !== null ? (
+                <span style={{ color: "var(--muted)" }}> · {ownDate.source}</span>
+              ) : null}
+            </span>
+          ) : null}
           {supersededLabel !== null ? (
             <span style={{ color: "var(--muted)" }}>{supersededLabel}</span>
           ) : null}

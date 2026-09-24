@@ -34,15 +34,6 @@ export interface DocumentDate {
   supersededAt: string | null;
 }
 
-const LOADING: DocumentDate = {
-  addedAt: null,
-  documentDate: null,
-  documentDatePrecision: null,
-  documentDateSource: null,
-  supersededBy: null,
-  supersededAt: null,
-};
-
 function fetchDocumentDate(documentId: string): Promise<DocumentDate | null> {
   return fetch(`/documents/${documentId}`, { cache: "no-store" })
     .then((response) =>
@@ -72,29 +63,11 @@ function fetchDocumentDate(documentId: string): Promise<DocumentDate | null> {
     .catch(() => null);
 }
 
-export function useDocumentDate(documentId: string, enabled: boolean): DocumentDate {
-  const [date, setDate] = useState<DocumentDate>(LOADING);
-
-  useEffect(() => {
-    if (!enabled) return;
-    let cancelled = false;
-    void fetchDocumentDate(documentId).then((result) => {
-      if (!cancelled && result !== null) setDate(result);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [documentId, enabled]);
-
-  return date;
-}
-
 /**
  * Every one of `documentIds`' dates, fetched in parallel, keyed by document
  * id. Issue GH-226: a conflicting-sources list has to be *sorted* by date
  * before it renders, which needs every card's date known up front — a card
- * calling `useDocumentDate` for itself alone (above) cannot see its
- * siblings' dates and so cannot decide where in the list it belongs.
+ * fetching its own date alone could not see its siblings' dates and so cannot decide where in the list it belongs.
  */
 export function useDocumentDates(documentIds: readonly string[], enabled: boolean): ReadonlyMap<string, DocumentDate> {
   const [dates, setDates] = useState<ReadonlyMap<string, DocumentDate>>(new Map());
@@ -159,12 +132,45 @@ export function sortByDateAndSupersession<T extends { documentId: string }>(
   });
 }
 
-/** "Added 3 June 2026" — when Askwell ingested the file, and labelled as
- * exactly that. Never the document's own date (`documentDate`). `null`
- * while the fetch is outstanding or the endpoint gave nothing back. */
-export function addedDateLabel(date: Pick<DocumentDate, "addedAt">): string | null {
-  if (date.addedAt === null) return null;
-  return `Added ${new Date(date.addedAt).toLocaleDateString()}`;
+/**
+ * A document's own date as the conflict records and their cards show it
+ * (`M7-FIX-FE-170`): `date` to the precision it is known — "2026",
+ * "March 2026", "15 March 2026", never padded out to a day it never claimed
+ * — and `source`, where it came from, because a file's properties are a
+ * claim the file makes about itself and a re-save moves them
+ * (`docs/decisions.md`, `M7-FIX-BE-170a`).
+ *
+ * An unknown date says so. It never falls back to `addedAt`: when Askwell
+ * ingested a file says nothing about which version is current, and showing
+ * it here would be a wrong fact presented as a right one. `null` only while
+ * the date has not loaded, so nothing is shown rather than "unknown" too
+ * early.
+ */
+export function documentDateLabel(
+  date: DocumentDate | undefined,
+  locale?: string,
+): { date: string; source: string | null } | null {
+  if (date === undefined) return null;
+  const { documentDate, documentDatePrecision, documentDateSource } = date;
+  if (documentDate === null || documentDatePrecision === null) return { date: "Date unknown", source: null };
+  const [year, month = 1, day = 1] = documentDate.split("-").map(Number);
+  const when = new Date(Date.UTC(year!, month - 1, day));
+  const text =
+    documentDatePrecision === "year"
+      ? String(year)
+      : when.toLocaleDateString(locale, {
+          timeZone: "UTC",
+          year: "numeric",
+          month: "long",
+          ...(documentDatePrecision === "day" ? { day: "numeric" } : {}),
+        });
+  const source =
+    documentDateSource === "filename"
+      ? "from the file name"
+      : documentDateSource === "metadata"
+        ? "from the file's properties"
+        : null;
+  return { date: text, source };
 }
 
 export function supersededDateLabel(date: Pick<DocumentDate, "supersededBy" | "supersededAt">): string | null {
