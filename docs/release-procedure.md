@@ -30,6 +30,18 @@ cat VERSION
 
 Check the top entry of `CHANGELOG.md` matches.
 
+Record the release's **schema revision** in its release notes — the migration chain's head this
+build expects:
+
+```
+scripts/dev.sh run alembic heads
+```
+
+`docs/rollback-and-incidents.md` §1.1 rolls a database back to the revision the *older* release
+names; without it recorded here, the person rolling back has to reconstruct it from history
+mid-incident. If this release adds a migration that cannot be reversed, its notes must also
+say so above the changelog, in the words §2 of that document gives.
+
 ## 2. Assemble the artefacts
 
 For each platform being released, build the trimmed tarball layout `deploy/<platform>/install.sh`

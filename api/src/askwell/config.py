@@ -388,6 +388,13 @@ class Settings(BaseSettings):
     # the artefact, the API's download route reads it.
     backup_dir: Path = Path("/var/lib/askwell/backups")
 
+    # Where a crash report is written (`M7-OPS-DOC-165`,
+    # `askwell.crash_report`). Same `askwell-state` volume, so a report
+    # written by the worker is listed and downloaded by the API. Local only:
+    # nothing reads this directory except the person, through Settings →
+    # About, deciding to attach a file to an issue themselves.
+    crash_report_dir: Path = Path("/var/lib/askwell/crash-reports")
+
     # Where the built frontend lives. The default is the path inside the API
     # image; a source checkout points it at web/out.
     web_assets_dir: Path = Path("/app/web/out")
@@ -569,6 +576,7 @@ class Settings(BaseSettings):
         "trace_dir",
         "export_dir",
         "backup_dir",
+        "crash_report_dir",
         "install_secret_path",
         "probe_result_path",
         "voice_whisper_model_path",

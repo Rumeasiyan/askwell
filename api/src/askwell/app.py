@@ -19,6 +19,8 @@ from askwell.ask import register_ask
 from askwell.assistant import read as read_assistant
 from askwell.backup import register_backup
 from askwell.config import ConfigurationError, Environment, Settings, load_settings
+from askwell.crash_report import install_excepthook, register_crash_reports
+from askwell.crash_report import write as write_crash_report
 from askwell.db.engine import build_engine, session_factory
 from askwell.documents import register_documents
 from askwell.health import ComponentState, check_components
@@ -169,6 +171,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_reset(app, resolved, app.state.sessions)
     register_passphrase(app, resolved, app.state.sessions)
     register_update_check(app, resolved, app.state.sessions)
+    register_crash_reports(app, resolved)
     register_voice_channel(
         app,
         resolved,
@@ -241,6 +244,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """
         current: Settings = request.app.state.settings
         log.exception("unhandled_exception", path=request.url.path)
+        # A local file the person may choose to attach to an issue; never
+        # sent (`askwell.crash_report`). The route template, not the path.
+        route = request.scope.get("route")
+        await asyncio.to_thread(
+            write_crash_report,
+            error,
+            component="api",
+            settings=current,
+            route=getattr(route, "path", None),
+        )
 
         detail: dict[str, Any] = {
             "error": "Askwell hit an error it did not expect.",
@@ -270,6 +283,7 @@ def main() -> None:
         # this is looking at a terminal.
         raise SystemExit(str(error)) from None
 
+    install_excepthook(settings, "api")
     uvicorn.run(
         create_app(settings),
         host=settings.host,

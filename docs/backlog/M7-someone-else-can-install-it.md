@@ -2000,16 +2000,16 @@ Cold start. Ask a question on the shipped model — no marker. Open settings, pl
 **Scope**
 - Rollback procedure, including data compatibility across a downgrade.
 - Local crash report generation with a stated location and contents, attached by the user only.
-- An incident procedure: how a broken release is communicated given that update delivery is blocked.
+- An incident procedure: how a broken release is communicated given that update checking is opt-in and reports only that a newer version exists. *(Corrected 2026-09-24: update delivery is no longer blocked — `docs/decisions.md` 2026-09-21, `M7-UPDATE-BE-161`.)*
 - A rehearsal of the rollback on each platform.
 
 **Out of Scope**
 - Automatic crash reporting — forbidden.
-- Anything depending on update delivery — blocked.
+- Anything that would push a notice to installs — there is no server to push from, by design (C1).
 
 **Acceptance Criteria**
-- **Acceptance Criteria:** The rollback procedure is documented and rehearsed on each platform. Data compatibility across a downgrade is stated, including where it is not possible. A crash produces a local report at a stated location containing no content from the user's corpus and nothing is transmitted. The incident procedure names how users would learn of a broken release given the blocked update mechanism.
-- **Edge Cases:** A downgrade across a migration that is not reversible — stated plainly, with the backup as the only path back. A crash report containing a filename or a question — the report must exclude corpus content, and a test asserts it. An incident with no way to notify users — acknowledged as a real limitation created by the blocked decision, and named as such rather than glossed over.
+- **Acceptance Criteria:** The rollback procedure is documented and rehearsed on each platform. Data compatibility across a downgrade is stated, including where it is not possible. A crash produces a local report at a stated location containing no content from the user's corpus and nothing is transmitted. The incident procedure names how users would learn of a broken release given that update checking is opt-in and says only that a newer version exists.
+- **Edge Cases:** A downgrade across a migration that is not reversible — stated plainly, with the backup as the only path back. A crash report containing a filename or a question — the report must exclude corpus content, and a test asserts it. An incident with no way to notify users — acknowledged as a real limitation created by the update-check decision (people who declined it cannot be reached), and named as such rather than glossed over.
 - **Permissions / Roles:** Single user — no roles. Not applicable.
 - **UI States:** `../ux/settings.md` §7 report a problem.
 - **Validation Rules:** No crash report is transmitted, ever, automatically or otherwise, without the user attaching it themselves.
@@ -2022,12 +2022,12 @@ Cold start. Ask a question on the shipped model — no marker. Open settings, pl
 **Dependencies & Assumptions**
 - **Dependencies:** M7-PACK-DEPLOY-142, M7-BACKUP-BE-158, M7-DOC-DOC-164.
 - **API / Data Touchpoints:** Log paths; version.
-- **Assumptions:** **The blocked update decision directly limits incident response**, and this ticket documents that limitation rather than working around it.
+- **Assumptions:** **The update-check decision directly limits incident response** — people who declined it cannot be reached, and it can say "newer", never "broken" — and this ticket documents that limitation rather than working around it.
 
 **Testing Notes / Scenarios**
 - **Cold-start manual walkthrough:** On each platform, install the current release, use it enough to have data, then follow the written rollback procedure to the previous version. Confirm the product starts, the data is intact or the documented limitation applies, and that a person following only the written procedure could do it. Then induce a crash and confirm a local report is produced at the stated location, contains no corpus content, and is not sent anywhere.
 - **Other scenarios:** Inspect a crash report for any filename or question text — there must be none.
-- **Known gaps:** There is no way to notify users of a broken release while update delivery is blocked, and that is stated in the procedure.
+- **Known gaps:** There is no way to notify users who declined update checks of a broken release, and that is stated in the procedure.
 
 **Effort & Granularity Check**
 - **Estimate:** 3–4 hours · **Priority:** High

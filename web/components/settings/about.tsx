@@ -22,6 +22,9 @@
  * security route is its own row, never folded in: a vulnerability filed as
  * a public issue is already disclosed.
  *
+ * Crash reports (`M7-OPS-DOC-165`) sit under the report route: listed and
+ * downloadable here, attached by the person, never sent by Askwell.
+ *
  * Update checking is `M7-UPDATE-BE-161`'s real setting, off unless the
  * person turned it on. The control states the payload before it is pressed.
  */
@@ -45,6 +48,13 @@ import {
   type BundledText,
   type UpdateCheckState,
 } from "@/lib/about";
+import {
+  CRASH_REPORT_CONTENTS,
+  crashReportUrl,
+  describeCrashReport,
+  fetchCrashReports,
+  type CrashReports,
+} from "@/lib/crash-reports";
 import { isNative } from "@/lib/native";
 import { VERSION } from "@/lib/version";
 
@@ -110,6 +120,67 @@ function ReportAProblem() {
         trace.
       </p>
       <Address url={ISSUE_URL} label="issue tracker" />
+      <CrashReportList />
+    </div>
+  );
+}
+
+/** Reports Askwell saved on this machine. Downloaded and attached by the
+ * person, never sent (`M7-OPS-DOC-165`). */
+function CrashReportList() {
+  const [state, setState] = useState<CrashReports | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchCrashReports(controller.signal)
+      .then(setState)
+      .catch((thrown: unknown) => {
+        if (!controller.signal.aborted) {
+          setError(thrown instanceof Error ? thrown.message : "Askwell could not list crash reports.");
+        }
+      });
+    return () => controller.abort();
+  }, []);
+
+  return (
+    <div className="flex flex-col gap-1">
+      <h4 className="ask-prose" style={{ color: "var(--muted)" }}>
+        Crash reports
+      </h4>
+      <p className="ask-prose">{CRASH_REPORT_CONTENTS}</p>
+      {state === null && error === null ? (
+        <p className="ask-prose" style={{ color: "var(--muted)" }}>
+          Reading…
+        </p>
+      ) : null}
+      {state !== null && state.reports.length === 0 ? (
+        <p className="ask-prose" style={{ color: "var(--muted)" }}>
+          None. Askwell has not crashed on this machine, or its reports were removed.
+        </p>
+      ) : null}
+      {state !== null && state.reports.length > 0 ? (
+        <ul className="ask-prose flex flex-col gap-1">
+          {state.reports.map((report) => (
+            <li key={report.name}>
+              {describeCrashReport(report.name)} ·{" "}
+              <a href={crashReportUrl(report.name)} download={report.name} className="ask-navigates">
+                Download
+              </a>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {state !== null ? (
+        <p className="ask-micro" style={{ color: "var(--muted)", textTransform: "none" }}>
+          Saved in <code>{state.directory}</code>, inside Askwell&apos;s own storage.
+        </p>
+      ) : null}
+      {error !== null ? (
+        <p className="ask-micro" style={{ color: "var(--alarm)", textTransform: "none" }}>
+          {error}
+        </p>
+      ) : null}
     </div>
   );
 }

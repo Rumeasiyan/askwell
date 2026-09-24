@@ -505,6 +505,7 @@ def main() -> None:
     from arq.worker import create_worker
 
     from askwell.config import ConfigurationError
+    from askwell.crash_report import install_excepthook
 
     try:
         settings = load_settings()
@@ -515,6 +516,7 @@ def main() -> None:
         level=settings.log_level,
         json_output=settings.environment is not Environment.DEVELOPMENT,
     )
+    install_excepthook(settings, "worker")
 
     worker = create_worker(
         WorkerSettings,  # type: ignore[arg-type]  # arq accepts a settings class

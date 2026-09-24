@@ -4,6 +4,18 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.33 - 2026-09-24
+
+`Added`: `M7-OPS-DOC-165`. When Askwell fails in a way it did not expect, it now saves a small
+crash report on this machine. Settings → About → Report a problem lists these reports and lets
+you download one to attach to an issue yourself. **Askwell never sends a crash report.** A
+report holds the version, your platform and profile, and where in Askwell's own code the failure
+happened. It leaves out the error message, and everything from your files, questions and
+databases, so it is safe to attach to a public issue without editing it.
+`docs/rollback-and-incidents.md` explains how to go back to a previous version and what happens
+to your data when you do. It also says what the maintainer does when a release is broken,
+including who can and cannot be told.
+
 ## 0.7.32 - 2026-09-24
 
 `Added`: `M7-SET-FE-150`. Settings now has an **Online AI** section, second after Model and
