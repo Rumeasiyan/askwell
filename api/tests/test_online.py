@@ -89,6 +89,7 @@ def settings(tmp_path: Path) -> Settings:
         sandbox_readonly_password="pw",  # type: ignore[arg-type]
         trace_dir=tmp_path / "traces",
         online_ai_destination=DESTINATION,
+        online_ai_model="provider-model",
         online_ai_authorisation_ttl_seconds=3600,
     )
 
@@ -218,6 +219,23 @@ async def test_nothing_is_authorised_when_no_destination_is_configured(
     assert redis_store == {}
     assert await _decisions(session) == []
     state = await online.get_state(session, unconfigured, conversation_id)
+    assert not state.available and state.unavailable_reason == online.NOT_CONFIGURED
+
+
+async def test_a_destination_without_a_model_is_not_a_provider(
+    session: AsyncSession, settings: Settings, redis_store: dict[str, str]
+) -> None:
+    """`M8-ONLINE-BE-170`: there is nothing to ask a destination for without
+    a model, so it is unavailable in the same words, and nothing opens."""
+    conversation_id = await _conversation(session)
+    unmodelled = settings.model_copy(update={"online_ai_model": None})
+
+    with pytest.raises(online.OnlineUnavailable):
+        await online.enable(session, unmodelled, conversation_id)
+    await session.commit()
+
+    assert redis_store == {}
+    state = await online.get_state(session, unmodelled, conversation_id)
     assert not state.available and state.unavailable_reason == online.NOT_CONFIGURED
 
 

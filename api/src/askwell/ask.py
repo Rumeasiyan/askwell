@@ -82,7 +82,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from askwell import crypto, passphrase
+from askwell import crypto, online, passphrase
 from askwell.agent.abstain import AbstainReason, compose_abstention
 from askwell.agent.claims import Claim, locate_quoted_span, segment_claims
 from askwell.agent.conflict import compose_conflict, split_conflict_answer
@@ -99,12 +99,14 @@ from askwell.audit import AuditError, Store, record
 from askwell.config import Settings
 from askwell.connections import Engine
 from askwell.db.engine import session_scope
+from askwell.inference import provider
 from askwell.inference.client import (
     GenerationTimings,
     InferenceClient,
     InferenceFailed,
     InferenceUnavailable,
 )
+from askwell.inference.provider import OnlineClient, OnlineFailed
 from askwell.ingest import coverage
 from askwell.inline_clarify import default_assumption, find_blocking
 from askwell.logging import get_logger
@@ -160,6 +162,7 @@ class _Event:
         "fact_citation",
         "clarification",
         "clarification_resolved",
+        "answer_reset",
         "done",
     ]
     data: dict[str, Any]
@@ -207,6 +210,7 @@ class _Turn:
             "fact_citation",
             "clarification",
             "clarification_resolved",
+            "answer_reset",
             "done",
         ],
         data: dict[str, Any],
@@ -1251,6 +1255,60 @@ async def _load_loop_continuation(
     )
 
 
+async def _online_client(
+    factory: async_sessionmaker[AsyncSession], settings: Settings, conversation_id: uuid.UUID
+) -> OnlineClient | None:
+    """The provider client for this conversation's answer, or None to answer
+    locally. `M8-ONLINE-BE-170`.
+
+    Read at the moment of generating, not when the question was asked: the
+    authorisation is the proxy's grant (`askwell.online.get_state`), and it
+    can lapse or be revoked while retrieval runs. A conversation that is not
+    online, a provider that is not configured, or a credential this process
+    does not hold all answer locally — nothing about the choice is guessed.
+    """
+    if not online.configured(settings):
+        return None
+    try:
+        async with session_scope(factory) as db:
+            state = await online.get_state(db, settings, conversation_id)
+    except online.ConversationNotFound:
+        return None
+    except Exception:
+        # The grant could not be read — Redis down, most likely. An
+        # authorisation that cannot be confirmed is not one: local.
+        log.exception("ask_online_state_unreadable", conversation_id=str(conversation_id))
+        return None
+    if not state.online:
+        return None
+    online_target = provider.target(settings, online.proxy_credentials(conversation_id))
+    return provider.OnlineClient(settings, online_target) if online_target else None
+
+
+def _backend_record(
+    local_model: str,
+    online_client: OnlineClient | None,
+    *,
+    answered: bool,
+    fallback: OnlineFailed | None,
+) -> dict[str, Any]:
+    """`messages.trace.backend`: which backend and model wrote this answer,
+    and — when the conversation asked for online and got local — that it
+    asked and why it did not get it. `M8-ONLINE-BE-170`."""
+    if online_client is not None and answered:
+        return {
+            "mode": "online",
+            "model": online_client.model,
+            "destination": online_client.target.destination,
+        }
+    record: dict[str, Any] = {"mode": "local", "model": local_model}
+    if online_client is not None:
+        record["requested"] = "online"
+        if fallback is not None:
+            record["fallback"] = {"reason_code": fallback.reason_code, "detail": str(fallback)}
+    return record
+
+
 async def _run_generation(
     settings: Settings,
     factory: async_sessionmaker[AsyncSession],
@@ -1296,7 +1354,21 @@ async def _run_generation(
     # The model file's own name, not its full path — read from configuration
     # (never hardcoded, `AGENTS.md` §4) so this ticket's "backend and model
     # used" survives a deployment-profile change with no code edit.
-    model_name = settings.inference_model_path.stem
+    # `M8-ONLINE-BE-170`: the identity captured at question time comes
+    # first. `inference_model_path` is the host supervisor's setting and is
+    # not passed to this container, so on its own it recorded the default
+    # stem, `model`, on every turn.
+    identified = (turn.model_identity or {}).get("display_name")
+    model_name = (
+        identified if isinstance(identified, str) and identified else None
+    ) or settings.inference_model_path.stem
+    # `M8-ONLINE-BE-170`: set only on the document path, the one step that
+    # can go online. `answered_online` is whether the answer the user got
+    # came from the provider; `online_fallback` is why it did not, when the
+    # conversation asked for online and got local.
+    online_client: OnlineClient | None = None
+    online_fallback: OnlineFailed | None = None
+    answered_online = False
     turn_started = time.monotonic()
 
     # `M5-LOOP-BE-116`: a `Continue` click names the turn it picks up from.
@@ -1897,42 +1969,109 @@ async def _run_generation(
 
             turn.emit("step", {"label": "Writing your answer.", "kind": "compose"})
 
-            prompt = f"{composed.system_prompt}\n\n{composed.user_content}"
-            # No separator: the directive is a prefill that has to sit
-            # exactly where the model's own output would begin.
-            prompt = f"{prompt}{settings.generation_thinking_directive}"
+            # `M8-ONLINE-BE-170`: a conversation switched to online AI sends
+            # this one step — the composed prompt, already past retrieval,
+            # the threshold and the C7 boundary — to the provider instead.
+            # Everything before it and after it is the same code either way,
+            # so citations are resolved and claims segmented exactly as for a
+            # local answer. A provider failure is never the turn's failure:
+            # the same prompt is answered locally, and the answer says so.
+            online_client = await _online_client(factory, settings, turn.conversation_id)
             compose_started = time.monotonic()
-            stream = client.stream_generate(prompt, max_tokens=settings.generation_max_tokens)
-            # The shipped model reasons in a `<think>` block before writing
-            # anything. Strip it here, at the one point tokens are consumed,
-            # so the stored answer, the reader and `segment_claims` all see
-            # the same text — issue #220, where a rehearsed line inside the
-            # reasoning was counted as a real claim.
-            stripper = ThinkStripper()
-            async for chunk in stream:
-                if turn.stop_requested:
-                    await stream.aclose()
-                    status = "stopped"
-                    break
-                visible = stripper.feed(chunk.text) if chunk.text else ""
-                if visible:
-                    turn.text += visible
-                    turn.emit("token", {"text": visible})
-                    claims = segment_claims(turn.text)
-                    for claim in claims[claims_emitted:]:
-                        _cite_claim(
-                            turn,
-                            claim,
-                            candidates,
-                            citation_rows,
-                            relevant_memory.facts,
-                            relevant_memory.notes,
-                            fact_usage_rows,
-                        )
-                    claims_emitted = len(claims)
-                if chunk.done:
-                    truncated = chunk.truncated
-                    generation_timings = chunk.timings
+            backends: list[OnlineClient | None] = (
+                [online_client, None] if online_client is not None else [None]
+            )
+            for backend in backends:
+                if backend is None:
+                    prompt = f"{composed.system_prompt}\n\n{composed.user_content}"
+                    # No separator: the directive is a prefill that has to sit
+                    # exactly where the model's own output would begin.
+                    prompt = f"{prompt}{settings.generation_thinking_directive}"
+                    stream = client.stream_generate(
+                        prompt, max_tokens=settings.generation_max_tokens
+                    )
+                else:
+                    stream = backend.stream_generate(
+                        composed.system_prompt,
+                        composed.user_content,
+                        max_tokens=settings.generation_max_tokens,
+                        timeout_seconds=settings.online_ai_timeout_seconds,
+                    )
+                # The shipped model reasons in a `<think>` block before writing
+                # anything. Strip it here, at the one point tokens are consumed,
+                # so the stored answer, the reader and `segment_claims` all see
+                # the same text — issue #220, where a rehearsed line inside the
+                # reasoning was counted as a real claim.
+                stripper = ThinkStripper()
+                try:
+                    async for chunk in stream:
+                        if turn.stop_requested:
+                            await stream.aclose()
+                            status = "stopped"
+                            break
+                        visible = stripper.feed(chunk.text) if chunk.text else ""
+                        if visible:
+                            turn.text += visible
+                            turn.emit("token", {"text": visible})
+                            claims = segment_claims(turn.text)
+                            for claim in claims[claims_emitted:]:
+                                _cite_claim(
+                                    turn,
+                                    claim,
+                                    candidates,
+                                    citation_rows,
+                                    relevant_memory.facts,
+                                    relevant_memory.notes,
+                                    fact_usage_rows,
+                                )
+                            claims_emitted = len(claims)
+                        if chunk.done:
+                            truncated = chunk.truncated
+                            generation_timings = chunk.timings
+                except OnlineFailed as error:
+                    online_fallback = error
+                    mid_answer = bool(turn.text)
+                    if mid_answer:
+                        # Half an online answer followed by a whole local one
+                        # would be two answers with one set of citations. The
+                        # local answer starts clean, and the reader is told to
+                        # drop what it already showed.
+                        turn.text = ""
+                        citation_rows.clear()
+                        fact_usage_rows.clear()
+                        claims_emitted = 0
+                        truncated = False
+                        turn.emit("answer_reset", {"reason": str(error)})
+                    turn.emit(
+                        "step",
+                        {
+                            "label": f"{error} Answering with the local model instead.",
+                            "kind": "backend",
+                        },
+                    )
+                    trace_steps.append(
+                        {
+                            "kind": "online_fallback",
+                            "reason_code": error.reason_code,
+                            "detail": str(error),
+                            "mid_answer": mid_answer,
+                        }
+                    )
+                    log.warning(
+                        "ask_online_fallback",
+                        message_id=str(turn.message_id),
+                        reason_code=error.reason_code,
+                        mid_answer=mid_answer,
+                    )
+                    continue
+                answered_online = backend is not None
+                if backend is not None:
+                    # `model_identity` describes the local model file, for
+                    # the unvalidated-model marker (`M7-SET-FE-146a`). An
+                    # online answer was not written by that file, so the
+                    # marker must not claim it was.
+                    turn.model_identity = {"source": "online", "display_name": backend.model}
+                break
 
             tail = stripper.flush()
             if tail:
@@ -1955,6 +2094,14 @@ async def _run_generation(
                 # Treat it as the truncation it is rather than storing a
                 # draft as the answer.
                 truncated = True
+
+            if online_fallback is not None:
+                # Said in the answer itself, not only in a step: the step
+                # list is collapsed once the turn is over, and which model
+                # wrote an answer is part of the answer.
+                appended_note = f"\n\nAnswered by the local model. {online_fallback}" + (
+                    appended_note or ""
+                )
 
             if appended_note is not None:
                 turn.text += appended_note
@@ -2011,11 +2158,14 @@ async def _run_generation(
 
     duration_ms = int((time.monotonic() - turn_started) * 1000)
 
+    backend_record = _backend_record(
+        model_name, online_client, answered=answered_online, fallback=online_fallback
+    )
     bounded_steps, steps_truncated = _bound_trace_steps(trace_steps)
     trace = {
         "steps": bounded_steps,
         "steps_truncated": steps_truncated,
-        "backend": {"mode": "local", "model": model_name},
+        "backend": backend_record,
         "stopped_early": status != "completed",
         "injection_flagged": injection_flagged,
         "injection_patterns": list(injection_patterns),
@@ -2088,6 +2238,14 @@ async def _run_generation(
             # rotated out of the file ring buffer, in the same step as this
             # turn's own write — see `_trim_rotated_traces`.
             await _trim_rotated_traces(db, rotated)
+            if answered_online:
+                await db.execute(
+                    text(
+                        "UPDATE messages SET model_identity = CAST(:model_identity AS jsonb) "
+                        "WHERE id = :id"
+                    ),
+                    {"id": turn.message_id, "model_identity": json.dumps(turn.model_identity)},
+                )
             # `ON CONFLICT` rather than a plain `UPDATE`: `ask()` always
             # inserts the pending row ahead of this, but a caller driving
             # `_generate` directly against a turn it built itself — every
@@ -2182,8 +2340,11 @@ async def _run_generation(
                     "source_id": str(source_id) if source_id else None,
                     "citation_count": len(citation_rows),
                     "duration_ms": duration_ms,
-                    "backend": "local",
-                    "model": model_name,
+                    "backend": backend_record["mode"],
+                    "model": backend_record["model"],
+                    "online_fallback": (
+                        online_fallback.reason_code if online_fallback is not None else None
+                    ),
                     "retrieved_chunks": [
                         {"chunk_id": str(candidate.chunk_id), "score": str(score)}
                         for candidate, score in scored_candidates
