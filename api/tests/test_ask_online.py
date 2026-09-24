@@ -8,8 +8,10 @@ same records, with the backend and model named on each — and that a provider
 failure of any kind answers locally and says so rather than failing the turn.
 """
 
+import asyncio
 import json
 import uuid
+import zipfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -18,13 +20,14 @@ import httpx
 import psycopg
 import pytest
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from askwell import ask as ask_module
-from askwell import online
+from askwell import crypto, log_export, online, passphrase, provider_key
 from askwell.config import Settings
 from askwell.inference import provider
 from askwell.inference.provider import OnlineClient, OnlineTarget
+from askwell.logging import configure_logging
 
 from .test_ask_api import (
     _app,
@@ -48,10 +51,21 @@ def _online_settings(settings: Settings, tmp_path: Path) -> Settings:
     return settings.model_copy(
         update={
             "trace_dir": tmp_path / "traces",
-            "online_ai_destination": DESTINATION,
-            "online_ai_model": MODEL,
+            "install_secret_path": tmp_path / "install.key",
         }
     )
+
+
+async def _hold_key(db: AsyncSession, settings: Settings, api_key: str = "sk-test-key") -> None:
+    install_secret = crypto.load_or_create_install_secret(settings.install_secret_path)
+    await provider_key.store(
+        db, crypto.derive_key(install_secret), provider_key.Provider(DESTINATION, MODEL), api_key
+    )
+
+
+def _forget_key(database_url: str) -> None:
+    with psycopg.connect(database_url, autocommit=True) as db:
+        db.execute("DELETE FROM settings WHERE key = %s", (provider_key.SETTING_KEY,))
 
 
 def _sse(*pieces: str, finish: str = "stop") -> bytes:
@@ -287,12 +301,12 @@ def test_an_uncited_online_answer_is_treated_as_an_uncited_local_one(
     [
         (
             lambda r: (_ for _ in ()).throw(httpx.ConnectError("no route", request=r)),
-            provider.NETWORK_UNAVAILABLE,
-            "the network is unavailable",
+            provider.FAILED,
+            "network gateway is not running",
             False,
         ),
         (lambda _r: httpx.Response(429), provider.RATE_LIMITED, "limiting requests", True),
-        (lambda _r: httpx.Response(401), provider.REFUSED, "refused the request", True),
+        (lambda _r: httpx.Response(401), provider.REFUSED, "rejected your key", True),
     ],
 )
 def test_a_failure_before_the_answer_falls_back_to_local_and_says_so(
@@ -397,6 +411,7 @@ async def test_only_a_conversation_authorised_in_this_process_gets_the_provider(
     factory = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with factory() as db:
+            await _hold_key(db, settings)
             conversation_ids = [uuid.uuid4(), uuid.uuid4()]
             for conversation_id in conversation_ids:
                 await db.execute(
@@ -420,11 +435,19 @@ async def test_only_a_conversation_authorised_in_this_process_gets_the_provider(
         assert (chosen.target.proxy_username, chosen.target.proxy_password) == (
             online.proxy_credentials(online_one)
         )
-        assert chosen.target.api_key is None, "no key is held until M8-KEY-BE-173"
+        assert chosen.target.api_key == "sk-test-key", "the stored key, decrypted at send"
+        assert chosen.target.destination == DESTINATION
 
         assert await ask_module._online_client(factory, settings, local_one) is None
-        unmodelled = settings.model_copy(update={"online_ai_model": None})
-        assert await ask_module._online_client(factory, unmodelled, online_one) is None
+
+        # A passphrase not yet entered: the key cannot be read, so nothing
+        # is sent with it — answered locally, not an error at send.
+        async def _locked(*_args: object) -> bytes:
+            raise passphrase.Locked("locked")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(passphrase, "current_key", _locked)
+            assert await ask_module._online_client(factory, settings, online_one) is None
 
         async with factory() as db:
             await online.disable(db, settings, online_one)
@@ -432,6 +455,7 @@ async def test_only_a_conversation_authorised_in_this_process_gets_the_provider(
         assert await ask_module._online_client(factory, settings, online_one) is None
     finally:
         online._credentials.clear()
+        _forget_key(database_url)
         async with factory() as db:
             await db.execute(text("UPDATE conversations SET ai_backend = 'local'"))
             await db.commit()
@@ -494,6 +518,11 @@ def test_an_online_conversation_takes_no_question_until_what_it_sends_is_confirm
     try:
         with client:
             _with_session(client)
+            stored = client.put(
+                "/settings/online-key",
+                json={"destination": DESTINATION, "model": MODEL, "api_key": "sk-test-key"},
+            )
+            assert stored.status_code == 200, stored.text
             created = client.post("/conversations")
             assert created.status_code == 201
             conversation_id = created.json()["conversation_id"]
@@ -536,6 +565,7 @@ def test_an_online_conversation_takes_no_question_until_what_it_sends_is_confirm
             done = next(data for kind, data in _events(answered.text) if kind == "done")
     finally:
         online._credentials.clear()
+        _forget_key(database_url)
         with psycopg.connect(database_url, autocommit=True) as db:
             db.execute("UPDATE conversations SET ai_backend = 'local'")
 
@@ -559,3 +589,175 @@ def test_an_online_conversation_takes_no_question_until_what_it_sends_is_confirm
     assert [row[0] for row in confirmations] == [
         {"conversation_id": conversation_id, "version": "1"}
     ]
+
+
+# --- the user's key, end to end (`M8-KEY-BE-173`) ------------------------------
+
+SENTINEL_KEY = "sk-SENTINEL-askwell-must-never-repeat-0123456789"
+
+
+async def _export_everything(database_url: str, settings: Settings, into: Path) -> str:
+    """Run "Export everything" and return every file in it, concatenated."""
+    engine = create_async_engine(database_url.replace("postgresql://", "postgresql+psycopg://", 1))
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with factory() as db:
+            job_id = await log_export.enqueue(
+                db,
+                since=None,
+                until=None,
+                acknowledged_decrypted_export=True,
+                scope=log_export.SCOPE_EVERYTHING,
+            )
+            await db.commit()
+        await log_export.run_job(factory, settings, job_id)
+    finally:
+        await engine.dispose()
+    archive = settings.export_dir / f"askwell-export-{job_id}.zip"
+    assert archive.exists(), "the export ran"
+    with zipfile.ZipFile(archive) as opened:
+        return "\n".join(opened.read(name).decode("utf-8", "replace") for name in opened.namelist())
+
+
+def test_a_stored_key_survives_a_restart_is_sent_and_appears_nowhere_else(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    database_url: str,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """The ticket's acceptance criterion. Store a known sentinel, restart,
+    answer one turn online and have the provider reject the key on a second
+    (echoing it back, as real providers do), then read every output the
+    ticket names — logs, traces, audit records, error text, the export and
+    every response — for the sentinel. It is in the provider's
+    `Authorization` header and nowhere else."""
+    import redis.asyncio as redis
+
+    store: dict[str, str] = {}
+    monkeypatch.setattr(redis, "Redis", lambda **_kwargs: FakeRedis(store, {}))
+    monkeypatch.setattr(online, "DISCLOSURE", online.Disclosure(version="1", text="What goes."))
+    online._credentials.clear()
+    _truncate(database_url)
+    _forget_key(database_url)
+    settings = _online_settings(settings, tmp_path).model_copy(
+        update={"export_dir": tmp_path / "exports"}
+    )
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "Notice is ninety days.", vector)
+    _patch_client(
+        monkeypatch, _FakeInferenceClient(settings, tokens=["Ninety days [1]."], vector=vector)
+    )
+
+    authorisations: list[str] = []
+    rejecting = False
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        authorisations.append(request.headers.get("Authorization", ""))
+        if rejecting:
+            return httpx.Response(
+                401, text=f'{{"error": "Incorrect API key provided: {SENTINEL_KEY}"}}'
+            )
+        return httpx.Response(200, content=_sse("Ninety days [1]."))
+
+    real_client = provider.OnlineClient
+    monkeypatch.setattr(
+        provider,
+        "OnlineClient",
+        lambda s, t: real_client(s, t, transport=httpx.MockTransport(respond)),
+    )
+
+    responses: list[str] = []
+    try:
+        with _app(settings, monkeypatch, tmp_path, database_url) as client:
+            _with_session(client)
+            stored = client.put(
+                "/settings/online-key",
+                json={"destination": DESTINATION, "model": MODEL, "api_key": SENTINEL_KEY},
+            )
+            assert stored.status_code == 200, stored.text
+            responses.append(stored.text)
+            # A malformed body is refused without repeating what was sent.
+            refused = client.put("/settings/online-key", json={"api_key": SENTINEL_KEY})
+            assert refused.status_code == 400
+            responses.append(refused.text)
+
+        # The restart: a new app, a new process's worth of in-memory state.
+        online._credentials.clear()
+        with _app(settings, monkeypatch, tmp_path, database_url) as client:
+            _with_session(client)
+            status = client.get("/settings/online-key")
+            assert status.json()["set"] is True, "the key survived the restart"
+            responses.append(status.text)
+            conversation_id = client.post("/conversations").json()["conversation_id"]
+            enabled = client.post(f"/conversations/{conversation_id}/online")
+            assert enabled.json()["destination"] == DESTINATION
+            client.post(
+                f"/conversations/{conversation_id}/online/disclosure", json={"version": "1"}
+            )
+            question = {"question": "How long is the notice?", "conversation_id": conversation_id}
+
+            answered = client.post("/ask", json=question)
+            assert answered.status_code == 200, answered.text
+            responses.append(answered.text)
+            done = next(data for kind, data in _events(answered.text) if kind == "done")
+            _content, trace, _citations, _audit = _stored(
+                database_url, uuid.UUID(done["message_id"])
+            )
+            assert trace["backend"]["mode"] == "online", "the key was used for an online turn"
+
+            rejecting = True
+            rejected = client.post("/ask", json=question)
+            assert rejected.status_code == 200, rejected.text
+            responses.append(rejected.text)
+            steps = [d["label"] for k, d in _events(rejected.text) if k == "step"]
+            assert any("rejected your key" in label for label in steps)
+
+            for path in (f"/conversations/{conversation_id}/online", "/network"):
+                responses.append(client.get(path).text)
+
+            removed = client.delete("/settings/online-key")
+            assert removed.json()["set"] is False
+            assert removed.json()["unavailable_reason"] == online.NO_KEY
+            responses.append(removed.text)
+            after = client.get(f"/conversations/{conversation_id}/online").json()
+            assert after["ai_backend"] == "local" and after["available"] is False
+            assert after["unavailable_reason"] == online.NO_KEY
+    finally:
+        online._credentials.clear()
+        _forget_key(database_url)
+        with psycopg.connect(database_url, autocommit=True) as db:
+            db.execute("UPDATE conversations SET ai_backend = 'local'")
+
+    assert authorisations == [f"Bearer {SENTINEL_KEY}"] * 2, "sent, and only to the provider"
+
+    logs = capfd.readouterr()
+    # `create_app` bound logging to this test's captured stream, which closes
+    # with it. Rebind to the session's, or the next test to log writes to a
+    # closed file.
+    with capfd.disabled():
+        configure_logging(settings.log_level)
+    exported = asyncio.run(_export_everything(database_url, settings, tmp_path))
+    with psycopg.connect(database_url, autocommit=True) as db:
+        records = json.dumps(
+            [
+                db.execute("SELECT kind, payload FROM audit_decisions").fetchall(),
+                db.execute("SELECT kind, payload FROM audit_interactions").fetchall(),
+                db.execute("SELECT content, trace FROM messages").fetchall(),
+                db.execute("SELECT key, value FROM settings").fetchall(),
+            ],
+            default=str,
+        )
+    trace_files = "\n".join(
+        path.read_text(encoding="utf-8") for path in settings.trace_dir.rglob("*") if path.is_file()
+    )
+    outputs = {
+        "logs": logs.out + logs.err,
+        "audit records, messages and traces in the database": records,
+        "trace files": trace_files,
+        "the export": exported,
+        "responses and error text": "\n".join(responses),
+    }
+    assert trace_files and exported and records and outputs["logs"], "each output was read"
+    for name, output in outputs.items():
+        assert SENTINEL_KEY not in output, f"the key appeared in {name}"

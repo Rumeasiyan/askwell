@@ -46,6 +46,31 @@ Since `M1-ASK-FE-039` a question can be typed and watched, for the first time: t
 
 ## Last completed
 
+**`0.7.43` — `M8-KEY-BE-173`**: the user's provider key, held as a secret. New
+`askwell.provider_key`: one `settings` row, `online_provider_key`, holding the key as a Fernet
+token under `passphrase.current_key` and, in the clear, the provider it belongs to (`destination`,
+`model`). `ASKWELL_ONLINE_AI_DESTINATION`/`_MODEL` are **removed**: online AI is available only
+while a key is held and readable (`online.NO_KEY`, `online.KEY_LOCKED`), `enable` authorises the
+key's destination, and `ask._online_client` decrypts the key at send time and uses it only if its
+destination matches the grant's. `GET`/`PUT`/`DELETE /settings/online-key` (the body `M8-KEY-FE-174`
+will call; `PUT` parses by hand so a validation error cannot echo the key). Removing the key, or
+replacing it for another destination, revokes every conversation (`key_removed`/`key_replaced`).
+Records: `online_key_stored`/`_replaced`/`_removed`, provider only. Passphrase set/change/remove
+re-encrypts it. A `401`/`403` says the provider rejected your key. **#735 fixed**: a connect
+failure is Askwell's gateway not running, not the network. **#730 re-owned with a guard**: a test
+fails if `online.DISCLOSURE` is set while `compose.yaml`'s Redis has no auth, so #737 cannot land
+before it. The sentinel test (`test_ask_online.py`) stores a key, restarts, answers online, has the
+provider reject it echoing the key, then greps logs, audit, traces, trace files, "Export
+everything" and every response; a mutation logging the key fails it. **Verified:** `check` (1181
+passed), `test-db` (956 passed). **Live walkthrough** (rebuilt `api`, real stack): `PUT` a
+sentinel key → `set: true`; a body missing fields → 400 without the key; `podman compose restart
+api` → still `set: true`; enabling a conversation authorised `api.example.com:443`, the key's
+destination; `DELETE` → the conversation read `local` at once with the no-key sentence, and a
+second enable 409'd with it; records `online_key_stored`/`_removed` and `online_ai_revoked`
+(`key_removed`) name the provider only. The sentinel appeared in none of the `api`, `worker` or
+`egress-proxy` logs, `pg_dump`, or `/var/lib/askwell`. **Not walkable live:** an actual online turn —
+every send is refused until #737 records the disclosure; the in-process sentinel test covers it.
+
 **`0.7.42` — `M8-ONLINE-OBS-172`**: the local record of each provider request. Built against
 #255, not the ticket's credit-era text: there is no billing, so nothing is transmitted to Askwell
 and #45's four billing fields govern nothing. `OnlineClient` leaves a `Transmission` after every

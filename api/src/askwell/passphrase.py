@@ -61,7 +61,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from askwell import content_encryption, crypto
+from askwell import content_encryption, crypto, provider_key
 from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
@@ -316,6 +316,7 @@ async def set_passphrase(
     await content_encryption.migrate_chunk_content(session, old_key, new_key, target_encrypted=True)
 
     await _reencrypt_sources(session, old_key, new_key)
+    await provider_key.reencrypt(session, old_key, new_key)
     verifier = crypto.encrypt(_CANARY, new_key)
     await set_setting(session, VERIFIER_KEY, base64.urlsafe_b64encode(verifier).decode("ascii"))
     await record(session, Store.DECISIONS, PASSPHRASE_SET, {})
@@ -352,6 +353,7 @@ async def change_passphrase(
     # values and resumes from whatever `content_encrypted` left behind.
     await content_encryption.migrate_chunk_content(session, old_key, new_key, target_encrypted=True)
     await _reencrypt_sources(session, old_key, new_key)
+    await provider_key.reencrypt(session, old_key, new_key)
     verifier = crypto.encrypt(_CANARY, new_key)
     await set_setting(session, VERIFIER_KEY, base64.urlsafe_b64encode(verifier).decode("ascii"))
     await record(session, Store.DECISIONS, PASSPHRASE_CHANGED, {})
@@ -384,6 +386,7 @@ async def remove_passphrase(
         session, old_key, new_key, target_encrypted=False
     )
     await _reencrypt_sources(session, old_key, new_key)
+    await provider_key.reencrypt(session, old_key, new_key)
     await session.execute(text("DELETE FROM settings WHERE key = :key"), {"key": VERIFIER_KEY})
     await record(session, Store.DECISIONS, PASSPHRASE_REMOVED, {})
 

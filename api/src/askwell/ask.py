@@ -1273,15 +1273,25 @@ async def _online_client(
     Read at the moment of generating, not when the question was asked: the
     authorisation is the proxy's grant (`askwell.online.get_state`), and it
     can lapse or be revoked while retrieval runs. A conversation that is not
-    online, a provider that is not configured, or a credential this process
-    does not hold all answer locally — nothing about the choice is guessed.
+    online, no provider key held, a key this process cannot decrypt, or a
+    credential this process does not hold all answer locally — nothing about
+    the choice is guessed.
+
+    The key is decrypted here and nowhere earlier (`M8-KEY-BE-173`), and only
+    used if its destination is the one this conversation's grant names: a
+    key replaced for another provider since the grant opened must not ride
+    that grant.
     """
-    if not online.configured(settings):
-        return None
     try:
         async with session_scope(factory) as db:
             state = await online.get_state(db, settings, conversation_id)
+            key = await online.key_for_send(db, settings) if state.online else None
     except online.ConversationNotFound:
+        return None
+    except crypto.CredentialsLocked:
+        # A passphrase not yet entered, or a lost install secret. The key
+        # cannot be read, so nothing can be sent with it.
+        log.warning("ask_online_key_locked", conversation_id=str(conversation_id))
         return None
     except Exception:
         # The grant could not be read — Redis down, most likely. An
@@ -1297,7 +1307,9 @@ async def _online_client(
         # confirmed what will be sent.
         log.warning("ask_online_not_confirmed", conversation_id=str(conversation_id))
         return None
-    online_target = provider.target(settings, online.proxy_credentials(conversation_id))
+    if key is None or key.provider.destination != state.destination:
+        return None
+    online_target = provider.target(online.proxy_credentials(conversation_id), key)
     return provider.OnlineClient(settings, online_target) if online_target else None
 
 
