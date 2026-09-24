@@ -1594,7 +1594,7 @@ Take option 1 of #523: a `SECURITY DEFINER` function (or an equivalently narrow 
 - A user sells the laptop, runs reset, and finds the interaction log genuinely empty rather than a reset that reported success and changed nothing.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M0-DATA-BE-012, M7-BACKUP-BE-157.
+- **Dependencies:** M0-DATA-OBS-015, M7-BACKUP-BE-157.
 - **API / Data Touchpoints:** `api/src/askwell/reset.py`; a new Alembic migration; the grants in `20260827_a8208099ef38`; `api/tests/test_reset.py` and its `factory` fixture.
 - **Assumptions:** The test harness can connect as a role restricted the way `askwell_app` is — `test_sql_execute_connection_db.py` and `test_connections_write_probe_db.py` already do this for other restricted roles, so the pattern exists.
 
@@ -1968,7 +1968,7 @@ Cold start. Ask a question on the shipped model — no marker. Open settings, pl
 - A user opens an issue with their version, platform, profile and a copied trace, and the maintainer diagnoses it without a round trip.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M5-TRACE-FE-121, M7-SET-FE-149.
+- **Dependencies:** M5-TRACE-FE-121.
 - **API / Data Touchpoints:** None.
 - **Assumptions:** A stated boundary reduces disappointment more than an unstated ambition raises satisfaction.
 
@@ -2296,7 +2296,7 @@ Render each position as its own block: the claim, its source, and the **document
 - A user sees the 2026 handbook says 9 PM and the 2025 one says 8 PM, with both dates, and settles it in one click instead of opening both files.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M2-CONFLICT-BE-058, M1-CITE-FE-044.
+- **Dependencies:** M2-PARTIAL-BE-059, M2-PARTIAL-FE-058, M1-CITE-FE-044.
 - **API / Data Touchpoints:** `api/src/askwell/agent/conflict.py`; the conflict renderer in `web/components/ask/`; whatever carries a document date.
 - **Assumptions:** A per-document date exists or can be extracted. **If it does not, stop and say so** — that is its own ticket, not something to improvise inside this one.
 
@@ -2397,7 +2397,7 @@ Render each position as its own block: the claim, its source, and the **document
 - A user opens the queue for the first time and the first question is one only they can answer — which is the one impression that decides whether they ever open it again.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M3-RAISE-BE-071, M2-CONFLICT-BE-058.
+- **Dependencies:** M3-RAISE-BE-071, M2-PARTIAL-BE-059.
 - **API / Data Touchpoints:** `api/src/askwell/clarify.py` and the candidate ranking.
 - **Assumptions:** Conflict detection already produces something the ranker can see. If it does not, wiring that is part of this ticket.
 
