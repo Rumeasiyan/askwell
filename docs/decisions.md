@@ -4,6 +4,72 @@ Append-only. **Newest first.** Never edit an entry to change its meaning — if 
 
 **Bar for an entry:** something a competent person would later ask *"why is it like this?"* about. Architecture changes, dependency choices, resolved `docs/PRD.md` §11 questions, reversals. **Not** routine implementation choices — those are visible in the diff.
 
+## 2026-09-24 — `M7-DATA-BE-159a`: reset empties the audit tables through one guarded definer function
+
+**Decision.** Migration `b5d09e3c71a8` adds a fourth database role, `askwell_audit_reset`. It is
+`NOLOGIN` and holds only `SELECT, TRUNCATE` on `audit_decisions` and `audit_interactions`. It owns
+`askwell_reset_audit()`, a `SECURITY DEFINER` function with a pinned `search_path`. `EXECUTE` is
+revoked from `PUBLIC` and granted to `askwell_app` alone. The function truncates both audit tables
+only if the newest decisions record is a `reset_requested` inserted by the calling transaction
+(its `xmin` is the caller's transaction id). It takes the same advisory lock `askwell.audit.record`
+takes, so nothing can be appended between the check and the truncate. `askwell.reset.perform`
+runs all of it in one transaction: record `reset_requested`, `DELETE` every other table
+(children first), call the function, then append `reset_performed`. That last record is the
+genesis of the new decisions chain. `askwell_app`'s own grants are unchanged.
+
+**Why.** The first reset (`M7-DATA-FE-160`, never merged) issued one `TRUNCATE` naming every table.
+`askwell_app` has no `TRUNCATE` on *any* table, and no `UPDATE`/`DELETE`/`TRUNCATE` on the audit
+tables (2026-08-27, "the database has three roles"). So Postgres refused the whole atomic statement
+and reset cleared nothing. Its tests passed because they connected as the owner, a superuser who
+bypasses every grant (#523). C6 already says the user owns the machine and can delete their data. A
+confirmed, recorded reset is that deletion. What C6 protects against is the application rewriting
+history *as a side effect*. So the privilege had to be exactly as wide as one deliberate act.
+
+Each layer is narrow on its own. The definer role cannot reach any other table even if the function
+body were wrong. It cannot log in, so no credential for it exists (C8). `askwell_readonly`, which
+runs model-generated SQL (C2), cannot execute the function. The transaction guard makes "only reset
+can call it" a property the database checks, not a convention. A caller cannot empty the audit
+tables without first recording, in the same transaction, that it is doing so. A committed request
+from an earlier transaction is refused, and so is a request followed by any other record.
+`reset_performed` is appended afterwards because `reset_requested` is necessarily destroyed with
+the table it lives in. Without it, the one record that could say a reset happened would be the one
+thing that vanished without trace.
+
+The ticket said "the non-audit truncate unchanged". There was no such truncate that worked: `askwell_app` cannot
+`TRUNCATE` anything. The ordinary tables are emptied with `DELETE`, which it already has, the same
+way `askwell.restore._clear_existing` does. `TRUNCATE`'s speed does not justify a new grant, and
+one reset per machine is not a hot path.
+
+`DELETE` brings one hazard `TRUNCATE` did not: under read committed it neither sees nor waits for
+a row a concurrent transaction has inserted but not committed. A worker's insert that commits
+mid-reset would survive a reset that reported success. So `perform` first takes `LOCK TABLE ...
+IN EXCLUSIVE MODE` on every ordinary table (reads continue; writes wait for reset to commit).
+`askwell_app` may take that lock because it holds `DELETE`. The ticket's edge case assumed an
+"existing refusal" while ingestion runs; no such refusal existed anywhere, and waiting is the
+better behaviour for a user who has confirmed a reset. A worker deadlocking against the locks is
+aborted by Postgres; if reset is the one aborted, it raises and removes nothing.
+
+**Rejected.** Granting `askwell_app` `TRUNCATE` on the audit tables: every code path would hold it,
+and C6's grant would become advisory. A second, elevated connection used only by reset (#523
+option 2): that puts a second credential inside the application, next to every other path. Making the
+definer function truncate every table: the ordinary tables need no elevation, so that widens the
+privilege for nothing. Owning the function as `askwell` (the superuser that runs migrations):
+simpler, but the function body would then run with every privilege in the cluster. A trigger- or
+Python-only check: the rules above already rejected both for C6 (2026-08-27).
+
+**Consequences.** The permission model is now four roles. The fourth can never log in and is
+created by the migration, not by `deploy/postgres/10-roles.sh`. Migrations must run as a superuser or
+a role that can `SET ROLE askwell_audit_reset`, which is already true of every install. A table
+added to the schema must be added to `askwell.reset.TABLES`; `test_reset.py` fails until it is.
+Reset tests connect as `askwell_app`. Sandbox databases, in-process passphrase state and the
+confirmation surface remain `M7-DATA-FE-160`'s.
+
+**Refs.** #523, `M7-DATA-BE-159a`, `api/src/askwell/reset.py`,
+`api/src/askwell/db/migrations/versions/20260924_b5d09e3c71a8_audit_reset_function.py`,
+`api/tests/test_reset.py`, `docs/audit-log.md` §4, `AGENTS.md` §3 C6.
+
+---
+
 ## 2026-09-24 — `M7-SET-FE-146`: a second model swap while one runs is refused, not queued
 
 **Decision.** One swap at a time, enforced by a module-level `asyncio.Lock` in

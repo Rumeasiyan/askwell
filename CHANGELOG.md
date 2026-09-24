@@ -4,6 +4,22 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.28 - 2026-09-24
+
+`Fixed`: `M7-DATA-BE-159a` — reset now works against a real install, and it empties the audit
+log too (#523). `POST /reset` removes everything in Askwell's own database in one transaction:
+sources, documents, memory, conversations, settings, job records, and both audit stores. If any
+step is refused, nothing is removed. The ordinary tables are emptied with `DELETE`, which the app's
+database role already has. The audit tables can only be emptied through one database function,
+and that function refuses unless the caller has just recorded, in the same transaction, that it is
+resetting. Everywhere else the app still cannot change or delete an audit record. The reset
+is recorded before anything goes, and again afterwards as the first record of the new, empty
+log, so the reset itself is the one thing that remains.
+
+`Security`: a fourth database role, `askwell_audit_reset`, which cannot log in, owns that function
+and holds nothing but `SELECT, TRUNCATE` on the two audit tables. The read-only role that runs
+model-generated SQL cannot call the function.
+
 ## 0.7.27 - 2026-09-24
 
 `Added`: `M7-SET-FE-146` — Settings → Model and speed, now the first settings section. It

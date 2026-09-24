@@ -35,6 +35,7 @@ from askwell.model_select import reapply_user_model, register_model_select
 from askwell.network import read_activity
 from askwell.passphrase import register_passphrase
 from askwell.probe import register_probe
+from askwell.reset import register_reset
 from askwell.restore import register_restore
 from askwell.retrieve import register_retrieval_threshold, register_search
 from askwell.review import register_review
@@ -165,6 +166,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_log_verify(app, app.state.sessions)
     register_backup(app, resolved, app.state.sessions)
     register_restore(app, resolved, app.state.sessions)
+    register_reset(app, app.state.sessions)
     register_passphrase(app, resolved, app.state.sessions)
     register_update_check(app, resolved, app.state.sessions)
     register_voice_channel(
