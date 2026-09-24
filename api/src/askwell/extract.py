@@ -18,11 +18,27 @@ one of these formats fails with a reason a person can read
 (`docs/data-sources.md` §6: "never silently dropped"), rather than an
 `AttributeError` three frames into a library that was never going to work.
 Filed as a follow-up: issue #121.
+
+**A document's own date is recorded here for every format but PDF.**
+`M7-FIX-BE-170a`: OOXML core properties live in the same zip every Office
+format shares, so they are read once here (`askwell.document_date.from_ooxml`)
+rather than three times in three extractors; text-like formats carry no
+metadata date, and get the filename's or none. PDF records its own, from the
+`/Info` dictionary of the document `extract_pdf` already has open — reading it
+here would open the file twice.
 """
 
+import asyncio
 from typing import TYPE_CHECKING
 
-from askwell import extract_docx, extract_pdf, extract_pptx, extract_text, extract_xlsx
+from askwell import (
+    document_date,
+    extract_docx,
+    extract_pdf,
+    extract_pptx,
+    extract_text,
+    extract_xlsx,
+)
 from askwell.extract_common import check_readable
 from askwell.logging import get_logger
 
@@ -43,6 +59,7 @@ _MARKDOWN = "text/markdown"
 _PLAIN = "text/plain"
 
 _TEXT_LIKE = frozenset({_HTML, _MARKDOWN, _PLAIN})
+_OOXML = frozenset({_DOCX, _PPTX, _XLSX})
 
 _LEGACY_OFFICE = {
     "application/msword": "an older .doc Word file",
@@ -69,7 +86,8 @@ async def run(
     check_readable(work)
     if work.mime == _PDF:
         await extract_pdf.run(work, report, factory)
-    elif work.mime == _DOCX:
+        return
+    if work.mime == _DOCX:
         await extract_docx.run(work, report, factory)
     elif work.mime == _PPTX:
         await extract_pptx.run(work, report, factory)
@@ -87,3 +105,9 @@ async def run(
         raise UnsupportedForExtraction(
             f"Askwell has no extractor for {work.mime!r} ({work.filename})."
         )
+    metadata = (
+        await asyncio.to_thread(document_date.from_ooxml, work.path)
+        if work.mime in _OOXML
+        else None
+    )
+    await document_date.record(factory, work, metadata)

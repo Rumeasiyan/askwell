@@ -4,6 +4,19 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.37 - 2026-09-24
+
+`Added`: `M7-FIX-BE-170a`. Askwell now records each document's own date as well as the date it
+was added. The date comes from the file's metadata when it has one (a PDF's modification or
+creation date, or a Word, PowerPoint or Excel file's document properties). Otherwise it comes
+from a date in the file's name, such as `store_hours_2026.pdf` or `minutes_2026-03-15.docx`. It
+keeps only as much detail as the source gave: a year in a filename stays a year and is never
+shown as 1 January. It also records where the date came from, because a file's metadata is a
+claim and not proof. A document with neither has no date and is treated as "Date unknown". The
+date it was added is never used in its place. When two sources conflict, they are now ordered by
+their own dates rather than by the order they were added in. Documents added before this version
+get a date the next time their source is re-indexed.
+
 ## 0.7.36 - 2026-09-24
 
 `Added`: `M7-QA-TEST-168`, the release readiness checklist. `docs/release-checklist.md` gathers

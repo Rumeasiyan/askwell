@@ -39,8 +39,9 @@ would be a cycle.
 
 import asyncio
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from fastapi import FastAPI, Response
@@ -52,6 +53,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
+from askwell.document_date import iso_for
 from askwell.ingest import refresh_source
 from askwell.logging import get_logger
 from askwell.roots import SourceState, covering, source_availability
@@ -73,7 +75,8 @@ async def _find(
         text(
             "SELECT d.id, d.filename, d.path, d.mime, d.page_count, d.anchor_kind, "
             "d.status, d.superseded_by, d.source_id, d.sha256, d.missing_since, "
-            "d.added_at, d.deleted_at, d.deleted_reason, s.root_path "
+            "d.added_at, d.deleted_at, d.deleted_reason, s.root_path, "
+            "d.document_date, d.document_date_precision, d.document_date_source "
             f"FROM documents d JOIN sources s ON s.id = d.source_id WHERE {clause}"
         ),
         {"id": document_id},
@@ -115,6 +118,25 @@ class Availability:
 
 def _isoformat(value: object) -> str | None:
     return value.isoformat() if isinstance(value, datetime) else None
+
+
+def _document_date(found: Mapping[str, object]) -> dict[str, object]:
+    """The document's own date, beside — never instead of — `added_at`.
+
+    `M7-FIX-BE-170a`. `document_date` is truncated to its precision (`2026`,
+    `2026-03`, `2026-03-15`) so the padded first-of-period value stored in the
+    column cannot be rendered as a full date by a caller that forgot to read
+    the precision. `null` for all three means unknown; nothing substitutes
+    `added_at` for it.
+    """
+    value, precision = found["document_date"], found["document_date_precision"]
+    if not (isinstance(value, date) and isinstance(precision, str)):
+        return dict.fromkeys(("document_date", "document_date_precision", "document_date_source"))
+    return {
+        "document_date": iso_for(value, precision),
+        "document_date_precision": precision,
+        "document_date_source": found["document_date_source"],
+    }
 
 
 async def _availability(
@@ -243,6 +265,7 @@ def register_documents(
                     "deleted_at": _isoformat(found["deleted_at"]),
                     "deleted_reason": found["deleted_reason"],
                     "added_at": _isoformat(found["added_at"]),
+                    **_document_date(found),
                     "source_id": str(found["source_id"]),
                 }
             )
@@ -279,15 +302,11 @@ def register_documents(
                 "superseded_by": str(superseded_by) if superseded_by is not None else None,
                 "superseded_at": superseded_at,
                 "deleted": False,
-                # `M2-PARTIAL-FE-058`: the conflicting-sources card needs a
-                # date to show beside each position, and `added_at` — already
-                # on every row — is the only one that exists yet (no
-                # ingestion-metadata or filename-derived date is extracted
-                # anywhere in this codebase). The ticket's own fallback rule
-                # ("where neither exists, the added date is used and
-                # labelled as such") is met by always sending this one and
-                # letting the caller label it "Added".
+                # When Askwell ingested the file. Never the document's own date
+                # — that is `document_date`, below, and null when unknown
+                # (`M7-FIX-BE-170a`).
                 "added_at": _isoformat(found["added_at"]),
+                **_document_date(found),
                 "source_id": str(found["source_id"]),
                 **availability.as_dict(),
             }

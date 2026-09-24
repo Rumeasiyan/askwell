@@ -130,6 +130,77 @@ def test_metadata_reports_an_available_pdf(
     assert body["added_at"] is not None
 
 
+def test_metadata_reports_no_document_date_rather_than_the_ingest_date(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """`M7-FIX-BE-170a`: an undated document says so. `added_at` is still
+    there, beside it, and is never substituted for it."""
+    _truncate(database_url)
+    document_id = _seed_document(database_url, tmp_path)
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+
+    with client:
+        _with_session(client)
+        body = client.get(f"/documents/{document_id}").json()
+
+    assert body["added_at"] is not None
+    assert body["document_date"] is None
+    assert body["document_date_precision"] is None
+    assert body["document_date_source"] is None
+
+
+@pytest.mark.parametrize(
+    ("stored", "precision", "source", "expected"),
+    [
+        ("2026-01-01", "year", "filename", "2026"),
+        ("2026-03-01", "month", "metadata", "2026-03"),
+        ("2026-03-15", "day", "metadata", "2026-03-15"),
+    ],
+)
+def test_metadata_reports_the_document_date_no_more_precisely_than_it_is_known(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    database_url: str,
+    stored: str,
+    precision: str,
+    source: str,
+    expected: str,
+) -> None:
+    """A year-precision date leaves the API as `2026`, never as the padded
+    `2026-01-01` the column stores — so nothing downstream can render it as
+    1 January."""
+    _truncate(database_url)
+    document_id = _seed_document(database_url, tmp_path)
+    with psycopg.connect(database_url, autocommit=True) as db:
+        db.execute(
+            "UPDATE documents SET document_date = %s, document_date_precision = %s, "
+            "document_date_source = %s WHERE id = %s",
+            (stored, precision, source, document_id),
+        )
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+
+    with client:
+        _with_session(client)
+        body = client.get(f"/documents/{document_id}").json()
+
+    assert body["document_date"] == expected
+    assert body["document_date_precision"] == precision
+    assert body["document_date_source"] == source
+
+
+def test_a_date_without_its_precision_cannot_be_stored(tmp_path: Path, database_url: str) -> None:
+    _truncate(database_url)
+    document_id = _seed_document(database_url, tmp_path)
+    with (
+        psycopg.connect(database_url, autocommit=True) as db,
+        pytest.raises(psycopg.errors.CheckViolation),
+    ):
+        db.execute(
+            "UPDATE documents SET document_date = '2026-01-01' WHERE id = %s", (document_id,)
+        )
+
+
 def test_metadata_reports_the_superseding_version_and_when(
     settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
 ) -> None:
