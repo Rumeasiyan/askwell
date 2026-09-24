@@ -46,6 +46,8 @@ Off. Everything below is inert until the user turns it on, and it stays off unti
 
 > Askwell sells nothing and takes no part in what online AI costs. The account, the provider and the bill are the user's; the key is stored encrypted on this machine, never logged and never exported.
 
+**Since `M8-ONLINE-FE-171` the section has no switch.** Online AI is switched on from the conversation, beside its Ask button (`ask.md` §5), so a switch here, even an inert one, reads as the global setting this section promises does not exist. The section says where the switch is instead. What follows describes the section before that ticket, kept as the record of `M7-SET-FE-150`.
+
 **Before M8 this section is visible and inert** (`M7-SET-FE-150`, `web/components/settings/online-ai.tsx`): what it will be, that it is per conversation, the key-and-bill statement, and a placeholder saying what leaves the machine will be stated before anything is sent. A switch reads *Off. Not available yet.*; pressing it says plainly that it cannot be turned on yet, with no waiting list and no email field — there is nothing to sign up for. No field in the section collects anything, and nothing in it makes a request. No price is described, because there is none. Hiding the feature until it exists means nobody expects it; showing it disabled sets the expectation honestly.
 
 ---

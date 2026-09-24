@@ -335,6 +335,7 @@ async def test_only_a_conversation_authorised_in_this_process_gets_the_provider(
     store: dict[str, str] = {}
     monkeypatch.setattr(redis, "Redis", lambda **_kwargs: FakeRedis(store, {}))
     online._credentials.clear()
+    monkeypatch.setattr(online, "DISCLOSURE", online.Disclosure(version="t", text="What goes."))
     settings = _online_settings(settings, tmp_path)
     engine = create_async_engine(database_url.replace("postgresql://", "postgresql+psycopg://", 1))
     factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -348,6 +349,13 @@ async def test_only_a_conversation_authorised_in_this_process_gets_the_provider(
             await db.commit()
             online_one, local_one = conversation_ids
             await online.enable(db, settings, online_one)
+            await db.commit()
+
+        # Authorised is not enough: nothing goes before the disclosure is
+        # confirmed (`M8-ONLINE-FE-171`).
+        assert await ask_module._online_client(factory, settings, online_one) is None
+        async with factory() as db:
+            await online.confirm_disclosure(db, settings, online_one, "t")
             await db.commit()
 
         chosen = await ask_module._online_client(factory, settings, online_one)
@@ -398,3 +406,100 @@ def test_a_local_turn_records_the_model_it_was_asked_under(
     _content, trace, _citations, audit = _stored(database_url, message_id)
     assert trace["backend"] == {"mode": "local", "model": "Local-Model-Q4.gguf"}
     assert audit["model"] == "Local-Model-Q4.gguf"
+
+
+# --- the pre-send disclosure (`M8-ONLINE-FE-171`) ------------------------------
+
+
+def test_an_online_conversation_takes_no_question_until_what_it_sends_is_confirmed(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """Through the routes the interface uses: create the conversation, switch
+    it online, ask. While the payload is undefined the question is refused
+    and nothing is recorded or sent. Once a statement exists, the question is
+    refused until it is confirmed. A confirmed conversation whose question
+    abstains still sends nothing, and its trace says so."""
+    import redis.asyncio as redis
+
+    store: dict[str, str] = {}
+    monkeypatch.setattr(redis, "Redis", lambda **_kwargs: FakeRedis(store, {}))
+    online._credentials.clear()
+    _truncate(database_url)
+    settings = _online_settings(settings, tmp_path)
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "Pets are not allowed.", vector)
+    _patch_client(
+        monkeypatch,
+        _FakeInferenceClient(settings, tokens=["never"], vector=vector, rerank_score=-10.0),
+    )
+    fake = _Provider(lambda _r: httpx.Response(200, content=_sse("invented")))
+
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    try:
+        with client:
+            _with_session(client)
+            created = client.post("/conversations")
+            assert created.status_code == 201
+            conversation_id = created.json()["conversation_id"]
+            assert (
+                client.get(f"/conversations/{conversation_id}/online").json()["ai_backend"]
+                == "local"
+            )
+
+            enabled = client.post(f"/conversations/{conversation_id}/online").json()
+            assert enabled["ai_backend"] == "online"
+            assert enabled["used_online"] is True
+            assert enabled["send_permitted"] is False
+            assert enabled["disclosure"]["defined"] is False
+
+            question = {"question": "What colour is the moon?", "conversation_id": conversation_id}
+            refused = client.post("/ask", json=question)
+            assert refused.status_code == 409
+            assert refused.json()["error"] == online.DISCLOSURE_UNDEFINED
+            confirm = client.post(
+                f"/conversations/{conversation_id}/online/disclosure", json={"version": "1"}
+            )
+            assert confirm.status_code == 409
+
+            monkeypatch.setattr(
+                online, "DISCLOSURE", online.Disclosure(version="1", text="Your question.")
+            )
+            refused = client.post("/ask", json=question)
+            assert refused.status_code == 409
+            assert refused.json()["error"] == online.NOT_CONFIRMED
+
+            confirmed = client.post(
+                f"/conversations/{conversation_id}/online/disclosure", json={"version": "1"}
+            )
+            assert confirmed.status_code == 200, confirmed.text
+            assert confirmed.json()["send_permitted"] is True
+
+            _go_online(monkeypatch, settings, fake)
+            answered = client.post("/ask", json=question)
+            assert answered.status_code == 200, answered.text
+            done = next(data for kind, data in _events(answered.text) if kind == "done")
+    finally:
+        online._credentials.clear()
+        with psycopg.connect(database_url, autocommit=True) as db:
+            db.execute("UPDATE conversations SET ai_backend = 'local'")
+
+    assert fake.requests == []
+    _content, trace, _citations, _audit = _stored(database_url, uuid.UUID(done["message_id"]))
+    assert trace["backend"]["mode"] == "local"
+    assert trace["backend"]["requested"] == "online"
+    assert trace["backend"]["sent_online"] is False
+    with psycopg.connect(database_url, autocommit=True) as db:
+        # The two refused questions left nothing behind; only the third did.
+        (count,) = db.execute(
+            "SELECT count(*) FROM messages WHERE conversation_id = %s AND role = 'user'",
+            (conversation_id,),
+        ).fetchone() or (None,)
+        confirmations = db.execute(
+            "SELECT payload FROM audit_decisions "
+            "WHERE kind = 'online_ai_disclosure_confirmed' AND payload->>'conversation_id' = %s",
+            (conversation_id,),
+        ).fetchall()
+    assert count == 1
+    assert [row[0] for row in confirmations] == [
+        {"conversation_id": conversation_id, "version": "1"}
+    ]

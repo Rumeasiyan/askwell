@@ -118,7 +118,9 @@ export type AskStatus = "completed" | "stopped" | "failed";
  * the persistent unvalidated-model marker. `"none"` when nothing was loaded
  * when the question was asked; `display_name` is `null` only then. */
 export interface AskModelIdentity {
-  source: "shipped" | "user_supplied" | "none" | "unknown";
+  /** `"online"`: the answer came from the provider (`M8-ONLINE-BE-170`), and
+   * `display_name` is the provider's model. */
+  source: "shipped" | "user_supplied" | "online" | "none" | "unknown";
   display_name: string | null;
 }
 
@@ -159,8 +161,19 @@ export interface AskDoneData {
   model_identity?: AskModelIdentity | null;
 }
 
+/** `M8-ONLINE-BE-170`: the online provider stopped partway through, and
+ * everything streamed so far is withdrawn. The local model then answers the
+ * same prompt from the start, so the answer, its cards and its chips begin
+ * again from empty (issue 733). */
+export interface AskAnswerResetData {
+  message_id: string;
+  conversation_id: string;
+  reason: string;
+}
+
 export type AskEvent =
   | { event: "step"; data: AskStepData }
+  | { event: "answer_reset"; data: AskAnswerResetData }
   | { event: "token"; data: AskTokenData }
   | { event: "citation"; data: AskCitationData }
   | { event: "fact_citation"; data: AskFactCitationData }
@@ -201,6 +214,8 @@ export function parseSseFrame(frame: string): AskEvent | null {
       return { event: "clarification", data: data as AskClarificationData };
     case "clarification_resolved":
       return { event: "clarification_resolved", data: data as AskClarificationResolvedData };
+    case "answer_reset":
+      return { event: "answer_reset", data: data as AskAnswerResetData };
     case "done":
       return { event: "done", data: data as AskDoneData };
     default:
@@ -486,6 +501,9 @@ export function applyAskEvent<T extends AskTurnState>(
     }
     case "token":
       return { answer: turn.answer + event.data.text };
+    case "answer_reset":
+      // Steps are kept: the `backend` step that follows says why.
+      return { answer: "" };
     default:
       return {};
   }

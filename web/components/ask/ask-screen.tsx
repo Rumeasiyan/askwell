@@ -9,6 +9,12 @@ import { useClaimRef, useHoverHandlers, useScrollToClaim } from "@/components/as
 import { InlineSourceCards, useRaised } from "@/components/ask/provenance-margin";
 import { SqlQueryCard, SqlResultTable } from "@/components/ask/sql-result-table";
 import { TraceToggle } from "@/components/ask/trace-panel";
+import {
+  OnlineDisclosure,
+  OnlineMarker,
+  OnlineSwitch,
+  TurnBackendLabel,
+} from "@/components/ask/online-conversation";
 import { MicControl } from "@/components/ask/voice-control";
 import { useWebRaised } from "@/components/ask/web-pairing";
 import { WebResultsRegion } from "@/components/ask/web-result";
@@ -52,6 +58,7 @@ import { type FactChip } from "@/lib/memory-chips";
 import { fetchSearch, type SearchHit } from "@/lib/search";
 import { fetchSuggestions, type Suggestion } from "@/lib/suggestions";
 import { segmentClaims } from "@/lib/claims";
+import { machineLine, SEND_REFUSED, sendAllowed } from "@/lib/online-conversation";
 import { useStatus } from "@/lib/use-status";
 import { VERSION } from "@/lib/version";
 import {
@@ -118,7 +125,7 @@ export function fillComposer(question: string, scope: ComposerFill["scope"] = nu
  */
 export function AskScreen() {
   const corpus = useCorpusState();
-  const { turns } = useAsk();
+  const { turns, online } = useAsk();
   const liveId = liveTurnId(turns);
   const status = useStatus();
   // `status.kind === "loading"` renders neither state rather than flashing
@@ -146,7 +153,9 @@ export function AskScreen() {
           so it reaches the exported `index.html` before `corpus` resolves on
           the client. `scripts/check-version.mjs` reads exactly that file for
           exactly this string (`AGENTS.md` §7). */}
-      <p className="ask-micro">Askwell {VERSION} · nothing leaves this machine</p>
+      <p className="ask-micro">
+        Askwell {VERSION} · {machineLine(online)}
+      </p>
 
       {/* `useSearchParams` needs a `Suspense` boundary, and this is the one
           piece of the screen that reads it (`M1-VIEW-FE-048`'s "back to
@@ -630,9 +639,14 @@ function FirstRun() {
  * Type, `Enter` submits, `Shift+Enter` newlines (`ask.md` §4). Never disabled
  * while a turn streams — the whole point of the queue in `AskProvider` is
  * that a question asked mid-answer still lands rather than being refused.
+ * The one refusal is an online conversation whose disclosure is unanswered
+ * (`M8-ONLINE-FE-171`), and it keeps the draft and says why.
  */
 function Composer() {
-  const { ask } = useAsk();
+  const { ask, online } = useAsk();
+  // `M8-ONLINE-FE-171`: an online conversation sends nothing until what it
+  // sends is defined and confirmed. The draft is kept, not cleared.
+  const canSend = sendAllowed(online);
   const [value, setValue] = useState("");
   const [scope, setScope] = useState<{ sourceId: string; filename: string } | null>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
@@ -680,7 +694,7 @@ function Composer() {
   }, []);
 
   const submit = (): void => {
-    if (value.trim() === "") return;
+    if (value.trim() === "" || !canSend) return;
     ask(value, scope?.sourceId ?? null);
     setValue("");
     setScope(null);
@@ -703,6 +717,8 @@ function Composer() {
       style={{ background: "var(--paper)", borderTop: "1px solid var(--rule)" }}
     >
       <div className="ask-measure flex flex-col gap-2">
+        <OnlineMarker />
+        <OnlineDisclosure />
         {scope !== null ? (
           <p className="ask-micro flex items-center gap-2">
             Scoped to {scope.filename}
@@ -733,13 +749,23 @@ function Composer() {
           aria-label="Ask a question"
         />
         <div className="flex justify-end items-center gap-2">
+          {!canSend ? (
+            <p id="composer-send-refused" className="ask-micro" style={{ textTransform: "none", flex: 1 }}>
+              {SEND_REFUSED}
+            </p>
+          ) : null}
+          <OnlineSwitch />
           <MicControl />
           <button
             type="button"
             onClick={submit}
-            disabled={value.trim() === ""}
+            disabled={value.trim() === "" || !canSend}
+            aria-describedby={!canSend ? "composer-send-refused" : undefined}
             className="ask-action-primary px-4"
-            style={{ fontSize: "var(--t-ui)", opacity: value.trim() === "" ? 0.5 : 1 }}
+            style={{
+              fontSize: "var(--t-ui)",
+              opacity: value.trim() === "" || !canSend ? 0.5 : 1,
+            }}
           >
             Ask
           </button>
@@ -858,6 +884,7 @@ function CollapsedTurn({ turn }: { turn: AskTurn }) {
           {turn.summary ?? ""}
         </p>
         {turn.webCitations.length > 0 ? <WebMarker /> : null}
+        <TurnBackendLabel turn={turn} />
         {isUnvalidatedModelTurn(turn) ? <UnvalidatedModelBadge /> : null}
         <SourceCountBadge
           count={turn.sourceCount}
@@ -1099,6 +1126,8 @@ function LiveTurn({ turn }: { turn: AskTurn }) {
       {(turn.status === "completed" || turn.status === "stopped") && isUnvalidatedModelTurn(turn) ? (
         <UnvalidatedModelNote />
       ) : null}
+
+      <TurnBackendLabel turn={turn} />
 
       {/* Below the three-column breakpoint the margin `<aside>` is
           CSS-hidden (`shell.tsx`) — these are the same cards, inline,
