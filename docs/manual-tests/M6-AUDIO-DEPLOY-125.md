@@ -89,7 +89,7 @@ except OSError as e:
 Then confirm the egress proxy agrees nothing passed through it:
 
 ```
-curl -s http://127.0.0.1:8000/network
+curl -s -c /tmp/askwell.cookies -H 'Accept: text/html' http://127.0.0.1:8000/ -o /dev/null && curl -s -b /tmp/askwell.cookies http://127.0.0.1:8000/network
 ```
 
 **Expect:** whatever refusal count was already there before this walkthrough, unchanged. If this number went up during steps 3–5, something in `voice` reached the proxy, which should not be possible given its network membership — stop and report it.

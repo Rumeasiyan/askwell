@@ -131,7 +131,7 @@ immediately on landing here.
 Confirm zero outbound requests were attributed to anything except this one deliberate download:
 
 ```
-curl -s http://127.0.0.1:8000/network | jq
+curl -s -c /tmp/askwell.cookies -H 'Accept: text/html' http://127.0.0.1:8000/ -o /dev/null && curl -s -b /tmp/askwell.cookies http://127.0.0.1:8000/network | jq
 ```
 
 **You should see:** a JSON body reporting outbound activity. Whatever count is there, note it —
@@ -348,7 +348,7 @@ is grounded in the file you added — not invented, and not fetched from anywher
 ### 14. Confirm the network count did not move
 
 ```
-curl -s http://127.0.0.1:8000/network | jq
+curl -s -c /tmp/askwell.cookies -H 'Accept: text/html' http://127.0.0.1:8000/ -o /dev/null && curl -s -b /tmp/askwell.cookies http://127.0.0.1:8000/network | jq
 ```
 
 **You should see:** the same count you noted in step 6 — asking a question, adding a source and

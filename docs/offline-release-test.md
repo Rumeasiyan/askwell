@@ -84,8 +84,12 @@ refusals the egress proxy itself logs (`egress_refused`) — those are expected 
 Record the proxy's baseline before doing anything else:
 
 ```
-curl -s localhost:8000/network | python3 -m json.tool
+curl -s -c /tmp/askwell.cookies -H 'Accept: text/html' localhost:8000/ -o /dev/null
+curl -s -b /tmp/askwell.cookies localhost:8000/network | python3 -m json.tool
 ```
+
+The first line takes the session the interface would take on load; without it `/network`
+answers `No session.`
 
 **Expect:** `permitted: 0`. Note whatever `refused` already reads (a container's own startup
 probes may have tried something once before the network came up — `docs/architecture.md`
@@ -128,7 +132,7 @@ cannot reach.
 ## 3. Manual walkthrough — the rest of the product
 
 Work through every remaining feature. For each, after it completes, re-check
-`curl -s localhost:8000/network | python3 -m json.tool` — catching a leak close to the action
+`curl -s -b /tmp/askwell.cookies localhost:8000/network | python3 -m json.tool` (session taken in §1) — catching a leak close to the action
 that caused it is far more useful than one combined check at the end.
 
 ### 3.1 First run

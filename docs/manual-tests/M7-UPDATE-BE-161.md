@@ -100,7 +100,7 @@ The third state, distinct from `no` — nobody has answered yet.
 ### 5. Confirm the egress proxy shows nothing for this destination
 
 ```
-curl -s http://127.0.0.1:8000/network | jq
+curl -s -c /tmp/askwell.cookies -H 'Accept: text/html' http://127.0.0.1:8000/ -o /dev/null && curl -s -b /tmp/askwell.cookies http://127.0.0.1:8000/network | jq
 ```
 
 **You should see:** no entry for `raw.githubusercontent.com` under either `permitted` or
@@ -123,7 +123,7 @@ curl -s -X POST http://127.0.0.1:8000/settings/update-check \
 ### 7. Confirm the egress proxy still shows nothing
 
 ```
-curl -s http://127.0.0.1:8000/network | jq
+curl -s -c /tmp/askwell.cookies -H 'Accept: text/html' http://127.0.0.1:8000/ -o /dev/null && curl -s -b /tmp/askwell.cookies http://127.0.0.1:8000/network | jq
 ```
 
 **You should see:** still no entry for `raw.githubusercontent.com`.
@@ -157,7 +157,7 @@ curl -s -X POST http://127.0.0.1:8000/settings/update-check \
 ### 10. Confirm the egress proxy now permits exactly the feed host
 
 ```
-curl -s http://127.0.0.1:8000/network | jq
+curl -s -c /tmp/askwell.cookies -H 'Accept: text/html' http://127.0.0.1:8000/ -o /dev/null && curl -s -b /tmp/askwell.cookies http://127.0.0.1:8000/network | jq
 ```
 
 **You should see:** `raw.githubusercontent.com:443` (or equivalent) listed under permitted
@@ -239,7 +239,7 @@ available; this repository has no automated capture harness for this ticket.)
 curl -s -X POST http://127.0.0.1:8000/settings/update-check \
   -H 'Content-Type: application/json' \
   -d '{"answer": "no"}' | jq
-curl -s http://127.0.0.1:8000/network | jq
+curl -s -c /tmp/askwell.cookies -H 'Accept: text/html' http://127.0.0.1:8000/ -o /dev/null && curl -s -b /tmp/askwell.cookies http://127.0.0.1:8000/network | jq
 ```
 
 **You should see:** `raw.githubusercontent.com` no longer listed under permitted destinations —
@@ -256,7 +256,7 @@ a manual check is a deliberate act regardless of the standing answer. Immediatel
 the destination is closed again:
 
 ```
-curl -s http://127.0.0.1:8000/network | jq
+curl -s -c /tmp/askwell.cookies -H 'Accept: text/html' http://127.0.0.1:8000/ -o /dev/null && curl -s -b /tmp/askwell.cookies http://127.0.0.1:8000/network | jq
 ```
 
 **You should see:** no permitted entry for `raw.githubusercontent.com` — the manual check opened
