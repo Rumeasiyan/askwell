@@ -2257,6 +2257,66 @@ Fix the geometry in the same change: the input and its action row currently end 
 
 ---
 
+### M7-FIX-BE-170a — A document's own date, with where it came from
+
+**Type:** Task
+
+**User Story**
+- **Actor:** someone holding two versions of the same document.
+- **User Need:** to know which is newer by what the documents say, not by when they happened to be added.
+- **Business Value:** the conflicting-sources state has to show dates, and the only date Askwell has today is the wrong one.
+- *As someone deciding which of two handbooks is current, I want each one's own date, so that I am not misled by the order I happened to add them in.*
+
+**Context / Background**
+**Detailed Description:** Askwell records no date for a document's *content* — only when it was ingested. `Document` (`api/src/askwell/db/models.py`) has `added_at`, `deleted_at`, `missing_since` and `superseded_by`, and nothing else date-shaped. No extractor reads PDF `/Info` dates, OOXML core properties, or a date in the filename, and `web/lib/document-dates.ts` falls back to `added_at` labelled "Added …". Two versions added in the same minute get the same date; a 2024 file added after a 2026 one looks newer. `M7-FIX-FE-170` halted nine times on exactly this, correctly — its own assumption says to stop if no per-document date exists.
+
+Add a nullable `document_date` with a **precision** (`day` | `month` | `year`) and a **source** (`metadata` | `filename`), filled at extraction: format metadata first (PDF `/CreationDate`/`/ModDate` via what `extract_pdf` already opens; OOXML `docProps/core.xml` `dcterms:created`/`modified`), then a conservative filename pattern — `YYYY`, `YYYY-MM`, `YYYY-MM-DD`, bounded to a plausible year range. Null means unknown.
+
+Precision matters: `store_hours_2026.pdf` carries a year, and rendering it as "1 January 2026" would be a wrong fact presented as a right one. Source matters: file metadata is a *claimed* date — a PDF re-exported in 2026 from a 2019 original says 2026 — so the interface has to be able to say where a date came from rather than present it as authoritative.
+
+Filename-only was rejected because it misses the common real case of `Handbook.pdf` with a correct `/CreationDate`. Metadata-only was rejected because it misses the fixture corpus entirely: `store_hours_2025.pdf` and `store_hours_2026.pdf` carry no `/Info` dictionary, so the walkthrough `M7-FIX-FE-170` depends on would show "date unknown" twice.
+
+**Scope**
+- Nullable `documents.document_date`, `document_date_precision`, `document_date_source`, with a reversible Alembic migration.
+- Extraction from PDF and OOXML metadata, then a bounded filename pattern.
+- Exposed on `GET /documents/{id}` beside `added_at`.
+- `sortByDateAndSupersession` in `web/lib/document-dates.ts` switched from `added_at` to the document date; undated documents sort the way not-yet-loaded ones already do.
+- Existing documents backfilled on re-index; nothing requires a fresh corpus.
+
+**Out of Scope**
+- Rendering the date in the conflict state (`M7-FIX-FE-170`).
+- A user-editable date. A later refinement, not this ticket.
+- Dates found in document *text*. Far less reliable than metadata or filename, and a different problem.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** A PDF or OOXML file with metadata dates gets `document_date` from metadata, with source `metadata`. A file with none but a year in its name gets that year, precision `year`, source `filename`. A file with neither gets null. `added_at` is never copied into `document_date` under any path.
+- **Edge Cases:** A filename with a number that is not a plausible year (`report_1234.pdf`, `invoice_20500.pdf`) — ignored. A filename with two dates — the more specific wins; with two equally specific, null rather than a guess. Metadata `/CreationDate` in the future — ignored. A corrupt metadata block — falls through to the filename, never fails the ingest.
+- **Permissions / Roles:** Single user — no roles.
+- **UI States:** None here beyond the sort order; `M7-FIX-FE-170` renders it, and a null renders as "Date unknown", never as the ingest date.
+- **Validation Rules:** The ingest date is never presented as the document's date (C4). A year-precision date is never rendered as a full date.
+- **Audit / Logging Requirements:** Unchanged.
+- **Analytics Events:** None (C1).
+
+**Real-World Example Scenarios**
+- The fixture's two store-hours files come back as 2025 and 2026, both marked as from the filename, and the conflict orders them correctly for the first time.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M1-ADD-ING-021, M0-DATA-DB-013.
+- **API / Data Touchpoints:** `Document` in `api/src/askwell/db/models.py` plus migration; the `extract_*` modules; `GET /documents/{id}`; `web/lib/document-dates.ts`.
+- **Assumptions:** `extract_pdf` already has the PDF open, so reading `/Info` costs nothing extra. If it does not, say so rather than opening the file twice.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** Re-index `eval/fixtures/corpus` and read `document_date`, precision and source for `store_hours_2025.pdf` and `store_hours_2026.pdf`. Both year, both filename.
+- **Other scenarios:** A PDF with `/CreationDate` and no date in the name; a file with neither; `report_1234.pdf`; a future `/CreationDate`.
+- **Known gaps:** Metadata is a claimed date. The source field exists so that gap is stated rather than hidden.
+
+**Effort & Granularity Check**
+- **Estimate:** 4 hours · **Priority:** High
+- **Labels / Component:** `phase:7`, `constraint:grounding`, backend
+- **Granularity:** One column triple, two extractors, one sort.
+
+---
+
 ### M7-FIX-FE-170 — Conflicting sources, as two records rather than one run-on sentence
 
 **Type:** Story
@@ -2296,7 +2356,7 @@ Render each position as its own block: the claim, its source, and the **document
 - A user sees the 2026 handbook says 9 PM and the 2025 one says 8 PM, with both dates, and settles it in one click instead of opening both files.
 
 **Dependencies & Assumptions**
-- **Dependencies:** M2-PARTIAL-BE-059, M2-PARTIAL-FE-058, M1-CITE-FE-044.
+- **Dependencies:** M7-FIX-BE-170a, M2-PARTIAL-BE-059, M2-PARTIAL-FE-058, M1-CITE-FE-044.
 - **API / Data Touchpoints:** `api/src/askwell/agent/conflict.py`; the conflict renderer in `web/components/ask/`; whatever carries a document date.
 - **Assumptions:** A per-document date exists or can be extracted. **If it does not, stop and say so** — that is its own ticket, not something to improvise inside this one.
 
