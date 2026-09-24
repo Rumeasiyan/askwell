@@ -208,6 +208,14 @@ def assess_strength(passphrase: str) -> StrengthResult:
     )
 
 
+def forget_unlocked_key() -> None:
+    """Drop this process's cached key. Reset (`askwell.reset`) calls it once
+    the `settings` row holding the verifier is gone, so nothing in this
+    process can go on encrypting under a passphrase that no longer exists."""
+    global _unlocked_key
+    _unlocked_key = None
+
+
 def _reset_lock_state_for_tests() -> None:
     """Test-only. Two tests in the same pytest process must not see each
     other's unlock state — production has exactly one process per lifetime,

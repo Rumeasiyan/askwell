@@ -4,6 +4,50 @@ Append-only. **Newest first.** Never edit an entry to change its meaning — if 
 
 **Bar for an entry:** something a competent person would later ask *"why is it like this?"* about. Architecture changes, dependency choices, resolved `docs/PRD.md` §11 questions, reversals. **Not** routine implementation choices — those are visible in the diff.
 
+## 2026-09-24 — `M7-DATA-FE-160`: "export everything" is the log export with a wider scope; reset removes files only after its transaction commits
+
+**Decision.** Export everything is the existing log-export job (`askwell.log_export`) with a new
+`scope` column on `export_jobs` (`'log'` by default, or `'everything'`; migration `c8f2a61d4b90`).
+With `'everything'`, the same zip also holds `data/<table>.jsonl` for roots, sources, documents,
+memory, schema notes, clarifications, fact usage, conversations, messages and both citation tables.
+These are read in one `REPEATABLE READ` snapshot by `askwell.backup`'s own row writer. The zip also
+holds a copy of the trace ring buffer and a `README.txt` that explains every file. Left out, each
+with a stated reason in the README and the manifest: the user's own files, chunks, the vector
+index, `settings`, job bookkeeping, and `sources.config_encrypted`. The passphrase warning is the
+log export's existing server-side acknowledgement. The screen asks for it before the request goes
+out. Reset keeps `perform`'s single transaction as it was. `POST /reset` then removes trace files and
+everything under `export_dir`/`backup_dir`, drops the sandbox databases, and clears the API
+process's unlocked key, all after the commit. `reset_requested`/`reset_performed` name the files
+about to go (`files_to_remove`). `GET /reset/preview` gives the counts shown in the confirmation.
+
+**Why.** There were three candidates for "export everything". **The backup artefact** was
+rejected. It is built to be restored, not read. It carries ciphertext for chunks and credentials
+when a passphrase is set, and a wrapped install secret. It has no verifier. It requires the
+passphrase to start. Calling it an open export would have been the lock-in contradiction
+`docs/ux/settings.md` §6 warns about. **A second job type** (its own table, worker entry,
+download route and acknowledgement) was rejected as a copy of `log_export`. It would differ only
+in the list of files it writes, and would drift from it. Widening the existing job keeps one
+passphrase gate and one verifier. A done, unfiltered everything-export also counts for
+`log_prune`'s "exported before pruned" check, which is correct, because it contains the whole log.
+Traces are included, not excluded. `docs/audit-log.md` §2 names them as the third log store, and
+the ticket asks for "logs". JSON Lines was picked over CSV because messages and traces hold nested
+JSON. A CSV of those would need its own escaping rules to be read at all. For the file removal,
+#683's option 2 (delete inside `perform`) was rejected. A file delete cannot roll back, so a reset
+that failed afterwards would stop being all-or-nothing. After the commit, a file that cannot be
+removed is named in the response instead. An unreachable sandbox is reported as
+`sandbox_databases_dropped: null`. The worker reclaims those databases on its next start anyway,
+because no source claims them.
+
+**Consequences.** A reset also deletes the session secret stored in `settings`, so the open page
+loses its session. The screen's "Start again" does a full page load to get a new one. A job
+already running when reset is pressed can write its zip after the sweep (#686, filed, not fixed).
+The worker holds no unlocked key to clear, since it never unlocks (#504).
+
+**Refs:** `docs/ux/settings.md` §6; `docs/audit-log.md` §2, §4; `api/src/askwell/log_export.py`;
+`api/src/askwell/reset.py`; `web/components/settings/your-data.tsx`; issues #683, #686, #523.
+
+---
+
 ## 2026-09-24 — `M7-DATA-BE-159a`: reset empties the audit tables through one guarded definer function
 
 **Decision.** Migration `b5d09e3c71a8` adds a fourth database role, `askwell_audit_reset`. It is

@@ -665,7 +665,8 @@ class ReapplyItem(Base):
 
 class ExportJob(Base):
     """One log export: both audit stores, streamed to disk, zipped with a
-    standalone verifier. `M7-LOG-BE-155`.
+    standalone verifier. `M7-LOG-BE-155`. `scope = 'everything'` adds the
+    rest of what Askwell holds to the same zip (`M7-DATA-FE-160`).
 
     Same reasoning as `IngestJob`/`ReapplyJob`: `arq` dispatches, this table
     records, and `askwell.log_export.resume` returns a job a dead worker was
@@ -675,6 +676,7 @@ class ExportJob(Base):
     __tablename__ = "export_jobs"
     __table_args__ = (
         _one_of("status", ("queued", "running", "done", "failed"), "status"),
+        _one_of("scope", ("log", "everything"), "scope"),
         # `dispatch`'s and `resume`'s own query: unfinished jobs. Partial,
         # matching `ix_reapply_jobs_pending` — finished rows accumulate and
         # are never the answer.
@@ -687,6 +689,7 @@ class ExportJob(Base):
 
     id: Mapped[uuid.UUID] = uuid_pk()
     status: Mapped[str] = mapped_column(String(16), nullable=False, server_default=text("'queued'"))
+    scope: Mapped[str] = mapped_column(String(16), nullable=False, server_default=text("'log'"))
     since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

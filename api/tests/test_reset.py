@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from askwell import reset
+from askwell import passphrase, reset
 from askwell import session as sessions
 from askwell.app import create_app
 from askwell.audit import Store, record, verify
@@ -324,6 +324,8 @@ def client(
                     "database_url": SecretStr(app_database_url),
                     "web_assets_dir": built,
                     "trace_dir": tmp_path / "traces",
+                    "export_dir": tmp_path / "exports",
+                    "backup_dir": tmp_path / "backups",
                 }
             )
         )
@@ -350,3 +352,103 @@ async def test_post_reset_succeeds_as_the_app_role(
     assert body["total"] == sum(body["counts"].values())
     after = await _counts(owner)
     assert after["audit_interactions"] == 0 and after["roots"] == 0
+
+
+# --- the surface's half: M7-DATA-FE-160, issue #683 --------------------------
+
+
+def _artefacts(tmp_path: Path) -> list[Path]:
+    """One of each thing on disk a reset must remove."""
+    trace = tmp_path / "traces" / f"{uuid.uuid4()}.trace.json"
+    export = tmp_path / "exports" / "askwell-export-1.zip"
+    backup = tmp_path / "backups" / "askwell-backup-1.zip"
+    leftover = tmp_path / "backups" / "restore" / "half-done.jsonl"
+    for path in (trace, export, backup, leftover):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}")
+    return [trace, export, backup, leftover]
+
+
+def _a_users_folder(tmp_path: Path) -> dict[Path, bytes]:
+    """A registered root's contents — the thing a user fears reset touches."""
+    folder = tmp_path / "home" / "contracts"
+    folder.mkdir(parents=True)
+    files = {folder / "lease.pdf": b"%PDF-1.7 lease", folder / "notes.txt": b"call Hendry"}
+    for path, content in files.items():
+        path.write_bytes(content)
+    return files
+
+
+async def test_the_preview_names_what_a_reset_would_destroy_and_changes_nothing(
+    owner: AsyncEngine,
+    factory: async_sessionmaker[AsyncSession],
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    await _seed(owner, factory)
+    _artefacts(tmp_path)
+    before = await _counts(owner)
+
+    with client:
+        client.get("/", headers={"accept": "text/html"})
+        response = client.get("/reset/preview")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["counts"] == before
+    assert body["total"] == sum(before.values())
+    assert body["files"] == {"traces": 1, "exports": 1, "backups": 2}
+    assert "never touched" in body["original_files_statement"]
+    assert await _counts(owner) == before
+
+
+async def test_reset_removes_traces_and_artefacts_and_never_the_users_own_files(
+    owner: AsyncEngine,
+    factory: async_sessionmaker[AsyncSession],
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    users_files = _a_users_folder(tmp_path)
+    async with owner.begin() as connection:
+        await connection.execute(
+            text("INSERT INTO roots (path) VALUES (:p)"), {"p": str(tmp_path / "home")}
+        )
+    await _seed(owner, factory)
+    artefacts = _artefacts(tmp_path)
+
+    with client:
+        client.get("/", headers={"accept": "text/html"})
+        response = client.post("/reset")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["counts"]["roots"] == 2  # both roots forgotten…
+    assert (await _counts(owner))["roots"] == 0
+    for path, content in users_files.items():  # …and their files untouched
+        assert path.read_bytes() == content
+    assert "never touched" in body["original_files_statement"]
+
+    assert not any(path.exists() for path in artefacts)
+    assert body["files_removed"] == {"traces": 1, "exports": 1, "backups": 2}
+    assert body["files_not_removed"] == []
+    # The test settings point the sandbox at a port nothing listens on: the
+    # database reset still completes, and the response says the drop did not.
+    assert body["sandbox_databases_dropped"] is None
+
+    async with owner.connect() as connection:
+        genesis = (
+            await connection.execute(text("SELECT kind, payload FROM audit_decisions"))
+        ).one()
+    assert genesis[0] == reset.RESET_PERFORMED
+    assert genesis[1]["files_to_remove"] == {"traces": 1, "exports": 1, "backups": 2}
+
+
+async def test_reset_forgets_this_processes_unlocked_passphrase_key(
+    owner: AsyncEngine, factory: async_sessionmaker[AsyncSession], client: TestClient
+) -> None:
+    passphrase._unlocked_key = b"k" * 32
+    with client:
+        client.get("/", headers={"accept": "text/html"})
+        response = client.post("/reset")
+    assert response.status_code == 200, response.text
+    assert passphrase._unlocked_key is None
