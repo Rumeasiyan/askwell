@@ -89,6 +89,9 @@ MEMORY_DISCARDED = "memory_discarded"
 MEMORY_SUPERSEDED = "memory_superseded"
 MEMORY_DELETED = "memory_deleted"
 MEMORY_CONFIRMED = "memory_confirmed"
+# One record for the confirmed act itself, beside the per-fact records
+# `delete_memory_fact`/`delete_schema_note` already write (`M7-DATA-FE-160`).
+MEMORY_DELETED_ALL = "memory_deleted_all"
 SCHEMA_NOTE_WRITTEN = "schema_note_written"
 SCHEMA_NOTE_DISCARDED = "schema_note_discarded"
 SCHEMA_NOTE_SUPERSEDED = "schema_note_superseded"
@@ -1426,6 +1429,7 @@ async def delete_all_memory(session: AsyncSession, *, expected_count: int) -> De
             outcome = await delete_schema_note(session, note_id=row.id)
         if outcome.reapply_job_id is not None:
             job_ids.append(outcome.reapply_job_id)
+    await record(session, Store.DECISIONS, MEMORY_DELETED_ALL, {"count": len(screen.rows)})
     return DeleteAllOutcome(deleted_count=len(screen.rows), reapply_job_ids=job_ids)
 
 

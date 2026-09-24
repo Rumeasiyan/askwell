@@ -166,7 +166,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_log_verify(app, app.state.sessions)
     register_backup(app, resolved, app.state.sessions)
     register_restore(app, resolved, app.state.sessions)
-    register_reset(app, app.state.sessions)
+    register_reset(app, resolved, app.state.sessions)
     register_passphrase(app, resolved, app.state.sessions)
     register_update_check(app, resolved, app.state.sessions)
     register_voice_channel(

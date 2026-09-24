@@ -31,6 +31,16 @@ it finishes. An unbounded `until` is resolved to the job's own start time
 before either store is queried, so a question answered while a multi-hour
 export is running lands after the file rather than corrupting a progress
 count that was fixed before that answer existed.
+
+**`scope = 'everything'` is the settings screen's "Export everything"**
+(`docs/ux/settings.md` §6, `M7-DATA-FE-160`): the same job, the same chain
+and the same verifier, plus the rest of what Askwell holds under `data/` —
+one JSON Lines file per table, read inside one `REPEATABLE READ` snapshot,
+and a `README.txt` that documents every file so none of it needs Askwell to
+read. What is left out, and why, is `_EVERYTHING_EXCLUDED` below and is
+stated in that README rather than silently dropped. Everything is plaintext:
+a passphrase-protected library is warned before it is written, through the
+same acknowledgement the log export already requires.
 """
 
 import asyncio
@@ -42,7 +52,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
@@ -52,14 +62,116 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from askwell import __version__, passphrase
 from askwell.audit import Store, record
+from askwell.backup import _dump_table
 from askwell.config import Settings
 from askwell.db.engine import session_scope
 from askwell.log_export_verifier import SOURCE as VERIFIER_SOURCE
 from askwell.logging import get_logger
+from askwell.traces import TraceRing
 
 log = get_logger(__name__)
 
 EXPORT_JOB_ENQUEUED = "log_export_enqueued"
+EXPORT_EVERYTHING_ENQUEUED = "export_everything_enqueued"
+
+SCOPE_LOG = "log"
+SCOPE_EVERYTHING = "everything"
+SCOPES = (SCOPE_LOG, SCOPE_EVERYTHING)
+
+# table -> (primary key, columns left out). The tables a person means by
+# "sources, memory, conversations": what they added, what Askwell learned or
+# was told, and what was said. `sources.config_encrypted` is a connection's
+# credentials — an export is plaintext, and a password in it would be the one
+# thing in the file the user never asked to carry around. The embedding is a
+# vector, not something a person reads.
+_EVERYTHING_TABLES: dict[str, tuple[str, tuple[str, ...]]] = {
+    "roots": ("id", ()),
+    "sources": ("id", ("config_encrypted",)),
+    "documents": ("id", ()),
+    "memory": ("id", ()),
+    "schema_notes": ("id", ("embedding",)),
+    "clarifications": ("id", ()),
+    "fact_usage": ("id", ()),
+    "conversations": ("id", ()),
+    "messages": ("id", ()),
+    "citations": ("id", ()),
+    "web_citations": ("id", ()),
+}
+
+# What "everything" does not carry, each with the reason — written into the
+# manifest and the README so the omission is stated, not discovered.
+_EVERYTHING_EXCLUDED: dict[str, str] = {
+    "your_files": (
+        "Your own files are not copied. Askwell never moves or changes them; "
+        "documents.jsonl records where each one is."
+    ),
+    "chunks": (
+        "The indexed passages and the per-page text extracted from your own files, which "
+        "you already have; with a passphrase set passages are ciphertext, which is not "
+        "readable anyway."
+    ),
+    "connection_credentials": (
+        "sources.config_encrypted, a connected database's password, is left out so an "
+        "export never carries a credential."
+    ),
+    "settings": "Askwell's own configuration, including the passphrase check value.",
+    "vector_index": "Embeddings are numbers derived from text; they are not readable.",
+    "job_bookkeeping": "Ingest, re-processing, export, backup, restore and prune job rows.",
+}
+
+_README = """Askwell export
+==============
+
+Everything in this folder is plain text. No Askwell is needed to read it.
+
+decisions.jsonl, interactions.jsonl
+    The two audit logs, one JSON object per line, oldest first. Each record
+    carries "prev_hash" and "hash": the hash of a record covers the record
+    before it, so an edited, removed or reordered line breaks the chain.
+
+verify.py
+    Checks that chain. Needs only Python 3, nothing else:
+        python3 verify.py .
+
+manifest.json
+    When this export was written, by which version, and how many records
+    each file holds.
+
+data/<table>.jsonl
+    The rest of what Askwell holds, one JSON object per line, one file per
+    table. Keys are column names. Ids are UUIDs; "*_id" keys point at the
+    "id" of a row in another file. Times carry their UTC offset, for
+    example 2026-09-24 02:24:26+00:00.
+
+    roots.jsonl           folders you allowed Askwell to read
+    sources.jsonl         each source you added: folder, file, CSV, dump or
+                          database connection
+    documents.jsonl       each file indexed, with its path on your disk
+    memory.jsonl          facts Askwell was told or inferred; "superseded_by"
+                          links a corrected fact to its replacement
+    schema_notes.jsonl    what columns in your databases mean
+    clarifications.jsonl  questions Askwell asked you, and your answers
+    fact_usage.jsonl      which answers used which memory facts
+    conversations.jsonl   one row per conversation
+    messages.jsonl        every question and answer; "conversation_id"
+                          groups them, "trace" records how an answer was made
+    citations.jsonl       which document and page each claim came from
+    web_citations.jsonl   web results, only for searches you asked for
+
+traces/<message id>.trace.json
+    The third log: the full working behind recent answers — prompts, tool
+    calls, timings. A capped buffer, so only the most recent are held; it
+    is not hash-chained. The file name is the "id" in messages.jsonl.
+
+Not included:
+{excluded}
+"""
+
+
+def _readme() -> str:
+    lines = "\n".join(f"    {key}: {reason}" for key, reason in _EVERYTHING_EXCLUDED.items())
+    return _README.format(excluded=lines)
+
 
 # Kept well under Postgres's own row/packet limits and small enough that one
 # batch's `json.dumps` output is never more than a few megabytes even for the
@@ -82,6 +194,7 @@ class InvalidRange(ValueError):
 class ExportJob:
     id: uuid.UUID
     status: str
+    scope: str
     since: datetime | None
     until: datetime | None
     decisions_total: int
@@ -95,6 +208,7 @@ class ExportJob:
         return {
             "id": str(self.id),
             "status": self.status,
+            "scope": self.scope,
             "since": self.since.isoformat() if self.since else None,
             "until": self.until.isoformat() if self.until else None,
             "decisions_total": self.decisions_total,
@@ -115,12 +229,16 @@ async def enqueue(
     since: datetime | None,
     until: datetime | None,
     acknowledged_decrypted_export: bool,
+    scope: str = SCOPE_LOG,
 ) -> uuid.UUID:
     """Record the intent to export. Always a decisions record naming the
     range — the ticket's own Audit Requirement — written in the same
     transaction as the job row, so a job nobody can prove was ever asked for
-    does not exist either.
+    does not exist either. Exporting everything is its own record kind, so
+    "did I ever export all of it" is one query.
     """
+    if scope not in SCOPES:
+        raise ValueError(f"unknown export scope {scope!r}")
     if since is not None and until is not None and since > until:
         raise InvalidRange("`since` must not be after `until`.")
     if await passphrase.is_enabled(session) and not acknowledged_decrypted_export:
@@ -132,13 +250,15 @@ async def enqueue(
 
     job_id = uuid.uuid4()
     await session.execute(
-        text("INSERT INTO export_jobs (id, since, until) VALUES (:id, :since, :until)"),
-        {"id": job_id, "since": since, "until": until},
+        text(
+            "INSERT INTO export_jobs (id, scope, since, until) VALUES (:id, :scope, :since, :until)"
+        ),
+        {"id": job_id, "scope": scope, "since": since, "until": until},
     )
     await record(
         session,
         Store.DECISIONS,
-        EXPORT_JOB_ENQUEUED,
+        EXPORT_EVERYTHING_ENQUEUED if scope == SCOPE_EVERYTHING else EXPORT_JOB_ENQUEUED,
         {
             "job_id": str(job_id),
             "since": since.isoformat() if since else None,
@@ -199,7 +319,7 @@ async def get_job(session: AsyncSession, job_id: uuid.UUID) -> ExportJob | None:
     row = (
         await session.execute(
             text(
-                "SELECT id, status, since, until, decisions_total, decisions_done, "
+                "SELECT id, status, scope, since, until, decisions_total, decisions_done, "
                 "interactions_total, interactions_done, file_bytes, error "
                 "FROM export_jobs WHERE id = :id"
             ),
@@ -325,12 +445,13 @@ async def run_job(
     async with session_scope(sessions) as session:
         row = (
             await session.execute(
-                text("SELECT since, until FROM export_jobs WHERE id = :id"), {"id": job_id}
+                text("SELECT scope, since, until FROM export_jobs WHERE id = :id"),
+                {"id": job_id},
             )
         ).first()
         if row is None:
             return
-        since, requested_until = row
+        scope, since, requested_until = row
         # The snapshot boundary: an unbounded `until` is pinned to this run's
         # own start, so a record written mid-export never changes a total
         # this run already counted (module docstring).
@@ -373,13 +494,23 @@ async def run_job(
                     "first_prev_hash": first_prev_hash,
                 }
 
-        manifest = {
+        manifest: dict[str, Any] = {
             "askwell_version": __version__,
             "generated_at": datetime.now(UTC).isoformat(),
+            "scope": scope,
             "since": since.astimezone(UTC).isoformat() if since else None,
             "until": requested_until.astimezone(UTC).isoformat() if requested_until else None,
             "stores": stores_manifest,
         }
+        if scope == SCOPE_EVERYTHING:
+            manifest["data"] = await _write_data_files(sessions, job_dir / "data")
+            manifest["traces"] = await asyncio.to_thread(
+                _copy_traces, settings.trace_dir, job_dir / "traces"
+            )
+            manifest["excluded"] = _EVERYTHING_EXCLUDED
+            readme_tmp = job_dir / "README.txt.tmp"
+            readme_tmp.write_text(_readme(), encoding="utf-8")
+            readme_tmp.rename(job_dir / "README.txt")
         manifest_tmp = job_dir / "manifest.json.tmp"
         manifest_tmp.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
         manifest_tmp.rename(job_dir / "manifest.json")
@@ -388,11 +519,13 @@ async def run_job(
         verifier_tmp.write_text(VERIFIER_SOURCE, encoding="utf-8")
         verifier_tmp.rename(job_dir / "verify.py")
 
-        zip_final = settings.export_dir / f"askwell-log-export-{job_id}.zip"
-        zip_tmp = settings.export_dir / f"askwell-log-export-{job_id}.zip.tmp"
+        stem = "askwell-export" if scope == SCOPE_EVERYTHING else "askwell-log-export"
+        zip_final = settings.export_dir / f"{stem}-{job_id}.zip"
+        zip_tmp = settings.export_dir / f"{stem}-{job_id}.zip.tmp"
         with zipfile.ZipFile(zip_tmp, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            for path in sorted(job_dir.iterdir()):
-                archive.write(path, arcname=path.name)
+            for path in sorted(job_dir.rglob("*")):
+                if path.is_file():
+                    archive.write(path, arcname=path.relative_to(job_dir).as_posix())
         zip_tmp.rename(zip_final)
         shutil.rmtree(job_dir)
 
@@ -425,10 +558,52 @@ async def run_job(
         raise
 
 
+def _copy_traces(trace_dir: Path, out_dir: Path) -> dict[str, Any]:
+    """The trace ring buffer as it stands now. A trace pruned mid-copy is
+    skipped, not an error: the buffer drops its oldest by design, and
+    losing one there is what `docs/audit-log.md` §2 already accepts."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for path in sorted(TraceRing(trace_dir, 0).files()):
+        try:
+            shutil.copy2(path, out_dir / path.name)
+        except FileNotFoundError:
+            continue
+        copied += 1
+    return {"directory": "traces/", "file_count": copied}
+
+
+async def _write_data_files(
+    sessions: async_sessionmaker[AsyncSession], out_dir: Path
+) -> dict[str, Any]:
+    """Every `_EVERYTHING_TABLES` table as `<table>.jsonl`, all read inside
+    one `REPEATABLE READ` snapshot so a conversation and its messages cannot
+    disagree — the same consistency argument `askwell.backup.run_job` makes,
+    and the same row writer, reused rather than copied."""
+    await asyncio.to_thread(out_dir.mkdir, parents=True, exist_ok=True)
+
+    async def _no_progress(_table: str, _count: int) -> None:
+        return None
+
+    tables: dict[str, Any] = {}
+    async with sessions() as session:
+        await session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
+        for table, (pk, exclude) in _EVERYTHING_TABLES.items():
+            count = await _dump_table(session, table, pk, exclude, out_dir, _no_progress)
+            tables[table] = {
+                "file": f"data/{table}.jsonl",
+                "record_count": count,
+                "excluded_columns": list(exclude),
+            }
+        await session.rollback()  # read-only; nothing to commit
+    return tables
+
+
 # --- HTTP --------------------------------------------------------------
 
 
 class CreateExportRequest(BaseModel):
+    scope: Literal["log", "everything"] = "log"
     since: datetime | None = None
     until: datetime | None = None
     acknowledged_decrypted_export: bool = False
@@ -453,6 +628,7 @@ def register_log_export(
                     since=body.since,
                     until=body.until,
                     acknowledged_decrypted_export=body.acknowledged_decrypted_export,
+                    scope=body.scope,
                 )
         except InvalidRange as error:
             return JSONResponse({"error": str(error)}, status_code=400)

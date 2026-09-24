@@ -3,7 +3,7 @@ import { Folders } from "@/components/settings/folders";
 import { ModelAndSpeed } from "@/components/settings/model-and-speed";
 import { PrivacySecurity } from "@/components/settings/privacy-security";
 import { Storage } from "@/components/settings/storage";
-import { VerifyLog } from "@/components/settings/verify-log";
+import { YourData } from "@/components/settings/your-data";
 
 /**
  * Settings — seven real sections so far.
@@ -30,12 +30,11 @@ import { VerifyLog } from "@/components/settings/verify-log";
  * count (never a toggle), and connected databases, which moves here from
  * its previous standalone placement because its read-only status is exactly
  * the "permitted destination, shown separately from the local-mode zero"
- * this section exists to draw. Your data arrives with `M7-LOG-FE-156`
- * (`web/components/settings/verify-log.tsx`) — only "verify the log" of
- * `docs/ux/settings.md` §6's six actions: export everything, export the log
- * alone, delete a source, delete all memory and reset Askwell have no
- * backend yet and are not stubbed here, the same honesty `storage.tsx`
- * already uses for export and prune. About arrives with `M7-DOC-DOC-163`
+ * this section exists to draw. Your data began with `M7-LOG-FE-156`'s
+ * verify the log and is completed by `M7-DATA-FE-160`
+ * (`web/components/settings/your-data.tsx`) — all six of
+ * `docs/ux/settings.md` §6's actions, with deleting a single source linked
+ * to the Library rather than rebuilt here. About arrives with `M7-DOC-DOC-163`
  * (`web/components/settings/about.tsx`) — version, licence, a link to the
  * source and a link to `NOTICES.md`, copied into `public/` at build time
  * (`web/scripts/copy-notices.mjs`) rather than duplicated; `docs/ux/settings.md`
@@ -83,10 +82,7 @@ export default function SettingsPage() {
 
       <PrivacySecurity />
 
-      <section className="flex flex-col gap-3">
-        <h2 style={{ fontSize: "var(--t-title)", lineHeight: "var(--t-title-lh)" }}>Your data</h2>
-        <VerifyLog />
-      </section>
+      <YourData />
 
       <About />
     </div>

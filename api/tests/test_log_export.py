@@ -37,7 +37,10 @@ from askwell.log_export import (
 
 pytestmark = pytest.mark.requires_db
 
-TABLES = "audit_decisions, audit_interactions, export_jobs, settings"
+TABLES = (
+    "audit_decisions, audit_interactions, export_jobs, settings, "
+    "roots, sources, memory, conversations"
+)
 
 
 @pytest_asyncio.fixture
@@ -70,6 +73,7 @@ def settings(tmp_path: Path) -> Settings:
         sandbox_owner_password="pw",  # type: ignore[arg-type]
         sandbox_readonly_password="pw",  # type: ignore[arg-type]
         export_dir=tmp_path / "exports",
+        trace_dir=tmp_path / "traces",
     )
 
 
@@ -322,3 +326,171 @@ async def test_a_failed_job_records_the_error(
     assert job is not None
     assert job.status == "failed"
     assert job.error is not None and "disk exploded" in job.error
+
+
+# --- export everything: M7-DATA-FE-160 ---------------------------------------
+
+
+async def _seed_everything(session: AsyncSession) -> uuid.UUID:
+    await session.execute(text("INSERT INTO roots (path) VALUES ('/home/me/contracts')"))
+    await session.execute(
+        text(
+            "INSERT INTO sources (kind, name, config_encrypted) "
+            "VALUES ('connection', 'crm', 'secret-ciphertext'::bytea)"
+        )
+    )
+    await session.execute(
+        text(
+            "INSERT INTO memory (subject, fact, origin) "
+            "VALUES ('notice period', 'Ninety days for the Hendry lease.', 'clarification')"
+        )
+    )
+    conversation = uuid.uuid4()
+    await session.execute(text("INSERT INTO conversations (id) VALUES (:id)"), {"id": conversation})
+    message = uuid.uuid4()
+    await session.execute(
+        text(
+            "INSERT INTO messages (id, conversation_id, role, content) "
+            "VALUES (:m, :c, 'user', 'What is the notice period?')"
+        ),
+        {"m": message, "c": conversation},
+    )
+    await record(session, Store.INTERACTIONS, "question_asked", {"q": "notice period"})
+    await session.commit()
+    return message
+
+
+def _lines(path: Path) -> list[dict[str, object]]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+async def test_export_everything_writes_every_part_in_open_formats(
+    factory: async_sessionmaker[AsyncSession], settings: Settings, tmp_path: Path
+) -> None:
+    async with factory() as session:
+        message = await _seed_everything(session)
+    settings.trace_dir.mkdir()
+    (settings.trace_dir / f"{message}.trace.json").write_text('{"steps": []}')
+
+    async with factory() as session:
+        job_id = await enqueue(
+            session,
+            since=None,
+            until=None,
+            acknowledged_decrypted_export=False,
+            scope=log_export.SCOPE_EVERYTHING,
+        )
+        await session.commit()
+    await _run(factory, settings, job_id)
+
+    async with factory() as session:
+        job = await get_job(session, job_id)
+    assert job is not None and job.status == "done", job
+    assert job.scope == "everything"
+
+    extracted = _extract(
+        settings.export_dir / f"askwell-export-{job_id}.zip", tmp_path / "extracted"
+    )
+    data = extracted / "data"
+    assert _lines(data / "memory.jsonl")[0]["fact"] == "Ninety days for the Hendry lease."
+    assert _lines(data / "messages.jsonl")[0]["content"] == "What is the notice period?"
+    assert len(_lines(data / "conversations.jsonl")) == 1
+    assert _lines(data / "roots.jsonl")[0]["path"] == "/home/me/contracts"
+    source = _lines(data / "sources.jsonl")[0]
+    assert source["name"] == "crm"
+    assert "config_encrypted" not in source  # a credential never leaves in plaintext
+    for table in log_export._EVERYTHING_TABLES:
+        assert (data / f"{table}.jsonl").exists(), table
+
+    assert (extracted / "traces" / f"{message}.trace.json").read_text() == '{"steps": []}'
+
+    readme = (extracted / "README.txt").read_text(encoding="utf-8")
+    for table in log_export._EVERYTHING_TABLES:
+        assert f"{table}.jsonl" in readme, table
+    assert "Your own files are not copied" in readme
+
+    manifest = json.loads((extracted / "manifest.json").read_text())
+    assert manifest["scope"] == "everything"
+    assert manifest["data"]["memory"]["record_count"] == 1
+    assert manifest["traces"]["file_count"] == 1
+    assert "connection_credentials" in manifest["excluded"]
+
+    # The log inside it is the same log, and still verifies on its own.
+    result = _run_verifier(extracted)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "interactions: 1 records, chain intact." in result.stdout
+
+
+async def test_export_everything_is_its_own_decisions_record(session: AsyncSession) -> None:
+    job_id = await enqueue(
+        session,
+        since=None,
+        until=None,
+        acknowledged_decrypted_export=False,
+        scope=log_export.SCOPE_EVERYTHING,
+    )
+    await session.commit()
+    kinds = (await session.execute(text("SELECT kind, payload FROM audit_decisions"))).all()
+    assert [(kind, payload["job_id"]) for kind, payload in kinds] == [
+        ("export_everything_enqueued", str(job_id))
+    ]
+
+
+async def test_export_everything_with_a_passphrase_set_warns_before_writing(
+    session: AsyncSession, settings: Settings
+) -> None:
+    await passphrase.set_passphrase(
+        session, settings, "correct horse battery staple", acknowledged_no_recovery=True
+    )
+    await session.commit()
+
+    with pytest.raises(ExportNotAcknowledged):
+        await enqueue(
+            session,
+            since=None,
+            until=None,
+            acknowledged_decrypted_export=False,
+            scope=log_export.SCOPE_EVERYTHING,
+        )
+    await session.rollback()
+    jobs = (await session.execute(text("SELECT count(*) FROM export_jobs"))).scalar_one()
+    assert jobs == 0  # refused before anything was written
+
+    await enqueue(
+        session,
+        since=None,
+        until=None,
+        acknowledged_decrypted_export=True,
+        scope=log_export.SCOPE_EVERYTHING,
+    )
+
+
+async def test_an_unknown_scope_is_refused(session: AsyncSession) -> None:
+    with pytest.raises(ValueError):
+        await enqueue(
+            session, since=None, until=None, acknowledged_decrypted_export=False, scope="some"
+        )
+
+
+def test_every_table_is_either_exported_or_stated_as_left_out() -> None:
+    """ "Genuinely complete" (`M7-DATA-FE-160`): a table added later must be
+    exported or named in the README's "Not included", never silently absent."""
+    from askwell import reset
+
+    stated_out = {
+        "chunks": "chunks",
+        "document_pages": "chunks",
+        "settings": "settings",
+        "ingest_jobs": "job_bookkeeping",
+        "reapply_jobs": "job_bookkeeping",
+        "reapply_items": "job_bookkeeping",
+        "export_jobs": "job_bookkeeping",
+        "backup_jobs": "job_bookkeeping",
+        "restore_jobs": "job_bookkeeping",
+        "prune_jobs": "job_bookkeeping",
+    }
+    for table in reset.TABLES:
+        if table in log_export._EVERYTHING_TABLES:
+            continue
+        assert table in stated_out, f"{table} is neither exported nor stated as left out"
+        assert stated_out[table] in log_export._EVERYTHING_EXCLUDED, table

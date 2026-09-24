@@ -4,6 +4,25 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.29 - 2026-09-24
+
+`Added`: `M7-DATA-FE-160` — Settings → Your data, all six actions. **Export everything** writes
+your sources list, memory, clarifications, conversations, both audit logs with their hash chain
+and a verifier, and the recent answer traces, as a background job. Every file is plain text:
+JSON Lines, one file per table, with a `README.txt` that explains each file and what was left
+out and why. A connected database's password is never included. With a passphrase set, the
+screen warns that the export will not be protected before anything is written. **Export the
+log** writes the two audit logs and the verifier on their own. **Delete a source** links to
+the Library. **Delete all memory** names the count and says it cannot be undone. **Verify the
+log** sits in the section. **Reset Askwell** first lists what it will remove, in counts, and
+says plainly that your original files are never touched. After a reset it also removes answer
+traces, and the exports and backups still held inside Askwell. It drops imported database
+copies and forgets any passphrase (#683).
+
+`Changed`: deleting all memory also writes one decisions record naming the count. Export and
+reset each write their own record too. Reset removes the log that holds these records, and the
+confirmation says so.
+
 ## 0.7.28 - 2026-09-24
 
 `Fixed`: `M7-DATA-BE-159a` — reset now works against a real install, and it empties the audit

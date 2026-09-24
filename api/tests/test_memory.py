@@ -1616,6 +1616,13 @@ async def test_delete_all_memory_removes_everything_and_counts_it(session: Async
     assert outcome.deleted_count == 2
     screen = await get_memory_screen(session)
     assert screen.rows == []
+    # One record for the confirmed act, naming the count (`M7-DATA-FE-160`).
+    rows = (
+        await session.execute(
+            text("SELECT payload FROM audit_decisions WHERE kind = 'memory_deleted_all'")
+        )
+    ).all()
+    assert [row[0] for row in rows] == [{"count": 2}]
 
 
 @pytest.mark.asyncio

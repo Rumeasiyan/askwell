@@ -132,6 +132,11 @@ class TraceRing:
             log.info("traces_pruned", dropped=len(dropped), remaining_bytes=total)
         return tuple(dropped)
 
+    def files(self) -> list[Path]:
+        """Every trace file currently held — what an export copies and what a
+        reset removes (`M7-DATA-FE-160`)."""
+        return self._files()
+
     def _files(self) -> list[Path]:
         try:
             return [path for path in self.directory.iterdir() if path.name.endswith(SUFFIX)]
