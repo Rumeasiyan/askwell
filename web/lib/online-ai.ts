@@ -4,8 +4,8 @@
  * Everything here is words. Since `M8-ONLINE-FE-171` online AI is switched
  * on per conversation, from the conversation (`lib/online-conversation.ts`),
  * so this section has no switch at all: a switch here would read as the
- * global setting the ticket forbids. There is no field and no request.
- * `M8-KEY-FE-174` adds the key here.
+ * global setting the ticket forbids. The key, and what it is for, is
+ * `lib/online-key.ts` (`M8-KEY-FE-174`).
  *
  * The copy follows `docs/decisions.md` 2026-09-23 — online AI uses a key the
  * person brings from their own provider, and Askwell sells nothing — not
@@ -29,13 +29,6 @@ export const ONLINE_AI_PER_CONVERSATION =
   "It is chosen per conversation. A conversation is either local or online, and you " +
   "switch it yourself. There is no setting that turns it on everywhere, so there is " +
   "nothing to forget about.";
-
-/** The key, and who the bill is between. */
-export const ONLINE_AI_KEY =
-  "It will use an API key from a provider you already pay. Askwell sells nothing and takes " +
-  "no part in what it costs — the account, the provider and the bill are yours. The key will " +
-  "be stored encrypted on this machine, never logged and never exported. Nothing on this " +
-  "screen asks for a key today, because there is nothing yet that could use one.";
 
 /** The payload statement is made in the conversation, before the first
  * send. Its wording is not decided yet (issue 737), and until it is, nothing is

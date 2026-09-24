@@ -91,3 +91,15 @@ export async function removePassphrase(
   const body = await asJson<{ enabled: boolean; message: string }>(response, "remove");
   return { status: { enabled: body.enabled, locked: false }, message: body.message };
 }
+
+/** Unlock this session. Not a decision about the library, so the server keeps
+ * no record of it (`askwell.passphrase.unlock`). */
+export async function unlockPassphrase(passphrase: string): Promise<PassphraseStatus> {
+  const response = await fetch("/settings/passphrase/unlock", {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({ passphrase }),
+  });
+  await asJson<{ locked: boolean }>(response, "unlock with");
+  return { enabled: true, locked: false };
+}

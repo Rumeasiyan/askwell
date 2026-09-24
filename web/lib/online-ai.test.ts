@@ -12,7 +12,6 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
-  ONLINE_AI_KEY,
   ONLINE_AI_PAYLOAD,
   ONLINE_AI_PER_CONVERSATION,
   ONLINE_AI_WHAT,
@@ -43,12 +42,9 @@ test("it states the choice is per conversation, never global", () => {
   assert.match(ONLINE_AI_PER_CONVERSATION, /no setting that turns it on everywhere/);
 });
 
-test("the key statement follows the 2026-09-23 decision: the person's own key, no sale", () => {
-  assert.match(ONLINE_AI_KEY, /provider you already pay/);
-  assert.match(ONLINE_AI_KEY, /Askwell sells nothing/);
-  assert.match(ONLINE_AI_KEY, /Nothing on this screen asks for a key today/);
-  // The cancelled credit tier must not come back through this section.
-  for (const text of [ONLINE_AI_WHAT, ONLINE_AI_KEY, ONLINE_AI_PER_CONVERSATION, ONLINE_AI_WHERE]) {
+test("the cancelled credit tier does not come back through this section", () => {
+  // The key and its bill are `online-key.test.ts`'s (M8-KEY-FE-174).
+  for (const text of [ONLINE_AI_WHAT, ONLINE_AI_PER_CONVERSATION, ONLINE_AI_WHERE]) {
     assert.doesNotMatch(text, /credit|purchase|balance|spending limit|price/i);
   }
 });
@@ -58,7 +54,9 @@ test("the payload is promised before sending rather than guessed", () => {
   assert.match(ONLINE_AI_PAYLOAD, /Until then, nothing leaves/);
 });
 
-test("no field in the section can collect anything, and nothing in it makes a request", () => {
+test("the section itself collects nothing: the key field is online-key.tsx's alone", () => {
+  // M8-KEY-FE-174 adds exactly one thing that collects: the key control.
+  assert.match(COMPONENT, /<OnlineKey \/>/);
   for (const forbidden of [/<input\b/, /<textarea\b/, /<select\b/, /<form\b/, /\bfetch\(/, /https?:\/\//]) {
     assert.doesNotMatch(COMPONENT, forbidden, `online-ai.tsx contains ${forbidden}`);
   }

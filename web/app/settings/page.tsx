@@ -49,8 +49,9 @@ import { YourData } from "@/components/settings/your-data";
  * hardware profile and retrieval threshold above under one heading, beside
  * the model in use, its measured memory and throughput, and the swap. Online
  * AI arrives with `M7-SET-FE-150` (`web/components/settings/online-ai.tsx`)
- * second, per the same order — visible and inert until M8, describing the
- * person's-own-key model `docs/decisions.md` 2026-09-23 settled on. The rest of the
+ * second, per the same order, describing the person's-own-key model
+ * `docs/decisions.md` 2026-09-23 settled on; `M8-KEY-FE-174` adds the key
+ * itself (`web/components/settings/online-key.tsx`). The rest of the
  * screen is still its empty state, because `docs/states-and-edge-cases.md`
  * requires every surface to have one and a route stub with nothing in it
  * teaches the next person that empty states are optional.

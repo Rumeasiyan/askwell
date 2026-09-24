@@ -4,6 +4,19 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.44 - 2026-09-25
+
+`Added`: `M8-KEY-FE-174`. Settings → Online AI now has a place for your own provider key. Above
+the field, before you paste anything, it says what the key is for: it is used only in a
+conversation you switch to online yourself, only after that conversation tells you what it will
+send, and only with the provider address you enter. It also says that the cost is between you
+and your provider and Askwell takes no part in it. Once saved, the key is never shown again; the
+section says a key is set and which provider it is for. You can replace it or remove it in one
+click, and each button says beforehand what it does to a conversation that is using online AI.
+A key that is only spaces, or has a space or line break in it from copying, is refused with that
+reason before anything is saved. On an install with a passphrase that has not been entered yet,
+adding a key asks for the passphrase first.
+
 ## 0.7.43 - 2026-09-25
 
 `Added`: `M8-KEY-BE-173`. Askwell can now hold your own provider key for online AI. The key is
