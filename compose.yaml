@@ -318,12 +318,10 @@ services:
       ASKWELL_WEB_SEARCH_DESTINATION_HOST: ${ASKWELL_WEB_SEARCH_DESTINATION_HOST:-html.duckduckgo.com}
       ASKWELL_WEB_SEARCH_DESTINATION_PORT: ${ASKWELL_WEB_SEARCH_DESTINATION_PORT:-443}
       ASKWELL_WEB_SEARCH_GRANT_TTL_SECONDS: ${ASKWELL_WEB_SEARCH_GRANT_TTL_SECONDS:-30.0}
-      # Online AI, `M8-ONLINE-SEC-169`. Empty means online AI cannot be
-      # enabled for any conversation; set, it is still only ever authorised
-      # for a conversation the user switches to online, one at a time.
-      ASKWELL_ONLINE_AI_DESTINATION: ${ASKWELL_ONLINE_AI_DESTINATION:-}
+      # Online AI, `M8-ONLINE-SEC-169`. The destination and model come from
+      # the user's stored provider key (`M8-KEY-BE-173`), never from here; a
+      # conversation is only ever authorised one at a time, when switched.
       ASKWELL_ONLINE_AI_AUTHORISATION_TTL_SECONDS: ${ASKWELL_ONLINE_AI_AUTHORISATION_TTL_SECONDS:-14400}
-      ASKWELL_ONLINE_AI_MODEL: ${ASKWELL_ONLINE_AI_MODEL:-}
       ASKWELL_ONLINE_AI_API_PATH: ${ASKWELL_ONLINE_AI_API_PATH:-/v1/chat/completions}
       ASKWELL_ONLINE_AI_TIMEOUT_SECONDS: ${ASKWELL_ONLINE_AI_TIMEOUT_SECONDS:-120}
       # Anything that respects these gets refused *with a log naming it*.

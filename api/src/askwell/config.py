@@ -499,14 +499,10 @@ class Settings(BaseSettings):
     # that a leaked grant is a bounded window, not a standing one.
     web_search_grant_ttl_seconds: float = Field(default=30.0, gt=0, le=300)
 
-    # The one `host:port` a conversation's online-AI authorisation names —
-    # `M8-ONLINE-SEC-169`. Empty means no provider is configured, and online
-    # AI cannot be enabled for any conversation: there is nothing to
-    # authorise. Configuration only until `M8-KEY-BE-173` derives it from the
-    # provider the user's own key belongs to; either way it is one
-    # destination, never a list, and it opens nothing on its own — a
-    # conversation still has to be switched to online, deliberately.
-    online_ai_destination: str | None = Field(default=None, pattern=r"^[A-Za-z0-9.-]+:[0-9]{1,5}$")
+    # The destination and model online AI uses are not configuration: they
+    # are stored with the user's provider key (`askwell.provider_key`,
+    # `M8-KEY-BE-173`), so the destination a conversation is authorised for
+    # is always the one the key belongs to.
 
     # How long a conversation's authorisation may stand before it lapses on
     # its own. A time bound, not a session: long enough for one sitting with
@@ -514,13 +510,6 @@ class Settings(BaseSettings):
     # forgotten does not hold a door open overnight. The user re-enables it
     # if they are still working; nothing renews it for them.
     online_ai_authorisation_ttl_seconds: float = Field(default=14400.0, gt=0, le=86400)
-
-    # The provider's model identifier, sent with each online request and
-    # recorded on every turn that used it — `M8-ONLINE-BE-170`. Configuration
-    # for the same reason as the destination above (`AGENTS.md` §4: never a
-    # model name in code). Empty means online AI is unavailable: a
-    # destination with no model to ask for is not a provider.
-    online_ai_model: str | None = None
 
     # The chat-completions path on the destination. The OpenAI-compatible
     # shape is the one the local server already speaks; providers differ in
@@ -574,8 +563,6 @@ class Settings(BaseSettings):
     @field_validator(
         "roots_mount",
         "web_search_provider",
-        "online_ai_destination",
-        "online_ai_model",
         mode="before",
     )
     @classmethod

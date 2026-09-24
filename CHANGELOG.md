@@ -4,6 +4,24 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.43 - 2026-09-25
+
+`Added`: `M8-KEY-BE-173`. Askwell can now hold your own provider key for online AI. The key is
+encrypted on disk with the same protection as your database passwords, including your
+passphrase if you set one. It is decrypted only at the moment a question is sent, and it is sent
+only to the provider it belongs to. Askwell records that a key was stored, replaced or removed,
+and which provider it is for, but never the key. It does not appear in the logs, the trace, the
+audit log, error messages or "Export everything". Removing the key turns online AI off straight
+away for every conversation, and says it is unavailable rather than failing at the next question.
+There is no screen to enter a key yet; that comes next.
+
+`Changed`: the online provider's address and model are now stored with your key, not set in
+`.env`. `ASKWELL_ONLINE_AI_DESTINATION` and `ASKWELL_ONLINE_AI_MODEL` are gone. If a provider
+rejects your key, Askwell says the provider rejected your key, not that something is broken.
+
+`Fixed`: if Askwell's own network gateway is not running, online AI now says so. It used to say
+that your network was unavailable, which sent you to check a connection that was fine (#735).
+
 ## 0.7.42 - 2026-09-24
 
 `Added`: `M8-ONLINE-OBS-172`. Every request Askwell makes to an online provider is now recorded

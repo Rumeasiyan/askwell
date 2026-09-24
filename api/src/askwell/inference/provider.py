@@ -32,12 +32,22 @@ closed after it, so the proxy's per-conversation count of permitted
 pooled client would make the two diverge, and the one the user can read is
 the proxy's.
 
-**No key is held here.** The caller passes one, or none. Storing it is
-`M8-KEY-BE-173`'s, and until that lands nothing passes one, so a real
-provider refuses and the turn answers locally saying the provider refused —
-which is the true state of an install with no key. A key is never put into
-an error message, a log line or the trace: a provider's own error body can
-echo part of it back, so the body is never repeated either.
+**No key is held here.** The caller passes the stored one
+(`askwell.provider_key`, `M8-KEY-BE-173`), decrypted at send time, and the
+destination and model come with it — there is no second setting naming a
+provider that could disagree with the key's. A key is never put into an
+error message, a log line or the trace: a provider's own error body can echo
+part of it back, so the body is never repeated either. A provider rejecting
+the key (401, 403) is said to be exactly that, because the fix is the user's
+key and not anything in Askwell.
+
+**Only the proxy can say the network is unavailable** (issue #735). Every
+call goes through Askwell's own egress proxy, so a connection that could not
+be opened at all is a connection to the proxy, not to the provider: that is
+Askwell's own network gateway not running, and saying "the network is
+unavailable" would send the user to check a Wi-Fi that is fine. The proxy's
+502 — it tried the destination and could not reach it — is the one place the
+network is named.
 
 **Every call leaves a `Transmission` behind** (`M8-ONLINE-OBS-172`): where
 it went, which model, when, the exact size of the body it handed to the
@@ -52,7 +62,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -61,6 +71,7 @@ import httpx
 from askwell.config import Settings
 from askwell.inference.client import CONNECT_TIMEOUT_SECONDS, StreamChunk
 from askwell.logging import get_logger
+from askwell.provider_key import ProviderKey
 
 log = get_logger(__name__)
 
@@ -95,13 +106,15 @@ class OnlineFailed(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class OnlineTarget:
     """Everything one call needs, resolved by the caller at send time: where,
-    which model, and the conversation's proxy credential."""
+    which model, the conversation's proxy credential and the user's key.
+    Neither secret is in the `repr`, so a log line or a traceback that
+    captures the target does not capture them."""
 
     destination: str
     model: str
     proxy_username: str
-    proxy_password: str
-    api_key: str | None = None
+    proxy_password: str = field(repr=False)
+    api_key: str | None = field(default=None, repr=False)
 
 
 @dataclass(slots=True)
@@ -124,23 +137,17 @@ class Transmission:
     outcome: str | None = None
 
 
-def target(
-    settings: Settings, credentials: tuple[str, str] | None, *, api_key: str | None = None
-) -> OnlineTarget | None:
+def target(credentials: tuple[str, str] | None, key: ProviderKey | None) -> OnlineTarget | None:
     """The target for a conversation, or None when it cannot go online:
-    no provider configured, or no credential held in this process for it."""
-    if (
-        credentials is None
-        or settings.online_ai_destination is None
-        or settings.online_ai_model is None
-    ):
+    no key held, or no credential held in this process for it."""
+    if credentials is None or key is None:
         return None
     return OnlineTarget(
-        destination=settings.online_ai_destination,
-        model=settings.online_ai_model,
+        destination=key.provider.destination,
+        model=key.provider.model,
         proxy_username=credentials[0],
         proxy_password=credentials[1],
-        api_key=api_key,
+        api_key=key.api_key,
     )
 
 
@@ -163,6 +170,12 @@ def _status_failure(status: int) -> OnlineFailed:
     if status == 429:
         return OnlineFailed(
             RATE_LIMITED, "The online provider is limiting requests right now (429)."
+        )
+    if status in (401, 403):
+        return OnlineFailed(
+            REFUSED,
+            f"The online provider rejected your key ({status}). "
+            "Check it with your provider, or replace it in Settings.",
         )
     if 400 <= status < 500:
         return OnlineFailed(REFUSED, f"The online provider refused the request ({status}).")
@@ -296,13 +309,14 @@ class OnlineClient:
             transmission.content_sent = False
             raise _record(transmission, _proxy_failure(error, self.target.destination)) from error
         except (httpx.ConnectError, httpx.ConnectTimeout) as error:
+            # Every call goes through the proxy, so this is the proxy not
+            # answering, not the provider (issue #735).
             transmission.content_sent = False
             raise _record(
                 transmission,
                 OnlineFailed(
-                    NETWORK_UNAVAILABLE,
-                    f"Online AI could not reach {self.target.destination}: "
-                    "the network is unavailable.",
+                    FAILED,
+                    "Online AI could not start: Askwell's network gateway is not running.",
                 ),
             ) from error
         except httpx.TimeoutException as error:

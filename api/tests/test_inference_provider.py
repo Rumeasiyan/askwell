@@ -18,6 +18,7 @@ from askwell.config import Settings
 from askwell.inference import provider
 from askwell.inference.client import StreamChunk
 from askwell.inference.provider import OnlineClient, OnlineFailed, OnlineTarget, Transmission
+from askwell.provider_key import Provider, ProviderKey
 
 DESTINATION = "api.provider.example:443"
 SENTINEL_KEY = "sk-sentinel-never-repeat-me"
@@ -31,8 +32,6 @@ def settings(tmp_path: Path) -> Settings:
         sandbox_owner_password="pw",  # type: ignore[arg-type]
         sandbox_readonly_password="pw",  # type: ignore[arg-type]
         trace_dir=tmp_path / "traces",
-        online_ai_destination=DESTINATION,
-        online_ai_model="provider-model",
     )
 
 
@@ -145,14 +144,41 @@ async def test_each_provider_answer_is_told_apart_and_never_repeats_the_body(
     assert SENTINEL_KEY not in str(caught.value)
 
 
-async def test_no_route_is_the_network_being_unavailable(settings: Settings) -> None:
+async def test_a_rejected_key_is_the_provider_rejecting_it_never_askwell_broken(
+    settings: Settings,
+) -> None:
+    """`M8-KEY-BE-173`: the fix for a 401 is the user's key, so that is what
+    the message says — and it never carries the key, even when the
+    provider's own body does."""
+    for status in (401, 403):
+
+        def handler(_request: httpx.Request, status: int = status) -> httpx.Response:
+            return httpx.Response(status, text=f"Incorrect API key provided: {SENTINEL_KEY}")
+
+        with pytest.raises(OnlineFailed) as caught:
+            await _collect(_client(settings, handler, api_key=SENTINEL_KEY))
+        assert caught.value.reason_code == provider.REFUSED
+        message = str(caught.value)
+        assert message.startswith("The online provider rejected your key")
+        assert "Askwell" not in message
+        assert SENTINEL_KEY not in message
+
+
+async def test_the_proxy_not_answering_is_askwells_gateway_not_the_network(
+    settings: Settings,
+) -> None:
+    """Issue #735. Every call goes through the egress proxy, so a connection
+    that could not be opened is the proxy not running. "The network is
+    unavailable" is kept for the proxy's own 502, below."""
+
     def handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("Name or service not known", request=request)
+        raise httpx.ConnectError("Connection refused", request=request)
 
     with pytest.raises(OnlineFailed) as caught:
         await _collect(_client(settings, handler))
-    assert caught.value.reason_code == provider.NETWORK_UNAVAILABLE
-    assert "the network is unavailable" in str(caught.value)
+    assert caught.value.reason_code == provider.FAILED
+    assert "network gateway is not running" in str(caught.value)
+    assert "the network is unavailable" not in str(caught.value)
 
 
 async def test_a_connection_lost_partway_is_interrupted(settings: Settings) -> None:
@@ -196,17 +222,21 @@ async def test_an_unreadable_stream_fails_rather_than_becoming_an_empty_answer(
     assert caught.value.reason_code == provider.FAILED
 
 
-def test_no_target_without_a_model_a_destination_or_a_credential(settings: Settings) -> None:
+def test_the_target_is_the_stored_keys_provider_and_needs_a_credential() -> None:
     credentials = ("conversation-abc", "token")
-    assert provider.target(settings, credentials) is not None
-    assert provider.target(settings, None) is None
-    assert (
-        provider.target(settings.model_copy(update={"online_ai_model": None}), credentials) is None
+    key = ProviderKey(
+        provider=Provider(destination=DESTINATION, model="provider-model"), api_key=SENTINEL_KEY
     )
-    assert (
-        provider.target(settings.model_copy(update={"online_ai_destination": None}), credentials)
-        is None
-    )
+    online_target = provider.target(credentials, key)
+    assert online_target is not None
+    assert (online_target.destination, online_target.model) == (DESTINATION, "provider-model")
+    assert online_target.api_key == SENTINEL_KEY
+    assert provider.target(None, key) is None
+    assert provider.target(credentials, None) is None
+    # Neither secret is in a repr a log line or traceback could capture.
+    assert SENTINEL_KEY not in repr(online_target)
+    assert "token" not in repr(online_target)
+    assert SENTINEL_KEY not in repr(key)
 
 
 # --- through a proxy -----------------------------------------------------------
@@ -358,7 +388,7 @@ async def test_no_route_means_nothing_left(settings: Settings) -> None:
         await _collect(client)
     assert client.last_transmission is not None
     assert client.last_transmission.content_sent is False
-    assert client.last_transmission.outcome == provider.NETWORK_UNAVAILABLE
+    assert client.last_transmission.outcome == provider.FAILED
 
 
 async def test_a_stream_closed_partway_is_recorded_as_stopped(settings: Settings) -> None:

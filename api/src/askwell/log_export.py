@@ -114,7 +114,10 @@ _EVERYTHING_EXCLUDED: dict[str, str] = {
         "sources.config_encrypted, a connected database's password, is left out so an "
         "export never carries a credential."
     ),
-    "settings": "Askwell's own configuration, including the passphrase check value.",
+    "settings": (
+        "Askwell's own configuration, including the passphrase check value and your "
+        "online provider key."
+    ),
     "vector_index": "Embeddings are numbers derived from text; they are not readable.",
     "job_bookkeeping": "Ingest, re-processing, export, backup, restore and prune job rows.",
 }
