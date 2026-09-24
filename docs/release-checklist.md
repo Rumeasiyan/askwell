@@ -54,6 +54,8 @@ Nothing is ever `ACCEPTED` against them:
 - the eval categories **SQL safety** (C2), **web escalation discipline** (C10) and
   **abstention** (C5);
 - the **offline** gate (C1);
+- the **online-mode** gate (C1): only the authorised destination, only for the authorised
+  conversation;
 - the **restore** gate. `docs/release-procedure.md` step 3: a failed restore does not ship;
 - a **security review** finding against any constraint C1–C10.
 
@@ -83,6 +85,7 @@ before a day goes into the manual ones.
 | G10 | **Artefacts and cold install** | An artefact exists for every platform being released. `docs/installing.md` works as written on a machine that has never seen Askwell, for each one. No platform is dropped silently: a platform that is not released is named in the entry | `docs/release-procedure.md` steps 2 and 7 | Release entry: platforms built, platforms installed on, and machine descriptions |
 | G11 | **Manual regression walkthrough** | Every step of `docs/release-walkthrough.md` is `PASS`, from a cold install, on every platform being released. If some platform was not walked, the entry names it | `docs/release-walkthrough.md` | `docs/release-evidence/<version>/walkthrough-<platform>.md`: the filled-in script, one per platform |
 | G12 | **Open defects** | Every open issue labelled `bug` has been read. Each one is fixed, or accepted under rule 4, or recorded as not affecting this release, with the reason. An open `bug` that also carries a `constraint:*` label cannot be accepted | `gh issue list --state open --label bug` | Release entry: the list, with a disposition for each issue |
+| G13 | **Online mode: only the authorised destination** | A `pass` entry for this `VERSION` in `docs/online-test-log.md`: `scripts/verify-online-egress.sh` exits 0, and the independent capture shows traffic only to the authorised destination, only while its one conversation is online, stopping within a second of switching it off, and none from the sandbox. Exit `2` or no capture is `BLOCKED` | `docs/online-release-test.md` | `docs/online-test-log.md`, and the capture file |
 
 ### G3 — the eval table
 
@@ -140,6 +143,7 @@ one is disposed of in the release entry under the gate named; none may be carrie
 | #710 | G3 | `eval/bench.py` exits 0 for a scored suite below its bar. Not a hold by itself: G3 is compared by hand until it lands |
 | #712 | G11 | No click reaches **Add a source** once anything is added: W4.3, W5.1, W5.2 and W5.4 are `FAIL` |
 | #615 | G11 | Settings → Storage → **Export and prune** is a disabled button reading "Not built yet", a dead control, so W9.1 is `FAIL`; and there is no backup control, so W9.4 runs from a terminal |
+| #737 | G13 | Every online send is refused until the disclosure wording is decided, so the online-mode gate's positive half cannot run: `BLOCKED`. #730 must land first, and a test enforces that order |
 
 Remove a row in the change that closes its issue.
 
@@ -152,6 +156,7 @@ The ticket assumes one maintainer can run this in one to two working days. The m
 | G1, G2, G8, G9, G12 | about 1h | about 1h. `test-db` and `web-check` dominate |
 | G3 eval | about 30 min to start the runs and read them | Several hours on CPU inference: 165 tasks × 3 runs. Can run unattended |
 | G4 offline | about 2h | about 2h |
+| G13 online mode | about 1h | about 1h, after G4 on the same machine |
 | G5 restore | about 2h | about 3h, including the second machine |
 | G6 security review | about 3h | about 3h |
 | G7 performance | about 1h | about 2h, including corpus ingestion |

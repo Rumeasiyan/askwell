@@ -75,6 +75,15 @@ it (`M7-OFFLINE-TEST-145`; `AGENTS.md` §3, C1). Do not proceed to step 4 withou
 for this exact version. `scripts/verify-no-egress.sh` covers the automatable half; the physical
 cable-pull and voice steps stay manual, per that document's own §2.
 
+## 3a-ii. The online-mode gate
+
+After the offline gate, run `docs/online-release-test.md` for this `VERSION` and record the
+result in `docs/online-test-log.md`. **A failed or blocked run blocks the release.** It adds to
+3a rather than replacing it: 3a proves nothing leaves with online AI off, this proves that with
+it on for one conversation, only that conversation reaches only its provider
+(`M8-ONLINE-TEST-176`; `AGENTS.md` §3, C1). `scripts/verify-online-egress.sh` covers the
+automatable half. The packet capture is read by hand, per that document's §6.
+
 ## 3b. The notices gate
 
 Also before checksumming or publishing, run `scripts/dev.sh notices`. It regenerates

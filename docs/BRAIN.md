@@ -46,6 +46,29 @@ Since `M1-ASK-FE-039` a question can be typed and watched, for the first time: t
 
 ## Last completed
 
+**`M8-ONLINE-TEST-176` (no version change: docs, tests and a release script)**: the
+online-mode release gate, G13 in `docs/release-checklist.md`. Procedure
+`docs/online-release-test.md`, record `docs/online-test-log.md`, automatable half
+`scripts/verify-online-egress.sh` (exit `0` pass, `1` fail, `2` blocked). Two independent checks
+as in G4: `GET /network` counters and a packet capture read by hand, by address **and** by TLS
+SNI, because the authorisation names a service, not an address. G13 cannot be `ACCEPTED`, runs
+after G4 on the same machine, with update checks off. The credential edge cases are tests, since
+the credential is only in the API's memory: `test_egress.py` gained four spellings of the
+authorised address refused even with the credential, a plain-HTTP request with the credential
+refused, and an unreachable destination costing one upstream attempt per `CONNECT`;
+`test_ask_online.py` asserts one provider request per question on every fallback. The retry
+bound is one connection attempt per question. `test_release_checklist.py` checks G13 and that
+every test the procedure names exists. **Live run** on the dev stack with a placeholder key for
+`api.openai.com:443`: exit `2`, every check passed except the send, which #737 refuses (entry in
+`docs/online-test-log.md`); key removed afterwards. **Verified:** `check` 1197 passed, `test-db` 962 passed. **#255**
+is finished by this ticket. Its leftover PRD/build-plan/AGENTS credit text moved to #744
+(owner's wording). **All eight M8 tickets are built, but M8 has not landed:** its exit condition
+needs a real send, which needs #737 (and #730 before it). G13 is `BLOCKED` until then, and the
+known-holds table says so. Manual test `docs/manual-tests/M8-ONLINE-TEST-176.md` walks the
+gate from a cold start. Writing it found that §6 of the procedure assumes the capture holds only
+Askwell's traffic, which a normal desktop's own traffic breaks: #745, with a baseline capture as
+the stand-in until then. **Next:** #730, then #737 (owner's call), then the first full G13 run.
+
 **`0.7.45` — `M8-KEY-FE-175`**: the provider saying no ends the conversation's online AI,
 named. A `401`/`403` is now `key_rejected` (was `refused`); a `402`, or a `429` whose error
 code is `insufficient_quota`, is `quota_exhausted` (the body is read for that code only, never

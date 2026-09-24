@@ -40,6 +40,7 @@ Format per entry:
 | G10 Artefacts and cold install | | per platform |
 | G11 Walkthrough | | per platform: PASS, or failing step numbers + issues |
 | G12 Open defects | | each open `bug` issue and its disposition |
+| G13 Online mode | | docs/online-test-log.md entry, capture file |
 
 **Accepted known issues:** none | per issue: #<n> — why shipping with it is acceptable — the
 follow-up that removes it (docs/release-checklist.md, rule 4)
