@@ -97,7 +97,7 @@ The change is recorded in the decisions log. Not hidden, not forbidden — it is
 | **Partial** | Which claims were grounded and which were not |
 | **Tool ceiling** | Steps taken, plus what it was about to do |
 | **Failed mid-answer** | Steps up to the failure, then the error |
-| **Online backend** | Marked, with what was sent |
+| **Online backend** | Marked, with what was sent: where, which model, when, the size in bytes, which parts (instructions, question, how many passages, facts and notes) and how it ended. Shown on a local answer too when a provider request was made first and failed, because that request still left the machine. Never the text itself (`M8-ONLINE-OBS-172`) |
 | **Trace unavailable** | Traces are a capped ring buffer (`../audit-log.md` §2). Old ones are gone: *"The detailed trace for this answer has been cleared. The answer and its sources are still in your log."* — the important records survive; only the debugging detail rotates |
 
 ---

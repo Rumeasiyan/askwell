@@ -419,7 +419,7 @@ Every ticket, in dependency order within each domain. Full text lives in the mil
 | M3-STORE-OBS-077 | Clarification answers as decisions records in one transaction | Critical | 2–3 h |
 | M4-SQL-OBS-108 | Record executed and rejected SQL with reasons | High | 2–3 h |
 | M6.5-WEB-OBS-193 | Trace flagging of fetched content, and the escalation on the record | High | 2–3 h |
-| M8-ONLINE-OBS-172 | Online-mode logging **[BLOCKED]** | Critical | — |
+| M8-ONLINE-OBS-172 | Online-mode logging — the local record of each provider request | Critical | 2–3 h |
 
 ### Test, evaluation and quality
 
@@ -455,7 +455,6 @@ Every ticket, in dependency order within each domain. Full text lives in the mil
 
 | ID | Title | Blocked on |
 | -- | ----- | ---------- |
-| M8-ONLINE-OBS-172 | Online-mode logging | What online mode transmits |
 | M8-CREDIT-BLOCKED-173 | Credit purchase | Credit pricing — rate, minimum, margin |
 | M8-CREDIT-BLOCKED-174 | Spending limit and balance | The same decision, and 173 |
 | M8-ONLINE-FE-171 (disclosure half) | Pre-send payload wording | #737: the wording of what the provider receives. The marker, the confirmation and the refusal are built (`0.7.41`); only `askwell.online.DISCLOSURE` waits |

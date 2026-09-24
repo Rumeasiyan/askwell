@@ -28,7 +28,9 @@ import {
   toolCeilingPendingCalls,
   toolInjectionPatterns,
   traceRows,
+  transmissionLines,
   type TraceData,
+  type TraceTransmission,
 } from "./trace.ts";
 
 // --- formatDuration ----------------------------------------------------------
@@ -414,10 +416,9 @@ test("isOnlineBackend is true once backend.mode reads \"online\" — the state M
     steps: [],
     steps_truncated: false,
     trace_rotated: false,
-    backend: { mode: "online", model: "claude-sonnet-5", sent: "3 passages, 1 question" },
+    backend: { mode: "online", model: "provider-model" },
   };
   assert.equal(isOnlineBackend(trace), true);
-  assert.equal(trace.backend?.sent, "3 passages, 1 question");
 });
 
 // --- Citations never rotate (docs/ux/trace.md §5's own edge case) -------------
@@ -436,4 +437,83 @@ test("buildTraceCopyText's rotated branch never reads or needs citations — the
   const text = buildTraceCopyText(trace, "What is the notice period?");
   assert.doesNotMatch(text, /citation/i);
   assert.match(text, /cleared/);
+});
+
+// --- transmissionLines (M8-ONLINE-OBS-172) --------------------------------------
+
+function transmission(overrides: Partial<TraceTransmission> = {}): TraceTransmission {
+  return {
+    destination: "api.provider.example:443",
+    model: "provider-model",
+    sent_at: "2026-09-24T10:31:05.123456+00:00",
+    request_bytes: 4210,
+    content_sent: true,
+    status_code: 200,
+    outcome: "answered",
+    contents: {
+      prompt_version: "conflicting_sources.v1",
+      question: true,
+      chunk_ids: ["a", "b", "c"],
+      memory_fact_ids: ["f"],
+      schema_note_ids: [],
+      clarification_answer: false,
+    },
+    ...overrides,
+  };
+}
+
+test("transmissionLines names where it went, when, its size and every part it carried", () => {
+  assert.deepEqual(transmissionLines(transmission()), [
+    "Sent to api.provider.example:443 · provider-model · 2026-09-24 10:31:05 UTC",
+    "4210 bytes: Askwell's instructions (conflicting_sources.v1), your question, " +
+      "3 passages from your files, 1 fact you taught Askwell.",
+    "The provider answered.",
+  ]);
+});
+
+test("transmissionLines says a refused request still left, with the status", () => {
+  const lines = transmissionLines(transmission({ status_code: 401, outcome: "refused" }));
+  assert.equal(lines[0]?.startsWith("Sent to api.provider.example:443"), true);
+  assert.equal(lines.at(-1), "The provider refused the request (401).");
+});
+
+test("transmissionLines says nothing left when the connection was never made", () => {
+  assert.deepEqual(
+    transmissionLines(
+      transmission({ content_sent: false, status_code: null, outcome: "network_unavailable" }),
+    ),
+    ["Nothing left this machine. The connection to api.provider.example:443 was not made (network_unavailable)."],
+  );
+});
+
+test("transmissionLines names schema notes and a clarification answer only when sent", () => {
+  const base = transmission();
+  const lines = transmissionLines(
+    transmission({
+      contents: {
+        ...base.contents!,
+        chunk_ids: ["a"],
+        memory_fact_ids: [],
+        schema_note_ids: ["n1", "n2"],
+        clarification_answer: true,
+      },
+    }),
+  );
+  assert.equal(
+    lines[1],
+    "4210 bytes: Askwell's instructions (conflicting_sources.v1), your question, " +
+      "1 passage from your files, 2 notes on a database, your answer to the clarification.",
+  );
+});
+
+test("buildTraceCopyText carries what was sent under the backend line", () => {
+  const trace: TraceData = {
+    steps: [],
+    steps_truncated: false,
+    trace_rotated: false,
+    backend: { mode: "local", model: "local-model", transmission: transmission({ status_code: 429, outcome: "rate_limited" }) },
+  };
+  const text = buildTraceCopyText(trace, "How long is the notice period?");
+  assert.match(text, /Backend: local · local-model\nSent to api\.provider\.example:443/);
+  assert.match(text, /The provider was limiting requests \(429\)\./);
 });

@@ -17,7 +17,7 @@ import pytest
 from askwell.config import Settings
 from askwell.inference import provider
 from askwell.inference.client import StreamChunk
-from askwell.inference.provider import OnlineClient, OnlineFailed, OnlineTarget
+from askwell.inference.provider import OnlineClient, OnlineFailed, OnlineTarget, Transmission
 
 DESTINATION = "api.provider.example:443"
 SENTINEL_KEY = "sk-sentinel-never-repeat-me"
@@ -259,6 +259,11 @@ async def test_through_the_proxy_with_the_conversations_credential_one_tunnel_pe
             with pytest.raises(OnlineFailed) as caught:
                 await _collect(client)
             assert caught.value.reason_code == reason_code
+            # The tunnel never opened, so the body never left (`M8-ONLINE-OBS-172`).
+            assert client.last_transmission is not None
+            assert client.last_transmission.content_sent is False
+            assert client.last_transmission.status_code is None
+            assert client.last_transmission.outcome == reason_code
     finally:
         server.close()
         await server.wait_closed()
@@ -268,3 +273,103 @@ async def test_through_the_proxy_with_the_conversations_credential_one_tunnel_pe
         assert request[0] == f"CONNECT {DESTINATION} HTTP/1.1"
         expected = base64.b64encode(b"conversation-abc:token").decode("ascii")
         assert f"Proxy-Authorization: Basic {expected}" in request
+
+
+# --- what each call leaves behind (`M8-ONLINE-OBS-172`) ---------------------------
+
+
+async def test_a_call_records_exactly_the_bytes_it_sent_and_how_it_ended(
+    settings: Settings,
+) -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, content=_sse(_delta("ok", "stop")))
+
+    client = _client(settings, handler)
+    assert client.last_transmission is None, "no record before any call"
+    await _collect(client)
+
+    (request,) = seen
+    transmission = client.last_transmission
+    assert isinstance(transmission, Transmission)
+    assert transmission.request_bytes == len(request.content), "the bytes sent, not an estimate"
+    assert transmission.content_sent is True
+    assert transmission.status_code == 200
+    assert transmission.outcome == provider.ANSWERED
+    assert transmission.destination == DESTINATION
+    assert transmission.model == "provider-model"
+    assert transmission.sent_at.tzinfo is not None
+
+
+async def test_the_body_carries_the_prompt_and_nothing_about_the_user(
+    settings: Settings,
+) -> None:
+    """Default-deny, read from the wire: the request body has the generation
+    parameters and the two prompt messages, and no field that identifies the
+    person, the machine, the conversation or the file a passage came from."""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, content=_sse(_delta("ok", "stop")))
+
+    await _collect(_client(settings, handler))
+
+    (request,) = seen
+    payload = json.loads(request.content)
+    assert set(payload) == {"model", "messages", "max_tokens", "temperature", "stream"}
+    assert [set(message) for message in payload["messages"]] == [{"role", "content"}] * 2
+    assert "conversation-abc" not in request.content.decode("utf-8")
+    assert set(request.headers) <= {
+        "host",
+        "accept",
+        "accept-encoding",
+        "connection",
+        "user-agent",
+        "content-type",
+        "content-length",
+    }
+
+
+@pytest.mark.parametrize(
+    ("status", "reason_code"), [(401, provider.REFUSED), (500, provider.FAILED)]
+)
+async def test_a_request_the_provider_refused_still_left_the_machine(
+    settings: Settings, status: int, reason_code: str
+) -> None:
+    client = _client(settings, lambda _r: httpx.Response(status))
+    with pytest.raises(OnlineFailed):
+        await _collect(client)
+    transmission = client.last_transmission
+    assert transmission is not None
+    assert transmission.content_sent is True, "the provider answered, so it had the body"
+    assert transmission.status_code == status
+    assert transmission.outcome == reason_code
+
+
+async def test_no_route_means_nothing_left(settings: Settings) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("no route", request=request)
+
+    client = _client(settings, handler)
+    with pytest.raises(OnlineFailed):
+        await _collect(client)
+    assert client.last_transmission is not None
+    assert client.last_transmission.content_sent is False
+    assert client.last_transmission.outcome == provider.NETWORK_UNAVAILABLE
+
+
+async def test_a_stream_closed_partway_is_recorded_as_stopped(settings: Settings) -> None:
+    client = _client(
+        settings,
+        lambda _r: httpx.Response(200, content=_sse(_delta("one "), _delta("two", "stop"))),
+    )
+    stream = client.stream_generate("SYSTEM", "USER", timeout_seconds=5.0)
+    first = await anext(stream)
+    assert first.text == "one "
+    await stream.aclose()
+    assert client.last_transmission is not None
+    assert client.last_transmission.content_sent is True
+    assert client.last_transmission.outcome == provider.STOPPED

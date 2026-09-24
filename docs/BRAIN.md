@@ -46,6 +46,23 @@ Since `M1-ASK-FE-039` a question can be typed and watched, for the first time: t
 
 ## Last completed
 
+**`0.7.42` — `M8-ONLINE-OBS-172`**: the local record of each provider request. Built against
+#255, not the ticket's credit-era text: there is no billing, so nothing is transmitted to Askwell
+and #45's four billing fields govern nothing. `OnlineClient` leaves a `Transmission` after every
+call (destination, model, `sent_at`, exact `request_bytes`, `content_sent`, status, outcome).
+`askwell.ask` adds what the body was made of, by reference only (prompt version, question,
+chunk ids, fact and note ids, clarification answer). That entry goes on
+`trace.backend.transmission` and into a new `online_ai_request` interaction record in the same
+transaction as `ask_asked`, whose shape is unchanged (a test compares the keys of an online turn
+and a local one). A provider refusal counts as sent. Only a connection never made counts as
+nothing left. The trace panel's "show what was sent" reads it, on a local fallback answer too.
+The unused `backend.sent` placeholder string was replaced. **Verified:** `check` (1170 passed),
+`test-db` (947 passed), `web-check`, `pnpm test` (516). Live: rebuilt api, a local turn's trace
+backend has no transmission and writes no `online_ai_request`; enabling online still `409`s
+with no destination configured; `askwell-verify` reports both chains intact. **Not walkable:**
+an online turn (#737 refuses every send; no key until `M8-KEY-BE-173`), and the network capture,
+which stays `M8-ONLINE-TEST-176`'s. **Next:** `M8-KEY-BE-173`. #737 is still the owner's call.
+
 **`0.7.41` — `M8-ONLINE-FE-171`**: the conversation marker and the pre-send disclosure. **The
 disclosure's wording is still blocked, so online AI sends nothing.** `askwell.online.DISCLOSURE`
 is `None` until #737 records what the provider receives. While it is `None`, nothing can be
@@ -1926,7 +1943,7 @@ Questions raised by the rewrite were settled as defaults rather than handed back
 | -------------- | ----- |
 | Code signing certificates — Apple and Windows, with lead times | [#42](https://github.com/Rumeasiyan/askwell/issues/42) |
 | Update delivery | [#44](https://github.com/Rumeasiyan/askwell/issues/44) |
-| What online mode transmits | [#45](https://github.com/Rumeasiyan/askwell/issues/45) |
+| ~~What online mode transmits~~ — moot since #255 (no billing). What the provider receives is #737 | ~~[#45](https://github.com/Rumeasiyan/askwell/issues/45)~~ |
 | Credit pricing | [#46](https://github.com/Rumeasiyan/askwell/issues/46) |
 | Enable private vulnerability reporting — `SECURITY.md`'s route does not exist until it is on | [#689](https://github.com/Rumeasiyan/askwell/issues/689) |
 | The copy-review marker | [#40](https://github.com/Rumeasiyan/askwell/issues/40) |
