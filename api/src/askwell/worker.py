@@ -313,8 +313,12 @@ async def run_update_check(ctx: dict[str, Any]) -> bool:
 
 async def startup(ctx: dict[str, Any]) -> None:
     from askwell import backup, embed, ingest, log_export, log_prune, reapply, restore, sandbox
+    from askwell.crash_report import install_loop_handler
 
     settings: Settings = ctx["settings"]
+    # An unretrieved background-task failure leaves a local crash report
+    # (#715). A failed job is not a crash: it has its own surfaced failure.
+    install_loop_handler(settings, "worker")
     engine = build_engine(settings)
     ctx["engine"] = engine
     ctx["sessions"] = session_factory(engine)
@@ -505,6 +509,7 @@ def main() -> None:
     from arq.worker import create_worker
 
     from askwell.config import ConfigurationError
+    from askwell.crash_report import install_excepthook
 
     try:
         settings = load_settings()
@@ -515,6 +520,7 @@ def main() -> None:
         level=settings.log_level,
         json_output=settings.environment is not Environment.DEVELOPMENT,
     )
+    install_excepthook(settings, "worker")
 
     worker = create_worker(
         WorkerSettings,  # type: ignore[arg-type]  # arq accepts a settings class

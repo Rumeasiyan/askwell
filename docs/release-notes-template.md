@@ -10,3 +10,8 @@ only stop your computer asking.
 ---
 
 <!-- What changed in this release — copy the matching CHANGELOG.md entry below. -->
+
+<!-- Schema revision (docs/release-procedure.md §1) — `scripts/dev.sh run alembic heads`.
+     Rolling back to this release means rolling the database back to this revision
+     (docs/rollback-and-incidents.md §1.1). -->
+**Schema revision:** `<revision>`

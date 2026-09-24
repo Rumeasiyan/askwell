@@ -57,6 +57,10 @@ _SKIP_DIRS = {
     "build",
     "target",
 }
+# Paths, not names: the build runner's git-ignored logs quote API payloads,
+# current version included (issue #716), while `.build-runner/ledger.jsonl`
+# is tracked and still scanned.
+_SKIP_PATHS = {REPO_ROOT / ".build-runner" / "logs"}
 _SKIP_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".woff", ".woff2", ".lock"}
 
 
@@ -68,7 +72,7 @@ def _source_files() -> list[Path]:
         directory = stack.pop()
         for entry in directory.iterdir():
             if entry.is_dir():
-                if entry.name not in _SKIP_DIRS:
+                if entry.name not in _SKIP_DIRS and entry not in _SKIP_PATHS:
                     stack.append(entry)
             elif entry.suffix not in _SKIP_SUFFIXES and entry.name != "VERSION":
                 found.append(entry)

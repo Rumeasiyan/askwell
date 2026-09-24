@@ -19,6 +19,13 @@ from askwell.ask import register_ask
 from askwell.assistant import read as read_assistant
 from askwell.backup import register_backup
 from askwell.config import ConfigurationError, Environment, Settings, load_settings
+from askwell.crash_report import (
+    install_excepthook,
+    install_loop_handler,
+    register_crash_reports,
+    report_task_failure,
+)
+from askwell.crash_report import write as write_crash_report
 from askwell.db.engine import build_engine, session_factory
 from askwell.documents import register_documents
 from askwell.health import ComponentState, check_components
@@ -62,6 +69,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     reproduce anything.
     """
     settings: Settings = app.state.settings
+    # A background task that fails with nobody awaiting it leaves a local
+    # crash report too, not only a log line (`askwell.crash_report`, #715).
+    install_loop_handler(settings, "api")
 
     components = await check_components(settings)
     log.info(
@@ -106,6 +116,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # every startup wait on top of that. `reapply_user_model` is a no-op
         # if nothing was ever selected.
         reapply_task = asyncio.create_task(reapply_user_model(app.state.sessions, settings))
+        reapply_task.add_done_callback(report_task_failure(settings, "api"))
         app.state.model_reapply_task = reapply_task
 
         # Model discovery and validation, logged, before anyone asks a
@@ -114,6 +125,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         discovery_task = asyncio.create_task(
             run_startup_discovery(app.state.sessions, app.state.model_download, settings)
         )
+        discovery_task.add_done_callback(report_task_failure(settings, "api"))
         app.state.model_discovery_task = discovery_task
 
     try:
@@ -177,6 +189,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_reset(app, resolved, app.state.sessions)
     register_passphrase(app, resolved, app.state.sessions)
     register_update_check(app, resolved, app.state.sessions)
+    register_crash_reports(app, resolved)
     register_voice_channel(
         app,
         resolved,
@@ -249,6 +262,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """
         current: Settings = request.app.state.settings
         log.exception("unhandled_exception", path=request.url.path)
+        # A local file the person may choose to attach to an issue; never
+        # sent (`askwell.crash_report`). The route template, not the path.
+        route = request.scope.get("route")
+        await asyncio.to_thread(
+            write_crash_report,
+            error,
+            component="api",
+            settings=current,
+            route=getattr(route, "path", None),
+        )
 
         detail: dict[str, Any] = {
             "error": "Askwell hit an error it did not expect.",
@@ -278,6 +301,7 @@ def main() -> None:
         # this is looking at a terminal.
         raise SystemExit(str(error)) from None
 
+    install_excepthook(settings, "api")
     uvicorn.run(
         create_app(settings),
         host=settings.host,

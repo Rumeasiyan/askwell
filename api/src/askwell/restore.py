@@ -291,19 +291,34 @@ def inspect_artefact(path: Path) -> RestoreManifest:
     """
     if not path.is_file():
         raise ArtefactInvalid(f"No file at {path}.")
+    # The whole manifest parses inside the `try`, version included: a zip
+    # whose `manifest.json` is not JSON, is a list, lacks a key or carries a
+    # malformed version is a backup Askwell cannot read, and says so by name
+    # rather than escaping as a 500 in the middle of a rollback (issue #714).
     try:
         with zipfile.ZipFile(path) as archive:
             manifest = json.loads(archive.read("manifest.json"))
-    except (zipfile.BadZipFile, KeyError) as error:
-        raise ArtefactInvalid(f"{path} is not a readable Askwell backup: {error}") from error
+        found = RestoreManifest(
+            askwell_version=manifest["askwell_version"],
+            chunk_count=manifest["chunk_count"],
+            estimated_reembed_seconds=manifest["estimated_reembed_seconds"],
+            passphrase_protected=manifest["passphrase_protected"],
+        )
+        _parse_version(found.askwell_version)
+    except (
+        zipfile.BadZipFile,
+        OSError,
+        KeyError,
+        TypeError,
+        ValueError,
+        AttributeError,
+    ) as error:
+        raise ArtefactInvalid(
+            f"{path} is not a readable Askwell backup ({type(error).__name__})."
+        ) from error
 
-    _check_version(manifest["askwell_version"])
-    return RestoreManifest(
-        askwell_version=manifest["askwell_version"],
-        chunk_count=manifest["chunk_count"],
-        estimated_reembed_seconds=manifest["estimated_reembed_seconds"],
-        passphrase_protected=manifest["passphrase_protected"],
-    )
+    _check_version(found.askwell_version)
+    return found
 
 
 # --- enqueue, dispatch, resume ----------------------------------------------
