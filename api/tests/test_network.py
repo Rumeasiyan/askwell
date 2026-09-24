@@ -14,6 +14,8 @@ import pytest
 
 from askwell.config import Settings
 from askwell.egress import (
+    CONVERSATION_GRANT_KEY_PREFIX,
+    PERMITTED_BY_CONVERSATION_KEY,
     PERMITTED_COUNTER_KEY,
     REFUSED_COUNTER_KEY,
     REFUSED_RECENT_KEY,
@@ -40,6 +42,9 @@ class FakePipeline:
     def lrange(self, key: str, _start: int, _stop: int) -> None:
         self.requested.append(key)
 
+    def hgetall(self, key: str) -> None:
+        self.requested.append(key)
+
     async def execute(self) -> list[Any]:
         if self.fail is not None:
             raise self.fail
@@ -53,6 +58,15 @@ class FakeRedis:
 
     def pipeline(self) -> FakePipeline:
         return FakePipeline(self.values, self.fail)
+
+    async def scan(
+        self, cursor: int, match: str | None = None, count: int | None = None
+    ) -> tuple[int, list[str]]:
+        prefix = (match or "*").rstrip("*")
+        return 0, [key for key in self.values if key.startswith(prefix)]
+
+    async def mget(self, keys: list[str]) -> list[Any]:
+        return [self.values.get(key) for key in keys]
 
     async def aclose(self) -> None:
         return None
@@ -173,8 +187,47 @@ def test_the_payload_states_facts_and_classifies_nothing() -> None:
         "permitted",
         "recent",
         "recent_capped_at",
+        "permitted_by_conversation",
+        "authorised",
         "unavailable_reason",
     }
     # Nothing here says whether the number is good or bad. It is a count.
     for classifier in ("status", "level", "severity", "healthy", "ok", "warning"):
         assert classifier not in payload
+
+
+async def test_permitted_requests_are_attributed_to_the_conversation_that_made_them(
+    settings: Settings, patched: Any
+) -> None:
+    """`M8-ONLINE-SEC-169`: "exactly three outbound requests were permitted,
+    attributable to that conversation" — the proxy's own per-conversation
+    figure, alongside the total and the refusals, never folded into either."""
+    patched(
+        {
+            **REPORTING,
+            PERMITTED_COUNTER_KEY: b"3",
+            PERMITTED_BY_CONVERSATION_KEY: {b"conv-a\tapi.example.com:443": b"3"},
+            f"{CONVERSATION_GRANT_KEY_PREFIX}conv-a": (
+                b'{"destination": "api.example.com:443", "token_sha256": "x"}'
+            ),
+        }
+    )
+    payload = (await read_activity(settings)).as_dict()
+
+    assert payload["permitted"] == 3
+    assert payload["refused"] == 6
+    assert payload["permitted_by_conversation"] == [
+        {"conversation_id": "conv-a", "destination": "api.example.com:443", "permitted": 3}
+    ]
+    assert payload["authorised"] == [
+        {"conversation_id": "conv-a", "destination": "api.example.com:443"}
+    ]
+
+
+async def test_in_local_mode_nothing_is_authorised_or_attributed(
+    settings: Settings, patched: Any
+) -> None:
+    patched(REPORTING)
+    payload = (await read_activity(settings)).as_dict()
+    assert payload["authorised"] == []
+    assert payload["permitted_by_conversation"] == []

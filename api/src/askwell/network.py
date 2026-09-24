@@ -18,14 +18,18 @@ problem.
 """
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from askwell.config import Settings
 from askwell.egress import (
+    CONVERSATION_GRANT_KEY_PREFIX,
+    PERMITTED_BY_CONVERSATION_KEY,
     PERMITTED_COUNTER_KEY,
     RECENT_LIMIT,
     REFUSED_COUNTER_KEY,
     REFUSED_RECENT_KEY,
     REPORTING_SINCE_KEY,
+    parse_conversation_grant,
 )
 from askwell.logging import get_logger
 
@@ -39,6 +43,25 @@ class Refusal:
 
 
 @dataclass(frozen=True, slots=True)
+class ConversationPermitted:
+    """Permitted connections the proxy attributed to one conversation's
+    online-AI authorisation (`M8-ONLINE-SEC-169`). Kept after the
+    authorisation ends — the count is what happened, not what is open."""
+
+    conversation_id: str
+    destination: str
+    permitted: int
+
+
+@dataclass(frozen=True, slots=True)
+class Authorisation:
+    """A conversation's authorisation standing right now."""
+
+    conversation_id: str
+    destination: str
+
+
+@dataclass(frozen=True, slots=True)
 class NetworkActivity:
     """The proxy's counters, or an honest statement that they could not be read."""
 
@@ -46,6 +69,8 @@ class NetworkActivity:
     refused: int | None = None
     permitted: int | None = None
     recent: list[Refusal] = field(default_factory=list)
+    permitted_by_conversation: list[ConversationPermitted] = field(default_factory=list)
+    authorised: list[Authorisation] = field(default_factory=list)
     unavailable_reason: str | None = None
 
     def as_dict(self) -> dict[str, object]:
@@ -59,6 +84,18 @@ class NetworkActivity:
             # Stated rather than implied. A list that silently stops at fifty
             # reads as "these are all of them".
             "recent_capped_at": RECENT_LIMIT,
+            "permitted_by_conversation": [
+                {
+                    "conversation_id": item.conversation_id,
+                    "destination": item.destination,
+                    "permitted": item.permitted,
+                }
+                for item in self.permitted_by_conversation
+            ],
+            "authorised": [
+                {"conversation_id": item.conversation_id, "destination": item.destination}
+                for item in self.authorised
+            ],
             "unavailable_reason": self.unavailable_reason,
         }
 
@@ -83,7 +120,9 @@ async def read_activity(settings: Settings) -> NetworkActivity:
             pipe.get(REFUSED_COUNTER_KEY)
             pipe.get(PERMITTED_COUNTER_KEY)
             pipe.lrange(REFUSED_RECENT_KEY, 0, RECENT_LIMIT - 1)
-            since, refused, permitted, recent = await pipe.execute()
+            pipe.hgetall(PERMITTED_BY_CONVERSATION_KEY)
+            since, refused, permitted, recent, by_conversation = await pipe.execute()
+        authorised = await _authorised(client)
     except Exception as error:
         log.warning("network_activity_unreadable", error=f"{type(error).__name__}: {error}")
         return _unavailable(
@@ -110,7 +149,43 @@ async def read_activity(settings: Settings) -> NetworkActivity:
         refused=int(refused or 0),
         permitted=int(permitted or 0),
         recent=[_parse_recent(entry) for entry in recent],
+        permitted_by_conversation=sorted(
+            (_parse_attributed(key, value) for key, value in (by_conversation or {}).items()),
+            key=lambda item: (item.conversation_id, item.destination),
+        ),
+        authorised=authorised,
     )
+
+
+def _text(value: bytes | str) -> str:
+    return value.decode("utf-8") if isinstance(value, bytes) else value
+
+
+def _parse_attributed(key: bytes | str, value: bytes | str) -> ConversationPermitted:
+    conversation_id, _, destination = _text(key).partition("\t")
+    return ConversationPermitted(
+        conversation_id=conversation_id,
+        destination=destination or "(none)",
+        permitted=int(_text(value)),
+    )
+
+
+async def _authorised(client: Any) -> list[Authorisation]:
+    """Every conversation authorisation the proxy would honour right now."""
+    found: list[Authorisation] = []
+    cursor = 0
+    while True:
+        cursor, keys = await client.scan(
+            cursor, match=f"{CONVERSATION_GRANT_KEY_PREFIX}*", count=100
+        )
+        if keys:
+            for key, value in zip(keys, await client.mget(keys), strict=True):
+                conversation_id = _text(key).removeprefix(CONVERSATION_GRANT_KEY_PREFIX)
+                grant = parse_conversation_grant(conversation_id, value)
+                if grant is not None:
+                    found.append(Authorisation(conversation_id, grant.destination))
+        if cursor == 0:
+            return sorted(found, key=lambda item: item.conversation_id)
 
 
 def _parse_recent(entry: bytes | str) -> Refusal:

@@ -13,12 +13,28 @@ export interface Refusal {
   destination: string;
 }
 
+/** Permitted connections the proxy attributed to one conversation's online-AI
+ * authorisation (`M8-ONLINE-SEC-169`). Kept after the authorisation ends. */
+export interface ConversationPermitted {
+  conversation_id: string;
+  destination: string;
+  permitted: number;
+}
+
+/** A conversation's online-AI authorisation standing right now. */
+export interface Authorisation {
+  conversation_id: string;
+  destination: string;
+}
+
 export interface NetworkActivity {
   available: boolean;
   refused: number | null;
   permitted: number | null;
   recent: Refusal[];
   recent_capped_at: number;
+  permitted_by_conversation: ConversationPermitted[];
+  authorised: Authorisation[];
   unavailable_reason: string | null;
 }
 

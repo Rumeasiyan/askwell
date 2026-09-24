@@ -69,7 +69,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from askwell import passphrase, sandbox
+from askwell import online, passphrase, sandbox
 from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
@@ -241,6 +241,14 @@ def register_reset(
             before = await perform(db, files=files)
         # Committed. Only now what cannot be rolled back (module docstring).
         passphrase.forget_unlocked_key()
+        # The conversations are gone, so are their online-AI authorisations
+        # (`M8-ONLINE-SEC-169`). Nothing to record — the audit tables were
+        # just emptied with them. Credentials are forgotten before Redis is
+        # touched, so a grant Redis would not let us close is already unusable.
+        try:
+            await online.revoke_all(settings)
+        except Exception as error:
+            log.warning("reset_online_grants_not_closed", error=f"{type(error).__name__}: {error}")
         removal = await asyncio.to_thread(remove_files, settings)
         dropped = await _drop_sandbox_databases(factory, settings)
         return JSONResponse(
