@@ -43,10 +43,11 @@ web/out/
 # (web/scripts/copy-notices.mjs) — generated, not a second source.
 web/public/notices.md
 
-# Copied from SUPPORT.md and SECURITY.md at build time
+# Copied from SUPPORT.md, SECURITY.md and LICENSE at build time
 # (web/scripts/copy-support.mjs) — generated, not a second source.
 web/public/support.txt
 web/public/security-policy.txt
+web/public/license.txt
 
 # Eval run output: machine- and timestamp-specific, not source. A before/after
 # comparison quotes the numbers into docs/BRAIN.md; the raw JSON is not the

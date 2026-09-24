@@ -2,7 +2,7 @@
 
 **Askwell is maintained by one person.** No company, no team, no support contract. This page says what that means in practice, so what you expect matches what exists before you need help rather than after.
 
-Askwell shows this page too: **Settings → About → Support**. It is the same file, bundled with the app, so you can read it without a network connection.
+Askwell shows this page too: **Settings → About → Report a problem**. It is the same file, bundled with the app, so you can read it without a network connection.
 
 ## Where to go
 

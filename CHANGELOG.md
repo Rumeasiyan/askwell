@@ -4,6 +4,21 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.31 - 2026-09-24
+
+`Added`: `M7-SET-FE-149`. Settings → About now has an **Update checking** control. It is off
+unless you turn it on, and before you do it says exactly what is sent: one request a week for
+a static file, carrying your version number and nothing else. It also says that the server
+holding the file sees your network address. Turning it on or off is recorded in the decisions
+log. The full text of the licence, the third-party notices (including every bundled model
+weight and its licence) and the security policy can be read inside Settings, in full and
+scrollable. The support boundary is shown before the issue address.
+
+`Fixed`: in the desktop app, About's links to the notices, the support boundary, the security
+policy and the source did nothing, because the app never opens new windows. The texts are now
+shown in the page. The source and issue-tracker addresses are shown as text with a
+**Copy address** button, so they can be opened elsewhere when this machine is offline.
+
 ## 0.7.30 - 2026-09-24
 
 `Added`: `M7-DOC-DOC-164` — Settings → About now says what help exists before you ask for it.
