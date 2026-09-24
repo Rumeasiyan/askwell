@@ -46,6 +46,15 @@ Off. Everything below is inert until the user turns it on, and it stays off unti
 
 > Askwell sells nothing and takes no part in what online AI costs. The account, the provider and the bill are the user's; the key is stored encrypted on this machine, never logged and never exported.
 
+**The key (`M8-KEY-FE-174`, `web/components/settings/online-key.tsx`).** Before the field, in plain words: what the key is for; that it is used only in a conversation the user switched online, and only after that conversation has stated what a question will send and the user agreed; that it goes to the provider address entered with it and nowhere else; which providers take it (an OpenAI-compatible chat API). Then the control:
+
+- **Not set:** *No key is set. Online AI cannot be switched on in any conversation.* and **Add a key**.
+- **Entry:** provider address, model, and the key in a password field. The key is never echoed, never put in a URL, and the field is emptied as soon as the save returns. A key that is empty, only whitespace, or has a space or line break in it is refused in place with that reason, before it is sent. Anything else the server refuses, it refuses in its own sentence, which never contains the key.
+- **Set:** *A key is set for `<address>`, asking for `<model>`.* Never the key, not even masked; the server does not return it. **Replace the key** (address and model pre-filled, key empty) and **Remove the key**, each with what it does to online conversations stated beside it before it is pressed. Remove is one click.
+- **Passphrase set and not yet entered:** adding or replacing asks for the passphrase first, in place. Removing needs no passphrase.
+
+Below the control: stored encrypted, never shown again, never logged, never exported, and not checked with the provider on save. Then *What it costs*: between the user and their provider; Askwell sells nothing and takes no part in it. The contents of an online question are **not** described here. That statement belongs to the conversation, before its first send (`M8-ONLINE-FE-171`, #737), and one copy of it is safer than two. Reasoning: `../decisions.md`, 2026-09-25.
+
 **Since `M8-ONLINE-FE-171` the section has no switch.** Online AI is switched on from the conversation, beside its Ask button (`ask.md` §5), so a switch here, even an inert one, reads as the global setting this section promises does not exist. The section says where the switch is instead. What follows describes the section before that ticket, kept as the record of `M7-SET-FE-150`.
 
 **Before M8 this section is visible and inert** (`M7-SET-FE-150`, `web/components/settings/online-ai.tsx`): what it will be, that it is per conversation, the key-and-bill statement, and a placeholder saying what leaves the machine will be stated before anything is sent. A switch reads *Off. Not available yet.*; pressing it says plainly that it cannot be turned on yet, with no waiting list and no email field — there is nothing to sign up for. No field in the section collects anything, and nothing in it makes a request. No price is described, because there is none. Hiding the feature until it exists means nobody expects it; showing it disabled sets the expectation honestly.
@@ -117,6 +126,10 @@ An open-source product whose users never learn about a security fix is a real pr
 | **Log over budget** | Prominent, with prune and export |
 | **Export running** | Background, with progress and a download when ready |
 | **Hash chain broken** | Where it breaks and what it means: the application never rewrites history, so this indicates something outside Askwell changed the file (`../audit-log.md` §4) |
+| **Online AI, no key set** | *No key is set.* and **Add a key**, below what the key is for and who pays |
+| **Online AI, key set** | The provider address and model, never the key. **Replace the key**, **Remove the key**, and what each does to online conversations |
+| **Key refused at entry** | The reason, in place: only whitespace, a space or line break from copying, or the server's own sentence. Never the key |
+| **Key entry, passphrase not yet entered** | The passphrase asked for first, in place |
 | **Online AI, before M8** | Visible, disabled, explaining what it will do. Pressing the switch shows that it is not available yet — never a form, a waiting list or an email field |
 
 ---
@@ -127,4 +140,4 @@ An open-source product whose users never learn about a security fix is a real pr
 2. **Settled: a backup taken from a passphrase-protected install is encrypted with that passphrase, and restore refuses clearly without it.** The alternative — writing an unencrypted backup from an encrypted install — would silently produce the one artefact that defeats the passphrase entirely, and it would do so at the moment the user was being careful. Restore states plainly that the passphrase from the source machine is required and that there is no recovery path, which is the same honesty the passphrase screen already uses.
 
    The tested restore in Phase 6 must cover **both** cases: passphrase set and not set. A restore path tested only in the easy direction is not tested.
-3. **Settled: the abstention surface's "Ask a larger model" offer names a provider key, never credits** (`../decisions.md`, 2026-09-23; `M7-FIX-FE-174`). With no key configured — true today, since M8 has not built anywhere to set one — it says the capability is not set up yet rather than a balance of zero. §3 above was rewritten to the key model by `M7-SET-FE-150` (issue #658), which had to build the section against it; the entry, masking and removal details stay with `M8-KEY-FE-174`.
+3. **Settled: the abstention surface's "Ask a larger model" offer names a provider key, never credits** (`../decisions.md`, 2026-09-23; `M7-FIX-FE-174`). With no key configured it says the capability is not set up yet rather than a balance of zero. §3 above was rewritten to the key model by `M7-SET-FE-150` (issue #658), and `M8-KEY-FE-174` specified and built the entry, masking and removal.
