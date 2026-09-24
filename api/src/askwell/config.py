@@ -388,6 +388,12 @@ class Settings(BaseSettings):
     # the artefact, the API's download route reads it.
     backup_dir: Path = Path("/var/lib/askwell/backups")
 
+    # The version this machine last started as (`M7-UPDATE-FE-162`), so the
+    # next start can tell an upgrade was applied. A file on the `askwell-state`
+    # volume, not a database row: a fresh install's audit tables and
+    # `settings` must stay empty until a restore lands in them (issue #697).
+    running_version_path: Path = Path("/var/lib/askwell/running_version")
+
     # Where the built frontend lives. The default is the path inside the API
     # image; a source checkout points it at web/out.
     web_assets_dir: Path = Path("/app/web/out")
@@ -569,6 +575,7 @@ class Settings(BaseSettings):
         "trace_dir",
         "export_dir",
         "backup_dir",
+        "running_version_path",
         "install_secret_path",
         "probe_result_path",
         "voice_whisper_model_path",

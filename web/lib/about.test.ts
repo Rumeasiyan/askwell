@@ -5,12 +5,14 @@
  */
 
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  checkNowOutcome,
+  dismissUpdate,
   fetchBundledText,
   ISSUE_URL,
   LICENCE_TEXT,
@@ -20,7 +22,9 @@ import {
   setUpdateCheck,
   SUPPORT_TEXT,
   UPDATE_CHECK_PAYLOAD,
+  UPGRADE_DATA_SAFETY,
   updateCheckIsOn,
+  updateMarker,
   updateCheckStatus,
   type UpdateCheckState,
 } from "./about.ts";
@@ -40,6 +44,9 @@ function state(answer: UpdateCheckState["answer"]): UpdateCheckState {
     latest_known_version: null,
     update_available: false,
     last_result: null,
+    latest_known_since: null,
+    dismissed_version: null,
+    dismissed: false,
   };
 }
 
@@ -115,4 +122,100 @@ test("the notices name the bundled model weights and their licences", () => {
 test("the source and issue addresses point at the one repository", () => {
   assert.ok(ISSUE_URL.startsWith(`${REPO_URL}/`));
   assert.match(REPO_URL, /^https:\/\/github\.com\/[^/]+\/askwell$/);
+});
+
+// --- a newer version: `M7-UPDATE-FE-162` ---------------------------------
+
+function found(overrides: Partial<UpdateCheckState>): UpdateCheckState {
+  return {
+    ...state("yes"),
+    last_checked_at: "2026-09-01T10:00:00+00:00",
+    latest_known_version: "1.2.0",
+    latest_known_since: "2026-09-03T10:00:00+00:00",
+    update_available: true,
+    last_result: "ok",
+    ...overrides,
+  };
+}
+
+test("a known newer version is one marker naming the version and when it was found", () => {
+  const marker = updateMarker(found({}));
+  assert.ok(marker !== null);
+  assert.equal(marker.version, "1.2.0");
+  assert.match(marker.found ?? "", /^Found .*2026/);
+});
+
+test("never checked shows no marker at all, and nothing that reads as a failure", () => {
+  assert.equal(updateMarker(state("not_asked")), null);
+  assert.equal(checkNowOutcome(state("not_asked")), null);
+});
+
+test("a dismissed version shows no marker; a further version is the server's to un-dismiss", () => {
+  assert.equal(updateMarker(found({ dismissed: true, dismissed_version: "1.2.0" })), null);
+  assert.ok(updateMarker(found({ latest_known_version: "1.3.0", dismissed_version: "1.2.0" })) !== null);
+});
+
+test("turning checking off keeps a version already found", () => {
+  assert.ok(updateMarker(found({ answer: "no" })) !== null);
+});
+
+test("a version found before its date was recorded is shown without a made-up date", () => {
+  const marker = updateMarker(found({ latest_known_since: null }));
+  assert.ok(marker !== null);
+  assert.equal(marker.found, null);
+});
+
+test("running the newest version shows no marker", () => {
+  assert.equal(updateMarker(found({ update_available: false })), null);
+});
+
+test("the data-safety statement names every store an upgrade keeps", () => {
+  assert.match(UPGRADE_DATA_SAFETY, /indexes/);
+  assert.match(UPGRADE_DATA_SAFETY, /remembers/);
+  assert.match(UPGRADE_DATA_SAFETY, /audit log/);
+  assert.match(UPGRADE_DATA_SAFETY, /kept/);
+});
+
+test("the data-safety statement matches what every installer does with a previous install", () => {
+  for (const installer of ["linux/install.sh", "macos/install.sh", "windows/install.ps1"]) {
+    const script = readFileSync(join(ROOT, "deploy", installer), "utf8");
+    assert.match(script, /Its data is left untouched; upgrading application files in place\./, installer);
+  }
+});
+
+test("a manual check says what it found, or that it could not reach the file", () => {
+  assert.equal(checkNowOutcome(found({ update_available: false })), "This is the newest version.");
+  assert.match(checkNowOutcome(found({ last_result: "unreachable" })) ?? "", /could not reach the file/);
+  assert.match(checkNowOutcome(found({})) ?? "", /^1\.2\.0 is available\. It is shown under the version above/);
+  assert.match(checkNowOutcome(found({ dismissed: true })) ?? "", /You dismissed its notice/);
+});
+
+test("dismissing names the version the marker showed", async () => {
+  const sent: unknown[] = [];
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    sent.push([url, JSON.parse(String(init?.body))]);
+    return new Response(JSON.stringify(found({ dismissed: true })), { status: 200 });
+  }) as typeof fetch;
+  await dismissUpdate("1.2.0");
+  assert.deepEqual(sent, [["/settings/update-check/dismiss", { version: "1.2.0" }]]);
+});
+
+test("a refused dismissal says the notice is still shown", async () => {
+  globalThis.fetch = (async () => new Response("", { status: 500 })) as typeof fetch;
+  await assert.rejects(dismissUpdate("1.2.0"), /did not dismiss the notice\. It is still shown/);
+});
+
+function sourceFiles(directory: string): string[] {
+  return readdirSync(directory).flatMap((name) => {
+    const path = join(directory, name);
+    if (statSync(path).isDirectory()) return sourceFiles(path);
+    return /\.(ts|tsx)$/.test(name) && !name.endsWith(".test.ts") ? [path] : [];
+  });
+}
+
+test("the marker appears in settings and nowhere else", () => {
+  const users = [...sourceFiles(join(WEB, "app")), ...sourceFiles(join(WEB, "components"))]
+    .filter((path) => readFileSync(path, "utf8").includes("updateMarker"))
+    .map((path) => path.slice(WEB.length + 1));
+  assert.deepEqual(users, ["components/settings/about.tsx"]);
 });

@@ -24,24 +24,37 @@
  *
  * Update checking is `M7-UPDATE-BE-161`'s real setting, off unless the
  * person turned it on. The control states the payload before it is pressed.
+ *
+ * A newer version (`M7-UPDATE-FE-162`) is one quiet line under the version,
+ * here and nowhere else in the interface. Getting it opens what happens to
+ * the person's material first, then the address of the installers — the
+ * statement is read before they leave, not discovered after. "Check now"
+ * (tracked as issue 693) sits with update checking and its result is that same line.
  */
 
 import { useEffect, useState, useSyncExternalStore } from "react";
 
 import {
+  CHECK_NOW_NOTE,
+  checkNowOutcome,
+  dismissUpdate,
   fetchBundledText,
   fetchUpdateCheck,
   ISSUE_URL,
   LICENCE_TEXT,
   NOTICES_TEXT,
+  RELEASES_URL,
   REPO_URL,
+  runUpdateCheck,
   SECURITY_TEXT,
   setUpdateCheck,
   SUPPORT_TEXT,
   UPDATE_CHECK_ADDRESS_NOTE,
   UPDATE_CHECK_PAYLOAD,
+  UPGRADE_DATA_SAFETY,
   updateCheckIsOn,
   updateCheckStatus,
+  updateMarker,
   type BundledText,
   type UpdateCheckState,
 } from "@/lib/about";
@@ -54,6 +67,23 @@ const outlined = { border: "1px solid var(--rule)" } as const;
 const neverChanges = () => () => {};
 
 export function About() {
+  // Read once, shared by the marker and the update-checking control, so a
+  // check run from the control shows its result in the marker at once.
+  const [update, setUpdate] = useState<UpdateCheckState | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchUpdateCheck(controller.signal)
+      .then(setUpdate)
+      .catch((thrown: unknown) => {
+        if (!controller.signal.aborted) {
+          setUpdateError(thrown instanceof Error ? thrown.message : "Askwell could not read the update check.");
+        }
+      });
+    return () => controller.abort();
+  }, []);
+
   return (
     <section className="flex flex-col gap-6">
       <h2 style={{ fontSize: "var(--t-title)", lineHeight: "var(--t-title-lh)" }}>About</h2>
@@ -63,6 +93,7 @@ export function About() {
           <dt style={{ color: "var(--muted)" }}>Version</dt>
           <dd>{VERSION}</dd>
         </div>
+        {update !== null ? <NewerVersion state={update} onChange={setUpdate} /> : null}
         <div className="flex flex-col gap-1">
           <div className="flex items-baseline gap-2">
             <dt style={{ color: "var(--muted)" }}>Licence</dt>
@@ -91,7 +122,7 @@ export function About() {
 
       <ReportAProblem />
       <SecurityProblem />
-      <UpdateChecking />
+      <UpdateChecking state={update} readError={updateError} onChange={setUpdate} />
     </section>
   );
 }
@@ -127,33 +158,121 @@ function SecurityProblem() {
   );
 }
 
-function UpdateChecking() {
-  const [state, setState] = useState<UpdateCheckState | null>(null);
+/** One quiet line, never a modal or a banner. Nothing when nothing newer
+ * is known — including when no check has ever run, which is not a failure. */
+function NewerVersion({
+  state,
+  onChange,
+}: {
+  state: UpdateCheckState;
+  onChange: (state: UpdateCheckState) => void;
+}) {
   const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [dismissing, setDismissing] = useState(false);
+  const marker = updateMarker(state);
+  if (marker === null) {
+    return null;
+  }
 
-  useEffect(() => {
-    const controller = new AbortController();
-    fetchUpdateCheck(controller.signal)
-      .then(setState)
+  function dismiss(version: string) {
+    setDismissing(true);
+    setError(null);
+    dismissUpdate(version)
+      .then(onChange)
       .catch((thrown: unknown) => {
-        if (!controller.signal.aborted) {
-          setError(thrown instanceof Error ? thrown.message : "Askwell could not read the update check.");
-        }
-      });
-    return () => controller.abort();
-  }, []);
+        setError(thrown instanceof Error ? thrown.message : "Askwell did not dismiss the notice.");
+      })
+      .finally(() => setDismissing(false));
+  }
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex flex-wrap items-baseline gap-2">
+        <dt style={{ color: "var(--muted)" }}>Newer version</dt>
+        <dd>
+          {marker.version}
+          {marker.found !== null ? (
+            <span style={{ color: "var(--muted)" }}> · {marker.found}</span>
+          ) : null}
+        </dd>
+        <dd>
+          <button
+            type="button"
+            className="ask-navigates px-2 py-1"
+            style={outlined}
+            disabled={dismissing}
+            onClick={() => dismiss(marker.version)}
+          >
+            {dismissing ? "Dismissing…" : "Dismiss until a newer one"}
+          </button>
+        </dd>
+      </div>
+      <dd>
+        <details>
+          <summary className="ask-navigates" style={{ cursor: "pointer" }}>
+            How to upgrade, and what happens to your data
+          </summary>
+          <div className="mt-2 flex flex-col gap-2">
+            <p className="ask-prose">{UPGRADE_DATA_SAFETY}</p>
+            <p className="ask-prose" style={{ color: "var(--muted)" }}>
+              The installer for each platform is on the releases page.
+            </p>
+            <Address url={RELEASES_URL} label="releases page" />
+          </div>
+        </details>
+      </dd>
+      {error !== null ? (
+        <dd className="ask-micro" style={{ color: "var(--alarm)", textTransform: "none" }}>
+          {error}
+        </dd>
+      ) : null}
+    </div>
+  );
+}
+
+function UpdateChecking({
+  state,
+  readError,
+  onChange,
+}: {
+  state: UpdateCheckState | null;
+  readError: string | null;
+  onChange: (state: UpdateCheckState) => void;
+}) {
+  const [changeError, setChangeError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [checking, setChecking] = useState(false);
+  // The outcome line is for a check the person just asked for, not a
+  // restatement of the weekly one every time the page opens.
+  const [checkedNow, setCheckedNow] = useState(false);
+  const error = changeError ?? readError;
 
   function change(on: boolean) {
     setSaving(true);
-    setError(null);
+    setChangeError(null);
     setUpdateCheck(on)
-      .then(setState)
+      .then(onChange)
       .catch((thrown: unknown) => {
-        setError(thrown instanceof Error ? thrown.message : "Askwell did not change the update check.");
+        setChangeError(thrown instanceof Error ? thrown.message : "Askwell did not change the update check.");
       })
       .finally(() => setSaving(false));
   }
+
+  function checkNow() {
+    setChecking(true);
+    setChangeError(null);
+    runUpdateCheck()
+      .then((next) => {
+        onChange(next);
+        setCheckedNow(true);
+      })
+      .catch((thrown: unknown) => {
+        setChangeError(thrown instanceof Error ? thrown.message : "Askwell did not check for updates.");
+      })
+      .finally(() => setChecking(false));
+  }
+
+  const outcome = checkedNow && state !== null ? checkNowOutcome(state) : null;
 
   return (
     <div className="flex flex-col gap-2">
@@ -181,6 +300,25 @@ function UpdateChecking() {
           <p className="ask-micro" style={{ color: "var(--muted)", textTransform: "none" }}>
             {saving ? "Saving…" : updateCheckStatus(state)}
           </p>
+          <p className="ask-prose" style={{ color: "var(--muted)" }}>
+            {CHECK_NOW_NOTE}
+          </p>
+          <div>
+            <button
+              type="button"
+              className="ask-navigates px-2 py-1"
+              style={outlined}
+              disabled={checking}
+              onClick={checkNow}
+            >
+              {checking ? "Checking…" : "Check now"}
+            </button>
+          </div>
+          {outcome !== null ? (
+            <p className="ask-micro" style={{ color: "var(--muted)", textTransform: "none" }}>
+              {outcome}
+            </p>
+          ) : null}
         </>
       ) : null}
       {error !== null ? (

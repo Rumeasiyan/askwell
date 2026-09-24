@@ -93,6 +93,8 @@ Version, licence, link to the source, and how to report a problem.
 
 **Update checking is off by default.** Checking for updates is a network call, and C1 says local means local. Offered as an opt-in with the honest trade: *"Askwell can check for updates once a week. That is one request for a static file, carrying your version number and nothing else. Off by default."*
 
+**A newer version is a quiet line in About, and nowhere else** (`M7-UPDATE-FE-162`). It names the newest version and the date Askwell found it. It never appears as a modal or a banner, and never over an answer. Before the person leaves to upgrade, it says what an upgrade does to their material: indexes, memory and the audit log are kept. Dismissing it holds until a further version is found. "Check now" makes the same one request, once, whatever the weekly setting is.
+
 It reads a **static version file**, not an endpoint — there is no server that could log who asked, which is a stronger statement than a promise not to log.
 
 An open-source product whose users never learn about a security fix is a real problem, and the honest resolution is an explicit opt-in with the payload stated — not a silent check because it is "only metadata".

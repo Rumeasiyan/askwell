@@ -4,6 +4,20 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.34 - 2026-09-24
+
+`Added`: `M7-UPDATE-FE-162`. When Askwell knows a newer version exists, Settings → About shows
+one quiet line under the version: the newest version and the date Askwell found it. It appears
+nowhere else. There is no pop-up, no banner and nothing near an answer. Opening "How to upgrade"
+first says what an upgrade does to your data: install over this version, and your indexes,
+memory and audit log are kept. Then it gives the address of the releases page. "Dismiss until a
+newer one" hides the line until a further version is found, including across restarts. Update
+checking now has a **Check now** button that makes the same single request once, even when
+weekly checking is off, and says what it found. If checking is turned off after a version was
+found, that version stays shown. An applied upgrade is now recorded in the decisions log. A fresh
+install's first start writes nothing to the database, so restoring a backup onto it still
+verifies as one unbroken chain.
+
 ## 0.7.33 - 2026-09-24
 
 `Fixed`: `M7-FIX-BE-172`. Askwell no longer asks what a term means when your own files already

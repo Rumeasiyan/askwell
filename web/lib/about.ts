@@ -18,11 +18,23 @@
  * as off. Only `yes` is on. Nothing here writes an answer except a person
  * pressing the control — an upgrade cannot turn it on, because the backend's
  * default is `not_asked` and this module never sends one on load.
+ *
+ * **A newer version** (`M7-UPDATE-FE-162`) is a marker in About and nowhere
+ * else — no modal, no banner, no badge in the navigation, nothing near an
+ * answer. It names only the newest version known, with the date Askwell
+ * found it (the feed is a bare version number with no release date, so
+ * "found" is the honest word). Dismissing it is stored by the server against
+ * that version, so it holds across restarts and returns only when a further
+ * version is found. A version already found stays shown after checking is
+ * turned off — it is known, and hiding it would pretend otherwise.
  */
 
 /** The one place the repository's address is written in the interface. */
 export const REPO_URL = "https://github.com/Rumeasiyan/askwell";
 export const ISSUE_URL = `${REPO_URL}/issues/new/choose`;
+/** Where each platform's installer is published. Applying an upgrade is
+ * that installer's job, never this screen's. */
+export const RELEASES_URL = `${REPO_URL}/releases`;
 
 export interface BundledText {
   /** Path on the interface's own origin, under `public/`. */
@@ -72,6 +84,73 @@ export interface UpdateCheckState {
   latest_known_version: string | null;
   update_available: boolean;
   last_result: "ok" | "unreachable" | null;
+  /** When Askwell first found `latest_known_version`. Null for a version
+   * found before this was recorded. */
+  latest_known_since: string | null;
+  dismissed_version: string | null;
+  /** Dismissed for this version or a later one. */
+  dismissed: boolean;
+}
+
+export interface UpdateMarker {
+  version: string;
+  /** "Found 3 September 2026", or null when the date was never recorded. */
+  found: string | null;
+}
+
+/**
+ * The marker, or null. One marker, naming the newest known version — never
+ * one per version missed. Null when nothing newer is known, including when
+ * no check has ever run: that is not a failure and says nothing.
+ */
+export function updateMarker(state: UpdateCheckState): UpdateMarker | null {
+  if (!state.update_available || state.dismissed || state.latest_known_version === null) {
+    return null;
+  }
+  const found =
+    state.latest_known_since !== null
+      ? `Found ${new Date(state.latest_known_since).toLocaleDateString(undefined, {
+          year: "numeric",
+          month: "long",
+          day: "numeric",
+        })}`
+      : null;
+  return { version: state.latest_known_version, found };
+}
+
+/**
+ * What happens to the person's material across an upgrade, said before they
+ * leave to get one. Every platform's installer (`deploy/linux`,
+ * `deploy/macos`, `deploy/windows`) detects the previous installation and
+ * replaces only the application files, leaving the data directory
+ * untouched, so this is one statement rather than one per platform. If a
+ * platform's installer ever stops doing that, this must say so for that
+ * platform.
+ */
+export const UPGRADE_DATA_SAFETY =
+  "Install the new version over this one; there is no need to uninstall first. " +
+  "The installer replaces Askwell's own program files and leaves your data where it is: " +
+  "your indexes, what Askwell remembers, and the audit log are all kept. " +
+  "Uninstalling with the option to delete data is the only thing that removes them.";
+
+/** Stated beside "Check now", before it is pressed. */
+export const CHECK_NOW_NOTE =
+  "Checking now makes that same one request, once, even if weekly checking is off.";
+
+/** The line shown after a check the person asked for. */
+export function checkNowOutcome(state: UpdateCheckState): string | null {
+  if (state.last_result === "unreachable") {
+    return "Askwell could not reach the file, so it does not know whether a newer version exists. Try again later.";
+  }
+  if (state.last_result !== "ok") {
+    return null;
+  }
+  if (!state.update_available || state.latest_known_version === null) {
+    return "This is the newest version.";
+  }
+  return state.dismissed
+    ? `${state.latest_known_version} is available. You dismissed its notice; it returns when a newer version is found.`
+    : `${state.latest_known_version} is available. It is shown under the version above.`;
 }
 
 /** On only when the person said yes. `not_asked` is off, forever, until
@@ -126,6 +205,32 @@ export async function setUpdateCheck(on: boolean): Promise<UpdateCheckState> {
       `Askwell answered ${response.status} and did not change the update check. ` +
         `It is still ${on ? "off" : "on"}.`,
     );
+  }
+  return (await response.json()) as UpdateCheckState;
+}
+
+/** A check now, regardless of the weekly setting (`M7-UPDATE-BE-161`). */
+export async function runUpdateCheck(): Promise<UpdateCheckState> {
+  const response = await fetch("/settings/update-check/run", {
+    method: "POST",
+    headers: { accept: "application/json" },
+  });
+  if (!response.ok) {
+    throw new Error(`Askwell answered ${response.status} and did not check for updates.`);
+  }
+  return (await response.json()) as UpdateCheckState;
+}
+
+/** Dismiss the marker for the version it showed — not "whatever is newest
+ * now", so a version found after the page loaded is never dismissed unseen. */
+export async function dismissUpdate(version: string): Promise<UpdateCheckState> {
+  const response = await fetch("/settings/update-check/dismiss", {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({ version }),
+  });
+  if (!response.ok) {
+    throw new Error(`Askwell answered ${response.status} and did not dismiss the notice. It is still shown.`);
   }
   return (await response.json()) as UpdateCheckState;
 }
