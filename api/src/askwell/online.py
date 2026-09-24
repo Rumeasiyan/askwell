@@ -86,6 +86,11 @@ REVOKED_ON_RESTART = "restart"
 
 REVOKED_KEY_REPLACED = "key_replaced"
 REVOKED_KEY_REMOVED = "key_removed"
+# `M8-KEY-FE-175`: the provider said no in a way it will keep saying until
+# the user acts — the key rejected, or the account out of quota. Named
+# apart because the two have different fixes, neither of them in Askwell.
+REVOKED_PROVIDER_REJECTED_KEY = "provider_rejected_key"
+REVOKED_PROVIDER_QUOTA_EXHAUSTED = "provider_quota_exhausted"
 
 ONLINE_KEY_STORED = "online_key_stored"
 ONLINE_KEY_REPLACED = "online_key_replaced"
@@ -162,6 +167,10 @@ class OnlineState:
     # whether the current disclosure was confirmed for it.
     used_online: bool = False
     disclosure_confirmed: bool = False
+    # `M8-KEY-FE-175`. Why the conversation's most recent authorisation
+    # ended, from its own revocation record: what the marker names once it
+    # is local again. None while online, and for one never switched on.
+    ended_reason: str | None = None
 
     @property
     def send_permitted(self) -> bool:
@@ -179,6 +188,7 @@ class OnlineState:
             "available": self.available,
             "unavailable_reason": self.unavailable_reason,
             "used_online": self.used_online,
+            "ended_reason": None if self.online else self.ended_reason,
             "disclosure": {
                 "defined": disclosure is not None,
                 "version": disclosure.version if disclosure is not None else None,
@@ -237,29 +247,40 @@ async def backend_of(db: AsyncSession, conversation_id: uuid.UUID) -> str:
     return await _backend(db, conversation_id)
 
 
-async def _record_facts(db: AsyncSession, conversation_id: uuid.UUID) -> tuple[bool, bool]:
-    """Whether this conversation was ever switched online, and whether the
-    current disclosure was confirmed for it. Both come from its own decisions
-    records, which are append-only, so neither can be quietly undone."""
+async def _record_facts(
+    db: AsyncSession, conversation_id: uuid.UUID
+) -> tuple[bool, bool, str | None]:
+    """Whether this conversation was ever switched online, whether the
+    current disclosure was confirmed for it, and why its most recent
+    authorisation ended. All three come from its own decisions records,
+    which are append-only, so none can be quietly undone."""
     disclosure = DISCLOSURE
     row = (
         await db.execute(
             text(
                 "SELECT "
                 "bool_or(kind = :enabled), "
-                "bool_or(kind = :confirmed AND payload->>'version' = :version) "
+                "bool_or(kind = :confirmed AND payload->>'version' = :version), "
+                "(array_agg(payload->>'reason' ORDER BY occurred_at DESC, id DESC) "
+                "FILTER (WHERE kind = :revoked))[1] "
                 "FROM audit_decisions "
-                "WHERE kind IN (:enabled, :confirmed) AND payload->>'conversation_id' = :id"
+                "WHERE kind IN (:enabled, :confirmed, :revoked) "
+                "AND payload->>'conversation_id' = :id"
             ),
             {
                 "enabled": ONLINE_AI_ENABLED,
                 "confirmed": ONLINE_AI_DISCLOSURE_CONFIRMED,
+                "revoked": ONLINE_AI_REVOKED,
                 "version": disclosure.version if disclosure is not None else "",
                 "id": str(conversation_id),
             },
         )
     ).one()
-    return bool(row[0]), disclosure is not None and bool(row[1])
+    return (
+        bool(row[0]),
+        disclosure is not None and bool(row[1]),
+        str(row[2]) if row[2] is not None else None,
+    )
 
 
 async def _last_enabled_destination(db: AsyncSession, conversation_id: uuid.UUID) -> str | None:
@@ -314,7 +335,7 @@ async def _state(
     grant: egress.ConversationGrant | None,
 ) -> OnlineState:
     held, unavailable_reason = await _availability(db)
-    used_online, confirmed = await _record_facts(db, conversation_id)
+    used_online, confirmed, ended_reason = await _record_facts(db, conversation_id)
     return OnlineState(
         conversation_id=str(conversation_id),
         online=grant is not None,
@@ -324,6 +345,7 @@ async def _state(
         unavailable_reason=unavailable_reason,
         used_online=used_online,
         disclosure_confirmed=confirmed,
+        ended_reason=ended_reason,
     )
 
 
@@ -479,6 +501,39 @@ async def disable(db: AsyncSession, settings: Settings, conversation_id: uuid.UU
             reason=REVOKED_BY_USER,
         )
     return await _state(db, settings, conversation_id, None)
+
+
+async def end_after_provider_refusal(
+    db: AsyncSession, settings: Settings, conversation_id: uuid.UUID, reason: str
+) -> bool:
+    """The provider rejected the key or the account is out of quota: end
+    this conversation's authorisation, recorded with that reason.
+    `M8-KEY-FE-175`.
+
+    Every later question would be refused the same way, and each refusal
+    still carries the question and its passages to the provider
+    (`M8-ONLINE-OBS-172`) — sending them again for a no that is already
+    known is egress for nothing. So the conversation goes local, and stays
+    local when the key or the quota is fixed: coming back online is the
+    user switching it on again, never Askwell noticing it could. Returns
+    whether it was online to end.
+
+    The credential goes first: without it this process cannot present the
+    grant to the proxy, so nothing more is sent even if what follows fails.
+    Then the grant, then the record, as in `disable`.
+    """
+    _credentials.pop(str(conversation_id), None)
+    if await _backend(db, conversation_id) != "online":
+        return False
+    grant = await egress.read_conversation_grant(settings, str(conversation_id))
+    await egress.close_conversation_grant(settings, str(conversation_id))
+    await _set_local(
+        db,
+        conversation_id,
+        destination=grant.destination if grant is not None else None,
+        reason=reason,
+    )
+    return True
 
 
 async def revoke_all(settings: Settings) -> dict[str, str]:

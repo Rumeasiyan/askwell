@@ -527,6 +527,72 @@ async def test_a_conversation_never_switched_on_is_not_marked(
     assert not state.used_online and not state.online
 
 
+# --- the provider saying no (`M8-KEY-FE-175`) -----------------------------------
+
+
+@pytest.mark.parametrize(
+    "reason", [online.REVOKED_PROVIDER_REJECTED_KEY, online.REVOKED_PROVIDER_QUOTA_EXHAUSTED]
+)
+async def test_a_provider_refusal_ends_the_authorisation_and_says_why(
+    session: AsyncSession, settings: Settings, redis_store: dict[str, str], reason: str
+) -> None:
+    """The grant closes and the credential is forgotten, so no later question
+    goes; the record names which no it was, and the state carries it for the
+    marker. Nothing puts it back: the user switches it on again."""
+    conversation_id = await _conversation(session)
+    await online.enable(session, settings, conversation_id)
+    await session.commit()
+
+    assert await online.end_after_provider_refusal(session, settings, conversation_id, reason)
+    await session.commit()
+
+    assert _grant(redis_store, conversation_id) is None
+    assert online.proxy_credentials(conversation_id) is None
+    assert await _backend(session, conversation_id) == "local"
+    assert (await _decisions(session))[-1] == (
+        "online_ai_revoked",
+        {"conversation_id": str(conversation_id), "destination": DESTINATION, "reason": reason},
+    )
+    state = await online.get_state(session, settings, conversation_id)
+    assert not state.online and state.used_online
+    assert state.as_dict()["ended_reason"] == reason
+    assert state.available, "the key is still held; switching back on is the user's"
+
+    again = await online.enable(session, settings, conversation_id)
+    await session.commit()
+    assert again.online
+    assert again.as_dict()["ended_reason"] is None, "online now: nothing has ended"
+
+
+async def test_a_refusal_in_a_conversation_already_local_records_nothing(
+    session: AsyncSession, settings: Settings, redis_store: dict[str, str]
+) -> None:
+    conversation_id = await _conversation(session)
+    assert not await online.end_after_provider_refusal(
+        session, settings, conversation_id, online.REVOKED_PROVIDER_REJECTED_KEY
+    )
+    await session.commit()
+    assert await _decisions(session) == []
+
+
+async def test_the_marker_reads_the_latest_ending_not_the_first(
+    session: AsyncSession, settings: Settings, redis_store: dict[str, str]
+) -> None:
+    conversation_id = await _conversation(session)
+    await online.enable(session, settings, conversation_id)
+    await online.disable(session, settings, conversation_id)
+    await session.commit()
+    await online.enable(session, settings, conversation_id)
+    await session.commit()
+    await online.end_after_provider_refusal(
+        session, settings, conversation_id, online.REVOKED_PROVIDER_QUOTA_EXHAUSTED
+    )
+    await session.commit()
+
+    state = await online.get_state(session, settings, conversation_id)
+    assert state.ended_reason == online.REVOKED_PROVIDER_QUOTA_EXHAUSTED
+
+
 # --- the provider key (`M8-KEY-BE-173`) ------------------------------------------
 
 KEY_SENTINEL = "sk-SENTINEL-online-key-0123456789"

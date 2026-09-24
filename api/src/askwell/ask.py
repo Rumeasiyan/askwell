@@ -1313,6 +1313,43 @@ async def _online_client(
     return provider.OnlineClient(settings, online_target) if online_target else None
 
 
+# `M8-KEY-FE-175`: the closing line's last sentence when the provider's
+# refusal also ended the conversation's online authorisation.
+ONLINE_ENDED_NOTE = "This conversation is local now."
+
+_REVOCATION_FOR = {
+    provider.KEY_REJECTED: online.REVOKED_PROVIDER_REJECTED_KEY,
+    provider.QUOTA_EXHAUSTED: online.REVOKED_PROVIDER_QUOTA_EXHAUSTED,
+}
+
+
+async def _end_online_after_refusal(
+    factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    conversation_id: uuid.UUID,
+    error: OnlineFailed,
+) -> bool:
+    """End the conversation's online authorisation when the provider's no
+    will not change by itself (`provider.ENDS_AUTHORISATION`), at once and
+    in its own transaction — before the local answer runs, so the marker
+    reread during it already says why. Returns whether it ended.
+
+    Never fails the turn: if the record cannot be written, the grant is
+    still closed first (`online.end_after_provider_refusal`), and the next
+    read of the state records the ending as `lapsed`, towards local.
+    """
+    if error.reason_code not in provider.ENDS_AUTHORISATION:
+        return False
+    try:
+        async with session_scope(factory) as db:
+            return await online.end_after_provider_refusal(
+                db, settings, conversation_id, _REVOCATION_FOR[error.reason_code]
+            )
+    except Exception:
+        log.exception("ask_online_end_failed", conversation_id=str(conversation_id))
+        return False
+
+
 def _sent_contents(
     composed: ComposedPrompt,
     candidates: list[Candidate],
@@ -1465,6 +1502,9 @@ async def _run_generation(
     # conversation asked for online and got local.
     online_client: OnlineClient | None = None
     online_fallback: OnlineFailed | None = None
+    # `M8-KEY-FE-175`: whether that failure also ended the conversation's
+    # online authorisation, so later questions are local until switched on.
+    online_ended = False
     answered_online = False
     # `M8-ONLINE-OBS-172`: what a provider request would carry, set once the
     # prompt is composed, and read after the turn however it ended — a
@@ -2157,12 +2197,16 @@ async def _run_generation(
                             "kind": "backend",
                         },
                     )
+                    online_ended = await _end_online_after_refusal(
+                        factory, settings, turn.conversation_id, error
+                    )
                     trace_steps.append(
                         {
                             "kind": "online_fallback",
                             "reason_code": error.reason_code,
                             "detail": str(error),
                             "mid_answer": mid_answer,
+                            "online_ended": online_ended,
                         }
                     )
                     log.warning(
@@ -2207,8 +2251,10 @@ async def _run_generation(
                 # Said in the answer itself, not only in a step: the step
                 # list is collapsed once the turn is over, and which model
                 # wrote an answer is part of the answer.
-                appended_note = f"\n\nAnswered by the local model. {online_fallback}" + (
-                    appended_note or ""
+                appended_note = (
+                    f"\n\nAnswered by the local model. {online_fallback}"
+                    + (f" {ONLINE_ENDED_NOTE}" if online_ended else "")
+                    + (appended_note or "")
                 )
 
             if appended_note is not None:

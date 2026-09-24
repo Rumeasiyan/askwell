@@ -4,6 +4,18 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.45 - 2026-09-25
+
+`Changed`: `M8-KEY-FE-175`. When your online provider rejects your key or says your account has
+run out of quota, the question is still answered, by the local model, and the answer says so,
+naming which of the two it was. That conversation also switches back to local straight away,
+so your next questions are not sent to a provider that has already said no. The marker above
+the question box says why online AI ended and what to do about it: check or replace the key, or
+add more quota with your provider. When that is fixed, nothing switches back on by itself; you
+switch it on again if you want it. A provider that is only asking you to slow down is different:
+that one question is answered locally and the conversation stays online. The marker also says
+when online AI ended because you removed your key or replaced it with one for another provider.
+
 ## 0.7.44 - 2026-09-25
 
 `Added`: `M8-KEY-FE-174`. Settings → Online AI now has a place for your own provider key. Above

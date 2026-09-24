@@ -16,15 +16,19 @@ and the user content as two messages rather than one templated string, and
 it has no `<think>` prefill, so the local model's thinking directive is not
 sent.
 
-**Every failure is typed, and none of them is fatal to the turn.** Four
+**Every failure is typed, and none of them is fatal to the turn.** Six
 reasons a provider call can fail are worth telling apart, because each has a
 different fix and none of them is the user's material being wrong: the
 network is not there (`NETWORK_UNAVAILABLE`), Askwell's own authorisation
-refused the connection (`NOT_AUTHORISED`), the provider said no
-(`REFUSED`), or the provider said not now (`RATE_LIMITED`). The rest —
-a provider error, a timeout, a malformed stream, a connection lost partway —
-is `FAILED` or `INTERRUPTED`. `askwell.ask` answers locally on any of them
-and says which it was.
+refused the connection (`NOT_AUTHORISED`), the provider rejected the key
+(`KEY_REJECTED`), the account behind the key has run out of quota
+(`QUOTA_EXHAUSTED`), the provider refused this request (`REFUSED`), or the
+provider said not now (`RATE_LIMITED`). The rest — a provider error, a
+timeout, a malformed stream, a connection lost partway — is `FAILED` or
+`INTERRUPTED`. `askwell.ask` answers locally on any of them and says which
+it was. The two that will not fix themselves within the session end the
+conversation's online authorisation too (`ENDS_AUTHORISATION`,
+`M8-KEY-FE-175`).
 
 **One request per tunnel.** A fresh client is opened for each call and
 closed after it, so the proxy's per-conversation count of permitted
@@ -79,6 +83,8 @@ NETWORK_UNAVAILABLE = "network_unavailable"
 NOT_AUTHORISED = "not_authorised"
 REFUSED = "refused"
 RATE_LIMITED = "rate_limited"
+KEY_REJECTED = "key_rejected"
+QUOTA_EXHAUSTED = "quota_exhausted"
 FAILED = "failed"
 INTERRUPTED = "interrupted"
 # A `Transmission`'s outcome when no failure applies: the provider finished
@@ -91,6 +97,17 @@ STOPPED = "stopped"
 # could not be reached from this machine".
 _PROXY_REFUSED = 403
 _PROXY_UNREACHABLE = 502
+
+# `M8-KEY-FE-175`: the refusals that will say no again to every later
+# question until the user does something with their provider — a new key,
+# or more quota. A rate limit, a network outage or a provider error is
+# transient, and the next question is worth sending.
+ENDS_AUTHORISATION = frozenset({KEY_REJECTED, QUOTA_EXHAUSTED})
+
+# How a provider says "429, but not a rate limit: the account is out of
+# quota". The OpenAI-compatible error body's `error.code`/`error.type`. Only
+# this value is read from the body, and it is compared, never repeated.
+_QUOTA_ERROR_CODES = frozenset({"insufficient_quota"})
 
 
 class OnlineFailed(RuntimeError):
@@ -166,14 +183,33 @@ def _proxy_failure(error: httpx.ProxyError, destination: str) -> OnlineFailed:
     return OnlineFailed(FAILED, f"Online AI could not connect ({status}).")
 
 
-def _status_failure(status: int) -> OnlineFailed:
+def _quota_exhausted(body: bytes) -> bool:
+    """Whether a 429 body says the account is out of quota rather than
+    asking for a pause. Anything unreadable is a rate limit, the reading
+    that keeps the conversation online."""
+    try:
+        error = json.loads(body).get("error")
+    except (ValueError, AttributeError):
+        return False
+    if not isinstance(error, dict):
+        return False
+    return bool({error.get("code"), error.get("type")} & _QUOTA_ERROR_CODES)
+
+
+def _status_failure(status: int, body: bytes = b"") -> OnlineFailed:
+    if status == 402 or (status == 429 and _quota_exhausted(body)):
+        return OnlineFailed(
+            QUOTA_EXHAUSTED,
+            f"Your account with the online provider has run out of quota ({status}). "
+            "Add more with your provider, then switch online AI back on.",
+        )
     if status == 429:
         return OnlineFailed(
             RATE_LIMITED, "The online provider is limiting requests right now (429)."
         )
     if status in (401, 403):
         return OnlineFailed(
-            REFUSED,
+            KEY_REJECTED,
             f"The online provider rejected your key ({status}). "
             "Check it with your provider, or replace it in Settings.",
         )
@@ -266,7 +302,10 @@ class OnlineClient:
             ):
                 transmission.status_code = response.status_code
                 if response.status_code >= 400:
-                    raise _status_failure(response.status_code)
+                    # Read only to tell quota from a rate limit; never
+                    # repeated, because a provider's body can echo the key.
+                    body = await response.aread() if response.status_code == 429 else b""
+                    raise _status_failure(response.status_code, body)
                 async for line in response.aiter_lines():
                     if not line.startswith("data:"):
                         continue

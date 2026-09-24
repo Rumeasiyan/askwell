@@ -32,6 +32,10 @@ export interface OnlineConversationState {
   available: boolean;
   unavailable_reason: string | null;
   used_online: boolean;
+  /** Why its most recent authorisation ended, from its revocation record
+   * (`askwell.online`). `null` while online and for one never switched on.
+   * `M8-KEY-FE-175`. */
+  ended_reason: string | null;
   disclosure: OnlineDisclosure;
   send_permitted: boolean;
 }
@@ -139,15 +143,40 @@ export function markerView(
     };
   }
   if (state.used_online) {
+    const ended = state.ended_reason !== null ? ENDED_BECAUSE[state.ended_reason] : undefined;
+    const earlier = ended !== undefined ? `earlier, until ${ended.because}` : "earlier";
     return {
       kind: "was_online",
       text:
-        "Online AI was on in this conversation earlier. It is local now: nothing you ask " +
-        "here leaves this machine.",
+        `Online AI was on in this conversation ${earlier}. It is local now: nothing you ask ` +
+        `here leaves this machine.${ended?.next !== undefined ? ` ${ended.next}` : ""}`,
     };
   }
   return { kind: "none" };
 }
+
+/**
+ * Why online AI ended, where the reason tells the user something to do or
+ * something they did not see happen. `M8-KEY-FE-175`. A refusal names the
+ * provider, never Askwell, because the fix is with the provider, and the two
+ * refusals have different fixes. Coming back online is always the user's
+ * choice, so the next step says "switch it back on", never that it will
+ * return. Ending by the switch, the time limit or a restart keeps the plain
+ * marker: the first the user did, and the others are reconciled into one
+ * record that cannot say which it was.
+ */
+const ENDED_BECAUSE: Record<string, { because: string; next?: string }> = {
+  provider_quota_exhausted: {
+    because: "your provider account ran out of quota",
+    next: "Add more with your provider, then switch online AI back on if you want it.",
+  },
+  provider_rejected_key: {
+    because: "your provider rejected your key",
+    next: "Check the key with your provider or replace it in Settings, then switch online AI back on if you want it.",
+  },
+  key_removed: { because: "you removed your provider key" },
+  key_replaced: { because: "you replaced your provider key with one for a different provider" },
+};
 
 /** The line under the version at the top of the Ask screen. It must not say
  * "nothing leaves this machine" while that is not true. */

@@ -121,8 +121,9 @@ async def test_a_key_passed_in_is_presented_as_a_bearer_token(settings: Settings
     ("status", "reason_code"),
     [
         (429, provider.RATE_LIMITED),
-        (401, provider.REFUSED),
-        (403, provider.REFUSED),
+        (401, provider.KEY_REJECTED),
+        (403, provider.KEY_REJECTED),
+        (402, provider.QUOTA_EXHAUSTED),
         (400, provider.REFUSED),
         (500, provider.FAILED),
         (503, provider.FAILED),
@@ -157,11 +158,49 @@ async def test_a_rejected_key_is_the_provider_rejecting_it_never_askwell_broken(
 
         with pytest.raises(OnlineFailed) as caught:
             await _collect(_client(settings, handler, api_key=SENTINEL_KEY))
-        assert caught.value.reason_code == provider.REFUSED
+        assert caught.value.reason_code == provider.KEY_REJECTED
         message = str(caught.value)
         assert message.startswith("The online provider rejected your key")
         assert "Askwell" not in message
         assert SENTINEL_KEY not in message
+
+
+@pytest.mark.parametrize(
+    ("body", "reason_code"),
+    [
+        ({"error": {"code": "insufficient_quota", "message": SENTINEL_KEY}}, "quota_exhausted"),
+        ({"error": {"type": "insufficient_quota"}}, "quota_exhausted"),
+        ({"error": {"code": "rate_limit_exceeded"}}, "rate_limited"),
+        ("not json", "rate_limited"),
+        (["error"], "rate_limited"),
+    ],
+)
+async def test_a_429_that_says_the_quota_ran_out_is_told_apart_from_a_rate_limit(
+    settings: Settings, body: object, reason_code: str
+) -> None:
+    """`M8-KEY-FE-175`: out of quota and "slow down" have different fixes, and
+    only one of them ends the conversation's online authorisation. The body
+    is read for that one code and never repeated; anything unreadable is a
+    rate limit, the reading that leaves the conversation online."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        if isinstance(body, str):
+            return httpx.Response(429, text=body)
+        return httpx.Response(429, json=body)
+
+    with pytest.raises(OnlineFailed) as caught:
+        await _collect(_client(settings, handler, api_key=SENTINEL_KEY))
+    assert caught.value.reason_code == reason_code
+    assert SENTINEL_KEY not in str(caught.value)
+    if reason_code == provider.QUOTA_EXHAUSTED:
+        assert str(caught.value).startswith("Your account with the online provider has run out")
+        assert "Askwell" not in str(caught.value), "the provider's no, not Askwell's error"
+    assert (reason_code in provider.ENDS_AUTHORISATION) is (reason_code == "quota_exhausted")
+
+
+def test_only_a_rejected_key_or_an_empty_account_ends_the_authorisation() -> None:
+    """Everything else is worth trying again at the next question."""
+    assert provider.ENDS_AUTHORISATION == {provider.KEY_REJECTED, provider.QUOTA_EXHAUSTED}
 
 
 async def test_the_proxy_not_answering_is_askwells_gateway_not_the_network(
@@ -364,7 +403,7 @@ async def test_the_body_carries_the_prompt_and_nothing_about_the_user(
 
 
 @pytest.mark.parametrize(
-    ("status", "reason_code"), [(401, provider.REFUSED), (500, provider.FAILED)]
+    ("status", "reason_code"), [(401, provider.KEY_REJECTED), (500, provider.FAILED)]
 )
 async def test_a_request_the_provider_refused_still_left_the_machine(
     settings: Settings, status: int, reason_code: str

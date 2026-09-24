@@ -37,6 +37,7 @@ function state(overrides: Partial<OnlineConversationState> = {}): OnlineConversa
     available: true,
     unavailable_reason: null,
     used_online: false,
+    ended_reason: null,
     disclosure: { defined: false, version: null, text: null, confirmed: false },
     send_permitted: false,
     ...overrides,
@@ -109,6 +110,60 @@ test("resumed after it lapsed, the conversation is still marked, as local now", 
   assert.ok(view.kind === "was_online");
   assert.match(view.text, /was on in this conversation earlier/);
   assert.match(view.text, /nothing you ask here leaves this machine/);
+});
+
+test("ended by the provider, the marker names which no it was and whose fix it is", () => {
+  const quota = markerView(state({ used_online: true, ended_reason: "provider_quota_exhausted" }));
+  assert.equal(quota.kind, "was_online");
+  assert.ok(quota.kind === "was_online");
+  assert.equal(
+    quota.text,
+    "Online AI was on in this conversation earlier, until your provider account ran out of " +
+      "quota. It is local now: nothing you ask here leaves this machine. Add more with your " +
+      "provider, then switch online AI back on if you want it.",
+  );
+
+  const key = markerView(state({ used_online: true, ended_reason: "provider_rejected_key" }));
+  assert.ok(key.kind === "was_online");
+  assert.match(key.text, /until your provider rejected your key\./);
+  assert.match(key.text, /replace it in Settings/);
+  assert.doesNotMatch(key.text, /quota/, "the two refusals have different fixes");
+
+  for (const view of [quota, key]) {
+    assert.ok(view.kind === "was_online");
+    assert.doesNotMatch(view.text, /Askwell/, "the provider's no, not Askwell's error");
+  }
+});
+
+test("ended by removing or replacing the key, the marker says so", () => {
+  const removed = markerView(state({ used_online: true, ended_reason: "key_removed" }));
+  assert.ok(removed.kind === "was_online");
+  assert.match(removed.text, /earlier, until you removed your provider key\. It is local now/);
+  const replaced = markerView(state({ used_online: true, ended_reason: "key_replaced" }));
+  assert.ok(replaced.kind === "was_online");
+  assert.match(replaced.text, /one for a different provider\. It is local now/);
+});
+
+test("ended any other way, or for a reason this screen does not know, the plain marker", () => {
+  for (const ended_reason of ["disabled", "lapsed", "restart", "something_new", null]) {
+    const view = markerView(state({ used_online: true, ended_reason }));
+    assert.ok(view.kind === "was_online");
+    assert.equal(
+      view.text,
+      "Online AI was on in this conversation earlier. It is local now: nothing you ask here " +
+        "leaves this machine.",
+    );
+  }
+});
+
+test("a mixed conversation labels each turn by the backend that wrote it", () => {
+  const ended = state({ used_online: true, ended_reason: "provider_quota_exhausted" });
+  const online = { status: "completed", modelIdentity: { source: "online", display_name: "big-1" } };
+  const local = { status: "completed", modelIdentity: { source: "shipped", display_name: "q.gguf" } };
+  assert.deepEqual(
+    [online, online, local, local].map((turn) => turnBackendLabel(turn, ended)),
+    ["Answered online · big-1", "Answered online · big-1", "Answered locally", "Answered locally"],
+  );
 });
 
 test("a conversation never switched on carries no marker", () => {
