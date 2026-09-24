@@ -46,6 +46,29 @@ Since `M1-ASK-FE-039` a question can be typed and watched, for the first time: t
 
 ## Last completed
 
+**`0.7.33` — `M7-FIX-BE-172`**: a clarification has to be worth asking. `askwell.clarify`
+now floors term-definition candidates. A use of "AM"/"PM" right after a clock time is resolved
+by its own passage (`_CONTEXT_READINGS`), and a term the source spells out by initials in
+brackets or with "stands for" is defined (`_defined_inline`). Only unresolved uses count
+towards materiality and evidence, and a failing term is **dropped**, not capped. The missing
+store-hours conflict was a **detector gap, not a ranking one**, since contradictions already
+ranked first. `_TIME_FACT_PATTERN` (`<subject> at|by|until <time> AM|PM`) now sees it.
+**Verified**: `scripts/dev.sh check` clean. `scripts/dev.sh test-db tests/test_clarify.py`
+gives 60 passed, 11 of them new, covering the fixture lines, jargon "PM" still asked, a
+definition dropped, a code beside a resolved PM still asked, an empty queue left empty, and
+conflict-over-term order. Cold-start walkthrough: a throwaway test (not committed) indexed
+`eval/fixtures/corpus` through the real `add()` → `ingest.process()` (extract + chunk; embed
+skipped, since test-db has no inference socket) on a fresh database. **Before**, the queue was
+`'PM' appears throughout. What does it mean?`. **After**, it is `Sources disagree on meridian
+loom retail stores close: *store_hours_2025.pdf* says 8 PM; *store_hours_2026.pdf* says 9 PM.
+Which is current?`, with PM dropped as "every occurrence is explained by its own passage".
+**Not fixed**: the fixture's `conflict_2025/2026` pair disagrees on eight facts written as
+words ("thirty days"), and the digits-only detector raises none of them. Filed as #705, with
+number-word normalisation recommended. Also found while verifying: `test_inline_clarify`'s
+deferral test fails whenever `test_schema_introspect` runs first. A clarification cap of 1
+leaks through the untruncated `settings` table. This predates the change and is filed as #706. Decision: `docs/decisions.md` 2026-09-24
+`M7-FIX-BE-172`.
+
 **`0.7.32` — `M7-SET-FE-150`**: Settings → **Online AI**, visible and inert, second after Model
 and speed (`web/components/settings/online-ai.tsx`, wording in `web/lib/online-ai.ts`). **The
 ticket predated the 2026-09-23 decision** that cancelled credits. It asked for "paid by credit"

@@ -4,6 +4,16 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.33 - 2026-09-24
+
+`Fixed`: `M7-FIX-BE-172`. Askwell no longer asks what a term means when your own files already
+say. "PM" after a clock time ("stores close at 8 PM") is a time of day, and a term the file
+spells out ("Request for Quotation (RFQ)") is already defined, so neither becomes a question.
+Such a term is dropped outright, not saved for later. The same word used as jargon ("the PM
+signs off") is still asked, and a question never quotes the line that answers it. Two files
+that disagree about a time ("close at 8 PM" and "close at 9 PM") are now noticed and asked
+about, ahead of any question about a term. If nothing is worth asking, the queue stays empty.
+
 ## 0.7.32 - 2026-09-24
 
 `Added`: `M7-SET-FE-150`. Settings now has an **Online AI** section, second after Model and

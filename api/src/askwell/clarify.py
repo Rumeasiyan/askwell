@@ -33,6 +33,12 @@ also carries what Askwell would have guessed had it not been material enough
 to ask. `column_distribution_evidence` is the one exception: no trigger in
 this module raises a column question yet (that is M4's own data source), so
 it exists only as the shared shape M4 needs to fill in with a query.
+
+`M7-FIX-BE-172`: a term-definition candidate must clear a floor before it
+is queued — see `_detect_abbreviations`. Against the fixture corpus the only
+question used to be what "PM" means, cited from two lines that say "8 PM"
+and "9 PM", while the closing-time conflict between those same two lines
+went unasked because no fact pattern here could see it (`_TIME_FACT_PATTERN`).
 """
 
 import json
@@ -81,7 +87,28 @@ _COMMON_ABBREVIATIONS = frozenset(
     {"PDF", "HTML", "HTTP", "HTTPS", "URL", "USA", "UK", "OK", "ID", "FAQ", "TV", "CEO", "USD"}
 )
 _ABBREVIATION = re.compile(r"\b[A-Z]{2,6}\b")
+# Counted over *unresolved* occurrences only (`M7-FIX-BE-172`): two uses the
+# surrounding text already explains do not make a term worth a question.
 _MIN_ABBREVIATION_OCCURRENCES = 2
+
+# `M7-FIX-BE-172`'s floor, first half: a common-English reading the passage
+# itself proves. "PM" right after a clock time is a time of day, and asking
+# what it means spends the user's attention on something a competent tool
+# should already know. Keyed per token rather than a stoplist on purpose — the
+# same "PM" with no clock time in front of it ("the PM signs off") is a domain
+# term in context and still asked; a stoplist would silence both.
+_CONTEXT_READINGS: dict[str, re.Pattern[str]] = {
+    "AM": re.compile(r"\b\d{1,2}(?::\d{2})?\s+AM\b"),
+    "PM": re.compile(r"\b\d{1,2}(?::\d{2})?\s+PM\b"),
+}
+# `\s+`, not `\s*`: "8PM" is never counted as a use by `_ABBREVIATION` (no
+# word boundary between "8" and "P"), so counting it as a resolved one would
+# cancel out a genuine jargon "PM" elsewhere in the same passage.
+# Second half: the source defines the term itself — "Request for Quotation
+# (RFQ)", "RFQ (Request for Quotation)", "RFQ stands for ...". The expansion
+# is found by initials, not a dictionary, so it only counts as a definition
+# when the words next to the term actually spell it.
+_DEFINITION_WORD = re.compile(r"[A-Za-z][A-Za-z'-]*")
 
 # `<subject> is|are|shall be|must be|will be <number> <unit>` — a narrow net,
 # deliberately: it is aimed at the kind of sentence the worked example in
@@ -91,6 +118,14 @@ _MIN_ABBREVIATION_OCCURRENCES = 2
 # already does at answer time over retrieved passages.
 _FACT_PATTERN = re.compile(
     r"\b([a-z][a-z ]{5,40}?)\s+(?:is|are|shall be|must be|will be)\s+(\d{1,5})\s*([a-z%$]*)",
+    re.IGNORECASE,
+)
+# `<subject> at|by|until <clock time> AM|PM` — `M7-FIX-BE-172`. A closing
+# time is exactly the kind of fact two sources disagree on and only the user
+# can settle, and `_FACT_PATTERN`'s `is <number>` shape never sees it ("stores
+# close at 8 PM"). Same narrow net, same subject rules.
+_TIME_FACT_PATTERN = re.compile(
+    r"\b([a-z][a-z ]{5,40}?)\s+(?:at|by|until)\s+(\d{1,2}(?::\d{2})?)\s*(am|pm)\b",
     re.IGNORECASE,
 )
 _MIN_SUBJECT_WORDS = 2
@@ -293,9 +328,62 @@ def _normalize_filename(filename: str) -> str:
     return re.sub(r"[\s_\-]+", " ", stem).strip().lower()
 
 
+def _spells(term: str, words: list[str]) -> bool:
+    """Whether `words`, starting with the term's own first letter, carry the
+    term's letters in order as initials — "Request for Quotation" spells
+    RFQ, "Project Manager" spells PM, "the price" spells nothing."""
+    if not words or words[0][0].upper() != term[0]:
+        return False
+    initials = iter(word[0].upper() for word in words)
+    return all(letter in initials for letter in term)
+
+
+def _defined_inline(term: str, content: str) -> bool:
+    """The passage itself says what `term` means, in one of three shapes:
+    an expansion before it in brackets, an expansion after it in brackets,
+    or "stands for / is short for / means". Anything looser — a sentence
+    that merely uses the term near some words — is not a definition, and
+    treating it as one would silence the question the loop exists for."""
+    escaped = re.escape(term)
+    reach = 2 * len(term) + 2
+    for match in re.finditer(rf"\(\s*{escaped}\s*\)", content):
+        before = content[max(0, match.start() - 200) : match.start()]
+        words = _DEFINITION_WORD.findall(before)[-reach:]
+        if any(_spells(term, words[start:]) for start in range(len(words))):
+            return True
+    for pattern in (
+        rf"\b{escaped}\s*\(([^()]+)\)",
+        rf"\b{escaped}\s+(?:stands for|is short for|means)\s+(.{{1,120}})",
+    ):
+        for match in re.finditer(pattern, content):
+            if _spells(term, _DEFINITION_WORD.findall(match.group(1))[:reach]):
+                return True
+    return False
+
+
+def _unresolved_occurrences(term: str, content: str) -> int:
+    """Occurrences of `term` in `content` that the text around them does not
+    already settle — see `_CONTEXT_READINGS`."""
+    total = sum(1 for found in _ABBREVIATION.findall(content) if found == term)
+    reading = _CONTEXT_READINGS.get(term)
+    resolved = len(reading.findall(content)) if reading is not None else 0
+    return max(total - resolved, 0)
+
+
 async def _detect_abbreviations(
     session: AsyncSession, source_id: uuid.UUID, settings: Settings
 ) -> list[Candidate]:
+    """One candidate per all-caps token, behind `M7-FIX-BE-172`'s floor.
+
+    A token is dropped — not deferred to the cap, since that would still
+    record it as a question worth asking — when the source already answers
+    it: every occurrence carries a common-English reading its own passage
+    proves (`_CONTEXT_READINGS`), or some passage defines it
+    (`_defined_inline`). The samples cited as evidence are taken only from
+    passages with an unresolved occurrence, so a question never cites the
+    very line that answers it. Materiality counts unresolved occurrences
+    only: two explained uses do not change any answer.
+    """
     rows = await session.execute(
         text(
             "SELECT c.content, c.content_encrypted, d.filename, c.page_from FROM chunks c "
@@ -307,6 +395,7 @@ async def _detect_abbreviations(
     )
     counts: Counter[str] = Counter()
     samples: dict[str, list[tuple[str, int | None, str]]] = defaultdict(list)
+    defined: set[str] = set()
     key: bytes | None = None
     for content, content_encrypted, filename, page_from in rows:
         if not content:
@@ -315,20 +404,31 @@ async def _detect_abbreviations(
             if key is None:
                 key = await passphrase.current_key(session, settings)
             content = crypto.decrypt(content.encode("ascii"), key).decode("utf-8")
-        found = _ABBREVIATION.findall(content)
-        counts.update(found)
-        for abbreviation in dict.fromkeys(found):
-            if len(samples[abbreviation]) < EVIDENCE_MAX_SAMPLES:
+        for abbreviation in dict.fromkeys(_ABBREVIATION.findall(content)):
+            if abbreviation in _COMMON_ABBREVIATIONS:
+                continue
+            if _defined_inline(abbreviation, content):
+                defined.add(abbreviation)
+            unresolved = _unresolved_occurrences(abbreviation, content)
+            # Zero is still recorded, so a token whose every use is
+            # explained is dropped visibly rather than never seen at all.
+            counts[abbreviation] += unresolved
+            if unresolved and len(samples[abbreviation]) < EVIDENCE_MAX_SAMPLES:
                 samples[abbreviation].append((filename, page_from, content))
     if not counts:
         return []
 
     candidates = []
     for abbreviation, occurrences in sorted(counts.items()):
-        if abbreviation in _COMMON_ABBREVIATIONS:
-            continue
+        cannot_determine = abbreviation not in defined and occurrences > 0
         material = occurrences >= _MIN_ABBREVIATION_OCCURRENCES
-        reason = _evaluate(cannot_determine=True, material=material, user_knows=True)
+        reason = _evaluate(cannot_determine=cannot_determine, material=material, user_knows=True)
+        if not cannot_determine:
+            reason = (
+                f"{reason} (defined in the source)"
+                if abbreviation in defined
+                else f"{reason} (every occurrence is explained by its own passage)"
+            )
         found_samples = samples.get(abbreviation, [])
         evidence: dict[str, Any] = (
             {
@@ -533,9 +633,16 @@ async def _detect_contradictions(session: AsyncSession, source_id: uuid.UUID) ->
     # contradiction question needs (`M3-RAISE-BE-071`).
     facts: dict[str, dict[tuple[str, str, str], dict[str, Any]]] = defaultdict(dict)
     for filename, added_at, page_number, page_text in rows:
-        for match in _FACT_PATTERN.finditer(page_text):
+        matches = [
+            *_FACT_PATTERN.finditer(page_text),
+            *_TIME_FACT_PATTERN.finditer(page_text),
+        ]
+        for match in matches:
             subject_raw, number, unit = match.group(1), match.group(2), match.group(3)
             subject = " ".join(subject_raw.lower().split())
+            if match.re is _TIME_FACT_PATTERN:
+                # "8 pm" and "8 PM" are one value, not a disagreement.
+                unit = unit.upper()
             key = (filename, number.strip(), unit.strip())
             if key in facts[subject]:
                 continue

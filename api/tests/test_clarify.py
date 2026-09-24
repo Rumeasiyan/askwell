@@ -21,9 +21,11 @@ from askwell.clarify import (
     Candidate,
     RaiseResult,
     _bound_text,
+    _defined_inline,
     _evaluate,
     _normalize_filename,
     _rank_candidates,
+    _unresolved_occurrences,
     column_distribution_evidence,
     get_clarification_cap,
     raise_candidates,
@@ -976,3 +978,195 @@ def test_column_distribution_evidence_keeps_only_the_top_values() -> None:
 def test_column_distribution_evidence_remainder_never_goes_negative() -> None:
     evidence = column_distribution_evidence([("only-value", 5)], row_count=1)
     assert evidence["remainder_count"] == 0
+
+
+# --- M7-FIX-BE-172: a clarification has to be worth asking ----------------------
+
+# Byte-for-byte `eval/fixtures/generate_corpus.py`'s `STORE_HOURS_*_LINE` —
+# the two passages that used to produce "'PM' appears throughout. What does
+# it mean?" while the closing-time conflict between them went unasked.
+_STORE_HOURS_2025 = "Meridian Loom retail stores close at 8 PM on weekdays."
+_STORE_HOURS_2026 = "Meridian Loom retail stores close at 9 PM on weekdays."
+
+
+async def _document_with_text(
+    session: AsyncSession, source_id: uuid.UUID, filename: str, content: str
+) -> uuid.UUID:
+    document_id = await _document(session, source_id, filename)
+    await _chunk(session, document_id, content)
+    await _page(session, document_id, 1, content)
+    return document_id
+
+
+def test_a_time_of_day_pm_is_resolved_by_its_own_passage() -> None:
+    assert _unresolved_occurrences("PM", _STORE_HOURS_2025) == 0
+    assert _unresolved_occurrences("PM", "Doors open at 9:30 AM and close at 5 PM.") == 0
+
+
+def test_a_pm_with_no_clock_time_is_not_resolved() -> None:
+    assert _unresolved_occurrences("PM", "The PM signs off every change.") == 1
+    assert _unresolved_occurrences("PM", "The PM leaves at 5 PM.") == 1
+    # "8PM" is not a use of the token at all, so it must not cancel one.
+    assert _unresolved_occurrences("PM", "Close at 8PM. The PM signs off.") == 1
+    assert _unresolved_occurrences("AM", "Opens 9AM. The AM approves.") == 1
+
+
+def test_an_inline_expansion_defines_the_term() -> None:
+    assert _defined_inline("RFQ", "Send a Request for Quotation (RFQ) to each vendor.")
+    assert _defined_inline("RFQ", "Each RFQ (Request for Quotation) closes Friday.")
+    assert _defined_inline("PM", "PM stands for project manager here.")
+
+
+def test_words_that_do_not_spell_the_term_are_not_a_definition() -> None:
+    assert not _defined_inline("RFQ", "Send the paperwork to procurement (RFQ).")
+    assert not _defined_inline("RFQ", "The RFQ (see appendix) closes Friday.")
+    assert not _defined_inline("RFQ", "The RFQ closes Friday.")
+
+
+@pytest.mark.asyncio
+async def test_the_fixture_store_hours_ask_the_conflict_not_pm(session: AsyncSession) -> None:
+    source_id = await _source(session)
+    await _document_with_text(session, source_id, "store_hours_2025.pdf", _STORE_HOURS_2025)
+    await _document_with_text(session, source_id, "store_hours_2026.pdf", _STORE_HOURS_2026)
+
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
+
+    rows = (await session.execute(text("SELECT subject, question, rank FROM clarifications"))).all()
+    assert len(rows) == 1
+    _subject, question, rank = rows[0]
+    assert rank == 1
+    assert "8 PM" in question and "9 PM" in question
+    assert "store_hours_2025.pdf" in question and "store_hours_2026.pdf" in question
+    assert all(subject != "PM" for subject, _q, _r in rows)
+    # Dropped, not deferred: nothing about PM is written to memory as a
+    # below-the-cap question, and it is not counted as capped.
+    assert result == RaiseResult(raised=1, inferred=0, dropped=1)
+    assert (
+        await session.execute(text("SELECT 1 FROM memory WHERE subject = 'PM'"))
+    ).first() is None
+
+
+@pytest.mark.asyncio
+async def test_a_term_dropped_by_the_floor_says_why_in_the_decisions_store(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session)
+    await _document_with_text(session, source_id, "store_hours_2025.pdf", _STORE_HOURS_2025)
+    await _document_with_text(session, source_id, "store_hours_2026.pdf", _STORE_HOURS_2026)
+
+    await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
+
+    details = (
+        (
+            await session.execute(
+                text(
+                    "SELECT payload FROM audit_decisions WHERE kind = 'clarification_dropped' "
+                    "AND payload->>'subject' = 'PM'"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(details) == 1
+    assert "cannot_determine" in details[0]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_a_common_word_used_as_domain_jargon_is_still_asked(session: AsyncSession) -> None:
+    # The case the floor is most likely to get wrong: "PM" is common English,
+    # but here it is someone's role, and only the user knows whose.
+    source_id = await _source(session)
+    await _document_with_text(
+        session, source_id, "process.pdf", "The PM signs off every change request."
+    )
+    await _document_with_text(
+        session, source_id, "rota.pdf", "Escalate to the PM before 5 PM on Fridays."
+    )
+
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
+
+    assert result == RaiseResult(raised=1, inferred=0, dropped=0)
+    evidence = await _evidence_for(session, "PM")
+    assert evidence["occurrences"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_question_never_cites_the_passage_that_answers_it(session: AsyncSession) -> None:
+    source_id = await _source(session)
+    await _document_with_text(session, source_id, "hours.pdf", _STORE_HOURS_2025)
+    await _document_with_text(session, source_id, "roles.pdf", "The PM approves budgets.")
+    await _document_with_text(session, source_id, "roles-2.pdf", "Ask the PM first.")
+
+    await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
+
+    evidence = await _evidence_for(session, "PM")
+    cited = {sample["document"] for sample in evidence["samples"]}
+    assert cited == {"roles.pdf", "roles-2.pdf"}
+
+
+@pytest.mark.asyncio
+async def test_a_term_the_source_defines_is_dropped(session: AsyncSession) -> None:
+    source_id = await _source(session)
+    document_id = await _document(session, source_id, "tender.pdf")
+    await _chunk(session, document_id, "Issue a Request for Quotation (RFQ) to three vendors.")
+    await _chunk(session, document_id, "The RFQ closes Friday. Late RFQ replies are void.")
+
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
+
+    assert result == RaiseResult(raised=0, inferred=0, dropped=1)
+    assert (await session.execute(text("SELECT 1 FROM clarifications"))).first() is None
+
+
+@pytest.mark.asyncio
+async def test_a_genuine_domain_abbreviation_is_still_asked_beside_a_resolved_one(
+    session: AsyncSession,
+) -> None:
+    # The floor is per term: resolving "PM" must not quietly take an
+    # unexplained code with it.
+    source_id = await _source(session)
+    await _document_with_text(
+        session, source_id, "a.pdf", "Stores close at 8 PM. Log each return under code STCD."
+    )
+    await _document_with_text(
+        session, source_id, "b.pdf", "Stores close at 8 PM. STCD applies to every refund."
+    )
+
+    await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
+
+    subjects = (await session.execute(text("SELECT subject FROM clarifications"))).scalars().all()
+    assert subjects == ["STCD"]
+
+
+@pytest.mark.asyncio
+async def test_nothing_worth_asking_leaves_the_queue_empty(session: AsyncSession) -> None:
+    # A correct outcome, not one to pad: no conflict, and the only term is
+    # answered by its own passages.
+    source_id = await _source(session)
+    await _document_with_text(session, source_id, "a.pdf", _STORE_HOURS_2025)
+    await _document_with_text(session, source_id, "b.pdf", "Deliveries arrive by 7 AM daily.")
+
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
+
+    assert result.raised == 0
+    assert (await session.execute(text("SELECT 1 FROM clarifications"))).first() is None
+
+
+@pytest.mark.asyncio
+async def test_the_same_time_in_different_case_is_not_a_conflict(session: AsyncSession) -> None:
+    source_id = await _source(session)
+    await _document_with_text(session, source_id, "a.pdf", _STORE_HOURS_2025)
+    await _document_with_text(
+        session, source_id, "b.pdf", "Meridian Loom retail stores close at 8 pm on weekdays."
+    )
+
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
+
+    assert result.raised == 0
+
+
+def test_a_conflict_outranks_a_term_that_passes_the_floor() -> None:
+    ranked = _rank_candidates(
+        [_abbrev_candidate("PM", 50), _contradiction_candidate("retail stores close")]
+    )
+    assert [c.trigger for c in ranked] == ["contradiction", "abbreviation"]
