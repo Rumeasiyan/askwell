@@ -8,6 +8,13 @@ mechanism that decision described — not the install prompt itself
 (`M7-PACK-DEPLOY-139`/`140`/`141`) and not how a found update is presented
 (`M7-UPDATE-FE-162`). It learns that a newer version exists. Nothing more.
 
+`M7-UPDATE-FE-162` adds three things the presentation needs and nothing
+else: the date Askwell first learned of the newest version it knows about
+(the feed is the bare `VERSION` file and carries no release date, so the
+honest date is "found on", never "released on"), the version the person
+dismissed the marker for, and a decisions record when an upgrade has been
+applied (`record_running_version`).
+
 **The stored answer has three states, and the third is load-bearing.**
 `not_asked` is not `no` in the database — an install that has never been
 asked must read that way forever, through any number of upgrades, so a
@@ -53,9 +60,13 @@ ANSWER_KEY = "update_check_answer"
 LAST_CHECKED_KEY = "update_check_last_checked_at"
 LATEST_KNOWN_VERSION_KEY = "update_check_latest_known_version"
 LAST_RESULT_KEY = "update_check_last_result"
+LATEST_KNOWN_SINCE_KEY = "update_check_latest_known_since"
+DISMISSED_VERSION_KEY = "update_check_dismissed_version"
 
 UPDATE_CHECK_ENABLED = "update_check_enabled"
 UPDATE_CHECK_DISABLED = "update_check_disabled"
+UPGRADE_APPLIED = "upgrade_applied"
+VERSION_CHANGED = "version_changed"
 
 ClientFactory = Callable[[], httpx.AsyncClient]
 
@@ -77,12 +88,23 @@ class UpdateCheckState:
     last_checked_at: datetime | None
     latest_known_version: str | None
     last_result: Result | None
+    latest_known_since: datetime | None = None
+    dismissed_version: str | None = None
 
     @property
     def update_available(self) -> bool:
         if self.latest_known_version is None:
             return False
         return _version_gt(self.latest_known_version, __version__)
+
+    @property
+    def dismissed(self) -> bool:
+        """Dismissed for this version or a later one. A further version
+        brings the marker back; a restart never does, because the dismissal
+        is stored, not held in the page."""
+        if self.latest_known_version is None or self.dismissed_version is None:
+            return False
+        return not _version_gt(self.latest_known_version, self.dismissed_version)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -91,6 +113,11 @@ class UpdateCheckState:
             "latest_known_version": self.latest_known_version,
             "update_available": self.update_available,
             "last_result": str(self.last_result) if self.last_result else None,
+            "latest_known_since": (
+                self.latest_known_since.isoformat() if self.latest_known_since else None
+            ),
+            "dismissed_version": self.dismissed_version,
+            "dismissed": self.dismissed,
         }
 
 
@@ -131,11 +158,16 @@ async def get_state(session: AsyncSession) -> UpdateCheckState:
     raw_result = await get_setting(session, LAST_RESULT_KEY)
     last_result = Result(raw_result) if raw_result in (Result.OK, Result.UNREACHABLE) else None
 
+    raw_since = await get_setting(session, LATEST_KNOWN_SINCE_KEY)
+    latest_known_since = datetime.fromisoformat(raw_since) if raw_since else None
+
     return UpdateCheckState(
         answer=answer,
         last_checked_at=last_checked_at,
         latest_known_version=latest_known_version,
         last_result=last_result,
+        latest_known_since=latest_known_since,
+        dismissed_version=await get_setting(session, DISMISSED_VERSION_KEY),
     )
 
 
@@ -206,9 +238,15 @@ async def run_check(
         if opened_temporarily:
             await egress.revoke_destination(settings)
 
-    await set_setting(session, LAST_CHECKED_KEY, datetime.now(UTC).isoformat())
+    now = datetime.now(UTC).isoformat()
+    await set_setting(session, LAST_CHECKED_KEY, now)
     await set_setting(session, LAST_RESULT_KEY, result.value)
     if remote_version is not None:
+        if remote_version != state.latest_known_version:
+            # The date shown beside the version is when Askwell learned of
+            # it, so it moves only when the version does — a weekly check
+            # that finds the same version again must not make it look new.
+            await set_setting(session, LATEST_KNOWN_SINCE_KEY, now)
         await set_setting(session, LATEST_KNOWN_VERSION_KEY, remote_version)
 
     return await get_state(session)
@@ -237,8 +275,70 @@ async def maybe_run_scheduled_check(
     return True
 
 
+class InvalidDismissal(ValueError):
+    """Only a `MAJOR.MINOR.PATCH` version may be dismissed."""
+
+
+async def dismiss(session: AsyncSession, version: str) -> UpdateCheckState:
+    """Dismiss the marker for `version`. The caller names the version it
+    showed, rather than this reading "whatever is newest now", so a check
+    that lands between the page loading and the click can never have its
+    newer version dismissed unseen."""
+    if not _version_gt(version, "0.0.0"):
+        raise InvalidDismissal("A version like 1.2.0 must be named.")
+    await set_setting(session, DISMISSED_VERSION_KEY, version)
+    return await get_state(session)
+
+
+async def record_running_version(
+    factory: async_sessionmaker[AsyncSession], settings: Settings
+) -> str | None:
+    """At startup: if this machine last started as a different version, an
+    upgrade was applied — a decisions record says so. Returns the kind
+    recorded, or `None`.
+
+    The version last started as lives in a file on the state volume
+    (`Settings.running_version_path`), not in the database. A first start
+    writes the file and nothing else: a fresh install's `audit_decisions`
+    must stay empty until a restore lands its historical chain there, or
+    the two genesis records fork (issue #697, `askwell.restore`'s module
+    docstring), and `settings` must stay empty for restore's own
+    existing-data check (issue #597). Restore does not touch the file, so a
+    machine restored from an older backup records no upgrade it never ran.
+
+    The record commits before the file is rewritten. If the file write
+    fails the next start records the same upgrade again — a duplicate
+    record, never a missing one.
+    """
+    path = settings.running_version_path
+    try:
+        previous = path.read_text(encoding="utf-8").strip() if path.exists() else None
+    except OSError as error:
+        log.warning("running_version_unreadable", path=str(path), error=str(error))
+        return None
+
+    kind: str | None = None
+    if previous is not None and previous != __version__:
+        kind = UPGRADE_APPLIED if _version_gt(__version__, previous) else VERSION_CHANGED
+        async with session_scope(factory) as session:
+            await record(session, Store.DECISIONS, kind, {"from": previous, "to": __version__})
+        log.info(kind, previous=previous, current=__version__)
+
+    if previous != __version__:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"{__version__}\n", encoding="utf-8")
+        except OSError as error:
+            log.warning("running_version_unwritable", path=str(path), error=str(error))
+    return kind
+
+
 class AnswerRequest(BaseModel):
     answer: Literal["yes", "no"]
+
+
+class DismissRequest(BaseModel):
+    version: str
 
 
 def register_update_check(
@@ -265,4 +365,14 @@ def register_update_check(
         web search."""
         async with session_scope(factory) as db:
             state = await run_check(db, settings, manual=True)
+            return JSONResponse(state.as_dict())
+
+    @app.post("/settings/update-check/dismiss")
+    async def dismiss_marker(body: DismissRequest) -> JSONResponse:
+        """Hide the newer-version marker until a further version appears."""
+        async with session_scope(factory) as db:
+            try:
+                state = await dismiss(db, body.version)
+            except InvalidDismissal as error:
+                return JSONResponse({"detail": str(error)}, status_code=422)
             return JSONResponse(state.as_dict())

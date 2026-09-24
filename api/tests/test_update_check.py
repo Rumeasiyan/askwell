@@ -358,3 +358,209 @@ async def test_a_month_offline_produces_one_check_not_a_backlog(
     await session.commit()
 
     assert ran is True
+
+
+# --- the marker's facts: `M7-UPDATE-FE-162` ---------------------------------
+
+
+@pytestmark_db
+async def test_never_checked_means_no_marker_and_nothing_implying_failure(
+    session: AsyncSession, settings: Settings
+) -> None:
+    state = await get_state(session)
+
+    assert state.update_available is False
+    assert state.latest_known_version is None
+    assert state.latest_known_since is None
+    assert state.last_result is None
+    assert state.dismissed is False
+
+
+@pytestmark_db
+async def test_the_date_is_when_the_version_was_first_found_not_the_last_check(
+    session: AsyncSession, settings: Settings, egress_calls: _EgressCalls
+) -> None:
+    from askwell.settings_store import set_setting
+
+    first = await run_check(
+        session, settings, manual=True, client_factory=_ok_client_factory("98.0.0")
+    )
+    await session.commit()
+    assert first.latest_known_since is not None
+
+    # A week later the same version is found again: the date must not move,
+    # or a three-week-old release would always look new.
+    a_week_ago = (datetime.now(UTC) - timedelta(days=7)).isoformat()
+    await set_setting(session, update_check.LATEST_KNOWN_SINCE_KEY, a_week_ago)
+    await session.commit()
+    again = await run_check(
+        session, settings, manual=True, client_factory=_ok_client_factory("98.0.0")
+    )
+    await session.commit()
+    assert again.latest_known_since == datetime.fromisoformat(a_week_ago)
+
+    newer = await run_check(
+        session, settings, manual=True, client_factory=_ok_client_factory("99.0.0")
+    )
+    await session.commit()
+    assert newer.latest_known_since is not None
+    assert newer.latest_known_since > datetime.fromisoformat(a_week_ago)
+
+
+@pytestmark_db
+async def test_two_versions_behind_names_only_the_newest(
+    session: AsyncSession, settings: Settings, egress_calls: _EgressCalls
+) -> None:
+    await run_check(session, settings, manual=True, client_factory=_ok_client_factory("98.0.0"))
+    state = await run_check(
+        session, settings, manual=True, client_factory=_ok_client_factory("99.0.0")
+    )
+    await session.commit()
+
+    payload = state.as_dict()
+    assert payload["latest_known_version"] == "99.0.0"
+    assert payload["update_available"] is True
+
+
+@pytestmark_db
+async def test_turning_the_check_off_keeps_a_version_already_found(
+    session: AsyncSession, settings: Settings, egress_calls: _EgressCalls
+) -> None:
+    await set_answer(session, settings, Answer.YES)
+    await run_check(session, settings, manual=False, client_factory=_ok_client_factory("99.0.0"))
+    await session.commit()
+
+    state = await set_answer(session, settings, Answer.NO)
+    await session.commit()
+
+    assert state.update_available is True
+    assert state.latest_known_version == "99.0.0"
+
+
+@pytestmark_db
+async def test_a_dismissal_holds_across_restarts_until_a_further_version(
+    session: AsyncSession, settings: Settings, egress_calls: _EgressCalls
+) -> None:
+    await run_check(session, settings, manual=True, client_factory=_ok_client_factory("98.0.0"))
+    await update_check.dismiss(session, "98.0.0")
+    await session.commit()
+
+    # A restart is a fresh read of stored state; nothing is held in memory.
+    assert (await get_state(session)).dismissed is True
+
+    # The same version found again stays dismissed.
+    await run_check(session, settings, manual=True, client_factory=_ok_client_factory("98.0.0"))
+    assert (await get_state(session)).dismissed is True
+
+    # A further version brings the marker back.
+    state = await run_check(
+        session, settings, manual=True, client_factory=_ok_client_factory("99.0.0")
+    )
+    await session.commit()
+    assert state.dismissed is False
+    assert state.update_available is True
+
+
+@pytestmark_db
+async def test_dismissing_a_stale_version_never_hides_a_newer_one(
+    session: AsyncSession, settings: Settings, egress_calls: _EgressCalls
+) -> None:
+    """The page showed 98.0.0; a check found 99.0.0 before the click landed."""
+    await run_check(session, settings, manual=True, client_factory=_ok_client_factory("99.0.0"))
+    state = await update_check.dismiss(session, "98.0.0")
+    await session.commit()
+
+    assert state.dismissed is False
+
+
+@pytestmark_db
+async def test_only_a_version_may_be_dismissed(session: AsyncSession) -> None:
+    with pytest.raises(update_check.InvalidDismissal):
+        await update_check.dismiss(session, "latest")
+
+
+# --- an applied upgrade is a decisions record -------------------------------
+
+
+@pytest_asyncio.fixture
+async def factory(
+    async_url: str, session: AsyncSession
+) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    """Its own engine; `session`'s teardown clears what it wrote."""
+    engine = create_async_engine(async_url)
+    yield async_sessionmaker(engine, expire_on_commit=False)
+    await engine.dispose()
+
+
+async def _decisions(session: AsyncSession) -> list[tuple[str, dict[str, str]]]:
+    rows = await session.execute(text("SELECT kind, payload FROM audit_decisions"))
+    return [(str(kind), dict(payload)) for kind, payload in rows.all()]
+
+
+@pytestmark_db
+async def test_a_first_start_writes_the_version_file_and_nothing_to_the_database(
+    factory: async_sessionmaker[AsyncSession], session: AsyncSession, tmp_path: Path
+) -> None:
+    """Issue #697: a fresh install's audit tables and `settings` stay empty,
+    or a restore onto it forks the chain and trips the existing-data check."""
+    settings = _versioned_settings(tmp_path)
+    count_settings = text("SELECT count(*) FROM settings")
+    settings_before = (await session.execute(count_settings)).scalar_one()
+
+    kind = await update_check.record_running_version(factory, settings)
+
+    assert kind is None
+    assert settings.running_version_path.read_text().strip() == update_check.__version__
+    assert await _decisions(session) == []
+    assert (await session.execute(count_settings)).scalar_one() == settings_before
+
+
+@pytestmark_db
+async def test_starting_the_same_version_again_records_nothing(
+    factory: async_sessionmaker[AsyncSession], session: AsyncSession, tmp_path: Path
+) -> None:
+    settings = _versioned_settings(tmp_path)
+    settings.running_version_path.write_text(f"{update_check.__version__}\n")
+
+    assert await update_check.record_running_version(factory, settings) is None
+    assert await _decisions(session) == []
+
+
+@pytestmark_db
+async def test_starting_a_newer_version_records_the_upgrade_once(
+    factory: async_sessionmaker[AsyncSession], session: AsyncSession, tmp_path: Path
+) -> None:
+    settings = _versioned_settings(tmp_path)
+    settings.running_version_path.write_text("0.0.1\n")
+
+    assert await update_check.record_running_version(factory, settings) == "upgrade_applied"
+    assert await update_check.record_running_version(factory, settings) is None
+
+    assert await _decisions(session) == [
+        ("upgrade_applied", {"from": "0.0.1", "to": update_check.__version__})
+    ]
+    assert settings.running_version_path.read_text().strip() == update_check.__version__
+
+
+@pytestmark_db
+async def test_starting_an_older_version_is_recorded_as_a_change_not_an_upgrade(
+    factory: async_sessionmaker[AsyncSession], session: AsyncSession, tmp_path: Path
+) -> None:
+    settings = _versioned_settings(tmp_path)
+    settings.running_version_path.write_text("999.0.0\n")
+
+    assert await update_check.record_running_version(factory, settings) == "version_changed"
+    assert await _decisions(session) == [
+        ("version_changed", {"from": "999.0.0", "to": update_check.__version__})
+    ]
+
+
+def _versioned_settings(tmp_path: Path) -> Settings:
+    (tmp_path / "state").mkdir(exist_ok=True)
+    return Settings(
+        database_url="postgresql://askwell:pw@127.0.0.1:1/askwell",  # type: ignore[arg-type]
+        sandbox_database_url="postgresql://x:x@127.0.0.1:1/postgres",  # type: ignore[arg-type]
+        sandbox_owner_password="pw",  # type: ignore[arg-type]
+        sandbox_readonly_password="pw",  # type: ignore[arg-type]
+        running_version_path=tmp_path / "state" / "running_version",
+    )

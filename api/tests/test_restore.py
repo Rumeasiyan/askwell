@@ -297,6 +297,37 @@ async def test_a_full_restore_recovers_rows_and_reembeds(
         assert chunk_row[1] is not None  # re-embedded
 
 
+async def test_a_restore_onto_a_machine_that_has_started_keeps_one_chain(
+    factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    inference_serving: None,
+    tmp_path: Path,
+) -> None:
+    """Issue #697. A clean machine starts Askwell before anyone restores
+    anything, so the startup version record runs first. It must leave the
+    audit tables empty, or the backup's own genesis record forks the chain."""
+    from askwell.update_check import record_running_version
+
+    path = await _make_backup(factory, settings, content="alpha beta gamma")
+    await _reset_to_clean_machine(factory)
+    started = settings.model_copy(update={"running_version_path": tmp_path / "running_version"})
+    await record_running_version(factory, started)
+
+    async with factory() as session:
+        job_id = await enqueue(
+            session, settings, path=path, restore_passphrase=None, replace_existing=False
+        )
+        await session.commit()
+
+    await run_job(factory, settings, job_id, None)
+
+    async with factory() as session:
+        job = await get_job(session, job_id)
+        assert job is not None
+        assert job.status == "done"
+        assert job.chain_verified is True
+
+
 async def test_replace_existing_clears_prior_non_audit_data(
     factory: async_sessionmaker[AsyncSession],
     settings: Settings,

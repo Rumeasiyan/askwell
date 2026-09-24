@@ -207,6 +207,21 @@ def test_the_endpoint_takes_paths_and_never_bytes(client: TestClient) -> None:
 # empty library.
 
 
+def _owned_state(tmp_path: Path) -> dict[str, Path]:
+    """Every state path the live app touches, under this test's own `tmp_path`.
+
+    Left at their `/var/lib/askwell` defaults, `add_source`'s disk-budget
+    check (`askwell.log_budget.measure`) failed whenever no earlier module had
+    happened to create that directory, so these tests passed only as part of
+    the full run (issue #696). The running-version file (`M7-UPDATE-FE-162`)
+    goes here for the same reason.
+    """
+    return {
+        "trace_dir": tmp_path / "traces",
+        "running_version_path": tmp_path / "running_version",
+    }
+
+
 @pytest.mark.requires_db
 def test_a_successful_add_is_committed_and_survives_the_request(
     settings: Settings,
@@ -246,6 +261,7 @@ def test_a_successful_add_is_committed_and_survives_the_request(
             update={
                 "database_url": SecretStr(app_database_url),
                 "web_assets_dir": built,
+                **_owned_state(tmp_path),
             }
         )
     )
@@ -313,7 +329,11 @@ def test_a_postgresql_dump_is_queued_and_committed(
     (built / "index.html").write_text("<!doctype html><title>Askwell</title>")
     live = create_app(
         settings.model_copy(
-            update={"database_url": SecretStr(app_database_url), "web_assets_dir": built}
+            update={
+                "database_url": SecretStr(app_database_url),
+                "web_assets_dir": built,
+                **_owned_state(tmp_path),
+            }
         )
     )
 
@@ -370,7 +390,11 @@ def test_a_mysql_dump_is_refused_over_the_endpoint_with_both_routes_out(
     (built / "index.html").write_text("<!doctype html><title>Askwell</title>")
     live = create_app(
         settings.model_copy(
-            update={"database_url": SecretStr(app_database_url), "web_assets_dir": built}
+            update={
+                "database_url": SecretStr(app_database_url),
+                "web_assets_dir": built,
+                **_owned_state(tmp_path),
+            }
         )
     )
 
@@ -422,7 +446,11 @@ def test_a_text_file_renamed_dot_sql_is_refused_as_unsupported_over_the_endpoint
     (built / "index.html").write_text("<!doctype html><title>Askwell</title>")
     live = create_app(
         settings.model_copy(
-            update={"database_url": SecretStr(app_database_url), "web_assets_dir": built}
+            update={
+                "database_url": SecretStr(app_database_url),
+                "web_assets_dir": built,
+                **_owned_state(tmp_path),
+            }
         )
     )
 

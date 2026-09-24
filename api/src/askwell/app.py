@@ -43,7 +43,7 @@ from askwell.roots import register_roots
 from askwell.setup import register_setup, run_startup_discovery
 from askwell.sources import register_sources
 from askwell.suggestions import register_suggestions
-from askwell.update_check import register_update_check
+from askwell.update_check import record_running_version, register_update_check
 from askwell.voice_channel import register_voice_channel
 from askwell.voice_tts import build_tts_driver
 from askwell.voice_turn_detection import build_vad_turn_detector
@@ -91,6 +91,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         reconciled = await ask.reconcile_interrupted(app.state.sessions)
         if reconciled:
             log.warning("ask_turns_reconciled", count=reconciled)
+
+        # An applied upgrade is a decisions record (`M7-UPDATE-FE-162`). A
+        # failure here must not stop Askwell starting; the version file is
+        # left as it was, so the next start records it instead.
+        try:
+            await record_running_version(app.state.sessions, settings)
+        except Exception as error:
+            log.warning("running_version_not_recorded", error=f"{type(error).__name__}: {error}")
 
         # Backgrounded, not awaited: the shipped default the host just booted
         # can take minutes to answer on a cold, light-profile machine, and a
