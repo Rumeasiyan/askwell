@@ -95,6 +95,15 @@ constraint whose enforcement point turns out to be a convention rather than a me
 release blocker, not an aside (`M7-SEC-TEST-166`; `AGENTS.md` §3). Do not proceed to step 4
 without a `pass` entry for this exact version.
 
+## 3d. The release checklist — every gate at once
+
+Steps 3 to 3c are four of the gates. `docs/release-checklist.md` is all of them: the eval gate
+against its eight categories, performance, the support boundary, open defects, and the manual
+regression walkthrough (`docs/release-walkthrough.md`) from a cold install. Run it, and
+record the result in `docs/release-log.md`. **Do not proceed to step 4 until an entry for this
+exact `VERSION` reads `Decision: release`.** A gate that could not be run holds the release;
+it does not wave it through (`M7-QA-TEST-168`).
+
 ## 4. Generate checksums
 
 ```

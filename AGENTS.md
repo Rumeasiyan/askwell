@@ -59,6 +59,7 @@ Four facts shape almost every decision here:
 | Phase scope, acceptance criteria, quality gate, repo layout | `docs/build-plan.md` |
 | What a screen must handle beyond the happy path | `docs/states-and-edge-cases.md` — **read before designing or building any surface** |
 | Whether the product is succeeding, in numbers | `docs/success-metrics.md` |
+| Whether a version can ship, and what each release recorded | `docs/release-checklist.md`, `docs/release-log.md` |
 | Current phase, next task, blockers | `docs/BRAIN.md` |
 | Why a choice was made | `docs/decisions.md` |
 | Current application version | `VERSION` |
@@ -133,7 +134,7 @@ Everything runs through one entry point:
 | Alembic against the stack | `scripts/dev.sh db upgrade head` | **Verified** |
 | A psql shell | `scripts/dev.sh psql` | **Verified** |
 | Verify the audit chains | `podman compose exec api askwell-verify` | **Verified** |
-| What the egress proxy refused | `curl -s localhost:8000/network` | **Verified** |
+| What the egress proxy refused | `curl -s -c /tmp/askwell.cookies -H 'Accept: text/html' localhost:8000/ -o /dev/null && curl -s -b /tmp/askwell.cookies localhost:8000/network` — the first request takes the session the interface would; a bare `curl` of `/network` answers `No session.` | **Verified** |
 | Prove it is not on the network | `scripts/verify-localhost-binding.sh` | **Verified** |
 | Native inference, **on the host** | `scripts/dev.sh inference` | **Verified** |
 | Hardware probe, **on the host** | `scripts/dev.sh probe` (`--watch` to keep polling for settings-triggered reruns) | **Verified** |

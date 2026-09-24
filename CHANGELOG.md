@@ -4,6 +4,26 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.36 - 2026-09-24
+
+`Added`: `M7-QA-TEST-168`, the release readiness checklist. `docs/release-checklist.md` gathers
+every release gate in one place: the eval suite's eight categories and 165 tasks, the
+cable-unplugged test, the tested restore, the security review, performance, licences and
+notices, the support boundary, version and changelog, open defects, and a manual walkthrough.
+Each gate has a pass condition and a stated place for its evidence. Every result is pass or
+fail. SQL safety and web escalation discipline at 0.9 are failures, not nearly-passes. A gate
+that cannot be run holds the release, and the issues already known to hold the next one are
+listed. `docs/release-walkthrough.md` is the walkthrough itself: from a cold install of the
+release artefact, through every milestone's headline path, to backup, restore on a second
+machine, export, and log verification, with the outbound request count read throughout. It
+uses only what an installed machine has, not a repository checkout. `docs/release-log.md`
+records each release's result, and `docs/release-procedure.md` does not checksum anything
+until that record says release.
+
+`Fixed`: the documented command for reading the outbound request count (`AGENTS.md`, the
+offline release test and eight manual tests) now takes a session first. On its own it
+answered `No session.`
+
 ## 0.7.35 - 2026-09-24
 
 `Added`: `M7-OPS-DOC-165`. When Askwell fails in a way it did not expect, it now saves a small

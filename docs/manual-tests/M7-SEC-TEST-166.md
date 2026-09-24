@@ -97,7 +97,7 @@ not a proxy response, and that is the expected shape for that one container.
 ### 4. Read the honest counter
 
 ```
-curl -s http://127.0.0.1:8000/network | jq
+curl -s -c /tmp/askwell.cookies -H 'Accept: text/html' http://127.0.0.1:8000/ -o /dev/null && curl -s -b /tmp/askwell.cookies http://127.0.0.1:8000/network | jq
 ```
 
 **You should see:** `refused` and `permitted` counters, plus a `recent` list. Note the current
@@ -157,7 +157,7 @@ screen the rest of Part D escalates from.
 ### 9. Confirm the trace carries a real abstain step, not just empty text
 
 ```
-curl -s http://127.0.0.1:8000/network | jq
+curl -s -c /tmp/askwell.cookies -H 'Accept: text/html' http://127.0.0.1:8000/ -o /dev/null && curl -s -b /tmp/askwell.cookies http://127.0.0.1:8000/network | jq
 ```
 
 Note the `message_id` shown in the browser's network tab or dev tools for the turn you just
@@ -189,7 +189,7 @@ Repeat step 8 for a handful more (aim for at least five) unanswerable questions.
 ### 11. Confirm zero fetches happened while you declined
 
 ```
-curl -s http://127.0.0.1:8000/network | jq '.permitted, .refused'
+curl -s -c /tmp/askwell.cookies -H 'Accept: text/html' http://127.0.0.1:8000/ -o /dev/null && curl -s -b /tmp/askwell.cookies http://127.0.0.1:8000/network | jq '.permitted, .refused'
 ```
 
 **You should see:** the `permitted` counter unchanged from before step 10 — declining an offer
@@ -208,7 +208,7 @@ that web results never enter the provenance margin as if they were your files.
 ### 13. Confirm exactly one grant opened and closed, at the proxy
 
 ```
-curl -s http://127.0.0.1:8000/network | jq '.permitted, .refused'
+curl -s -c /tmp/askwell.cookies -H 'Accept: text/html' http://127.0.0.1:8000/ -o /dev/null && curl -s -b /tmp/askwell.cookies http://127.0.0.1:8000/network | jq '.permitted, .refused'
 ```
 
 **You should see:** `permitted` incremented by exactly the amount one search accounts for (one

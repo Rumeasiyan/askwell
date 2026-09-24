@@ -306,7 +306,7 @@ Click **Skip setup**. Then click through the rail:
 
 ### 23. The network stayed local
 
-In a terminal: `curl -s localhost:8000/network`
+In a terminal: `curl -s -c /tmp/askwell.cookies -H 'Accept: text/html' localhost:8000/ -o /dev/null && curl -s -b /tmp/askwell.cookies localhost:8000/network`
 
 **You should see:** no refused outbound attempts from this session. Nothing in this test should try to reach the network.
 

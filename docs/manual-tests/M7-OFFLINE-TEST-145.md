@@ -33,7 +33,7 @@ the one machine that cannot be un-disconnected to fix it.
 1. Open a terminal and confirm the stack is up: `podman compose ps` should show `api`,
    `worker`, `postgres`, `redis`, `sandbox`, `voice`, `inference-bridge`, `egress-proxy` all
    `Up`. **Expect:** all healthy, none restarting.
-2. In the same terminal, run `curl -s localhost:8000/network | python3 -m json.tool`.
+2. In the same terminal, run `curl -s -c /tmp/askwell.cookies -H 'Accept: text/html' localhost:8000/ -o /dev/null && curl -s -b /tmp/askwell.cookies localhost:8000/network | python3 -m json.tool`. (Without the first request, `/network` answers `No session.`)
    **Expect:** a JSON object with `permitted` and `refused` counts — note the numbers down,
    this is the baseline you compare against after every step below.
 
@@ -227,7 +227,7 @@ blocker independent of anything the proxy or a packet capture shows.
 
 ### 14. Final counters
 
-`curl -s localhost:8000/network | python3 -m json.tool` one more time. **Expect:** `permitted`
+`curl -s -b /tmp/askwell.cookies localhost:8000/network | python3 -m json.tool` one more time. **Expect:** `permitted`
 identical to the very first check in "Before you start." Any `refused` entries gained across
 steps 1–13 are investigated individually per `docs/offline-release-test.md` §4 — named by
 service, destination and cause — before this run can be called a pass.
