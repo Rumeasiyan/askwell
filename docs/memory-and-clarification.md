@@ -37,6 +37,9 @@ If any fails, infer, record the inference as low confidence, and move on.
 - Formatting, encoding, or anything the user has no way to answer.
 - Preferences that can have a sensible default.
 - Anything already in memory — **always check memory first**. Asking twice is how the feature becomes annoying rather than useful.
+- **A term the source already explains.** A term-definition candidate must clear a floor before it is queued: every use of "PM" right after a clock time is a time of day, and a term the source defines ("Request for Quotation (RFQ)") needs no question. Only unexplained uses count towards whether it is worth asking, and a question never cites the passage that answers it. A candidate below the floor is **dropped**, not deferred behind the cap. The same token used as jargon ("the PM signs off") is still asked — the floor judges each use in its context, not the word.
+
+An empty queue is a correct outcome. When nothing clears these tests, nothing is asked, and the queue is never padded to look busy.
 
 ---
 
