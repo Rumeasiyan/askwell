@@ -1,0 +1,48 @@
+name: Question
+description: Is this meant to happen? How does this work? Not for help with your own database or hardware.
+labels: ["question", "needs-triage"]
+assignees: ["Rumeasiyan"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Askwell has one maintainer, and questions are answered in batches rather than as they arrive — [SUPPORT.md](https://github.com/Rumeasiyan/askwell/blob/main/SUPPORT.md) says what to expect. `docs/decisions.md` may already answer a "why is it like this?" question.
+
+        Questions about your own database, documents or hardware are out of scope; ask whoever runs that database or supports that machine.
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Settings → About → Version.
+      placeholder: "0.7.30"
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: Operating system and its version, if the question is about how Askwell runs.
+      placeholder: "macOS 15.4 / Windows 11 24H2 / Fedora 43"
+  - type: dropdown
+    id: profile
+    attributes:
+      label: Profile
+      description: Settings → Model and speed → Current profile, if the question is about speed or models.
+      options:
+        - not relevant
+        - light
+        - standard
+        - accelerated
+        - workstation
+  - type: textarea
+    id: trace
+    attributes:
+      label: Trace
+      description: If the question is about a particular answer, open its trace and press **Copy trace**. Read it first — it contains passages from your files and this issue is public.
+      render: text

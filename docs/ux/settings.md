@@ -89,6 +89,8 @@ Export must be genuinely complete and genuinely open. A free, open-source, local
 
 Version, licence, link to the source, and how to report a problem.
 
+**Report a problem** leads with the support boundary (the repository's own `SUPPORT.md`, bundled so it reads offline): what one maintainer will and will not answer, and what a report needs — version, platform, profile and a copied trace. Then the link that opens an issue, through templates that ask for exactly those. **A security problem is a separate, named row** pointing at `SECURITY.md`, never folded into general reporting: a vulnerability filed as a public issue is already disclosed.
+
 **Update checking is off by default.** Checking for updates is a network call, and C1 says local means local. Offered as an opt-in with the honest trade: *"Askwell can check for updates once a week. That is one request for a static file, carrying your version number and nothing else. Off by default."*
 
 It reads a **static version file**, not an endpoint — there is no server that could log who asked, which is a stronger statement than a promise not to log.

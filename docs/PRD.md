@@ -168,9 +168,9 @@ Build detail, estimates and acceptance criteria: `build-plan.md`.
 
 *Each is a tracked issue with an owner — a question recorded only here is a question nobody is answering.*
 
-1. **Support boundary** ([#47](https://github.com/Rumeasiyan/askwell/issues/47)). `SUPPORT.md` states one; it needs reading and agreeing rather than inheriting.
+Nothing is open here right now.
 
-Settled and recorded in `decisions.md`: no trademark registration, and unsigned distribution with published checksums. Both were declined on cost, deliberately, with the consequences written down rather than assumed away.
+Settled and recorded in `decisions.md`: no trademark registration, and unsigned distribution with published checksums. Both were declined on cost, deliberately, with the consequences written down rather than assumed away. The support boundary is agreed and published: `SUPPORT.md` says what one maintainer will and will not answer, and Askwell links to it from its About screen.
 
 ---
 

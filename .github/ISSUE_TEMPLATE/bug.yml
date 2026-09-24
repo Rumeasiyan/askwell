@@ -1,0 +1,74 @@
+name: Bug report
+description: Askwell did something wrong. Not for security problems — see SECURITY.md.
+labels: ["bug", "needs-triage"]
+assignees: ["Rumeasiyan"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Askwell has one maintainer. A report that can be diagnosed without a round trip gets looked at first — [SUPPORT.md](https://github.com/Rumeasiyan/askwell/blob/main/SUPPORT.md) says what is and is not answered.
+
+        **A security problem does not belong here.** Report it privately: [SECURITY.md](https://github.com/Rumeasiyan/askwell/blob/main/SECURITY.md).
+
+        **A problem with your own database, documents or hardware** — a server refusing a connection, a machine running out of memory — is out of scope unless Askwell itself behaved wrongly.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Settings → About → Version.
+      placeholder: "0.7.30"
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: Operating system and its version.
+      placeholder: "macOS 15.4 / Windows 11 24H2 / Fedora 43"
+    validations:
+      required: true
+  - type: dropdown
+    id: profile
+    attributes:
+      label: Profile
+      description: Settings → Model and speed → Current profile.
+      options:
+        - light
+        - standard
+        - accelerated
+        - workstation
+        - I cannot open Settings
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what happened, and what you expected instead. Paste exact error text rather than a paraphrase.
+    validations:
+      required: true
+  - type: textarea
+    id: trace
+    attributes:
+      label: Trace
+      description: |
+        Under the answer that went wrong, open the trace and press **Copy trace**, then paste it here. If the problem is not about an answer, write "not about an answer".
+
+        **Read it before posting.** A trace contains your question and short passages from your own files, and this issue is public. Remove anything you would not publish. Never paste passwords or connection strings.
+      render: text
+    validations:
+      required: true
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Did Askwell break one of its promises?
+      description: These are treated as serious. Tick any that apply.
+      options:
+        - label: It made a network call without asking me, or sent something while online AI was off.
+        - label: SQL that was not a single read query reached my database.
+        - label: An imported database dump reached outside its sandbox.
+        - label: An answer stated a fact with no citation.
+        - label: It answered from general knowledge instead of saying it did not know.
+        - label: The audit log was changed, lost, or its verification failed.
+        - label: Text inside one of my documents was treated as an instruction.
+        - label: A web result was shown as if it came from my own files.

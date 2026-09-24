@@ -2,7 +2,9 @@
 
 ## Status
 
-**Askwell has no released version and no application code yet.** There is nothing deployed to attack. This policy exists so it is in place before the first release rather than written after an incident.
+Askwell has no public release yet, and the code on `main` is pre-1.0. This policy exists so it is in place before the first release rather than written after an incident.
+
+**This is a separate route from ordinary support, on purpose.** A security report is never triaged alongside bugs and questions (`SUPPORT.md`), never waits behind them, and is never discussed in a public issue.
 
 ## Reporting a vulnerability
 

@@ -1,0 +1,10 @@
+# Blank issues are off so every report arrives through a template that asks
+# for the version, platform, profile and trace. SUPPORT.md explains why.
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security problem (private — not an issue)
+    url: https://github.com/Rumeasiyan/askwell/security/advisories/new
+    about: Security problems go privately to the maintainer, never in a public issue. See SECURITY.md for what counts and what to expect.
+  - name: Read the support boundary first
+    url: https://github.com/Rumeasiyan/askwell/blob/main/SUPPORT.md
+    about: One maintainer. What is answered, what is not, and what a good report contains.

@@ -4,6 +4,20 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.30 - 2026-09-24
+
+`Added`: `M7-DOC-DOC-164` — Settings → About now says what help exists before you ask for it.
+A **Support** link opens the support boundary: Askwell has one maintainer, what is answered,
+what is not (your own database, documents or hardware; a response time on ordinary issues),
+and what a good report contains — version, platform, profile and a copied trace, each with
+where to find it. It is bundled with the app, so it opens with no network. **Report a problem**
+now opens a choice of three issue templates (bug, question, feature request) that ask for
+those details. A bug report cannot be submitted without them. A separate **Security problem**
+row opens the security policy, so a vulnerability is never reported as a public issue.
+
+`Changed`: `SUPPORT.md` gains the triage convention (labels and a batched, roughly weekly aim
+that is not a deadline) and drops its out-of-date status text. Blank issues are turned off.
+
 ## 0.7.29 - 2026-09-24
 
 `Added`: `M7-DATA-FE-160` — Settings → Your data, all six actions. **Export everything** writes

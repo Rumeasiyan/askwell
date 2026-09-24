@@ -11,10 +11,17 @@
  * note ("one file plus one check") does not ask for. Filed as a gap rather
  * than silently left for the next reader to notice.
  *
- * The repository the source link points at is private today
- * (`AGENTS.md` §8 — tracker `Rumeasiyan/askwell`, private); the link is
- * written once, here, rather than guessed at per-caller, so opening it is
- * the one place that changes when the repository's visibility does.
+ * The repository URL is written once, here, rather than guessed at
+ * per-caller, so a move is a one-line change.
+ *
+ * Report a problem (`docs/ux/settings.md` §7, `M7-DOC-DOC-164`): the support
+ * boundary and the security policy are the repository's own `SUPPORT.md` and
+ * `SECURITY.md`, copied into `public/` at build time
+ * (`scripts/copy-support.mjs`), so both read with no network. The support
+ * boundary comes first, before the link that opens an issue, so someone
+ * reads what is and is not answered before they file. The security route
+ * is its own row, named, never folded into the general one — a
+ * vulnerability filed as a public issue is already disclosed.
  */
 
 import { VERSION } from "@/lib/version";
@@ -43,10 +50,27 @@ export function About() {
           </dd>
         </div>
         <div className="flex items-baseline gap-2">
+          <dt style={{ color: "var(--muted)" }}>Support</dt>
+          <dd>
+            <a href="/support.txt" target="_blank" rel="noreferrer">
+              What one maintainer can and cannot answer
+            </a>
+          </dd>
+        </div>
+        <div className="flex items-baseline gap-2">
           <dt style={{ color: "var(--muted)" }}>Report a problem</dt>
           <dd>
-            <a href={`${REPO_URL}/issues/new`} target="_blank" rel="noreferrer">
+            <a href={`${REPO_URL}/issues/new/choose`} target="_blank" rel="noreferrer">
               Open an issue
+            </a>{" "}
+            <span style={{ color: "var(--muted)" }}>— include the version above and a copied trace</span>
+          </dd>
+        </div>
+        <div className="flex items-baseline gap-2">
+          <dt style={{ color: "var(--muted)" }}>Security problem</dt>
+          <dd>
+            <a href="/security-policy.txt" target="_blank" rel="noreferrer">
+              Report privately, not as an issue
             </a>
           </dd>
         </div>

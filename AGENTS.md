@@ -306,6 +306,7 @@ Typos, formatting, renaming a local variable, a one-line correction to a documen
 | `v2:language` | Tamil or Sinhala work. Out of v1 scope — do not start without a scope decision. |
 | `deploy` | Install bundle, hardware probe, deployment profiles, licensing |
 | `bug`, `documentation`, `question` | GitHub defaults, kept |
+| `needs-triage`, `needs-info`, `out-of-scope`, `enhancement`, `duplicate`, `wontfix` | Triage of reports from people using Askwell. The convention, and what each means, is `SUPPORT.md` §How issues are triaged |
 
 **Any issue carrying a `constraint:*` label must state, before it is closed, how the constraint was preserved.** That is the whole point of the label — it forces the check to be written down where an auditor can find it.
 

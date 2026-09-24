@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "next dev",
-    "build": "node scripts/copy-notices.mjs && next build",
+    "build": "node scripts/copy-notices.mjs && node scripts/copy-support.mjs && next build",
     "typecheck": "tsc --noEmit",
     "test": "node --test --experimental-strip-types lib/add-source.test.ts lib/sources.test.ts lib/ingest.test.ts lib/ask.test.ts lib/claims.test.ts lib/citations.test.ts lib/memory-chips.test.ts lib/follow-ups.test.ts lib/pairing.test.ts lib/library.test.ts lib/pdf-highlight.test.ts lib/pdf-text-map.test.ts lib/document-format.test.ts lib/search.test.ts lib/clarifications.test.ts lib/memory.test.ts lib/sql-result.test.ts lib/trace.test.ts lib/retrieval-threshold.test.ts lib/voice.test.ts lib/probe.test.ts lib/model.test.ts lib/web-citations.test.ts lib/web-search.test.ts lib/native.test.ts lib/selection.test.ts lib/drawer.test.ts lib/data-export.test.ts lib/reset.test.ts",
     "lint": "eslint .",
