@@ -135,6 +135,7 @@ GATES = {
     "G10": ["docs/installing.md"],
     "G11": ["docs/release-walkthrough.md"],
     "G12": ["gh issue list --state open --label bug"],
+    "G13": ["docs/online-release-test.md", "docs/online-test-log.md", "independent capture"],
 }
 
 
@@ -173,6 +174,7 @@ def test_the_constraint_gates_cannot_be_accepted() -> None:
         "**web escalation discipline**",
         "**abstention**",
         "**offline**",
+        "**online-mode**",
         "**restore**",
         "**security review**",
     ):
@@ -284,3 +286,42 @@ def test_every_known_hold_names_an_issue_and_a_gate() -> None:
     assert rows
     for issue, gates in rows:
         assert re.search(r"G\d+", gates), f"{issue} holds no named gate"
+
+
+# --- the online-mode gate: `M8-ONLINE-TEST-176` ----------------------------------
+
+
+ONLINE_PROCEDURE = REPO_ROOT / "docs" / "online-release-test.md"
+ONLINE_LOG = REPO_ROOT / "docs" / "online-test-log.md"
+ONLINE_SCRIPT = REPO_ROOT / "scripts" / "verify-online-egress.sh"
+
+
+def test_the_online_gate_names_tests_that_exist() -> None:
+    """The edge cases the script cannot reach are handed to named tests. A
+    rename would leave the procedure pointing at nothing, and the edge case
+    unguarded without anyone noticing."""
+    named = re.findall(r"`(?:api/tests/)?(test_\w+\.py)::(test_\w+)`", _read(ONLINE_PROCEDURE))
+    assert len(named) >= 4
+    for module, test in named:
+        source = _read(REPO_ROOT / "api" / "tests" / module)
+        assert f"def {test}(" in source, f"{module}::{test} is named but does not exist"
+
+
+def test_the_online_gate_is_two_checks_and_blocked_is_not_a_pass() -> None:
+    procedure = _read(ONLINE_PROCEDURE)
+    assert "independent" in procedure.lower() and "capture" in procedure
+    assert "`BLOCKED`" in procedure
+    assert "cannot be `ACCEPTED`" in procedure
+    script = _read(ONLINE_SCRIPT)
+    assert "exit 2" in script and "exit 1" in script
+    assert ONLINE_SCRIPT.stat().st_mode & 0o111, "the script is run directly"
+
+
+def test_the_online_gate_documents_name_only_paths_that_exist() -> None:
+    for doc in (ONLINE_PROCEDURE, ONLINE_LOG):
+        for path in re.findall(r"`((?:docs|scripts|api|eval|web|\.github)/[^`\s]+)`", _read(doc)):
+            if "<" in path:
+                continue
+            # A test id is checked by name above; here only its file.
+            path = path.split("::")[0]
+            assert (REPO_ROOT / path.rstrip("/")).exists(), f"{doc.name} names missing {path}"

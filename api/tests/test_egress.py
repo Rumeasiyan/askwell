@@ -13,6 +13,7 @@ miss a real attempt and the number is a reassurance rather than a measurement.
 
 import asyncio
 import contextlib
+import socket
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -846,3 +847,130 @@ def test_only_a_conversation_credential_is_recognised(
     header: str, expected: tuple[str, str] | None
 ) -> None:
     assert _conversation_credential([header]) == expected
+
+
+# --- the online-mode release test's edge cases: `M8-ONLINE-TEST-176` ------------
+#
+# `docs/online-release-test.md` walks these against a real provider with an
+# independent capture. What is pinned here is the part the proxy decides, so a
+# change that loosens it fails before anyone reaches the release run.
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        pytest.param("127.0.0.1:{port}", id="the address the authorised name resolves to"),
+        pytest.param("LOCALHOST:{port}", id="the same name in another case"),
+        pytest.param("localhost.:{port}", id="the same name, fully qualified"),
+        pytest.param("[::ffff:127.0.0.1]:{port}", id="the same address, mapped to IPv6"),
+    ],
+)
+async def test_another_name_for_the_authorised_address_is_not_the_authorised_destination(
+    settings: Settings,
+    conversation_store: FakeConversationRedis,
+    conversation_proxy: tuple[int, EgressProxy],
+    echo_upstream: str,
+    spelling: str,
+) -> None:
+    """The authorisation is for one named service, not for an IP address.
+    `localhost` resolves to the same listener the refused spellings reach, and
+    the owning conversation's own credential still opens only the name it was
+    granted: two services behind one address (a shared CDN edge, say) are two
+    destinations. Refusing a harmless respelling is the safe way to be wrong."""
+    port, proxy = conversation_proxy
+    upstream_port = echo_upstream.rpartition(":")[2]
+    authorised = f"localhost:{upstream_port}"
+    await open_conversation_grant(
+        settings, conversation_id="conv-a", destination=authorised, token="tok", ttl_seconds=60
+    )
+
+    _reader, writer, head = await _connect(
+        port, spelling.format(port=upstream_port), _credential_header("conv-a", "tok")
+    )
+    writer.close()
+    assert b"403 Forbidden" in head
+    assert proxy.permitted == 0
+
+    # And the name itself does reach it, so the refusal above is about the
+    # spelling, not about a listener nothing could reach.
+    reader, writer, head = await _connect(port, authorised, _credential_header("conv-a", "tok"))
+    assert b"200 Connection Established" in head
+    writer.write(b"ping")
+    await writer.drain()
+    assert await asyncio.wait_for(reader.read(1024), timeout=5) == b"PING"
+    writer.close()
+    assert proxy.permitted == 1
+    assert conversation_store.hashes[PERMITTED_BY_CONVERSATION_KEY] == {f"conv-a\t{authorised}": 1}
+
+
+async def test_a_plain_http_request_to_the_authorised_host_is_refused_even_with_the_credential(
+    settings: Settings,
+    conversation_store: FakeConversationRedis,
+    conversation_proxy: tuple[int, EgressProxy],
+    echo_upstream: str,
+) -> None:
+    """A dependency speaking plain HTTP through the proxy, the way a library
+    honouring `HTTP_PROXY` would, is not a tunnel to the provider. Only
+    `CONNECT` is ever forwarded, and the credential does not change that."""
+    port, proxy = conversation_proxy
+    await open_conversation_grant(
+        settings, conversation_id="conv-a", destination=echo_upstream, token="tok", ttl_seconds=60
+    )
+
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    writer.write(
+        f"GET http://{echo_upstream}/v1/models HTTP/1.1\r\nHost: {echo_upstream}\r\n"
+        f"{_credential_header('conv-a', 'tok')}\r\n".encode()
+    )
+    await writer.drain()
+    head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=5)
+    writer.close()
+
+    assert b"403 Forbidden" in head
+    assert proxy.refused == 1
+    assert proxy.permitted == 0
+
+
+async def test_an_unreachable_destination_costs_one_connection_attempt_per_connect(
+    settings: Settings,
+    conversation_store: FakeConversationRedis,
+    conversation_proxy: tuple[int, EgressProxy],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The retry-storm edge case, at the proxy. A `CONNECT` to an authorised
+    destination that does not answer is one upstream attempt, answered `502`,
+    and never counted as permitted: the proxy does not retry on the caller's
+    behalf. The other half of the bound, one `CONNECT` per question, is
+    `test_inference_provider`'s and `test_ask_online`'s."""
+    import askwell.egress as egress_module
+
+    closed = socket.socket()
+    closed.bind(("127.0.0.1", 0))
+    unreachable = f"127.0.0.1:{closed.getsockname()[1]}"
+    closed.close()
+
+    attempts: list[tuple[str, int]] = []
+    real_open = asyncio.open_connection
+
+    async def _counting_open(host: str, port: int, **kwargs: Any) -> Any:
+        attempts.append((host, port))
+        return await real_open(host, port, **kwargs)
+
+    monkeypatch.setattr(egress_module.asyncio, "open_connection", _counting_open)
+    port, proxy = conversation_proxy
+    await open_conversation_grant(
+        settings, conversation_id="conv-a", destination=unreachable, token="tok", ttl_seconds=60
+    )
+
+    for _ in range(3):
+        _reader, writer, head = await _connect(
+            port, unreachable, _credential_header("conv-a", "tok")
+        )
+        writer.close()
+        assert b"502 Bad Gateway" in head
+
+    upstream = [attempt for attempt in attempts if attempt[1] != port]
+    assert len(upstream) == 3, "one upstream attempt per CONNECT, never a retry"
+    assert proxy.permitted == 0
+    assert PERMITTED_COUNTER_KEY not in conversation_store.counters
+    assert PERMITTED_BY_CONVERSATION_KEY not in conversation_store.hashes

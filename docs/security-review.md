@@ -42,6 +42,8 @@ permit (`docs/architecture.md` §5).
 - `docs/offline-release-test.md` in full — it already is this constraint's own dedicated gate,
   run separately per `docs/release-procedure.md` step 3a. Do not re-derive its content here;
   record only whether it passed for this release and link the entry.
+- `docs/online-release-test.md` likewise for C1's one exception, online AI: record whether it
+  passed and link the `docs/online-test-log.md` entry.
 - `GET /network` (with a session cookie — see §0) reports `refused`/`permitted` counters and a
   `recent` list. Confirm the counts are plausible for what actually ran in this session, not
   reset or suspiciously round.

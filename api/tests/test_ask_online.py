@@ -326,12 +326,16 @@ def test_a_failure_before_the_answer_falls_back_to_local_and_says_so(
     _patch_client(
         monkeypatch, _FakeInferenceClient(settings, tokens=["Ninety days [1]."], vector=vector)
     )
-    _go_online(monkeypatch, settings, _Provider(respond))
+    fake = _Provider(respond)
+    _go_online(monkeypatch, settings, fake)
 
     events, message_id = _ask(settings, monkeypatch, tmp_path, database_url)
 
     done = next(data for kind, data in events if kind == "done")
     assert done["status"] == "completed", "a provider failure never fails the turn"
+    # `M8-ONLINE-TEST-176`'s retry-storm edge case: one attempt per question,
+    # whatever the failure. The fallback is the local model, never a retry.
+    assert len(fake.requests) == 1
     steps = [data for kind, data in events if kind == "step" and data["kind"] == "backend"]
     assert len(steps) == 1 and said in steps[0]["label"]
     assert "answer_reset" not in [kind for kind, _ in events], "nothing to take back"
