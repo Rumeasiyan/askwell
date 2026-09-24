@@ -1,12 +1,13 @@
 import { About } from "@/components/settings/about";
 import { Folders } from "@/components/settings/folders";
 import { ModelAndSpeed } from "@/components/settings/model-and-speed";
+import { OnlineAi } from "@/components/settings/online-ai";
 import { PrivacySecurity } from "@/components/settings/privacy-security";
 import { Storage } from "@/components/settings/storage";
 import { YourData } from "@/components/settings/your-data";
 
 /**
- * Settings — seven real sections so far.
+ * Settings — eight real sections so far.
  *
  * The folders Askwell may read arrive here in M1 because that is where the
  * cold-start walkthrough looks for them: nominate a folder while adding a
@@ -46,7 +47,10 @@ import { YourData } from "@/components/settings/your-data";
  * arrives with `M7-SET-FE-146` (`web/components/settings/model-and-speed.tsx`)
  * as the first section, per `docs/ux/settings.md` §1's order — it gathers the
  * hardware profile and retrieval threshold above under one heading, beside
- * the model in use, its measured memory and throughput, and the swap. The rest of the
+ * the model in use, its measured memory and throughput, and the swap. Online
+ * AI arrives with `M7-SET-FE-150` (`web/components/settings/online-ai.tsx`)
+ * second, per the same order — visible and inert until M8, describing the
+ * person's-own-key model `docs/decisions.md` 2026-09-23 settled on. The rest of the
  * screen is still its empty state, because `docs/states-and-edge-cases.md`
  * requires every surface to have one and a route stub with nothing in it
  * teaches the next person that empty states are optional.
@@ -78,6 +82,8 @@ export default function SettingsPage() {
       </section>
 
       <ModelAndSpeed />
+
+      <OnlineAi />
 
       <Folders />
 

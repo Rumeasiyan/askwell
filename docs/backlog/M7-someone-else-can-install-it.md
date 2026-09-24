@@ -1005,18 +1005,18 @@ The shell is the natural supervisor because it is the thing the user launches. M
 - *As someone evaluating whether to invest my corpus in this, I want to see where it is going, so that a paid feature appearing later is not a surprise.*
 
 **Context / Background**
-**Detailed Description:** The online AI section ships visible and inert, explaining in plain terms what it will be — a larger cloud model for hard questions, paid by credit, chosen per conversation rather than globally — and stating that Askwell never asks for an API key from another provider. Everything in it is inert until the feature exists.
+**Detailed Description:** The online AI section ships visible and inert, explaining in plain terms what it will be — a larger cloud model for hard questions, paid by credit, chosen per conversation rather than globally — and stating that Askwell never asks for an API key from another provider. Everything in it is inert until the feature exists. *(Corrected 2026-09-24: `docs/decisions.md` 2026-09-23 cancelled the credit tier — online AI uses a key from the person's own provider and Askwell sells nothing. The section describes that model instead; see `docs/decisions.md` 2026-09-24, `M7-SET-FE-150`.)*
 
 **Scope**
 - The section with its explanation, visibly disabled.
-- The statement about never asking for a third-party key.
+- The statement about never asking for a third-party key. *(Corrected 2026-09-24: now the statement that the key and the bill are the person's own, and that nothing on the screen asks for a key today.)*
 - A placeholder for exactly what leaves the machine, which is filled when the open decision is answered.
 
 **Out of Scope**
 - Everything functional — the whole feature is M8 and partly blocked.
 
 **Acceptance Criteria**
-- **Acceptance Criteria:** The section is visible, clearly inert, and explains what the feature will be. It states that no third-party API key is ever requested. It states that the choice will be per conversation. Nothing in it can be enabled.
+- **Acceptance Criteria:** The section is visible, clearly inert, and explains what the feature will be. It states that no third-party API key is ever requested *(corrected 2026-09-24: that the key will be the person's own, from a provider they already pay, and that none is asked for today)*. It states that the choice will be per conversation. Nothing in it can be enabled.
 - **Edge Cases:** A user trying to enable it — a plain statement that it is not available yet, with no waiting list and no email field, because there is nothing to sign into. The exact-payload statement not yet decided — the section says it will be stated before anything is sent, rather than guessing.
 - **Permissions / Roles:** Single user — no roles. Not applicable.
 - **UI States:** `../ux/settings.md` §3 and §8 online AI pre-launch.
