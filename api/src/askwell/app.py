@@ -40,6 +40,7 @@ from askwell.memory import register_memory
 from askwell.middleware import register_session
 from askwell.model_select import reapply_user_model, register_model_select
 from askwell.network import read_activity
+from askwell.online import register_online, revoke_all_on_startup
 from askwell.passphrase import register_passphrase
 from askwell.probe import register_probe
 from askwell.reset import register_reset
@@ -101,6 +102,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         reconciled = await ask.reconcile_interrupted(app.state.sessions)
         if reconciled:
             log.warning("ask_turns_reconciled", count=reconciled)
+
+        # No online-AI authorisation survives a restart (`M8-ONLINE-SEC-169`).
+        # A failure here is logged, not fatal: every read of a conversation's
+        # state reconciles towards local anyway, and the proxy clears its own
+        # grants when it restarts.
+        try:
+            revoked = await revoke_all_on_startup(app.state.sessions, settings)
+            if revoked:
+                log.warning("online_ai_revoked_on_restart", count=revoked)
+        except Exception as error:
+            log.warning(
+                "online_ai_not_revoked_on_restart", error=f"{type(error).__name__}: {error}"
+            )
 
         # An applied upgrade is a decisions record (`M7-UPDATE-FE-162`). A
         # failure here must not stop Askwell starting; the version file is
@@ -171,6 +185,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_ingest(app, resolved, app.state.sessions)
     register_ask(app, resolved, app.state.sessions)
     register_web_search(app, resolved, app.state.sessions)
+    register_online(app, resolved, app.state.sessions)
     register_search(app, resolved, app.state.sessions)
     register_retrieval_threshold(app, resolved, app.state.sessions)
     register_suggestions(app, resolved, app.state.sessions)

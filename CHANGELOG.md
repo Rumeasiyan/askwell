@@ -4,6 +4,19 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.39 - 2026-09-24
+
+`Security`: `M8-ONLINE-SEC-169`. Askwell can now authorise online AI for one conversation at a
+time. The authorisation covers exactly one destination, and only that conversation's own
+requests reach it. Another conversation, or anything else on the machine, that tries the same
+destination is refused. Turning it off takes effect straight away: new requests are refused, and
+a connection already open is cut within a second. The authorisation also ends by itself after
+four hours, and a restart never brings it back. Each conversation's permitted requests are
+counted separately from refusals. Settings lists them by conversation, so the local-mode zero
+still means what it says. Turning online AI on and off is recorded in the decisions log with the
+conversation and the destination. Nothing is sent yet: there is no online provider, and no
+destination is configured by default, so online AI cannot be turned on in a fresh install.
+
 ## 0.7.38 - 2026-09-24
 
 `Fixed`: `M7-FIX-FE-170`. When your files disagree, each version now appears in its own box.

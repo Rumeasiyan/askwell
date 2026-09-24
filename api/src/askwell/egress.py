@@ -26,7 +26,12 @@ look at is the difference between a claim and evidence.
 """
 
 import asyncio
+import base64
 import contextlib
+import hashlib
+import hmac
+import json
+from dataclasses import dataclass
 
 from askwell import __version__
 from askwell.config import Environment, Settings, load_settings
@@ -61,6 +66,38 @@ PERMITTED_HOST_KEY = "askwell:egress:permitted_host"
 # not turn-scoped at all; this is a second, narrower mechanism next to it, not
 # a replacement.
 GRANT_KEY_PREFIX = "askwell:egress:grant:"
+
+# A conversation's online-AI authorisation — `M8-ONLINE-SEC-169`. The third
+# shape, next to the two above and deliberately not either of them: scoped to
+# one conversation rather than one turn or the whole install, and bound to a
+# credential rather than to a destination alone. The other two let *anything*
+# on the internal network reach their destination while open; this one lets
+# only a `CONNECT` carrying that conversation's credential through, so a
+# second conversation — or a dependency making its own call — reaching the
+# same host is refused while the first is online.
+#
+# The value is JSON: the destination, and the SHA-256 of the credential. The
+# credential itself never reaches Redis; it lives only in the API process that
+# minted it (`askwell.online`), so an authorisation that somehow outlives that
+# process is unusable, not merely revoked.
+CONVERSATION_GRANT_KEY_PREFIX = "askwell:egress:conversation:"
+
+# Permitted connections attributed to the conversation that made them. A hash
+# of `"<conversation id>\t<destination>"` → count, beside the global
+# `PERMITTED_COUNTER_KEY` rather than instead of it, so "exactly three
+# outbound requests, from that conversation" is a figure the proxy measured.
+PERMITTED_BY_CONVERSATION_KEY = "askwell:egress:permitted_by_conversation"
+
+# How often an open conversation tunnel re-reads its own authorisation. A
+# tunnel is authorised once, at `CONNECT`, but an HTTP client keeps it open
+# and sends further requests down it — so revoking only new connections
+# would let a pooled connection keep talking after the user said stop.
+# Re-checked on this interval and cut when the authorisation is gone.
+CONVERSATION_RECHECK_SECONDS = 1.0
+
+# The username a conversation's credential is presented under, in the
+# standard `Proxy-Authorization: Basic` scheme — the password is the token.
+CONVERSATION_CREDENTIAL_USER_PREFIX = "conversation-"
 
 RECENT_LIMIT = 50
 
@@ -243,6 +280,203 @@ async def close_grant(settings: Settings, turn_id: str) -> None:
         log.info("egress_grant_closed", turn_id=turn_id)
 
 
+# --- per-conversation authorisation: `M8-ONLINE-SEC-169` ---------------------
+
+
+def _conversation_key(conversation_id: str) -> str:
+    return f"{CONVERSATION_GRANT_KEY_PREFIX}{conversation_id}"
+
+
+def credential_digest(token: str) -> str:
+    """What Redis holds instead of the credential itself."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationGrant:
+    conversation_id: str
+    destination: str
+    token_sha256: str
+    expires_in_seconds: int | None = None
+
+
+def parse_conversation_grant(
+    conversation_id: str, raw: bytes | str | None
+) -> ConversationGrant | None:
+    """A grant that cannot be read is no grant. Never guessed at."""
+    if raw is None:
+        return None
+    try:
+        value = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+        return ConversationGrant(
+            conversation_id=conversation_id,
+            destination=str(value["destination"]),
+            token_sha256=str(value["token_sha256"]),
+        )
+    except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+        return None
+
+
+async def open_conversation_grant(
+    settings: Settings,
+    *,
+    conversation_id: str,
+    destination: str,
+    token: str,
+    ttl_seconds: float,
+) -> None:
+    """Authorise one destination for one conversation, `destination` being
+    `host:port`. Replaces any earlier grant for the same conversation — a
+    conversation holds one destination, never a list.
+
+    Expires on its own Redis TTL regardless of whether anything ever revokes
+    it: the time bound is the backstop for a revocation path that was never
+    reached, the same reasoning `open_grant` applies to a turn.
+    """
+    import redis.asyncio as redis
+
+    client = redis.Redis(
+        host=settings.redis_host,
+        port=settings.redis_port,
+        socket_connect_timeout=2.0,
+        socket_timeout=2.0,
+    )
+    try:
+        await client.set(
+            _conversation_key(conversation_id),
+            json.dumps({"destination": destination, "token_sha256": credential_digest(token)}),
+            ex=max(1, int(ttl_seconds)),
+        )
+    finally:
+        with contextlib.suppress(Exception):
+            await client.aclose()
+    log.info(
+        "egress_conversation_grant_opened",
+        conversation_id=conversation_id,
+        destination=destination,
+        ttl_seconds=ttl_seconds,
+    )
+
+
+async def read_conversation_grant(
+    settings: Settings, conversation_id: str
+) -> ConversationGrant | None:
+    """The live grant for one conversation, with its remaining time, or None.
+
+    Raises if Redis cannot be read — the caller decides what an unknown
+    means, and for a revocation it must not mean "nothing to revoke".
+    """
+    import redis.asyncio as redis
+
+    client = redis.Redis(
+        host=settings.redis_host,
+        port=settings.redis_port,
+        socket_connect_timeout=2.0,
+        socket_timeout=2.0,
+    )
+    try:
+        key = _conversation_key(conversation_id)
+        raw = await client.get(key)
+        ttl = await client.ttl(key) if raw is not None else None
+    finally:
+        with contextlib.suppress(Exception):
+            await client.aclose()
+    grant = parse_conversation_grant(conversation_id, raw)
+    if grant is None:
+        return None
+    return ConversationGrant(
+        conversation_id=grant.conversation_id,
+        destination=grant.destination,
+        token_sha256=grant.token_sha256,
+        expires_in_seconds=int(ttl) if ttl is not None and int(ttl) >= 0 else None,
+    )
+
+
+async def close_conversation_grant(settings: Settings, conversation_id: str) -> bool:
+    """Revoke one conversation's grant. Returns whether one was standing.
+
+    Open tunnels are cut by the proxy within `CONVERSATION_RECHECK_SECONDS`;
+    new ones are refused from the moment this returns."""
+    import redis.asyncio as redis
+
+    client = redis.Redis(
+        host=settings.redis_host,
+        port=settings.redis_port,
+        socket_connect_timeout=2.0,
+        socket_timeout=2.0,
+    )
+    try:
+        deleted = await client.delete(_conversation_key(conversation_id))
+    finally:
+        with contextlib.suppress(Exception):
+            await client.aclose()
+    if deleted:
+        log.info("egress_conversation_grant_closed", conversation_id=conversation_id)
+    return bool(deleted)
+
+
+async def close_all_conversation_grants(settings: Settings) -> dict[str, str]:
+    """Revoke every conversation grant. Returns what was standing, as
+    conversation id → destination, so the caller can record each one.
+
+    Called at startup by both the API and the proxy: a grant surviving a
+    restart is one nobody re-asked for (`M8-ONLINE-SEC-169`'s own edge case),
+    and Redis here is `appendonly`, so it would otherwise survive.
+    """
+    import redis.asyncio as redis
+
+    client = redis.Redis(
+        host=settings.redis_host,
+        port=settings.redis_port,
+        socket_connect_timeout=2.0,
+        socket_timeout=2.0,
+    )
+    revoked: dict[str, str] = {}
+    try:
+        cursor = 0
+        while True:
+            cursor, keys = await client.scan(
+                cursor, match=f"{CONVERSATION_GRANT_KEY_PREFIX}*", count=100
+            )
+            if keys:
+                values = await client.mget(keys)
+                for key, value in zip(keys, values, strict=True):
+                    name = key.decode("utf-8") if isinstance(key, bytes) else key
+                    conversation_id = name.removeprefix(CONVERSATION_GRANT_KEY_PREFIX)
+                    grant = parse_conversation_grant(conversation_id, value)
+                    revoked[conversation_id] = grant.destination if grant else "(unreadable)"
+                await client.delete(*keys)
+            if cursor == 0:
+                break
+    finally:
+        with contextlib.suppress(Exception):
+            await client.aclose()
+    if revoked:
+        log.info("egress_conversation_grants_cleared", count=len(revoked))
+    return revoked
+
+
+def _conversation_credential(header_lines: list[str]) -> tuple[str, str] | None:
+    """`(conversation id, token)` from a `Proxy-Authorization: Basic` header,
+    or None when there is none or it is not one of ours."""
+    for header in header_lines:
+        name, _, value = header.partition(":")
+        if name.strip().lower() != "proxy-authorization":
+            continue
+        scheme, _, encoded = value.strip().partition(" ")
+        if scheme.lower() != "basic":
+            return None
+        try:
+            decoded = base64.b64decode(encoded.strip(), validate=True).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return None
+        user, separator, token = decoded.partition(":")
+        if not separator or not user.startswith(CONVERSATION_CREDENTIAL_USER_PREFIX):
+            return None
+        return user.removeprefix(CONVERSATION_CREDENTIAL_USER_PREFIX), token
+    return None
+
+
 class EgressProxy:
     """Refuses every outbound request except the one destination, if any,
     that has been explicitly permitted — and counts both."""
@@ -314,6 +548,93 @@ class EgressProxy:
             with contextlib.suppress(Exception):
                 await client.aclose()
 
+    async def _conversation_grant_names(self, destination: str) -> bool:
+        """Whether any live conversation grant names `destination` — the cheap
+        question asked before reading headers. Unreadable reads as no."""
+        import redis.asyncio as redis
+
+        client = redis.Redis(
+            host=self.settings.redis_host,
+            port=self.settings.redis_port,
+            socket_connect_timeout=1.0,
+            socket_timeout=1.0,
+        )
+        try:
+            cursor = 0
+            while True:
+                cursor, keys = await client.scan(
+                    cursor, match=f"{CONVERSATION_GRANT_KEY_PREFIX}*", count=100
+                )
+                if keys:
+                    for value in await client.mget(keys):
+                        grant = parse_conversation_grant("", value)
+                        if grant is not None and grant.destination == destination:
+                            return True
+                if cursor == 0:
+                    return False
+        except Exception as error:
+            log.warning(
+                "egress_conversation_grant_unreadable", error=f"{type(error).__name__}: {error}"
+            )
+            return False
+        finally:
+            with contextlib.suppress(Exception):
+                await client.aclose()
+
+    async def _conversation_grant(self, conversation_id: str) -> ConversationGrant | None:
+        """One conversation's grant, read fresh. Unreadable reads as none —
+        a proxy that cannot see an authorisation does not assume one."""
+        try:
+            return await read_conversation_grant(self.settings, conversation_id)
+        except Exception as error:
+            log.warning(
+                "egress_conversation_grant_unreadable", error=f"{type(error).__name__}: {error}"
+            )
+            return None
+
+    async def _conversation_permits(
+        self, destination: str, header_lines: list[str]
+    ) -> ConversationGrant | None:
+        """The grant this request's credential proves, if it names exactly
+        `destination`. No credential, a wrong one, another conversation's, or
+        the right one aimed somewhere else: None, and the request is refused."""
+        credential = _conversation_credential(header_lines)
+        if credential is None:
+            return None
+        conversation_id, token = credential
+        grant = await self._conversation_grant(conversation_id)
+        if grant is None or grant.destination != destination:
+            return None
+        if not hmac.compare_digest(grant.token_sha256, credential_digest(token)):
+            return None
+        return grant
+
+    async def _watch_conversation(
+        self,
+        grant: ConversationGrant,
+        writer: asyncio.StreamWriter,
+        upstream_writer: asyncio.StreamWriter,
+    ) -> None:
+        """Cut an open tunnel the moment its authorisation stops being the
+        one it was opened under — revoked, expired, or replaced by a fresh
+        enable with a new credential. `M8-ONLINE-SEC-169`'s in-flight edge
+        case, decided as *cancelled*: a pooled connection must not outlive
+        the user turning online AI off."""
+        while True:
+            await asyncio.sleep(CONVERSATION_RECHECK_SECONDS)
+            current = await self._conversation_grant(grant.conversation_id)
+            if current is not None and current.token_sha256 == grant.token_sha256:
+                continue
+            log.info(
+                "egress_conversation_tunnel_cut",
+                conversation_id=grant.conversation_id,
+                destination=grant.destination,
+            )
+            for side in (writer, upstream_writer):
+                with contextlib.suppress(Exception):
+                    side.transport.abort()
+            return
+
     async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         peer = writer.get_extra_info("peername")
         client = peer[0] if peer else "unknown"
@@ -360,6 +681,15 @@ class EgressProxy:
                 await self._consume_header_block(reader)
                 await self._forward(reader, writer, destination, service)
                 return
+            # Headers are read only when some conversation is authorised for
+            # this destination at all — every other refusal stays exactly as
+            # it was, answered on the request line alone.
+            if await self._conversation_grant_names(destination):
+                headers = await self._read_header_block(reader)
+                grant = await self._conversation_permits(destination, headers)
+                if grant is not None:
+                    await self._forward(reader, writer, destination, service, grant=grant)
+                    return
 
         self.refused += 1
 
@@ -424,12 +754,35 @@ class EgressProxy:
         except (TimeoutError, OSError):
             return
 
+    @staticmethod
+    async def _read_header_block(reader: asyncio.StreamReader) -> list[str]:
+        """The header lines after a `CONNECT` request line, up to the blank
+        line — kept rather than discarded, because a conversation's
+        credential travels in one of them. Bounded by `MAX_REQUEST_BYTES`
+        so a client streaming headers forever cannot hold memory open."""
+        lines: list[str] = []
+        total = 0
+        try:
+            async with asyncio.timeout(5.0):
+                while True:
+                    header_line = await reader.readline()
+                    if header_line in (b"", b"\r\n", b"\n"):
+                        return lines
+                    total += len(header_line)
+                    if total > MAX_REQUEST_BYTES:
+                        return []
+                    lines.append(header_line.decode("latin-1").strip())
+        except (TimeoutError, OSError, ValueError):
+            return []
+
     async def _forward(
         self,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
         destination: str,
         service: str,
+        *,
+        grant: ConversationGrant | None = None,
     ) -> None:
         """Tunnel a `CONNECT` to the one permitted destination.
 
@@ -464,22 +817,35 @@ class EgressProxy:
             return
 
         self.permitted += 1
+        conversation_id = grant.conversation_id if grant is not None else None
         log.info(
             "egress_permitted",
             service=service,
             destination=destination,
+            conversation_id=conversation_id,
             permitted_total=self.permitted,
         )
-        await self._record_permitted(service, destination)
+        await self._record_permitted(service, destination, conversation_id)
 
         with contextlib.suppress(OSError):
             writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             await writer.drain()
 
-        await asyncio.gather(
-            self._pipe(reader, upstream_writer),
-            self._pipe(upstream_reader, writer),
+        watcher = (
+            asyncio.create_task(self._watch_conversation(grant, writer, upstream_writer))
+            if grant is not None
+            else None
         )
+        try:
+            await asyncio.gather(
+                self._pipe(reader, upstream_writer),
+                self._pipe(upstream_reader, writer),
+            )
+        finally:
+            if watcher is not None:
+                watcher.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await watcher
         with contextlib.suppress(OSError, asyncio.CancelledError):
             upstream_writer.close()
             await upstream_writer.wait_closed()
@@ -504,10 +870,13 @@ class EgressProxy:
             with contextlib.suppress(OSError, RuntimeError):
                 dst.write_eof()
 
-    async def _record_permitted(self, service: str, destination: str) -> None:
+    async def _record_permitted(
+        self, service: str, destination: str, conversation_id: str | None = None
+    ) -> None:
         """Count a forwarded connection, the same honest-counter shape `_record`
         gives refusals — a number the settings screen can show without
-        inventing anything."""
+        inventing anything. A conversation's connection is also counted
+        against that conversation, so the figure is attributable."""
         import redis.asyncio as redis
 
         client = redis.Redis(
@@ -517,7 +886,13 @@ class EgressProxy:
             socket_timeout=1.0,
         )
         try:
-            await client.incr(PERMITTED_COUNTER_KEY)
+            async with client.pipeline() as pipe:
+                pipe.incr(PERMITTED_COUNTER_KEY)
+                if conversation_id is not None:
+                    pipe.hincrby(
+                        PERMITTED_BY_CONVERSATION_KEY, f"{conversation_id}\t{destination}", 1
+                    )
+                await pipe.execute()
         except Exception as error:
             log.warning("egress_permitted_count_failed", error=f"{type(error).__name__}: {error}")
         finally:
@@ -562,6 +937,15 @@ async def _register(settings: Settings) -> None:
 async def serve(settings: Settings) -> None:
     proxy = EgressProxy(settings)
     await _register(settings)
+    # The proxy restarting is a restart: no conversation's authorisation
+    # carries across it (`M8-ONLINE-SEC-169`). Revocation only — the proxy
+    # still never writes a grant, so this cannot open anything.
+    try:
+        await close_all_conversation_grants(settings)
+    except Exception as error:
+        log.warning(
+            "egress_conversation_grants_not_cleared", error=f"{type(error).__name__}: {error}"
+        )
     server = await asyncio.start_server(proxy.handle, "0.0.0.0", settings.egress_proxy_port)
     log.info(
         "egress_proxy_started",

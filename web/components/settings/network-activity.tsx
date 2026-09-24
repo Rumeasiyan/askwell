@@ -19,6 +19,11 @@
  * own destination, online AI, a web search) has somewhere to land without
  * reshaping this component — named per destination, never one incremented
  * total, matching this ticket's own Assumption.
+ *
+ * `M8-ONLINE-SEC-169` gives it the first such permit: a conversation switched
+ * to online AI. Its connections are listed per conversation and destination,
+ * so a permitted count is attributable rather than a bare total, and a
+ * conversation whose authorisation is standing right now says so.
  */
 
 import { useEffect, useState } from "react";
@@ -62,6 +67,24 @@ export function NetworkActivityStatement() {
             permitted · <strong>{activity.refused}</strong> refused, measured by the egress proxy
             itself. Not a setting — this is what actually happened.
           </p>
+
+          {activity.permitted_by_conversation.length > 0 ? (
+            <div className="flex flex-col gap-1">
+              <p className="ask-micro" style={{ textTransform: "none" }}>
+                Permitted, by the conversation that made them:
+              </p>
+              <ul className="flex flex-col gap-1">
+                {activity.permitted_by_conversation.map((item) => (
+                  <li key={`${item.conversation_id}-${item.destination}`} className="ask-micro" style={{ textTransform: "none" }}>
+                    Conversation {item.conversation_id.slice(0, 8)} → {item.destination}: {item.permitted}
+                    {activity.authorised.some((open) => open.conversation_id === item.conversation_id)
+                      ? " · online now"
+                      : ""}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
 
           {activity.refused !== null && activity.refused > 0 ? (
             <div className="flex flex-col gap-1">

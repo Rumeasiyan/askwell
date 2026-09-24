@@ -499,6 +499,22 @@ class Settings(BaseSettings):
     # that a leaked grant is a bounded window, not a standing one.
     web_search_grant_ttl_seconds: float = Field(default=30.0, gt=0, le=300)
 
+    # The one `host:port` a conversation's online-AI authorisation names —
+    # `M8-ONLINE-SEC-169`. Empty means no provider is configured, and online
+    # AI cannot be enabled for any conversation: there is nothing to
+    # authorise. Configuration only until `M8-KEY-BE-173` derives it from the
+    # provider the user's own key belongs to; either way it is one
+    # destination, never a list, and it opens nothing on its own — a
+    # conversation still has to be switched to online, deliberately.
+    online_ai_destination: str | None = Field(default=None, pattern=r"^[A-Za-z0-9.-]+:[0-9]{1,5}$")
+
+    # How long a conversation's authorisation may stand before it lapses on
+    # its own. A time bound, not a session: long enough for one sitting with
+    # a hard question, short enough that a conversation left online and
+    # forgotten does not hold a door open overnight. The user re-enables it
+    # if they are still working; nothing renews it for them.
+    online_ai_authorisation_ttl_seconds: float = Field(default=14400.0, gt=0, le=86400)
+
     # `askwell.webfetch.fetch_pages`'s three caps, `M6.5-WEB-BE-188`.
     # Configuration, not constants — the ticket's own assumption that these
     # are first guesses, tuned with real use, and that a change is a
@@ -537,7 +553,7 @@ class Settings(BaseSettings):
     # its result across the same bind mount.
     probe_result_path: Path = Path("/run/askwell/probe.json")
 
-    @field_validator("roots_mount", "web_search_provider", mode="before")
+    @field_validator("roots_mount", "web_search_provider", "online_ai_destination", mode="before")
     @classmethod
     def _optional_path(cls, value: object) -> object:
         """An empty value means "no window", not a directory named "".

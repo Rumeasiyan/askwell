@@ -12,6 +12,7 @@ miss a real attempt and the number is a reassurance rather than a measurement.
 """
 
 import asyncio
+import contextlib
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -20,10 +21,19 @@ import pytest_asyncio
 
 from askwell.config import Settings
 from askwell.egress import (
+    CONVERSATION_CREDENTIAL_USER_PREFIX,
+    CONVERSATION_GRANT_KEY_PREFIX,
     GRANT_KEY_PREFIX,
+    PERMITTED_BY_CONVERSATION_KEY,
+    PERMITTED_COUNTER_KEY,
     REFUSAL_BODY,
     EgressProxy,
+    _conversation_credential,
+    close_all_conversation_grants,
+    close_conversation_grant,
     close_grant,
+    credential_digest,
+    open_conversation_grant,
     open_grant,
     parse_destination,
 )
@@ -443,3 +453,396 @@ async def test_a_connect_to_a_different_host_is_refused_even_with_a_grant_open(
     assert b"403 Forbidden" in response
     assert proxy.refused == 1
     assert proxy.permitted == 0
+
+
+# --- per-conversation authorisation: `M8-ONLINE-SEC-169` ---------------------
+
+
+class FakeConversationRedis(FakeGrantRedis):
+    """`FakeGrantRedis` plus what the conversation grant and its attributed
+    counter need: `ttl`, many-key `delete`, and a pipeline for the counters."""
+
+    counters: dict[str, int]
+    hashes: dict[str, dict[str, int]]
+
+    async def ttl(self, key: str) -> int:
+        for stored_key, _value, ex in reversed(self.set_calls):
+            if stored_key == key:
+                return ex if ex is not None else -1
+        return -2
+
+    async def delete(self, *keys: str) -> int:  # type: ignore[override]
+        return sum(1 for key in keys if self.store.pop(key, None) is not None)
+
+    def pipeline(self) -> "FakeCounterPipeline":
+        return FakeCounterPipeline(self)
+
+
+class FakeCounterPipeline:
+    def __init__(self, owner: FakeConversationRedis) -> None:
+        self.owner = owner
+        self.ops: list[tuple[str, str, str | None]] = []
+
+    async def __aenter__(self) -> "FakeCounterPipeline":
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        return None
+
+    def incr(self, key: str) -> None:
+        self.ops.append(("incr", key, None))
+
+    def hincrby(self, key: str, field: str, _amount: int) -> None:
+        self.ops.append(("hincrby", key, field))
+
+    async def execute(self) -> list[int]:
+        for op, key, field in self.ops:
+            if op == "incr":
+                self.owner.counters[key] = self.owner.counters.get(key, 0) + 1
+            else:
+                bucket = self.owner.hashes.setdefault(key, {})
+                assert field is not None
+                bucket[field] = bucket.get(field, 0) + 1
+        return []
+
+
+@pytest.fixture
+def conversation_store(monkeypatch: pytest.MonkeyPatch) -> FakeConversationRedis:
+    """One shared fake behind every `redis.Redis(...)` the proxy and the
+    grant functions construct — they are separate clients against one
+    server in production, and have to see each other's writes here too."""
+    store: dict[str, str] = {}
+    counters: dict[str, int] = {}
+    hashes: dict[str, dict[str, int]] = {}
+    set_calls: list[tuple[str, str, int | None]] = []
+
+    def _build(**_kwargs: Any) -> FakeConversationRedis:
+        client = FakeConversationRedis(store)
+        client.counters = counters
+        client.hashes = hashes
+        client.set_calls = set_calls
+        return client
+
+    import redis.asyncio as redis
+
+    monkeypatch.setattr(redis, "Redis", _build)
+    probe = FakeConversationRedis(store)
+    probe.counters = counters
+    probe.hashes = hashes
+    probe.set_calls = set_calls
+    return probe
+
+
+def _credential_header(conversation_id: str, token: str) -> str:
+    import base64
+
+    raw = f"{CONVERSATION_CREDENTIAL_USER_PREFIX}{conversation_id}:{token}".encode()
+    return f"Proxy-Authorization: Basic {base64.b64encode(raw).decode()}\r\n"
+
+
+async def _connect(
+    port: int, destination: str, extra_headers: str = ""
+) -> tuple[asyncio.StreamReader, asyncio.StreamWriter, bytes]:
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    writer.write(
+        f"CONNECT {destination} HTTP/1.1\r\nHost: {destination}\r\n{extra_headers}\r\n".encode()
+    )
+    await writer.drain()
+    head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=5)
+    return reader, writer, head
+
+
+@pytest_asyncio.fixture
+async def echo_upstream() -> AsyncIterator[str]:
+    """An upstream that echoes upper-cased, as many times as it is sent to —
+    a pooled connection sending a second request is part of what is tested."""
+
+    async def echo(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        while data := await reader.read(1024):
+            writer.write(data.upper())
+            await writer.drain()
+        writer.close()
+
+    upstream = await asyncio.start_server(echo, "127.0.0.1", 0)
+    try:
+        yield f"127.0.0.1:{upstream.sockets[0].getsockname()[1]}"
+    finally:
+        upstream.close()
+        await upstream.wait_closed()
+
+
+@pytest_asyncio.fixture
+async def conversation_proxy(
+    settings: Settings, conversation_store: FakeConversationRedis
+) -> AsyncIterator[tuple[int, EgressProxy]]:
+    proxy = EgressProxy(settings)
+    server = await asyncio.start_server(proxy.handle, "127.0.0.1", 0)
+    async with server:
+        yield server.sockets[0].getsockname()[1], proxy
+
+
+async def test_the_credential_never_reaches_redis(
+    settings: Settings, conversation_store: FakeConversationRedis
+) -> None:
+    """Redis holds a digest. The credential itself stays in the API process
+    that minted it, so a grant outliving that process is unusable."""
+    await open_conversation_grant(
+        settings,
+        conversation_id="conv-a",
+        destination="api.example.com:443",
+        token="the-secret-token",
+        ttl_seconds=600,
+    )
+    stored = conversation_store.store[f"{CONVERSATION_GRANT_KEY_PREFIX}conv-a"]
+    assert "the-secret-token" not in stored
+    assert credential_digest("the-secret-token") in stored
+    assert conversation_store.set_calls[-1][2] == 600, "the time bound must be a Redis expiry"
+
+
+async def test_the_owning_conversation_reaches_its_one_destination_and_is_counted(
+    settings: Settings,
+    conversation_store: FakeConversationRedis,
+    conversation_proxy: tuple[int, EgressProxy],
+    echo_upstream: str,
+) -> None:
+    port, proxy = conversation_proxy
+    await open_conversation_grant(
+        settings, conversation_id="conv-a", destination=echo_upstream, token="tok", ttl_seconds=60
+    )
+
+    reader, writer, head = await _connect(port, echo_upstream, _credential_header("conv-a", "tok"))
+    assert b"200 Connection Established" in head
+    writer.write(b"hello")
+    await writer.drain()
+    assert await asyncio.wait_for(reader.read(1024), timeout=5) == b"HELLO"
+    writer.close()
+
+    assert proxy.permitted == 1
+    assert proxy.refused == 0
+    assert conversation_store.counters[PERMITTED_COUNTER_KEY] == 1
+    assert conversation_store.hashes[PERMITTED_BY_CONVERSATION_KEY] == {
+        f"conv-a\t{echo_upstream}": 1
+    }
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        pytest.param("", id="a local conversation, or a dependency: no credential"),
+        pytest.param(_credential_header("conv-b", "tok"), id="another conversation's id"),
+        pytest.param(_credential_header("conv-a", "wrong"), id="the right id, wrong token"),
+        pytest.param("Proxy-Authorization: Bearer tok\r\n", id="not our scheme"),
+    ],
+)
+async def test_nothing_else_reaches_the_destination_while_one_conversation_is_online(
+    settings: Settings,
+    conversation_store: FakeConversationRedis,
+    conversation_proxy: tuple[int, EgressProxy],
+    echo_upstream: str,
+    headers: str,
+) -> None:
+    """The ticket's own edge case: two conversations, one online and one
+    local — the local one has no route out. Unlike the turn grant and the
+    update-check permit, a conversation grant does not open the destination
+    to everything on the network."""
+    port, proxy = conversation_proxy
+    await open_conversation_grant(
+        settings, conversation_id="conv-a", destination=echo_upstream, token="tok", ttl_seconds=60
+    )
+
+    _reader, writer, head = await _connect(port, echo_upstream, headers)
+    writer.close()
+
+    assert b"403 Forbidden" in head
+    assert proxy.refused == 1
+    assert proxy.permitted == 0
+    assert PERMITTED_BY_CONVERSATION_KEY not in conversation_store.hashes
+
+
+async def test_the_owning_conversation_is_refused_anywhere_else(
+    settings: Settings,
+    conversation_store: FakeConversationRedis,
+    conversation_proxy: tuple[int, EgressProxy],
+    echo_upstream: str,
+) -> None:
+    """Exactly one destination: the credential does not widen it."""
+    port, proxy = conversation_proxy
+    await open_conversation_grant(
+        settings, conversation_id="conv-a", destination=echo_upstream, token="tok", ttl_seconds=60
+    )
+
+    _reader, writer, head = await _connect(
+        port, "elsewhere.example:443", _credential_header("conv-a", "tok")
+    )
+    writer.close()
+
+    assert b"403 Forbidden" in head
+    assert proxy.permitted == 0
+
+
+async def test_a_revoked_conversation_is_refused_from_the_next_connection(
+    settings: Settings,
+    conversation_store: FakeConversationRedis,
+    conversation_proxy: tuple[int, EgressProxy],
+    echo_upstream: str,
+) -> None:
+    port, proxy = conversation_proxy
+    await open_conversation_grant(
+        settings, conversation_id="conv-a", destination=echo_upstream, token="tok", ttl_seconds=60
+    )
+    assert await close_conversation_grant(settings, "conv-a") is True
+
+    _reader, writer, head = await _connect(port, echo_upstream, _credential_header("conv-a", "tok"))
+    writer.close()
+
+    assert b"403 Forbidden" in head
+    assert proxy.permitted == 0
+
+
+async def test_an_open_tunnel_is_cut_when_the_conversation_is_revoked(
+    settings: Settings,
+    conversation_store: FakeConversationRedis,
+    conversation_proxy: tuple[int, EgressProxy],
+    echo_upstream: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The in-flight edge case, decided as *cancelled*. A client keeps a
+    tunnel open and sends more requests down it; revoking only new
+    connections would let that pooled tunnel keep talking after the user
+    said stop."""
+    import askwell.egress as egress_module
+
+    monkeypatch.setattr(egress_module, "CONVERSATION_RECHECK_SECONDS", 0.05)
+    port, _proxy = conversation_proxy
+    await open_conversation_grant(
+        settings, conversation_id="conv-a", destination=echo_upstream, token="tok", ttl_seconds=60
+    )
+    reader, writer, head = await _connect(port, echo_upstream, _credential_header("conv-a", "tok"))
+    assert b"200 Connection Established" in head
+    writer.write(b"first")
+    await writer.drain()
+    assert await asyncio.wait_for(reader.read(1024), timeout=5) == b"FIRST"
+
+    await close_conversation_grant(settings, "conv-a")
+
+    # The tunnel is closed from the proxy's side: the client reads EOF (or a
+    # reset) rather than a second answer.
+    await asyncio.sleep(0.3)
+    with contextlib.suppress(ConnectionError):
+        writer.write(b"second")
+        await writer.drain()
+    try:
+        after = await asyncio.wait_for(reader.read(1024), timeout=5)
+    except ConnectionError:
+        after = b""
+    writer.close()
+    assert after == b""
+
+
+async def test_a_fresh_enable_cuts_a_tunnel_opened_under_the_old_credential(
+    settings: Settings,
+    conversation_store: FakeConversationRedis,
+    conversation_proxy: tuple[int, EgressProxy],
+    echo_upstream: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Off and on again inside one recheck is not "still authorised" for the
+    old tunnel: it was opened under a credential that no longer exists."""
+    import askwell.egress as egress_module
+
+    monkeypatch.setattr(egress_module, "CONVERSATION_RECHECK_SECONDS", 0.05)
+    port, _proxy = conversation_proxy
+    await open_conversation_grant(
+        settings, conversation_id="conv-a", destination=echo_upstream, token="old", ttl_seconds=60
+    )
+    reader, writer, _head = await _connect(port, echo_upstream, _credential_header("conv-a", "old"))
+    await open_conversation_grant(
+        settings, conversation_id="conv-a", destination=echo_upstream, token="new", ttl_seconds=60
+    )
+
+    try:
+        after = await asyncio.wait_for(reader.read(1024), timeout=5)
+    except ConnectionError:
+        after = b""
+    writer.close()
+    assert after == b""
+
+
+async def test_every_conversation_grant_is_cleared_and_reported(
+    settings: Settings, conversation_store: FakeConversationRedis
+) -> None:
+    """What the API and the proxy each call at startup. Turn grants and the
+    update-check permit are not conversation grants and are left alone."""
+    for conversation_id in ("conv-a", "conv-b"):
+        await open_conversation_grant(
+            settings,
+            conversation_id=conversation_id,
+            destination="api.example.com:443",
+            token="tok",
+            ttl_seconds=60,
+        )
+    conversation_store.store[f"{GRANT_KEY_PREFIX}turn-1"] = "html.duckduckgo.com:443"
+
+    revoked = await close_all_conversation_grants(settings)
+
+    assert revoked == {"conv-a": "api.example.com:443", "conv-b": "api.example.com:443"}
+    assert not any(k.startswith(CONVERSATION_GRANT_KEY_PREFIX) for k in conversation_store.store)
+    assert f"{GRANT_KEY_PREFIX}turn-1" in conversation_store.store
+
+
+async def test_the_proxy_clears_conversation_grants_when_it_starts(
+    settings: Settings,
+    conversation_store: FakeConversationRedis,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A proxy restart is a restart. It revokes; it still never grants."""
+    import askwell.egress as egress_module
+
+    await open_conversation_grant(
+        settings,
+        conversation_id="conv-a",
+        destination="api.example.com:443",
+        token="t",
+        ttl_seconds=60,
+    )
+
+    async def _no_register(_settings: Settings) -> None:
+        return None
+
+    class _Stop(Exception):
+        pass
+
+    async def _refuse_to_serve(*_args: Any, **_kwargs: Any) -> Any:
+        raise _Stop
+
+    monkeypatch.setattr(egress_module, "_register", _no_register)
+    monkeypatch.setattr(asyncio, "start_server", _refuse_to_serve)
+    with pytest.raises(_Stop):
+        await egress_module.serve(settings)
+
+    assert f"{CONVERSATION_GRANT_KEY_PREFIX}conv-a" not in conversation_store.store
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        (_credential_header("conv-a", "tok").strip(), ("conv-a", "tok")),
+        (
+            "proxy-authorization: basic "
+            + __import__("base64")
+            .b64encode(f"{CONVERSATION_CREDENTIAL_USER_PREFIX}c:t:with:colons".encode())
+            .decode(),
+            ("c", "t:with:colons"),
+        ),
+        ("Proxy-Authorization: Basic !!!not-base64", None),
+        (
+            "Proxy-Authorization: Basic " + __import__("base64").b64encode(b"someone:tok").decode(),
+            None,
+        ),
+        ("Host: example.com", None),
+    ],
+)
+def test_only_a_conversation_credential_is_recognised(
+    header: str, expected: tuple[str, str] | None
+) -> None:
+    assert _conversation_credential([header]) == expected
