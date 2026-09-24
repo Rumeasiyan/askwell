@@ -395,3 +395,110 @@ async def test_a_revocation_names_the_destination_even_when_the_grant_was_alread
     await online.revoke_all_on_startup(factory, settings)
 
     assert (await _decisions(session))[-1][1]["destination"] == DESTINATION
+
+
+# --- the pre-send disclosure (`M8-ONLINE-FE-171`) ------------------------------
+
+DISCLOSED = online.Disclosure(version="test-1", text="Your question and the passages found for it.")
+
+
+async def test_while_the_payload_is_undefined_nothing_can_be_confirmed_and_nothing_sent(
+    session: AsyncSession, settings: Settings, redis_store: dict[str, str]
+) -> None:
+    """The ticket's safeguard: the product never sends something it cannot
+    describe. Online is authorised; a send is still not permitted."""
+    assert online.DISCLOSURE is None, "#737 decides the wording; until then this stays None"
+    conversation_id = await _conversation(session)
+
+    state = await online.enable(session, settings, conversation_id)
+    await session.commit()
+    assert state.online and not state.send_permitted
+    assert state.as_dict()["disclosure"] == {
+        "defined": False,
+        "version": None,
+        "text": None,
+        "confirmed": False,
+    }
+
+    with pytest.raises(online.DisclosureNotConfirmable, match="not been decided"):
+        await online.confirm_disclosure(session, settings, conversation_id, "anything")
+    assert [kind for kind, _ in await _decisions(session)] == ["online_ai_enabled"]
+
+
+async def test_confirming_is_a_decisions_record_naming_the_conversation_and_is_asked_once(
+    session: AsyncSession,
+    settings: Settings,
+    redis_store: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(online, "DISCLOSURE", DISCLOSED)
+    conversation_id = await _conversation(session)
+    other = await _conversation(session)
+    await online.enable(session, settings, conversation_id)
+    await online.enable(session, settings, other)
+    await session.commit()
+
+    assert not (await online.get_state(session, settings, conversation_id)).send_permitted
+    with pytest.raises(online.DisclosureNotConfirmable, match="has changed"):
+        await online.confirm_disclosure(session, settings, conversation_id, "test-0")
+
+    state = await online.confirm_disclosure(session, settings, conversation_id, "test-1")
+    await online.confirm_disclosure(session, settings, conversation_id, "test-1")
+    await session.commit()
+
+    assert state.send_permitted and state.as_dict()["disclosure"]["confirmed"] is True
+    confirmations = [
+        payload for kind, payload in await _decisions(session) if kind.endswith("confirmed")
+    ]
+    assert confirmations == [{"conversation_id": str(conversation_id), "version": "test-1"}]
+    # One conversation's confirmation is not another's.
+    assert not (await online.get_state(session, settings, other)).send_permitted
+
+
+async def test_a_lapsed_conversation_keeps_its_marker_and_is_not_asked_again(
+    session: AsyncSession,
+    settings: Settings,
+    redis_store: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Resumed weeks later: the authorisation has long lapsed, the
+    conversation still reads as having used online AI, and switching it back
+    on does not repeat the disclosure it already confirmed."""
+    monkeypatch.setattr(online, "DISCLOSURE", DISCLOSED)
+    conversation_id = await _conversation(session)
+    await online.enable(session, settings, conversation_id)
+    await online.confirm_disclosure(session, settings, conversation_id, "test-1")
+    await session.commit()
+
+    redis_store.clear()  # the time bound ran out
+    lapsed = await online.get_state(session, settings, conversation_id)
+    await session.commit()
+    assert not lapsed.online and lapsed.used_online and lapsed.disclosure_confirmed
+
+    again = await online.enable(session, settings, conversation_id)
+    await session.commit()
+    assert again.send_permitted
+
+
+async def test_a_changed_statement_is_confirmed_again(
+    session: AsyncSession,
+    settings: Settings,
+    redis_store: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(online, "DISCLOSURE", DISCLOSED)
+    conversation_id = await _conversation(session)
+    await online.enable(session, settings, conversation_id)
+    await online.confirm_disclosure(session, settings, conversation_id, "test-1")
+    await session.commit()
+
+    monkeypatch.setattr(online, "DISCLOSURE", online.Disclosure(version="test-2", text="More."))
+    assert not (await online.get_state(session, settings, conversation_id)).send_permitted
+
+
+async def test_a_conversation_never_switched_on_is_not_marked(
+    session: AsyncSession, settings: Settings, redis_store: dict[str, str]
+) -> None:
+    conversation_id = await _conversation(session)
+    state = await online.get_state(session, settings, conversation_id)
+    assert not state.used_online and not state.online

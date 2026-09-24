@@ -458,7 +458,7 @@ Every ticket, in dependency order within each domain. Full text lives in the mil
 | M8-ONLINE-OBS-172 | Online-mode logging | What online mode transmits |
 | M8-CREDIT-BLOCKED-173 | Credit purchase | Credit pricing — rate, minimum, margin |
 | M8-CREDIT-BLOCKED-174 | Spending limit and balance | The same decision, and 173 |
-| M8-ONLINE-FE-171 (disclosure half) | Pre-send payload wording | What online mode transmits |
+| M8-ONLINE-FE-171 (disclosure half) | Pre-send payload wording | #737: the wording of what the provider receives. The marker, the confirmation and the refusal are built (`0.7.41`); only `askwell.online.DISCLOSURE` waits |
 
 ---
 

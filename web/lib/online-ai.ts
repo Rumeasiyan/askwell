@@ -1,11 +1,11 @@
 /**
- * Settings → Online AI, before it exists. `M7-SET-FE-150`,
- * `docs/ux/settings.md` §3 and §8's "Online AI, before M8" row.
+ * Settings → Online AI. `M7-SET-FE-150`, `docs/ux/settings.md` §3.
  *
- * Everything here is words. The section is inert: there is no endpoint
- * behind it, no field in it, and no state that can become "on" — the only
- * thing a click can change is whether the not-available statement is shown.
- * M8 (`M8-KEY-FE-174`) fills the section in rather than adding a new one.
+ * Everything here is words. Since `M8-ONLINE-FE-171` online AI is switched
+ * on per conversation, from the conversation (`lib/online-conversation.ts`),
+ * so this section has no switch at all: a switch here would read as the
+ * global setting the ticket forbids. There is no field and no request.
+ * `M8-KEY-FE-174` adds the key here.
  *
  * The copy follows `docs/decisions.md` 2026-09-23 — online AI uses a key the
  * person brings from their own provider, and Askwell sells nothing — not
@@ -14,7 +14,10 @@
  * described because there is none to describe.
  */
 
-export const ONLINE_AI_STATUS = "Off. Not available yet.";
+/** Where it is turned on, since it is not here. */
+export const ONLINE_AI_WHERE =
+  "There is no switch here. Online AI is turned on for one conversation at a time, with " +
+  "the switch beside that conversation's Ask button, and every new conversation starts local.";
 
 /** What it will be, in plain terms. */
 export const ONLINE_AI_WHAT =
@@ -23,8 +26,8 @@ export const ONLINE_AI_WHAT =
 
 /** Per conversation, never global. */
 export const ONLINE_AI_PER_CONVERSATION =
-  "It will be chosen per conversation. A conversation is either local or online, and you " +
-  "switch it yourself. There will be no setting that turns it on everywhere, so there is " +
+  "It is chosen per conversation. A conversation is either local or online, and you " +
+  "switch it yourself. There is no setting that turns it on everywhere, so there is " +
   "nothing to forget about.";
 
 /** The key, and who the bill is between. */
@@ -34,25 +37,10 @@ export const ONLINE_AI_KEY =
   "be stored encrypted on this machine, never logged and never exported. Nothing on this " +
   "screen asks for a key today, because there is nothing yet that could use one.";
 
-/** Placeholder for the payload statement, which M8 states exactly. Says
- * when it will be stated rather than guessing what it will say. */
+/** The payload statement is made in the conversation, before the first
+ * send. Its wording is not decided yet (issue 737), and until it is, nothing is
+ * sent, which this says rather than guessing what the statement will be. */
 export const ONLINE_AI_PAYLOAD =
-  "Exactly what leaves this machine will be stated here, and again in the conversation " +
-  "before anything is sent — never after. Until then, nothing leaves.";
-
-/** Shown when someone tries to turn it on. No waiting list, no email
- * field: there is nothing to sign up for. */
-export const ONLINE_AI_NOT_AVAILABLE =
-  "Online AI is not available yet, so it cannot be turned on. There is nothing to sign up " +
-  "for and no list to join. When it exists it will appear here, still off until you choose " +
-  "it for a conversation.";
-
-/** What the section holds after any number of attempts to enable it: never
- * on, and the statement shown once someone has tried. */
-export type OnlineAiView = { readonly on: false; readonly notice: string | null };
-
-export const ONLINE_AI_INITIAL: OnlineAiView = { on: false, notice: null };
-
-export function attemptToEnable(): OnlineAiView {
-  return { on: false, notice: ONLINE_AI_NOT_AVAILABLE };
-}
+  "Exactly what leaves this machine is stated in the conversation before anything is " +
+  "sent, never after. That statement has not been written yet, so online AI sends nothing " +
+  "today. Until then, nothing leaves.";

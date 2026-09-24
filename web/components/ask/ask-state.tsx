@@ -26,6 +26,13 @@ import {
 import { applyCitation, type CitationCard } from "@/lib/citations";
 import { applyFactCitation, type FactChip } from "@/lib/memory-chips";
 import type { SqlQueryDisclosure, SqlResultData } from "@/lib/sql-result";
+import {
+  createConversation,
+  fetchOnlineState,
+  type OnlineConversationState,
+  SEND_REFUSED,
+  sendAllowed,
+} from "@/lib/online-conversation";
 import { applyWebCitation, type WebCitationEntry, type WebResult } from "@/lib/web-citations";
 
 /**
@@ -43,13 +50,12 @@ import { applyWebCitation, type WebCitationEntry, type WebResult } from "@/lib/w
  * simply stacks, unstyled by collapse rules — `AskTurn` is deliberately a
  * container that later ticket can wrap without this one being rewritten.
  *
- * **`conversation_id` is not threaded across turns.** `POST /ask` accepts
- * one, but `askwell.ask` never returns the id it resolved or created — not
- * in an SSE event, not in a header — so there is nothing here to capture and
- * send on the next question. Filed as issue 156 rather than guessed at:
- * every question lands in its own conversation server-side until that's
- * fixed. It does not affect this ticket's own acceptance criteria, which
- * only requires a second question to render as a second turn.
+ * **One conversation per page load.** Every event names its
+ * `conversation_id` (issue 156, fixed), and the first one adopted is sent
+ * back with every later question. Since `M8-ONLINE-FE-171` the conversation
+ * can also be created before its first question (`ensureConversation`), so
+ * it can be switched to online AI before anything is sent. A reload starts
+ * a new conversation, and a new conversation is always local.
  */
 
 export type TurnStatus = "queued" | "running" | "completed" | "stopped" | "failed";
@@ -160,6 +166,17 @@ export interface AskApi {
    * and folds every entry into `webCitations` via `applyWebCitation`
    * (`M6.5-WEB-FE-191`). */
   applyWebAnswer: (turnId: string, text: string, citations: readonly WebCitationEntry[]) => void;
+  /** `M8-ONLINE-FE-171`: the conversation these turns belong to, `null`
+   * until the server names one or `ensureConversation` creates it. */
+  conversationId: string | null;
+  /** The conversation's id, creating an empty local one first if there is
+   * none yet, so it can be switched online before its first question. */
+  ensureConversation: () => Promise<string>;
+  /** Its online state as the server holds it, `null` before there is a
+   * conversation to ask about. Read by the marker, the composer's gate and
+   * each turn's backend label, so all three agree. */
+  online: OnlineConversationState | null;
+  setOnline: (state: OnlineConversationState) => void;
 }
 
 const AskContext = createContext<AskApi | null>(null);
@@ -231,10 +248,60 @@ export function AskProvider({ children }: { children: ReactNode }) {
   // cannot know the id until an event carries it back. A ref rather than state
   // because nothing renders from it and a re-render per token is the cost.
   const conversation = useRef<string | null>(null);
+  // The same id as state, for what renders from it: the marker and the
+  // switch (`M8-ONLINE-FE-171`). Set once per conversation, not per token.
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [online, setOnlineState] = useState<OnlineConversationState | null>(null);
+  const onlineRef = useRef<OnlineConversationState | null>(null);
 
   useEffect(() => {
     current.current = turns;
   }, [turns]);
+
+  const setOnline = useCallback((state: OnlineConversationState): void => {
+    onlineRef.current = state;
+    setOnlineState(state);
+  }, []);
+
+  const adoptConversation = useCallback((id: string): void => {
+    if (conversation.current !== null) return;
+    conversation.current = id;
+    setConversationId(id);
+  }, []);
+
+  const ensureConversation = useCallback(async (): Promise<string> => {
+    if (conversation.current !== null) return conversation.current;
+    const id = await createConversation();
+    adoptConversation(id);
+    return conversation.current ?? id;
+  }, [adoptConversation]);
+
+  const refreshOnline = useCallback(async (): Promise<void> => {
+    const id = conversation.current;
+    if (id === null) return;
+    try {
+      setOnline(await fetchOnlineState(id));
+    } catch {
+      // Unreadable is not "online": the server refuses a send it cannot
+      // authorise on its own, so the marker keeps its last reading rather
+      // than inventing one.
+    }
+  }, [setOnline]);
+
+  // Read when the conversation is first known, and again every minute while
+  // it is online, so a lapsed authorisation reads as local without anyone
+  // having to reload (`states-and-edge-cases.md` §1).
+  useEffect(() => {
+    if (conversationId === null) return;
+    void refreshOnline();
+  }, [conversationId, refreshOnline]);
+
+  const isOnline = online?.ai_backend === "online";
+  useEffect(() => {
+    if (!isOnline) return;
+    const timer = window.setInterval(() => void refreshOnline(), 60_000);
+    return () => window.clearInterval(timer);
+  }, [isOnline, refreshOnline]);
 
   const patch = useCallback((id: string, changes: Partial<AskTurn>): void => {
     setTurns((queue) => queue.map((turn) => (turn.id !== id ? turn : { ...turn, ...changes })));
@@ -249,6 +316,18 @@ export function AskProvider({ children }: { children: ReactNode }) {
       setTurns((queue) => [
         ...queue,
         blankTurn(trimmed, "failed", NON_ENGLISH_REASON, sourceId, NON_ENGLISH_REASON),
+      ]);
+      return;
+    }
+
+    // `M8-ONLINE-FE-171`: the composer already holds a question back while
+    // the disclosure is unanswered. This is for any other caller. The
+    // question is shown as not sent rather than dropped, and the server
+    // would refuse it anyway.
+    if (!sendAllowed(onlineRef.current)) {
+      setTurns((queue) => [
+        ...queue,
+        blankTurn(trimmed, "failed", SEND_REFUSED, sourceId, SEND_REFUSED),
       ]);
       return;
     }
@@ -292,7 +371,8 @@ export function AskProvider({ children }: { children: ReactNode }) {
           next.question,
           { conversationId: conversation.current, sourceId: next.sourceId },
           (event: AskEvent) => {
-            conversation.current ??= conversationOf(event);
+            const named = conversationOf(event);
+            if (named !== null) adoptConversation(named);
           if (event.event === "done") {
               finalStatus = event.data.status;
               finalReason = event.data.reason;
@@ -334,6 +414,11 @@ export function AskProvider({ children }: { children: ReactNode }) {
                 if (event.event === "clarification_resolved") {
                   return { ...turn, blocking: null };
                 }
+                if (event.event === "answer_reset") {
+                  // issue 733: the withdrawn online half takes its cards and
+                  // chips with it. The local answer starts clean.
+                  return { ...turn, ...applyAskEvent(turn, event), citations: [], factChips: [] };
+                }
                 return { ...turn, ...applyAskEvent(turn, event) };
               }),
             );
@@ -354,8 +439,10 @@ export function AskProvider({ children }: { children: ReactNode }) {
         modelIdentity: finalModelIdentity,
       });
       dispatching.current = false;
+      // A turn is when a lapse is most likely to be noticed server-side.
+      void refreshOnline();
     })();
-  }, [turns, patch]);
+  }, [turns, patch, refreshOnline]);
 
   const running = turns.find((turn) => turn.status === "running") ?? null;
 
@@ -387,8 +474,25 @@ export function AskProvider({ children }: { children: ReactNode }) {
       openTrace,
       closeTrace,
       applyWebAnswer,
+      conversationId,
+      ensureConversation,
+      online,
+      setOnline,
     }),
-    [turns, running, ask, stop, openTraceTurnId, openTrace, closeTrace, applyWebAnswer],
+    [
+      turns,
+      running,
+      ask,
+      stop,
+      openTraceTurnId,
+      openTrace,
+      closeTrace,
+      applyWebAnswer,
+      conversationId,
+      ensureConversation,
+      online,
+      setOnline,
+    ],
   );
 
   return <AskContext.Provider value={api}>{children}</AskContext.Provider>;

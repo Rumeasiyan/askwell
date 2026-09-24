@@ -1,5 +1,6 @@
 /**
- * Settings → Online AI, before it exists. `M7-SET-FE-150`.
+ * Settings → Online AI. `M7-SET-FE-150`, and `M8-ONLINE-FE-171` for the
+ * absence of a global switch.
  *
  *   pnpm test        (scripts/dev.sh web-run pnpm test)
  */
@@ -11,34 +12,25 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
-  attemptToEnable,
-  ONLINE_AI_INITIAL,
   ONLINE_AI_KEY,
-  ONLINE_AI_NOT_AVAILABLE,
   ONLINE_AI_PAYLOAD,
   ONLINE_AI_PER_CONVERSATION,
-  ONLINE_AI_STATUS,
   ONLINE_AI_WHAT,
+  ONLINE_AI_WHERE,
 } from "./online-ai.ts";
 
 const WEB = join(dirname(fileURLToPath(import.meta.url)), "..");
 const COMPONENT = readFileSync(join(WEB, "components", "settings", "online-ai.tsx"), "utf8");
 const PAGE = readFileSync(join(WEB, "app", "settings", "page.tsx"), "utf8");
 
-test("the section starts off and says it is not available", () => {
-  assert.equal(ONLINE_AI_INITIAL.on, false);
-  assert.equal(ONLINE_AI_INITIAL.notice, null);
-  assert.match(ONLINE_AI_STATUS, /^Off\. Not available yet\.$/);
-});
-
-test("trying to turn it on, any number of times, leaves it off with a plain statement", () => {
-  const once = attemptToEnable();
-  const twice = attemptToEnable();
-  assert.equal(once.on, false);
-  assert.equal(twice.on, false);
-  assert.equal(once.notice, ONLINE_AI_NOT_AVAILABLE);
-  assert.match(ONLINE_AI_NOT_AVAILABLE, /not available yet/);
-  assert.match(ONLINE_AI_NOT_AVAILABLE, /nothing to sign up for and no list to join/);
+test("there is no global online setting: no switch, and it says where the switch is", () => {
+  // M8-ONLINE-FE-171's acceptance criterion. A switch here would be the
+  // setting nobody remembers turning on.
+  assert.doesNotMatch(COMPONENT, /role="switch"/);
+  assert.doesNotMatch(COMPONENT, /<button\b/);
+  assert.match(ONLINE_AI_WHERE, /no switch here/);
+  assert.match(ONLINE_AI_WHERE, /one conversation at a time/);
+  assert.match(ONLINE_AI_WHERE, /every new conversation starts local/);
 });
 
 test("it explains what the feature will be", () => {
@@ -56,7 +48,7 @@ test("the key statement follows the 2026-09-23 decision: the person's own key, n
   assert.match(ONLINE_AI_KEY, /Askwell sells nothing/);
   assert.match(ONLINE_AI_KEY, /Nothing on this screen asks for a key today/);
   // The cancelled credit tier must not come back through this section.
-  for (const text of [ONLINE_AI_WHAT, ONLINE_AI_KEY, ONLINE_AI_PER_CONVERSATION, ONLINE_AI_NOT_AVAILABLE]) {
+  for (const text of [ONLINE_AI_WHAT, ONLINE_AI_KEY, ONLINE_AI_PER_CONVERSATION, ONLINE_AI_WHERE]) {
     assert.doesNotMatch(text, /credit|purchase|balance|spending limit|price/i);
   }
 });
@@ -70,9 +62,6 @@ test("no field in the section can collect anything, and nothing in it makes a re
   for (const forbidden of [/<input\b/, /<textarea\b/, /<select\b/, /<form\b/, /\bfetch\(/, /https?:\/\//]) {
     assert.doesNotMatch(COMPONENT, forbidden, `online-ai.tsx contains ${forbidden}`);
   }
-  // The switch is marked disabled but stays clickable, so an attempt gets the statement.
-  assert.match(COMPONENT, /aria-disabled="true"/);
-  assert.match(COMPONENT, /onClick=\{\(\) => setView\(attemptToEnable\(\)\)\}/);
 });
 
 test("the section is on the settings page, second, after model and speed", () => {

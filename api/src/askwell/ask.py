@@ -184,6 +184,10 @@ class _Turn:
     # swap that lands while this turn is still running does not relabel an
     # answer it never touched.
     model_identity: dict[str, Any] | None = None
+    # `M8-ONLINE-FE-171`: whether the conversation was online (and its
+    # disclosure confirmed) when the question was asked, so a turn that never
+    # reached the provider can say so in its trace.
+    requested_online: bool = False
     # `M3-INLINE-FE-085`: set while this turn is paused on an inline
     # clarification, `None` the rest of the time. `clarify_event` is what
     # `POST /ask/{id}/clarify/resolve` sets once the browser has answered or
@@ -1281,6 +1285,13 @@ async def _online_client(
         return None
     if not state.online:
         return None
+    if not state.send_permitted:
+        # `M8-ONLINE-FE-171`: authorised but not described. `POST /ask`
+        # refuses such a question before it starts; this catches every other
+        # way into generation (voice). Nothing is sent before the user has
+        # confirmed what will be sent.
+        log.warning("ask_online_not_confirmed", conversation_id=str(conversation_id))
+        return None
     online_target = provider.target(settings, online.proxy_credentials(conversation_id))
     return provider.OnlineClient(settings, online_target) if online_target else None
 
@@ -1291,6 +1302,7 @@ def _backend_record(
     *,
     answered: bool,
     fallback: OnlineFailed | None,
+    requested_online: bool = False,
 ) -> dict[str, Any]:
     """`messages.trace.backend`: which backend and model wrote this answer,
     and — when the conversation asked for online and got local — that it
@@ -1301,11 +1313,23 @@ def _backend_record(
             "model": online_client.model,
             "destination": online_client.target.destination,
         }
+    if online_client is None:
+        return _local_backend(local_model, requested_online=requested_online)
+    record: dict[str, Any] = {"mode": "local", "model": local_model, "requested": "online"}
+    if fallback is not None:
+        record["fallback"] = {"reason_code": fallback.reason_code, "detail": str(fallback)}
+    return record
+
+
+def _local_backend(local_model: str, *, requested_online: bool) -> dict[str, Any]:
+    """The backend record of a turn the provider never saw. In a conversation
+    that was online when the question was asked, it says so, and says that
+    nothing went to the provider: an abstention, a database answer, a tool
+    loop (#734). `M8-ONLINE-FE-171`'s "the trace shows it"."""
     record: dict[str, Any] = {"mode": "local", "model": local_model}
-    if online_client is not None:
+    if requested_online:
         record["requested"] = "online"
-        if fallback is not None:
-            record["fallback"] = {"reason_code": fallback.reason_code, "detail": str(fallback)}
+        record["sent_online"] = False
     return record
 
 
@@ -1420,7 +1444,7 @@ async def _run_generation(
         trace = {
             "steps": bounded_steps,
             "steps_truncated": steps_truncated,
-            "backend": {"mode": "local", "model": model_name},
+            "backend": _local_backend(model_name, requested_online=turn.requested_online),
             "stopped_early": status != "completed",
             "injection_flagged": False,
             "injection_patterns": [],
@@ -1649,7 +1673,7 @@ async def _run_generation(
         trace = {
             "steps": bounded_steps,
             "steps_truncated": steps_truncated,
-            "backend": {"mode": "local", "model": model_name},
+            "backend": _local_backend(model_name, requested_online=turn.requested_online),
             "stopped_early": loop_answer.stopped_reason != "answered",
             "injection_flagged": injection_flagged,
             "injection_patterns": list(injection_patterns),
@@ -2159,7 +2183,11 @@ async def _run_generation(
     duration_ms = int((time.monotonic() - turn_started) * 1000)
 
     backend_record = _backend_record(
-        model_name, online_client, answered=answered_online, fallback=online_fallback
+        model_name,
+        online_client,
+        answered=answered_online,
+        fallback=online_fallback,
+        requested_online=turn.requested_online,
     )
     bounded_steps, steps_truncated = _bound_trace_steps(trace_steps)
     trace = {
@@ -2512,6 +2540,16 @@ def register_ask(
             }
         )
 
+    @app.post("/conversations")
+    async def create_conversation() -> JSONResponse:
+        """An empty conversation, before its first question. `M8-ONLINE-FE-171`:
+        online AI is switched on per conversation, and the disclosure has to
+        come before the first send, so the conversation has to exist first.
+        It is created local. Nothing else is recorded."""
+        async with session_scope(factory) as db:
+            conversation_id = await _resolve_conversation(db, None)
+        return JSONResponse({"conversation_id": str(conversation_id)}, status_code=201)
+
     @app.post("/ask", response_model=None)
     async def ask(body: AskRequest, request: Request) -> StreamingResponse | JSONResponse:
         async with session_scope(factory) as db:
@@ -2521,6 +2559,32 @@ def register_ask(
                 return JSONResponse(
                     {"error": "Askwell has no conversation with that id."}, status_code=404
                 )
+
+            # `M8-ONLINE-FE-171`: an online conversation takes no question
+            # until what it sends has been described and confirmed. Refused
+            # here, before anything is recorded or generated, so the user is
+            # told rather than quietly answered locally.
+            requested_online = False
+            if await online.backend_of(db, conversation_id) == "online":
+                try:
+                    state = await online.get_state(db, settings, conversation_id)
+                except Exception:
+                    # The grant cannot be read, so it cannot be used either:
+                    # `_online_client` answers locally. Nothing is sent.
+                    log.exception(
+                        "ask_online_state_unreadable", conversation_id=str(conversation_id)
+                    )
+                else:
+                    if state.online and not state.send_permitted:
+                        return JSONResponse(
+                            {
+                                "error": online.DISCLOSURE_UNDEFINED
+                                if online.DISCLOSURE is None
+                                else online.NOT_CONFIRMED
+                            },
+                            status_code=409,
+                        )
+                    requested_online = state.online
 
             question_id = uuid.uuid4()
             await db.execute(
@@ -2562,7 +2626,10 @@ def register_ask(
             )
 
         turn = _Turn(
-            message_id=message_id, conversation_id=conversation_id, model_identity=model_identity
+            message_id=message_id,
+            conversation_id=conversation_id,
+            model_identity=model_identity,
+            requested_online=requested_online,
         )
         _turns[turn.message_id] = turn
         asyncio.create_task(  # noqa: RUF006 — deliberately outlives this request; see module docstring

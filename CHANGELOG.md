@@ -4,6 +4,26 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.41 - 2026-09-24
+
+`Added`: `M8-ONLINE-FE-171`. Online AI is now switched on one conversation at a time, with a
+switch beside the Ask button. There is no setting anywhere that turns it on for every
+conversation, and every new conversation starts local. A conversation with online AI on carries
+a marker beside the Ask box that cannot be scrolled away or dismissed. It says where questions
+go and until when. The line at the top of the screen stops saying that nothing leaves this
+machine. A conversation that had online AI on earlier keeps a marker saying it is local now. In
+such a conversation, each answer says whether it was answered locally or online. Before the
+first online question, Askwell shows what will leave the machine and asks you to confirm. Your
+confirmation is recorded in the decisions log with the conversation it belongs to. Exactly what
+online AI sends has not been decided yet (issue #737). Until it is, the statement says so,
+and every online question is refused, both by the Ask screen and by Askwell itself, rather than
+sent. A question that finds nothing in your files sends nothing, and its trace says so. The
+Online AI section in Settings has lost its switch. It now says where online AI is turned on.
+
+`Fixed`: when online AI stopped partway through an answer, the Ask screen showed the withdrawn
+half and the local answer together, with the first half's source cards, until you reloaded.
+It now clears the half answer and its cards, then shows the local answer alone (#733).
+
 ## 0.7.40 - 2026-09-24
 
 `Added`: `M8-ONLINE-BE-170`. A conversation switched to online AI now has its answer written by
