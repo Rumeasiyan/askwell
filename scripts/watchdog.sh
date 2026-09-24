@@ -53,7 +53,15 @@ pick_milestone() {
     # `grep -c` exits 1 when it counts zero, so a `|| echo 0` fallback
     # appends a second line and the test below sees "0\n0". Count with wc
     # instead, which always prints one number and always succeeds.
-    total=$(grep -E "^### ${m}-" "$f" 2>/dev/null | wc -l | tr -d " ")
+    # A ticket marked `[BLOCKED]` is deferred on something no build can
+    # supply — M7-TAURI-DEPLOY-184a waits on certificates the owner has to
+    # buy — and the runner already refuses to schedule it. Counting it here
+    # meant M7 could never read as finished, so this pinned every restart to
+    # M7 after its buildable work ran out: the queue said "nothing left that
+    # is ready", exited, and was restarted into the same answer every fifteen
+    # minutes overnight on 2026-09-24 while M8-ONLINE-SEC-169 sat ready and
+    # unbuilt. `[UNBLOCKED …]` does not match, which is the point.
+    total=$(grep -E "^### ${m}-" "$f" 2>/dev/null | grep -vF '[BLOCKED]' | wc -l | tr -d " ")
     done_n=$(ls .build-runner/done/ 2>/dev/null | grep "^${m}-" | wc -l | tr -d " ")
     if [ "$done_n" -lt "$total" ]; then
       printf '%s' "$m"
