@@ -4,6 +4,20 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.33 - 2026-09-24
+
+`Added`: `M7-QA-TEST-168`, the release readiness checklist. `docs/release-checklist.md` gathers
+every release gate in one place: the eval suite's eight categories and 165 tasks, the
+cable-unplugged test, the tested restore, the security review, performance, licences and
+notices, the support boundary, version and changelog, open defects, and a manual walkthrough.
+Each gate has a pass condition and a stated place for its evidence. Every result is pass or
+fail. SQL safety and web escalation discipline at 0.9 are failures, not nearly-passes. A gate
+that cannot be run holds the release. `docs/release-walkthrough.md` is the walkthrough itself:
+from a cold install of the release artefact, through every milestone's headline path, to
+backup, restore on a second machine, export, and log verification, with the outbound request
+count read throughout. `docs/release-log.md` records each release's result, and
+`docs/release-procedure.md` does not checksum anything until that record says release.
+
 ## 0.7.32 - 2026-09-24
 
 `Added`: `M7-SET-FE-150`. Settings now has an **Online AI** section, second after Model and

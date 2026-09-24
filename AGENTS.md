@@ -59,6 +59,7 @@ Four facts shape almost every decision here:
 | Phase scope, acceptance criteria, quality gate, repo layout | `docs/build-plan.md` |
 | What a screen must handle beyond the happy path | `docs/states-and-edge-cases.md` — **read before designing or building any surface** |
 | Whether the product is succeeding, in numbers | `docs/success-metrics.md` |
+| Whether a version can ship, and what each release recorded | `docs/release-checklist.md`, `docs/release-log.md` |
 | Current phase, next task, blockers | `docs/BRAIN.md` |
 | Why a choice was made | `docs/decisions.md` |
 | Current application version | `VERSION` |
