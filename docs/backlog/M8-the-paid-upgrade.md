@@ -497,7 +497,9 @@ Take option 1 of #730: Redis ACLs, one user per service. The API may write the g
 
 ---
 
-### M8-FIX-BE-178 — The approved statement of what online AI sends
+### M8-FIX-BE-178 — The approved statement of what online AI sends **[BLOCKED]**
+
+> **Blocked on a product decision (#753).** The approved wording is not true of what the code sends: inferred facts as well as taught ones, schema notes that can carry a value from a table row, and memory that is global across conversations. The build agent halted rather than ship a false statement about what leaves the machine, which was correct every time. The `[BLOCKED]` marker keeps the runner from retrying it; change it to `[UNBLOCKED <date>]` once the product owner has chosen between narrowing the payload and rewording the statement.
 
 **Type:** Task
 
