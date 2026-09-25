@@ -61,6 +61,7 @@ Four facts shape almost every decision here:
 | Whether the product is succeeding, in numbers | `docs/success-metrics.md` |
 | Whether a version can ship, and what each release recorded | `docs/release-checklist.md`, `docs/release-log.md` |
 | Current phase, next task, blockers | `docs/BRAIN.md` |
+| How the unattended build runs, what stalls it, moving it to another machine | `docs/operating-the-build.md` — **read before starting or restarting the queue** |
 | Why a choice was made | `docs/decisions.md` |
 | Current application version | `VERSION` |
 | What shipped in each version | `CHANGELOG.md` |

@@ -7,6 +7,16 @@
 
 ## Current phase
 
+> **Read this block first. Everything below it is the per-ticket history, oldest milestones first.**
+>
+> **As of 2026-09-25: every milestone's tickets are built — M0 through M8, 213 tickets — and the product is not yet release-ready.** Three tickets remain, added from two product decisions that morning (`docs/decisions.md`, 2026-09-25): `M8-FIX-SEC-177` (Redis authentication, #730), then `M8-FIX-BE-178` (the approved online-AI disclosure, #737), and `M8-FIX-DOC-179` (relicensing to GPLv3 so spoken answers ship, #619). `M7-TAURI-DEPLOY-184a` (code signing) is `[BLOCKED]` on certificates the owner has to buy, and v1 ships unsigned by decision.
+>
+> **What "not release-ready" means.** About 228 issues are open, 64 of them bugs, filed by the build's own audit agents along the way. Some are real: #719 (re-indexing a cited document fails), #728 (the conflict resolution control writes no memory fact), #727 (the conflict layout can box the wrong sentence), #734 (online mode still runs the tool loop locally). **The abstention eval has never been run** — C5's pass bar is ≥ 0.90 and the Eval baseline section at the bottom of this file still reads "Not yet established" (#625). Nothing has been verified on Windows or macOS (#590, #592).
+>
+> **Next, in order:** land the three tickets above; run the eval suites and record the baseline; triage the open issues into ship-blockers and noise, and **write the ship-blockers as backlog tickets** — the queue builds `docs/backlog/`, never the tracker, so an issue alone is never built; re-record the walkthrough video, which predates the six screen fixes.
+>
+> **Moving to another machine, or starting a session cold:** read `docs/operating-the-build.md` first. It covers restoring the done markers (without them the queue rebuilds all 213 tickets), what stops the build and what each stall looks like, and how the product owner wants the loop run.
+
 **M1 — It answers from my documents. Complete, 37 of 37.** M0 complete, 21 of 21.
 
 Askwell answers from a user's own documents, end to end, for the first time: add a folder, files are recorded and deduplicated by content hash, six formats extract with an OCR fallback, chunks embed, hybrid retrieval reranks, the prompt composes with the C7 boundary intact, and the answer streams in with citations that open the cited page.
