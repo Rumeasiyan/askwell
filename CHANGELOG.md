@@ -4,6 +4,19 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.48 - 2026-09-25
+
+`Added`: `M8-FIX-BE-178`. Online AI can now send. Before a conversation's first online question,
+Askwell shows exactly what will leave your machine: your question, the passages from your files
+it found relevant, and what it knows about your material that bears on the question. That
+includes facts you taught it, conclusions it drew on its own (including the names of your tables
+and columns) and, occasionally, one value from a table that it used to work out how dates in a
+column are written. Knowledge from other conversations can be included. Whole files, database
+query results and earlier turns are never sent, and a question Askwell cannot answer from your
+files sends nothing. Nothing goes until you confirm the statement for that conversation. Until
+now every online question was refused, because the product does not send what it cannot
+describe.
+
 ## 0.7.47 - 2026-09-25
 
 `Changed`: `M8-FIX-DOC-179`. Askwell is now licensed under the GNU General Public License,

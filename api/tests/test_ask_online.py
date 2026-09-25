@@ -411,7 +411,6 @@ def test_an_empty_account_answers_locally_ends_online_and_loses_nothing(
 
     store: dict[str, str] = {}
     monkeypatch.setattr(redis, "Redis", lambda **_kwargs: FakeRedis(store, {}))
-    monkeypatch.setattr(online, "DISCLOSURE", online.Disclosure(version="1", text="What goes."))
     online._credentials.clear()
     _truncate(database_url)
     settings = _online_settings(settings, tmp_path)
@@ -669,6 +668,7 @@ def test_an_online_conversation_takes_no_question_until_what_it_sends_is_confirm
 
     store: dict[str, str] = {}
     monkeypatch.setattr(redis, "Redis", lambda **_kwargs: FakeRedis(store, {}))
+    monkeypatch.setattr(online, "DISCLOSURE", None)
     online._credentials.clear()
     _truncate(database_url)
     settings = _online_settings(settings, tmp_path)
@@ -757,6 +757,81 @@ def test_an_online_conversation_takes_no_question_until_what_it_sends_is_confirm
     ]
 
 
+def test_the_approved_statement_is_shown_confirmed_and_the_question_then_sent(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """`M8-FIX-BE-178`'s walkthrough against the real `online.DISCLOSURE`,
+    through the routes the interface uses and the real `_online_client`:
+    store a key, switch online, read the statement, confirm version `1`,
+    ask, and the request reaches the provider. Before the confirmation the
+    question is refused with `NOT_CONFIRMED` and nothing is sent."""
+    import redis.asyncio as redis
+
+    store: dict[str, str] = {}
+    monkeypatch.setattr(redis, "Redis", lambda **_kwargs: FakeRedis(store, {}))
+    online._credentials.clear()
+    _truncate(database_url)
+    _forget_key(database_url)
+    settings = _online_settings(settings, tmp_path)
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "Notice is ninety days.", vector)
+    _patch_client(
+        monkeypatch, _FakeInferenceClient(settings, tokens=["Ninety days [1]."], vector=vector)
+    )
+    fake = _Provider(lambda _r: httpx.Response(200, content=_sse("Online: ninety days [1].")))
+    real_client = provider.OnlineClient
+    monkeypatch.setattr(
+        provider,
+        "OnlineClient",
+        lambda s, t: real_client(s, t, transport=httpx.MockTransport(fake.handler)),
+    )
+    approved = online.DISCLOSURE
+    assert approved is not None and approved.version == "1"
+
+    try:
+        with _app(settings, monkeypatch, tmp_path, database_url) as client:
+            _with_session(client)
+            stored = client.put(
+                "/settings/online-key",
+                json={"destination": DESTINATION, "model": MODEL, "api_key": "sk-test-key"},
+            )
+            assert stored.status_code == 200, stored.text
+            conversation_id = client.post("/conversations").json()["conversation_id"]
+            enabled = client.post(f"/conversations/{conversation_id}/online").json()
+            assert enabled["disclosure"] == {
+                "defined": True,
+                "version": "1",
+                "text": approved.text,
+                "confirmed": False,
+            }
+            assert enabled["send_permitted"] is False
+
+            question = {"question": "How long is the notice?", "conversation_id": conversation_id}
+            refused = client.post("/ask", json=question)
+            assert refused.status_code == 409
+            assert refused.json()["error"] == online.NOT_CONFIRMED
+            assert fake.requests == []
+
+            confirmed = client.post(
+                f"/conversations/{conversation_id}/online/disclosure", json={"version": "1"}
+            )
+            assert confirmed.status_code == 200, confirmed.text
+            assert confirmed.json()["send_permitted"] is True
+
+            answered = client.post("/ask", json=question)
+            assert answered.status_code == 200, answered.text
+            done = next(data for kind, data in _events(answered.text) if kind == "done")
+    finally:
+        online._credentials.clear()
+        _forget_key(database_url)
+        with psycopg.connect(database_url, autocommit=True) as db:
+            db.execute("UPDATE conversations SET ai_backend = 'local'")
+
+    assert len(fake.requests) == 1, "the confirmed question reached the provider"
+    _content, trace, _citations, _audit = _stored(database_url, uuid.UUID(done["message_id"]))
+    assert trace["backend"]["mode"] == "online"
+
+
 # --- the user's key, end to end (`M8-KEY-BE-173`) ------------------------------
 
 SENTINEL_KEY = "sk-SENTINEL-askwell-must-never-repeat-0123456789"
@@ -802,7 +877,6 @@ def test_a_stored_key_survives_a_restart_is_sent_and_appears_nowhere_else(
 
     store: dict[str, str] = {}
     monkeypatch.setattr(redis, "Redis", lambda **_kwargs: FakeRedis(store, {}))
-    monkeypatch.setattr(online, "DISCLOSURE", online.Disclosure(version="1", text="What goes."))
     online._credentials.clear()
     _truncate(database_url)
     _forget_key(database_url)

@@ -31,8 +31,9 @@ depend on Askwell being honest about itself. A counter on its own is not suffici
 
 **Needs:** `M8-ONLINE-SEC-169` (the conversation grant), `M8-ONLINE-BE-170` (the provider
 client), `M8-KEY-BE-173`/`M8-KEY-FE-174` (the stored key), and a decided disclosure (#737).
-**While #737 is open, every online send is refused**, and this gate's positive half (§4.3)
-cannot run. Record the gate as `BLOCKED`, not `PASS`. Everything else here still runs and
+#737 was decided on 2026-09-25 and set by `M8-FIX-BE-178` (`0.7.48`), so the positive half
+(§4.3) can run. If `askwell.online.DISCLOSURE` is ever set back to `None`, every online send is
+refused again: record the gate as `BLOCKED`, not `PASS`. Everything else here still runs and
 still has to pass.
 
 **A provider key of the maintainer's own**, for an OpenAI-compatible provider, with a small
@@ -145,8 +146,8 @@ attributed to that conversation and the authorised destination. In the capture: 
 for the authorised name (the proxy resolves it; no other container can resolve an outside name)
 and one TLS session to one of its addresses, whose SNI is the authorised name.
 
-While #737 is open this step prints `BLOCKED` and the script exits `2`. The gate is then
-`BLOCKED`.
+If the disclosure is unset this step prints `BLOCKED` and the script exits `2`. The gate is
+then `BLOCKED`.
 
 ### 4.4 A dependency asks for the same destination (step 2)
 
