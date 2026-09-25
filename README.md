@@ -103,6 +103,6 @@ There is no code yet, which makes some kinds of help unusually valuable — the 
 
 ## Licence
 
-**Apache-2.0.** Free to install, free to fork, free to audit — see [`LICENSE`](LICENSE).
+**GPLv3** (GPL-3.0-or-later). Free to install, free to fork, free to audit — see [`LICENSE`](LICENSE). If you distribute a modified Askwell, your changes are GPLv3 too. It is GPLv3 rather than a permissive licence because spoken answers depend on a GPLv3 pronunciation library, and no permissive licence can include it ([`docs/decisions.md`](docs/decisions.md), 2026-09-25).
 
 The optional online-AI credit service is proprietary. Everything you run locally is not. For a product that claims nothing leaves your machine, the source is the proof.

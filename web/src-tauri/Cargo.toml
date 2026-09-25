@@ -6,6 +6,7 @@ name = "askwell-shell"
 version = "0.0.0"
 description = "Askwell desktop shell — a window over the local API, nothing more"
 edition = "2021"
+license = "GPL-3.0-or-later"
 rust-version = "1.77"
 publish = false
 

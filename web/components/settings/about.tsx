@@ -107,7 +107,7 @@ export function About() {
         <div className="flex flex-col gap-1">
           <div className="flex items-baseline gap-2">
             <dt style={{ color: "var(--muted)" }}>Licence</dt>
-            <dd>Apache-2.0</dd>
+            <dd>GPLv3 (GPL-3.0-or-later)</dd>
           </div>
           <dd>
             <BundledTextDisclosure text={LICENCE_TEXT} summary="Read the licence in full" />

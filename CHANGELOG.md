@@ -4,6 +4,21 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.47 - 2026-09-25
+
+`Changed`: `M8-FIX-DOC-179`. Askwell is now licensed under the GNU General Public License,
+version 3 or later, instead of Apache-2.0. Settings → About says so, and **Read the licence in
+full** shows the new text. Askwell is still free to install, use, read, audit and fork. What
+changes is for anyone who distributes a modified Askwell: their changes must be offered under
+GPLv3 too. The reason is voice. Spoken answers depend on a pronunciation library that is itself
+GPLv3, and no permissive licence can include it, so this is the licence under which Askwell can
+both listen and answer out loud.
+
+The release check on bundled licences now asks whether each component is compatible with
+GPLv3. It still refuses GPL-2.0-only, AGPL, SSPL, non-commercial, no-derivatives and
+unlicensed components, and a component whose licence is unclear, such as one that says only
+"GPL", now stops the release until a person decides.
+
 ## 0.7.46 - 2026-09-25
 
 `Security`: `M8-FIX-SEC-177`. Askwell's internal message store now requires a password, and

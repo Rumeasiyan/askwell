@@ -9,7 +9,7 @@
 
 > **Read this block first. Everything below it is the per-ticket history, oldest milestones first.**
 >
-> **As of 2026-09-25: every milestone's tickets are built — M0 through M8, 213 tickets — and the product is not yet release-ready.** Three tickets remain, added from two product decisions that morning (`docs/decisions.md`, 2026-09-25): `M8-FIX-SEC-177` (Redis authentication, #730), then `M8-FIX-BE-178` (the approved online-AI disclosure, #737), and `M8-FIX-DOC-179` (relicensing to GPLv3 so spoken answers ship, #619). `M7-TAURI-DEPLOY-184a` (code signing) is `[BLOCKED]` on certificates the owner has to buy, and v1 ships unsigned by decision.
+> **As of 2026-09-25: every milestone's tickets are built — M0 through M8, 213 tickets — and the product is not yet release-ready.** Three tickets remain, added from two product decisions that morning (`docs/decisions.md`, 2026-09-25): `M8-FIX-SEC-177` (Redis authentication, #730), then `M8-FIX-BE-178` (the approved online-AI disclosure, #737), and `M8-FIX-DOC-179` (relicensing to GPLv3 so spoken answers ship, #619). `M8-FIX-SEC-177` and `M8-FIX-DOC-179` have landed (`0.7.46`, `0.7.47`); `M8-FIX-BE-178` is the one left. `M7-TAURI-DEPLOY-184a` (code signing) is `[BLOCKED]` on certificates the owner has to buy, and v1 ships unsigned by decision.
 >
 > **What "not release-ready" means.** About 228 issues are open, 64 of them bugs, filed by the build's own audit agents along the way. Some are real: #719 (re-indexing a cited document fails), #728 (the conflict resolution control writes no memory fact), #727 (the conflict layout can box the wrong sentence), #734 (online mode still runs the tool loop locally). **The abstention eval has never been run** — C5's pass bar is ≥ 0.90 and the Eval baseline section at the bottom of this file still reads "Not yet established" (#625). Nothing has been verified on Windows or macOS (#590, #592).
 >
@@ -55,6 +55,29 @@ Since `M1-ASK-FE-039` a question can be typed and watched, for the first time: t
 **Tracker:** `Rumeasiyan/askwell`. Working agreements in `AGENTS.md`. Backlog in `docs/backlog/`.
 
 ## Last completed
+
+**`0.7.47` — `M8-FIX-DOC-179`**: Askwell is GPL-3.0-or-later, and the notices gate passes, closing
+#619. `LICENSE` is the FSF's GPLv3 text, fetched from gnu.org and byte-identical to Fedora's copy.
+`api/pyproject.toml`, `web/package.json` and `web/src-tauri/Cargo.toml` declare `GPL-3.0-or-later`.
+The About screen, `README.md`, `docs/PRD.md`, `SUPPORT.md`, `llms.txt`, and the two manual
+walkthroughs that read the About screen say GPLv3. `AGENTS.md` C9 now requires everything bundled
+to be GPLv3-compatible, with a note above the table saying when and why it changed. The gate's
+rule changed rather than naming `phonemizer`: `askwell.notices.DISALLOWED_LICENSES` keeps
+GPL-1.0/2.0-only, AGPL, SSPL, NC/ND, BUSL, Commons Clause and unlicensed, and drops every GPL that
+can be taken under v3. The new `UNCLEAR_LICENSES` (a bare "GPL", an unqualified "GPLv2", no licence
+at all) also fails the gate, as "needs a decision". `UNVERIFIED` used to pass silently, and now
+fails. AGPL stays refused, although GPLv3 §13 could carry it; the reasons are in
+`docs/decisions.md`, this date. Verified: `scripts/dev.sh notices` exits 0 with `phonemizer`
+3.4.0 listed as `GPL-3.0-or-later`, and a second run leaves `NOTICES.md` unchanged. The real
+script, fed a fabricated web inventory with GPL-2.0-only, AGPL-3.0-only and bare-GPL packages,
+exits 1 naming all three. `test_notices.py` has 23 tests, pinning both halves through the
+generator's `check()`, a non-commercial model still refused, and the classifier mapping.
+`scripts/dev.sh check` passed (1237) and `web-check` passed. On the live stack, after recreating
+`api` over the rebuilt `web/out`, `/settings/` shows "GPLv3 (GPL-3.0-or-later)" and
+`/license.txt` begins "GNU GENERAL PUBLIC LICENSE / Version 3, 29 June 2007". **Filed, not
+fixed:** #754. A distributed GPLv3 bundle must come with the Corresponding Source (§6), and the
+repository is still private. The installers also do not show the licence. It needs one owner
+decision, about when the repository goes public. **Next:** `M8-FIX-BE-178`.
 
 **`0.7.46` — `M8-FIX-SEC-177`**: Redis has one user per service that connects, closing #730.
 `deploy/redis/users.acl` sets up `default` (off), `healthcheck` (`PING`), `api`, `worker` and

@@ -89,12 +89,13 @@ automatable half. The packet capture is read by hand, per that document's §6.
 Also before checksumming or publishing, run `scripts/dev.sh notices`. It regenerates
 `NOTICES.md` from what is actually installed in the built images (never hand-edited) and fails
 if any shipped Python package, JavaScript package, or bundled model carries a licence on
-`askwell.notices`'s disallowed list — C9's redistribution/commercial-use/ungated requirement,
-evidenced rather than merely asserted (`M7-DOC-DOC-163`). **A failed run blocks the release.**
-Commit the regenerated `NOTICES.md` if it changed. As of 2026-09-23 this gate is known red —
-`kokoro-onnx` pulls in `phonemizer` (GPLv3+) — tracked in issue #619 and not yet resolved; do
-not release until it passes or the exception is deliberately, visibly recorded here and in
-`docs/decisions.md`, not silently bypassed.
+`askwell.notices`'s disallowed list, or one it cannot place (a bare "GPL", no licence at all) —
+C9's GPLv3-compatible/commercial-use/ungated requirement, evidenced rather than merely asserted
+(`M7-DOC-DOC-163`, `M8-FIX-DOC-179`). **A failed run blocks the release.** Commit the
+regenerated `NOTICES.md` if it changed. An unclear licence is resolved by a person reading the
+package's actual terms and recording the answer, never by adding the package's name to a list.
+`phonemizer` (GPLv3+), red from 2026-09-23 under #619, passes since Askwell was relicensed to
+GPLv3 (`docs/decisions.md`, 2026-09-25).
 
 ## 3c. The security review gate
 

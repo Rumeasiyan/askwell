@@ -108,7 +108,7 @@ Neither is sticky. Neither happens on its own. Turning one on for a question doe
 
 ## 7. What it costs, and who owns it
 
-**Askwell is open source under Apache-2.0, and free to install.** Unlimited files, unlimited questions, no account, no time limit. Read the code, audit it, fork it, run it forever without paying anyone.
+**Askwell is open source under GPLv3, and free to install.** Unlimited files, unlimited questions, no account, no time limit. Read the code, audit it, fork it, run it forever without paying anyone. Anyone who distributes a modified Askwell shares their changes on the same terms; that is the licence spoken answers require.
 
 Revenue comes from optional online-AI credits — bought in advance, spent per question, with a limit you set so a bad afternoon cannot produce a surprise bill. That service is the one part that is not open.
 

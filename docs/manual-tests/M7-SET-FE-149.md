@@ -59,14 +59,14 @@ cat VERSION
 ## Part B — version and licence
 
 1. **Version** shows exactly the number `cat VERSION` printed. Not an older number, not an extra suffix. ☐
-2. **Licence** reads `Apache-2.0`. ☐
+2. **Licence** reads `GPLv3 (GPL-3.0-or-later)`. ☐
 3. Click **Read the licence in full**. ☐
 
-   **You should see:** a box opens below the link, first showing "Reading…" briefly, then the text. It begins "Apache License / Version 2.0, January 2004".
+   **You should see:** a box opens below the link, first showing "Reading…" briefly, then the text. It begins "GNU GENERAL PUBLIC LICENSE / Version 3, 29 June 2007".
 
 4. Scroll inside that box to the very bottom. ☐
 
-   **You should see:** the copyright line `Copyright 2026 Suseenthiran Arulraj Rumeasiyan`, and the last words are "limitations under the License." Nothing is cut off mid-sentence. The page around the box does not scroll away while you scroll inside it.
+   **You should see:** the section "How to Apply These Terms to Your New Programs", and the last words are "<https://www.gnu.org/licenses/why-not-lgpl.html>." There is no copyright line yet (#756). Nothing is cut off mid-sentence. The page around the box does not scroll away while you scroll inside it.
 
 5. Click **Read the licence in full** again. ☐
 
