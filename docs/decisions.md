@@ -140,6 +140,22 @@ Append-only. **Newest first.** Never edit an entry to change its meaning — if 
 
 ---
 
+## 2026-09-25 — Correction: the first approved online-AI disclosure was false, and is replaced
+
+**Decision:** The disclosure recorded earlier today is withdrawn. The payload is kept as it is and stated honestly. Version `1` of the statement is now, verbatim: *"When you ask in this conversation, Askwell sends your online AI provider your question, the passages from your files that it found relevant to it, and what Askwell knows about your material that bears on the question: facts you have taught it, conclusions it has drawn about your files and databases on its own — including the names of your tables and columns — and, occasionally, a single value from one of your tables that it used to work out how the dates in a column are written. What Askwell knows is not tied to one conversation, so something you taught it elsewhere can be included. It does not send whole files, database query results, or the questions and answers from earlier turns. A question Askwell cannot answer from your files sends nothing."*
+
+**Why:** The earlier entry said the draft was "read from the code, not assumed". It was not read carefully enough, and the orchestrating session is the one that approved it without checking. The build agent for `M8-FIX-BE-178` checked every clause and halted sixteen times rather than set it. It found three untrue claims. "Facts you have taught Askwell": `retrieve_relevant_facts` also returns inferred facts and schema notes, and orders them by origin without filtering on it. "Does not send database rows": `askwell.table_infer` writes the cell value that settled a column's date format into a schema note, and schema notes are sent. "Nothing from other conversations": memory is global.
+
+Two fixes were put to the product owner. Narrowing the payload to user-taught facts, with no cell values, would have kept the original sentence true. It needed a ticket and an eval run, and online answers would lose the inferences that make them as good as local ones. Rewording to match the payload keeps the answer quality and asks the sentence to carry more. The product owner chose the rewording. The replacement was checked clause by clause against `compose_conflict`, `delimit_candidates` and `table_infer` before it was shown for approval.
+
+**What this entry is really about:** a statement of what leaves the machine is a C1 promise the user relies on to decide whether confidential material may go. The safeguard that caught this was an agent that refused to set text it could not verify. The approval process had no such check: the orchestrator restated a draft's own claim of accuracy instead of re-reading the code. Any future change to this statement, or to what is sent, has to be verified against the code first.
+
+**Consequences:** `M8-FIX-BE-178` is unblocked with the new text and told to re-verify before setting it. The earlier entry stays as written, because this log is append-only, and this one supersedes it.
+
+**Refs:** #753, #737; `M8-FIX-BE-178`; `api/src/askwell/agent/conflict.py`, `api/src/askwell/memory.py`, `api/src/askwell/table_infer.py`; product owner's decision, 2026-09-25.
+
+---
+
 ## 2026-09-25 — Askwell is relicensed to GPLv3, so that spoken answers ship
 
 **Decision:** Askwell moves from Apache-2.0 to GPL-3.0-or-later. `AGENTS.md` C9 changes from "must permit redistribution under Apache-2.0" to "must be GPLv3-compatible, permit commercial use and redistribution, and not be gated". The release licence gate keeps refusing GPL-2.0-only, AGPL, SSPL, non-commercial, no-derivatives and unlicensed material, and stops refusing GPLv3. The mechanics are `M8-FIX-DOC-179`.
