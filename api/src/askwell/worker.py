@@ -44,8 +44,15 @@ log = get_logger(__name__)
 
 
 def redis_settings(settings: Settings) -> RedisSettings:
-    """Where the queue lives."""
-    return RedisSettings(host=settings.redis_host, port=settings.redis_port)
+    """Where the queue lives, and which Redis user this process reaches it
+    as (`M8-FIX-SEC-177`) — the API and the worker are different users with
+    the same queue keys."""
+    from askwell.redis_client import credentials
+
+    username, password = credentials(settings)
+    return RedisSettings(
+        host=settings.redis_host, port=settings.redis_port, username=username, password=password
+    )
 
 
 async def ping(ctx: dict[str, Any], sent_at: str) -> dict[str, str]:
@@ -510,9 +517,11 @@ def main() -> None:
 
     from askwell.config import ConfigurationError
     from askwell.crash_report import install_excepthook
+    from askwell.redis_client import require_credentials
 
     try:
         settings = load_settings()
+        require_credentials(settings, "The worker")
     except ConfigurationError as error:
         raise SystemExit(str(error)) from None
 

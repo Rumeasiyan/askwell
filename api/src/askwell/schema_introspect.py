@@ -51,7 +51,7 @@ from typing import TYPE_CHECKING, Literal
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from askwell import audit
+from askwell import audit, redis_client
 from askwell.audit import Store
 from askwell.clarify import (
     EVIDENCE_MAX_COLUMN_VALUES,
@@ -1066,14 +1066,7 @@ async def record_introspection_run(settings: "Settings") -> None:
     """
     import contextlib
 
-    import redis.asyncio as redis
-
-    client = redis.Redis(
-        host=settings.redis_host,
-        port=settings.redis_port,
-        socket_connect_timeout=1.0,
-        socket_timeout=1.0,
-    )
+    client = redis_client.connect(settings, timeout=1.0)
     try:
         await client.incr(SCHEMA_INTROSPECTION_RUN_COUNTER_KEY)
     except Exception as error:

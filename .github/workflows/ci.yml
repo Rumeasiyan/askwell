@@ -107,6 +107,10 @@ jobs:
       SANDBOX_POSTGRES_PASSWORD: ci-only-sandbox-password
       SANDBOX_OWNER_PASSWORD: ci-only-sandbox-owner-password
       SANDBOX_READONLY_PASSWORD: ci-only-sandbox-readonly-password
+      REDIS_API_PASSWORD: ci-only-redis-api-password
+      REDIS_WORKER_PASSWORD: ci-only-redis-worker-password
+      REDIS_PROXY_PASSWORD: ci-only-redis-proxy-password
+      ASKWELL_REDIS_HOST: 127.0.0.1
       # `host`, so the test container reaches both services on localhost.
       # Locally this is two Compose networks joined at once; the tests do not
       # know the difference.
@@ -176,6 +180,27 @@ jobs:
               REVOKE EXECUTE ON FUNCTION pg_catalog.loread(integer, integer) FROM PUBLIC;
               REVOKE EXECUTE ON FUNCTION pg_catalog.lowrite(integer, bytea) FROM PUBLIC;
             "
+
+      - name: Start Redis with one user per service
+        # Not a `services` entry: a service container cannot be given a
+        # command or a mounted file, and Redis without `deploy/redis/start.sh`
+        # and `users.acl` would be the open Redis `M8-FIX-SEC-177` closed —
+        # `test_redis_acl.py` would then be asserting refusals against a
+        # server that refuses nothing. Started exactly as compose.yaml does.
+        run: |
+          docker run -d --name redis --network host \
+            -e REDIS_API_PASSWORD -e REDIS_WORKER_PASSWORD -e REDIS_PROXY_PASSWORD \
+            -v "$PWD/deploy/redis:/askwell-redis:ro" \
+            --entrypoint sh redis:8-alpine /askwell-redis/start.sh \
+            redis-server --aclfile /tmp/askwell-redis/users.acl
+          for _ in $(seq 1 30); do
+            if docker exec redis sh -c 'redis-cli --user healthcheck --pass "$(cat /tmp/askwell-redis/healthcheck.pass)" --no-auth-warning ping' | grep -q PONG; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs redis
+          exit 1
 
       - name: Database-backed tests
         # These are where C6 and the schema invariants are actually asserted —

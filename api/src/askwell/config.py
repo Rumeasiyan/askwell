@@ -77,6 +77,17 @@ class Settings(BaseSettings):
     redis_host: str = "redis"
     redis_port: Port = 6379
 
+    # Which Redis user this process is, and its password (`M8-FIX-SEC-177`).
+    # One user per service, each holding only the keys it uses —
+    # `deploy/redis/users.acl` — so the worker cannot write the egress grants
+    # the proxy trusts. Optional here only because `voice` and
+    # `inference-bridge` load these settings and never open Redis; the three
+    # processes that do refuse to start without them
+    # (`askwell.redis_client.require_credentials`), and Redis itself refuses
+    # a connection that does not authenticate.
+    redis_username: str | None = None
+    redis_password: SecretStr | None = None
+
     # The worker is not addressed by host and port, deliberately. An arq
     # worker consumes a queue; it does not listen on anything, so a TCP probe
     # can never see it and would report a perfectly healthy worker as down.

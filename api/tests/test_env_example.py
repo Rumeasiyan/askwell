@@ -82,7 +82,7 @@ def test_the_example_carries_no_real_looking_secret() -> None:
     """Placeholders, always. This file is committed."""
     text = EXAMPLE.read_text(encoding="utf-8")
     for line in text.splitlines():
-        if not line.startswith("POSTGRES_") or "PASSWORD" not in line:
+        if not line.startswith(("POSTGRES_", "REDIS_")) or "PASSWORD" not in line:
             continue
         _, _, value = line.partition("=")
         assert "change-me" in value, (

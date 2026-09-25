@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from askwell import redis_client
 from askwell.config import Settings
 from askwell.inference import state as inference_state
 from askwell.inference.state import ProcessState
@@ -130,12 +131,7 @@ async def _probe_worker(settings: Settings, timeout: float) -> ComponentHealth: 
             duration_ms=(loop.time() - started) * 1000,
         )
 
-    client = redis.Redis(
-        host=settings.redis_host,
-        port=settings.redis_port,
-        socket_connect_timeout=timeout,
-        socket_timeout=timeout,
-    )
+    client = redis_client.connect(settings, timeout=timeout)
     try:
         async with asyncio.timeout(timeout):
             record = await client.get(settings.worker_health_key)

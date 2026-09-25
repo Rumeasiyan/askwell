@@ -124,6 +124,19 @@ _sandbox_readonly_password() {
     [ -n "$value" ] || die "SANDBOX_READONLY_PASSWORD is not set in .env. Copy .env.example and set it."
     printf '%s' "$value"
 }
+# One Redis password per service (`M8-FIX-SEC-177`), named for its user:
+# `_redis_password api` reads REDIS_API_PASSWORD.
+_redis_password() {
+    local name value
+    name="REDIS_$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')_PASSWORD"
+    value="$(_env_value "$name" "")"
+    [ -n "$value" ] || die "$name is not set in .env. Copy .env.example and set it; the installer generates it."
+    printf '%s' "$value"
+}
+# `redis` is the Compose service name, same reasoning as `_db_host`. CI
+# reaches its own Redis on loopback instead, and overrides this.
+_redis_host() { _env_value ASKWELL_REDIS_HOST redis; }
+_redis_port() { _env_value ASKWELL_REDIS_PORT 6379; }
 
 build_image() {
     note "building $IMAGE"
@@ -295,6 +308,11 @@ case "$cmd" in
             -e TEST_SANDBOX_OWNER_PASSWORD="$(_sandbox_owner_password)" \
             -e TEST_SANDBOX_READONLY_PASSWORD="$(_sandbox_readonly_password)" \
             -e ASKWELL_SANDBOX_OWNER_PASSWORD="$(_sandbox_owner_password)" \
+            -e TEST_REDIS_HOST="$(_redis_host)" \
+            -e TEST_REDIS_PORT="$(_redis_port)" \
+            -e TEST_REDIS_API_PASSWORD="$(_redis_password api)" \
+            -e TEST_REDIS_WORKER_PASSWORD="$(_redis_password worker)" \
+            -e TEST_REDIS_PROXY_PASSWORD="$(_redis_password proxy)" \
             -v "$REPO_ROOT":/app:z \
             -w /app/api \
             "$IMAGE" pytest -m requires_db "$@"
@@ -320,6 +338,10 @@ case "$cmd" in
         # POSTGRES_* variables Compose interpolates for other services —
         # exactly the "unknown variable" refusal load_settings() exists to
         # give. Every other in_image command avoids this the same way.
+        #
+        # Redis as the `api` user (`M8-FIX-SEC-177`): a suite drives real
+        # `askwell.ask` turns, which is the API's code, and `web_escalation`
+        # reads the proxy's counters, which only the API may read.
         [ "$#" -gt 0 ] || die "eval needs a suite, e.g. $SELF eval --suite smoke.v1"
         image_exists || build_image
         "$CONTAINER" run --rm "${TTY_FLAGS[@]}" \
@@ -329,6 +351,8 @@ case "$cmd" in
             -e ASKWELL_SANDBOX_DATABASE_URL="postgresql://$(_sandbox_user):$(_sandbox_password)@$(_sandbox_host):$(_sandbox_port)/postgres" \
             -e ASKWELL_SANDBOX_OWNER_PASSWORD="$(_sandbox_owner_password)" \
             -e ASKWELL_SANDBOX_READONLY_PASSWORD="$(_sandbox_readonly_password)" \
+            -e ASKWELL_REDIS_USERNAME=api \
+            -e ASKWELL_REDIS_PASSWORD="$(_redis_password api)" \
             -v "$REPO_ROOT":/app:z \
             -v "${ASKWELL_RUN_DIR:-$REPO_ROOT/.run}":/run/askwell:z \
             -w /app/api \

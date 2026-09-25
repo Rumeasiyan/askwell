@@ -1,0 +1,55 @@
+# Askwell's Redis users — one per service that connects, each holding only
+# the commands and keys it uses (`M8-FIX-SEC-177`, issue #730).
+#
+# Why this exists: the egress proxy is C1's enforcement point, and it opens a
+# route off the machine for whatever `askwell:egress:*` grant Redis holds.
+# Without users, every container on the `internal` network could write one —
+# including the worker, which parses untrusted documents. With them, only the
+# API can.
+#
+# This is a template. `start.sh` beside it replaces each `@..._SHA256@` with
+# the SHA-256 of a password from `.env` (C8), strips these comments, and
+# starts Redis on the result. Loaded as it stands, it is refused: a
+# placeholder is not a valid hash, so a mistake here fails closed.
+#
+# Who is not here: `voice` and `inference-bridge`. Neither opens a Redis
+# connection, so neither has a user, and neither is given a password.
+#
+# Command names are what reaches Redis, not the client method: redis-py's
+# `incr()` sends INCRBY, so INCRBY is what is granted.
+#
+# Key permissions: `~` read and write, `%R~` read only, `%W~` write only.
+# `resetkeys resetchannels -@all` first on every line, so nothing is inherited
+# from a default and every grant below is one somebody wrote on purpose.
+
+# No user, no access. A connection that never authenticates is `default`, and
+# `default` can do nothing — not even PING.
+user default off resetpass resetkeys resetchannels -@all
+
+# The container's own health check: PING and nothing else, no keys. Its
+# password is generated fresh by `start.sh` at every start and never leaves
+# the container, so it is not in `.env` and no installer handles it.
+user healthcheck on #@HEALTHCHECK_PASSWORD_SHA256@ resetkeys resetchannels -@all +ping
+
+# The API. The only writer of the three egress grants: the update check's
+# permitted host (`askwell.update_check`), a web-search turn's grant
+# (`askwell.websearch`), a conversation's online authorisation
+# (`askwell.online`). It reads the proxy's counters and never writes them. It
+# enqueues jobs, reads the worker's health record, and counts two refusals of
+# its own (`askwell.sql_execute`, `askwell.connections`).
+user api on #@API_PASSWORD_SHA256@ resetkeys resetchannels -@all +ping +client|setinfo +multi +exec +discard +watch +unwatch +get +mget +set +del +exists +ttl +scan +incrby +lrange +hgetall +psetex +zadd ~arq:* ~askwell:egress:permitted_host ~askwell:egress:grant:* ~askwell:egress:conversation:* %R~askwell:egress:refused %R~askwell:egress:permitted %R~askwell:egress:recent %R~askwell:egress:since %R~askwell:egress:permitted_by_conversation ~askwell:sql:* ~askwell:connections:*
+
+# The worker. The queue (arq's own keys, all under `arq:`) and one counter of
+# its own (`askwell.schema_introspect`). No `askwell:egress:` pattern at all,
+# so it can neither read nor write any grant: a document that exploits a
+# parser can reach Redis and still cannot open a route out.
+user worker on #@WORKER_PASSWORD_SHA256@ resetkeys resetchannels -@all +ping +info +dbsize +client|setinfo +multi +exec +discard +watch +unwatch +get +set +setex +psetex +del +exists +expire +pexpire +incrby +zadd +zincrby +zrem +zrange +zrangebyscore +zremrangebyscore +zscore +zcard ~arq:* ~askwell:schema_introspect:*
+
+# The egress proxy. Reads the three grants, never writes one. Writes only its
+# own counters. The one exception is the selector in parentheses: at startup
+# the proxy revokes every standing conversation grant
+# (`askwell.egress.close_all_conversation_grants`), so it may DEL — and only
+# DEL — a key under `askwell:egress:conversation:`. A selector binds the
+# command to the key pattern; a plain `%W~` on that prefix would have let it
+# SET a grant too.
+user proxy on #@PROXY_PASSWORD_SHA256@ resetkeys resetchannels -@all +ping +client|setinfo +multi +exec +discard +get +mget +ttl +scan +incrby +setnx +set +lpush +ltrim +hincrby %R~askwell:egress:permitted_host %R~askwell:egress:grant:* %R~askwell:egress:conversation:* ~askwell:egress:refused ~askwell:egress:permitted ~askwell:egress:recent ~askwell:egress:since ~askwell:egress:permitted_by_conversation (+del %W~askwell:egress:conversation:*)

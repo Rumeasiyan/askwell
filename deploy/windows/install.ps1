@@ -13,7 +13,7 @@
     What this script needs beside itself, and where it expects to find it:
 
       REPO_ROOT (two directories above this script)\
-        compose.yaml, .env.example, deploy\postgres, deploy\sandbox   — the stack
+        compose.yaml, .env.example, deploy\postgres, deploy\sandbox, deploy\redis — the stack
         deploy\probe\askwell-probe                                    — the host probe
         deploy\inference\askwell-inference                             — native inference (a
                                                                           standard-library-only
@@ -198,6 +198,7 @@ function Copy-AskwellFiles {
     New-Item -ItemType Directory -Force -Path $StartMenuDir | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $InstallPrefix 'deploy\postgres') | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $InstallPrefix 'deploy\sandbox') | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $InstallPrefix 'deploy\redis') | Out-Null
 
     Copy-Item (Join-Path $RepoRoot 'compose.yaml') (Join-Path $InstallPrefix 'compose.yaml') -Force
 
@@ -207,9 +208,13 @@ function Copy-AskwellFiles {
         Set-AskwellEnvPasswords $envFile
         Write-AskwellSay "Generated database credentials in $envFile"
     }
+    # Every run, not only a fresh one: an upgrade from before Redis had users
+    # needs these generated too, or the stack refuses to start.
+    Set-AskwellRedisPasswords $envFile
 
     Copy-Item (Join-Path $RepoRoot 'deploy\postgres\*') (Join-Path $InstallPrefix 'deploy\postgres\') -Recurse -Force
     Copy-Item (Join-Path $RepoRoot 'deploy\sandbox\*') (Join-Path $InstallPrefix 'deploy\sandbox\') -Recurse -Force
+    Copy-Item (Join-Path $RepoRoot 'deploy\redis\*') (Join-Path $InstallPrefix 'deploy\redis\') -Recurse -Force
 
     $probeDest = Join-Path $InstallPrefix 'askwell-probe'
     Copy-Item (Join-Path $RepoRoot 'deploy\probe\askwell-probe') $probeDest -Force

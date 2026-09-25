@@ -31,11 +31,12 @@ has no token and is refused. The token lives only in this process — Redis
 holds its SHA-256 — so a restart makes any surviving grant unusable even
 before startup revokes it (`revoke_all_on_startup`).
 
-**What the credential is not.** Redis has no authentication on the internal
-network, so anything already able to write to Redis could write a grant of
-its own. The credential scopes the door to the conversation that opened it
-against accidental use — a local conversation, a telemetry call — not against
-a compromised container, which already has the database too.
+**What the credential is not.** It scopes the door to the conversation that
+opened it against accidental use — a local conversation, a telemetry call.
+Who may write a grant at all is Redis's job, not the credential's: since
+`M8-FIX-SEC-177` each service is its own Redis user and only the API's may
+write one (`deploy/redis/users.acl`), so a compromised worker cannot. A
+compromised API process could, and it holds the database and the key too.
 
 **Nothing is sent before it is described** (`M8-ONLINE-FE-171`). Being
 online authorises the destination; it does not permit a send. A send also

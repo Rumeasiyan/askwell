@@ -14,7 +14,7 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from askwell import __version__, ask
+from askwell import __version__, ask, redis_client
 from askwell.ask import register_ask
 from askwell.assistant import read as read_assistant
 from askwell.backup import register_backup
@@ -310,6 +310,7 @@ def main() -> None:
 
     try:
         settings = load_settings()
+        redis_client.require_credentials(settings, "The API")
     except ConfigurationError as error:
         # Deliberately not a log line and deliberately not a traceback: nothing
         # has started, logging is not configured yet, and the person reading

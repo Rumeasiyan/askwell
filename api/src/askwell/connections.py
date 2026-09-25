@@ -86,7 +86,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from askwell import audit, crypto, passphrase
+from askwell import audit, crypto, passphrase, redis_client
 from askwell.audit import Store
 from askwell.logging import get_logger
 
@@ -675,14 +675,7 @@ async def record_write_probe_refusal(
     )
     log.info("connection_write_refused", engine=engine, host=host)
 
-    import redis.asyncio as redis
-
-    client = redis.Redis(
-        host=settings.redis_host,
-        port=settings.redis_port,
-        socket_connect_timeout=1.0,
-        socket_timeout=1.0,
-    )
+    client = redis_client.connect(settings, timeout=1.0)
     try:
         await client.incr(WRITE_PROBE_REFUSED_COUNTER_KEY)
     except Exception as error:

@@ -20,6 +20,7 @@ problem.
 from dataclasses import dataclass, field
 from typing import Any
 
+from askwell import redis_client
 from askwell.config import Settings
 from askwell.egress import (
     CONVERSATION_GRANT_KEY_PREFIX,
@@ -106,14 +107,7 @@ def _unavailable(reason: str) -> NetworkActivity:
 
 async def read_activity(settings: Settings) -> NetworkActivity:
     """Read the proxy's counters. Never invents one."""
-    import redis.asyncio as redis
-
-    client = redis.Redis(
-        host=settings.redis_host,
-        port=settings.redis_port,
-        socket_connect_timeout=settings.health_probe_timeout_seconds,
-        socket_timeout=settings.health_probe_timeout_seconds,
-    )
+    client = redis_client.connect(settings, timeout=settings.health_probe_timeout_seconds)
     try:
         async with client.pipeline() as pipe:
             pipe.get(REPORTING_SINCE_KEY)

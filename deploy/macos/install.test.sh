@@ -178,6 +178,56 @@ all_pw="$pg_pw $pg_app_pw $pg_ro_pw $sbx_pg_pw $sbx_owner_pw $sbx_ro_pw"
 distinct="$(printf '%s\n' $all_pw | sort -u | wc -l | tr -d ' ')"
 check "the six stored passwords are all distinct from each other" "$distinct" "6"
 
+# --- M8-FIX-SEC-177: Redis passwords, fresh and on upgrade -----------------------
+fresh
+env_file="$TMP/env-redis-fresh"
+cat > "$env_file" <<'EOF'
+REDIS_API_PASSWORD=change-me-redis-api
+REDIS_WORKER_PASSWORD=change-me-redis-worker
+REDIS_PROXY_PASSWORD=change-me-redis-proxy
+OTHER=kept
+EOF
+ensure_redis_passwords "$env_file"
+grep -q 'change-me' "$env_file" && r=0 || r=1
+check "a fresh .env keeps no Redis placeholder" "$r" 1
+api_pw="$(grep '^REDIS_API_PASSWORD=' "$env_file" | cut -d= -f2)"
+worker_pw="$(grep '^REDIS_WORKER_PASSWORD=' "$env_file" | cut -d= -f2)"
+proxy_pw="$(grep '^REDIS_PROXY_PASSWORD=' "$env_file" | cut -d= -f2)"
+check "a generated Redis password is 64 hex characters" "${#api_pw}" "64"
+distinct="$(printf '%s\n' "$api_pw" "$worker_pw" "$proxy_pw" | sort -u | wc -l | tr -d ' ')"
+check "the three Redis passwords are distinct" "$distinct" "3"
+check "other lines survive" "$(grep -c '^OTHER=kept$' "$env_file")" "1"
+check "each Redis password appears once" "$(grep -c '^REDIS_' "$env_file")" "3"
+
+# An install from before Redis had users: none of the three lines exist, and
+# Compose would refuse to start. The upgrade must add them, not refuse.
+fresh
+env_file="$TMP/env-redis-upgrade"
+printf 'POSTGRES_PASSWORD=already-real\nOTHER=kept' > "$env_file"
+ensure_redis_passwords "$env_file"
+for name in REDIS_API_PASSWORD REDIS_WORKER_PASSWORD REDIS_PROXY_PASSWORD; do
+  value="$(grep "^$name=" "$env_file" | cut -d= -f2)"
+  check "an upgrade generates $name" "${#value}" "64"
+done
+check "an upgrade leaves the database password alone" "$(grep '^POSTGRES_PASSWORD=' "$env_file")" "POSTGRES_PASSWORD=already-real"
+check "an upgrade keeps a last line that had no newline" "$(grep -c '^OTHER=kept$' "$env_file")" "1"
+
+# A password someone already has is theirs: a second install run changes nothing.
+before="$(cat "$env_file")"
+ensure_redis_passwords "$env_file"
+check "a second run changes no existing Redis password" "$(cat "$env_file")" "$before"
+
+# An empty value is as unusable as a missing one.
+fresh
+env_file="$TMP/env-redis-empty"
+printf 'REDIS_API_PASSWORD=\nREDIS_WORKER_PASSWORD=mine\nREDIS_PROXY_PASSWORD=change-me-redis-proxy\n' > "$env_file"
+ensure_redis_passwords "$env_file"
+value="$(grep '^REDIS_API_PASSWORD=' "$env_file" | cut -d= -f2)"
+check "an empty Redis password is generated" "${#value}" "64"
+check "a real Redis password is kept" "$(grep '^REDIS_WORKER_PASSWORD=' "$env_file")" "REDIS_WORKER_PASSWORD=mine"
+value="$(grep '^REDIS_PROXY_PASSWORD=' "$env_file" | cut -d= -f2)"
+check "a placeholder Redis password is generated" "${#value}" "64"
+
 fresh
 env_file2="$TMP/env-preserves-other-lines"
 cat > "$env_file2" <<'EOF'
