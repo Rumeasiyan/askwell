@@ -34,7 +34,7 @@ Askwell shows this page too: **Settings → About → Report a problem**. It is 
 - **Support for a model you supplied yourself.** Askwell measures citation and abstention behaviour for the models it ships. Anything else is unmeasured, and the interface says so.
 - **Features on request.** A feature request is read and weighed against `docs/PRD.md`. Most will be declined; that is not a judgement on the idea.
 
-This is a free, Apache-2.0 project. If this boundary does not work for your situation, forking is explicitly fine. That is what the licence is for.
+This is a free, GPLv3 project. If this boundary does not work for your situation, forking is explicitly fine. That is what the licence is for.
 
 ## What a good report contains
 

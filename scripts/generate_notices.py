@@ -25,9 +25,10 @@ Usage (see `scripts/dev.sh notices`, which drives both steps):
 
 Exits 1 (after still writing `NOTICES.md`, so the diff is visible) if any
 dependency or bundled model carries a licence on `askwell.notices`'s
-disallowed list. This is a release-gate check (`docs/release-procedure.md`),
-not part of `scripts/dev.sh check` — see that file for why it is not wired
-into every commit's run.
+disallowed list, or one it cannot place either side of that list. This is a
+release-gate check (`docs/release-procedure.md`), not part of
+`scripts/dev.sh check` — see that file for why it is not wired into every
+commit's run.
 """
 
 from __future__ import annotations
@@ -43,7 +44,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "api" / "src"))
 
-from askwell.notices import MODEL_NOTICES, disallowed_tokens  # noqa: E402
+from askwell.notices import MODEL_NOTICES, disallowed_tokens, unclear_tokens  # noqa: E402
 
 DEFAULT_WEB_LICENSES = REPO_ROOT / ".notices" / "web-licenses.json"
 NOTICES_PATH = REPO_ROOT / "NOTICES.md"
@@ -63,7 +64,18 @@ _CLASSIFIER_TO_SPDX = {
     "GNU Library or Lesser General Public License (LGPL)": "LGPL-3.0-only",
     "License :: OSI Approved :: "
     "GNU General Public License v3 or later (GPLv3+)": "GPL-3.0-or-later",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)": "GPL-3.0-only",
+    "License :: OSI Approved :: "
+    "GNU General Public License v2 or later (GPLv2+)": "GPL-2.0-or-later",
+    # The v2 classifier does not say "only" or "or later". Read as "only",
+    # the one that fails, so a package using it is looked at, not waved on.
     "License :: OSI Approved :: GNU General Public License v2 (GPLv2)": "GPL-2.0-only",
+    "License :: OSI Approved :: GNU Affero General Public License v3": "AGPL-3.0-only",
+    "License :: OSI Approved :: "
+    "GNU Affero General Public License v3 or later (AGPLv3+)": "AGPL-3.0-or-later",
+    # No version at all: `askwell.notices.UNCLEAR_LICENSES` fails the gate on
+    # it, unless the same package also carries a versioned classifier.
+    "License :: OSI Approved :: GNU General Public License (GPL)": "GPL",
 }
 
 # Neither package publishes a machine-readable licence (PyPI's own JSON API
@@ -100,10 +112,16 @@ def _python_license(dist: metadata.Distribution) -> str:
     expr = dist.metadata.get("License-Expression")
     if expr:
         return expr
-    for classifier in dist.metadata.get_all("Classifier", []):
-        mapped = _CLASSIFIER_TO_SPDX.get(classifier)
-        if mapped:
-            return mapped
+    mapped = [
+        _CLASSIFIER_TO_SPDX[c]
+        for c in dist.metadata.get_all("Classifier", [])
+        if c in _CLASSIFIER_TO_SPDX
+    ]
+    # Packages often list the unversioned GPL classifier beside the versioned
+    # one; the versioned one is the actual statement.
+    specific = [m for m in mapped if m != "GPL"]
+    if mapped:
+        return (specific or mapped)[0]
     raw = (dist.metadata.get("License") or "").strip()
     if raw and "\n" not in raw and len(raw) < 60:
         return raw
@@ -215,9 +233,9 @@ def render(
         "## Bundled model weights",
         "",
         "Verified against the model's own registry entry before being written here "
-        "(`AGENTS.md` §4); C9 requires every one of these to permit redistribution and "
-        "commercial use, and to be ungated. A model you swap in yourself is your own "
-        "responsibility to check against the same terms.",
+        "(`AGENTS.md` §4); C9 requires every one of these to be GPLv3-compatible, to "
+        "permit redistribution and commercial use, and to be ungated. A model you swap in "
+        "yourself is your own responsibility to check against the same terms.",
         "",
         "| Role | Model | Source | Licence | Verified | Note |",
         "| ---- | ----- | ------ | ------- | -------- | ---- |",
@@ -260,11 +278,20 @@ def check(python_deps: list[DependencyNotice], web_deps: list[DependencyNotice])
     for m in MODEL_NOTICES:
         for token in disallowed_tokens(m.license):
             problems.append(f"model {m.name!r} ({m.role}): disallowed licence {token}")
+        for token in unclear_tokens(m.license):
+            problems.append(
+                f"model {m.name!r} ({m.role}): unclear licence {token}, needs a decision"
+            )
     for d in python_deps + web_deps:
         if d.scope != "runtime":
             continue
         for token in disallowed_tokens(d.license):
             problems.append(f"python/js package {d.name!r} {d.version}: disallowed licence {token}")
+        for token in unclear_tokens(d.license):
+            problems.append(
+                f"python/js package {d.name!r} {d.version}: unclear licence {token}, "
+                "needs a decision"
+            )
     return problems
 
 
@@ -279,13 +306,13 @@ def main() -> int:
     problems = check(python_deps, web_deps)
     if problems:
         print(  # noqa: T201 - a command, talking to a terminal
-            "\nDISALLOWED LICENCES FOUND — release gate fails:", file=sys.stderr
+            "\nDISALLOWED OR UNCLEAR LICENCES FOUND — release gate fails:", file=sys.stderr
         )
         for p in problems:
             print(f"  - {p}", file=sys.stderr)  # noqa: T201 - a command, talking to a terminal
         return 1
 
-    print("no disallowed licences found")  # noqa: T201 - a command, talking to a terminal
+    print("no disallowed or unclear licences found")  # noqa: T201 - a command, talking to a terminal
     return 0
 
 

@@ -38,7 +38,7 @@ PART 0 — ASKWELL CONTEXT (READ THIS FIRST)
 
 ### What Askwell is
 
-A **personal AI over your own files and databases**, running entirely on one person's own machine. Add documents, spreadsheets, database dumps or live connections; ask questions in English; get answers with sources attached. It asks the user about anything genuinely ambiguous and remembers the answers. Free, open source (Apache-2.0), English-only in v1.
+A **personal AI over your own files and databases**, running entirely on one person's own machine. Add documents, spreadsheets, database dumps or live connections; ask questions in English; get answers with sources attached. It asks the user about anything genuinely ambiguous and remembers the answers. Free, open source (GPLv3), English-only in v1.
 
 ### Five facts that invalidate normal planning assumptions
 

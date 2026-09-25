@@ -11,7 +11,7 @@ export default function SettingsAbout() {
 
           <Panel>
             <Row k="Version" v="0.1.0" />
-            <Row k="Licence" v="Apache-2.0 · free to use, fork and audit" tone="prov" />
+            <Row k="Licence" v="GPLv3 · free to use, fork and audit" tone="prov" />
             <Row k="Source" v="github.com/Rumeasiyan/askwell" tone="prov" />
             <Row k="Models in use" v="Qwen3.5 4B · bge-m3 · whisper small · Kokoro" />
             <Prose className="mt-3 text-[14px] text-[var(--ask-muted)]">

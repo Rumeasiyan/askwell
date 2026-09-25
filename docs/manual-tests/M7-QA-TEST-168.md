@@ -458,7 +458,7 @@ If it is blank, mark W8.3–W8.5 `BLOCKED` in the dry-run copy and continue to E
     not available. Network activity is unchanged.
 
 47. **W9.3.** Under **About**.
-    **You should see:** **Version** reads what `cat VERSION` prints. **Licence** reads Apache-2.0, with **Read
+    **You should see:** **Version** reads what `cat VERSION` prints. **Licence** reads GPLv3 (GPL-3.0-or-later), with **Read
     the licence in full**. **Notices** has "Third-party notices and licences, including the
     bundled model weights". Under **Report a problem**, the support boundary text is shown
     before the issue address. **Security problem** has "How to report a security problem".
