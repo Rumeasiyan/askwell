@@ -42,7 +42,7 @@ from typing import Any, NoReturn
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from askwell import audit, connections
+from askwell import audit, connections, redis_client
 from askwell.audit import Store
 from askwell.config import Settings
 from askwell.logging import get_logger
@@ -460,14 +460,7 @@ async def _record_timeout(
         duration_seconds=failure.duration_seconds,
     )
 
-    import redis.asyncio as redis
-
-    client = redis.Redis(
-        host=settings.redis_host,
-        port=settings.redis_port,
-        socket_connect_timeout=1.0,
-        socket_timeout=1.0,
-    )
+    client = redis_client.connect(settings, timeout=1.0)
     try:
         await client.incr(STATEMENT_TIMEOUT_COUNTER_KEY)
     except Exception as error:

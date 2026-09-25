@@ -129,6 +129,31 @@ $allPasswords = $lines | Where-Object { $_ -match '=' } | ForEach-Object { ($_ -
 $distinctCount = ($allPasswords | Select-Object -Unique).Count
 Test-Check 'the six stored passwords are all distinct from each other' $distinctCount 6
 
+# --- M8-FIX-SEC-177: Redis passwords, fresh and on upgrade -----------------------
+$redisDir = New-AskwellTempDir
+$redisEnv = Join-Path $redisDir '.env'
+@'
+REDIS_API_PASSWORD=change-me-redis-api
+REDIS_WORKER_PASSWORD=change-me-redis-worker
+REDIS_PROXY_PASSWORD=change-me-redis-proxy
+'@ | Set-Content -Path $redisEnv -Encoding utf8
+Set-AskwellRedisPasswords $redisEnv
+$redisContent = Get-Content $redisEnv -Raw
+if ($redisContent -notmatch 'change-me') { Test-Ok 'a fresh .env keeps no Redis placeholder' } else { Test-Bad 'a fresh .env keeps no Redis placeholder' 'still present' 'gone' }
+$redisValues = Get-Content $redisEnv | Where-Object { $_ -match '^REDIS_' } | ForEach-Object { ($_ -split '=', 2)[1] }
+Test-Check 'the three Redis passwords are distinct' (($redisValues | Select-Object -Unique).Count) 3
+
+# An install from before Redis had users: the lines are added, not refused.
+'POSTGRES_PASSWORD=already-real' | Set-Content -Path $redisEnv -Encoding utf8
+Set-AskwellRedisPasswords $redisEnv
+foreach ($name in @('REDIS_API_PASSWORD', 'REDIS_WORKER_PASSWORD', 'REDIS_PROXY_PASSWORD')) {
+    $value = ((Get-Content $redisEnv | Where-Object { $_ -match "^$name=" }) -split '=', 2)[1]
+    Test-Check "an upgrade generates $name" $value.Length 64
+}
+$before = Get-Content $redisEnv -Raw
+Set-AskwellRedisPasswords $redisEnv
+Test-Check 'a second run changes no existing Redis password' (Get-Content $redisEnv -Raw) $before
+
 # --- quarantine message ------------------------------------------------------------
 $msg = Get-AskwellQuarantineMessage 'askwell-inference'
 if ($msg -match 'askwell-inference') { Test-Ok 'quarantine message names the missing file' } else { Test-Bad 'quarantine message names the missing file' $msg 'askwell-inference' }

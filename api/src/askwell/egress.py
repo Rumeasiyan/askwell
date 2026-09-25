@@ -33,7 +33,7 @@ import hmac
 import json
 from dataclasses import dataclass
 
-from askwell import __version__
+from askwell import __version__, redis_client
 from askwell.config import Environment, Settings, load_settings
 from askwell.logging import configure_logging, get_logger
 
@@ -178,16 +178,10 @@ async def permit_destination(settings: Settings, destination: str) -> None:
     Called by the API, never by the proxy on itself — the proxy only ever
     reads this key, so a bug here cannot let the proxy grant itself anything.
     """
-    import redis.asyncio as redis
-
-    client = redis.Redis(
-        host=settings.redis_host,
-        port=settings.redis_port,
-        socket_connect_timeout=2.0,
-        socket_timeout=2.0,
-    )
+    client = redis_client.connect(settings, timeout=2.0)
     try:
-        await client.set(PERMITTED_HOST_KEY, destination)
+        with redis_client.refusal_logged(settings, "permit_destination"):
+            await client.set(PERMITTED_HOST_KEY, destination)
     finally:
         with contextlib.suppress(Exception):
             await client.aclose()
@@ -195,16 +189,10 @@ async def permit_destination(settings: Settings, destination: str) -> None:
 
 async def revoke_destination(settings: Settings) -> None:
     """Close whatever destination was permitted. A no-op if none was."""
-    import redis.asyncio as redis
-
-    client = redis.Redis(
-        host=settings.redis_host,
-        port=settings.redis_port,
-        socket_connect_timeout=2.0,
-        socket_timeout=2.0,
-    )
+    client = redis_client.connect(settings, timeout=2.0)
     try:
-        await client.delete(PERMITTED_HOST_KEY)
+        with redis_client.refusal_logged(settings, "revoke_destination"):
+            await client.delete(PERMITTED_HOST_KEY)
     finally:
         with contextlib.suppress(Exception):
             await client.aclose()
@@ -240,16 +228,10 @@ async def open_grant(
         log.warning("egress_grant_refused_unaccepted", turn_id=turn_id, destination=destination)
         return False
 
-    import redis.asyncio as redis
-
-    client = redis.Redis(
-        host=settings.redis_host,
-        port=settings.redis_port,
-        socket_connect_timeout=2.0,
-        socket_timeout=2.0,
-    )
+    client = redis_client.connect(settings, timeout=2.0)
     try:
-        await client.set(_grant_key(turn_id), destination, ex=max(1, int(ttl_seconds)))
+        with redis_client.refusal_logged(settings, "open_grant"):
+            await client.set(_grant_key(turn_id), destination, ex=max(1, int(ttl_seconds)))
     finally:
         with contextlib.suppress(Exception):
             await client.aclose()
@@ -263,16 +245,10 @@ async def close_grant(settings: Settings, turn_id: str) -> None:
     """Close a turn's grant. A no-op if it already expired or was never
     opened — every route by which a turn can end calls this unconditionally,
     so it has to tolerate being called on a turn that never escalated."""
-    import redis.asyncio as redis
-
-    client = redis.Redis(
-        host=settings.redis_host,
-        port=settings.redis_port,
-        socket_connect_timeout=2.0,
-        socket_timeout=2.0,
-    )
+    client = redis_client.connect(settings, timeout=2.0)
     try:
-        deleted = await client.delete(_grant_key(turn_id))
+        with redis_client.refusal_logged(settings, "close_grant"):
+            deleted = await client.delete(_grant_key(turn_id))
     finally:
         with contextlib.suppress(Exception):
             await client.aclose()
@@ -333,20 +309,14 @@ async def open_conversation_grant(
     it: the time bound is the backstop for a revocation path that was never
     reached, the same reasoning `open_grant` applies to a turn.
     """
-    import redis.asyncio as redis
-
-    client = redis.Redis(
-        host=settings.redis_host,
-        port=settings.redis_port,
-        socket_connect_timeout=2.0,
-        socket_timeout=2.0,
-    )
+    client = redis_client.connect(settings, timeout=2.0)
     try:
-        await client.set(
-            _conversation_key(conversation_id),
-            json.dumps({"destination": destination, "token_sha256": credential_digest(token)}),
-            ex=max(1, int(ttl_seconds)),
-        )
+        with redis_client.refusal_logged(settings, "open_conversation_grant"):
+            await client.set(
+                _conversation_key(conversation_id),
+                json.dumps({"destination": destination, "token_sha256": credential_digest(token)}),
+                ex=max(1, int(ttl_seconds)),
+            )
     finally:
         with contextlib.suppress(Exception):
             await client.aclose()
@@ -366,14 +336,7 @@ async def read_conversation_grant(
     Raises if Redis cannot be read — the caller decides what an unknown
     means, and for a revocation it must not mean "nothing to revoke".
     """
-    import redis.asyncio as redis
-
-    client = redis.Redis(
-        host=settings.redis_host,
-        port=settings.redis_port,
-        socket_connect_timeout=2.0,
-        socket_timeout=2.0,
-    )
+    client = redis_client.connect(settings, timeout=2.0)
     try:
         key = _conversation_key(conversation_id)
         raw = await client.get(key)
@@ -397,16 +360,10 @@ async def close_conversation_grant(settings: Settings, conversation_id: str) -> 
 
     Open tunnels are cut by the proxy within `CONVERSATION_RECHECK_SECONDS`;
     new ones are refused from the moment this returns."""
-    import redis.asyncio as redis
-
-    client = redis.Redis(
-        host=settings.redis_host,
-        port=settings.redis_port,
-        socket_connect_timeout=2.0,
-        socket_timeout=2.0,
-    )
+    client = redis_client.connect(settings, timeout=2.0)
     try:
-        deleted = await client.delete(_conversation_key(conversation_id))
+        with redis_client.refusal_logged(settings, "close_conversation_grant"):
+            deleted = await client.delete(_conversation_key(conversation_id))
     finally:
         with contextlib.suppress(Exception):
             await client.aclose()
@@ -423,31 +380,25 @@ async def close_all_conversation_grants(settings: Settings) -> dict[str, str]:
     restart is one nobody re-asked for (`M8-ONLINE-SEC-169`'s own edge case),
     and Redis here is `appendonly`, so it would otherwise survive.
     """
-    import redis.asyncio as redis
-
-    client = redis.Redis(
-        host=settings.redis_host,
-        port=settings.redis_port,
-        socket_connect_timeout=2.0,
-        socket_timeout=2.0,
-    )
+    client = redis_client.connect(settings, timeout=2.0)
     revoked: dict[str, str] = {}
     try:
-        cursor = 0
-        while True:
-            cursor, keys = await client.scan(
-                cursor, match=f"{CONVERSATION_GRANT_KEY_PREFIX}*", count=100
-            )
-            if keys:
-                values = await client.mget(keys)
-                for key, value in zip(keys, values, strict=True):
-                    name = key.decode("utf-8") if isinstance(key, bytes) else key
-                    conversation_id = name.removeprefix(CONVERSATION_GRANT_KEY_PREFIX)
-                    grant = parse_conversation_grant(conversation_id, value)
-                    revoked[conversation_id] = grant.destination if grant else "(unreadable)"
-                await client.delete(*keys)
-            if cursor == 0:
-                break
+        with redis_client.refusal_logged(settings, "close_all_conversation_grants"):
+            cursor = 0
+            while True:
+                cursor, keys = await client.scan(
+                    cursor, match=f"{CONVERSATION_GRANT_KEY_PREFIX}*", count=100
+                )
+                if keys:
+                    values = await client.mget(keys)
+                    for key, value in zip(keys, values, strict=True):
+                        name = key.decode("utf-8") if isinstance(key, bytes) else key
+                        conversation_id = name.removeprefix(CONVERSATION_GRANT_KEY_PREFIX)
+                        grant = parse_conversation_grant(conversation_id, value)
+                        revoked[conversation_id] = grant.destination if grant else "(unreadable)"
+                    await client.delete(*keys)
+                if cursor == 0:
+                    break
     finally:
         with contextlib.suppress(Exception):
             await client.aclose()
@@ -489,14 +440,7 @@ class EgressProxy:
     async def _permitted_destination(self) -> str | None:
         """Read fresh on every connection — a setting flipped off must close
         this the instant the API acts, not on the proxy's next restart."""
-        import redis.asyncio as redis
-
-        client = redis.Redis(
-            host=self.settings.redis_host,
-            port=self.settings.redis_port,
-            socket_connect_timeout=1.0,
-            socket_timeout=1.0,
-        )
+        client = redis_client.connect(self.settings, timeout=1.0)
         try:
             value = await client.get(PERMITTED_HOST_KEY)
         except Exception as error:
@@ -519,14 +463,7 @@ class EgressProxy:
         per-turn: two escalations in flight hold two keys, and this has to
         find either.
         """
-        import redis.asyncio as redis
-
-        client = redis.Redis(
-            host=self.settings.redis_host,
-            port=self.settings.redis_port,
-            socket_connect_timeout=1.0,
-            socket_timeout=1.0,
-        )
+        client = redis_client.connect(self.settings, timeout=1.0)
         try:
             cursor = 0
             while True:
@@ -551,14 +488,7 @@ class EgressProxy:
     async def _conversation_grant_names(self, destination: str) -> bool:
         """Whether any live conversation grant names `destination` — the cheap
         question asked before reading headers. Unreadable reads as no."""
-        import redis.asyncio as redis
-
-        client = redis.Redis(
-            host=self.settings.redis_host,
-            port=self.settings.redis_port,
-            socket_connect_timeout=1.0,
-            socket_timeout=1.0,
-        )
+        client = redis_client.connect(self.settings, timeout=1.0)
         try:
             cursor = 0
             while True:
@@ -717,14 +647,7 @@ class EgressProxy:
         happened by this point, and a proxy that crashed on a Redis hiccup
         would take the deny with it.
         """
-        import redis.asyncio as redis
-
-        client = redis.Redis(
-            host=self.settings.redis_host,
-            port=self.settings.redis_port,
-            socket_connect_timeout=1.0,
-            socket_timeout=1.0,
-        )
+        client = redis_client.connect(self.settings, timeout=1.0)
         try:
             async with client.pipeline() as pipe:
                 pipe.incr(REFUSED_COUNTER_KEY)
@@ -877,14 +800,7 @@ class EgressProxy:
         gives refusals — a number the settings screen can show without
         inventing anything. A conversation's connection is also counted
         against that conversation, so the figure is attributable."""
-        import redis.asyncio as redis
-
-        client = redis.Redis(
-            host=self.settings.redis_host,
-            port=self.settings.redis_port,
-            socket_connect_timeout=1.0,
-            socket_timeout=1.0,
-        )
+        client = redis_client.connect(self.settings, timeout=1.0)
         try:
             async with client.pipeline() as pipe:
                 pipe.incr(PERMITTED_COUNTER_KEY)
@@ -910,14 +826,7 @@ async def _register(settings: Settings) -> None:
     proxy has never run — which the API reports as unavailable rather than as
     "nothing has tried to leave this machine".
     """
-    import redis.asyncio as redis
-
-    client = redis.Redis(
-        host=settings.redis_host,
-        port=settings.redis_port,
-        socket_connect_timeout=2.0,
-        socket_timeout=2.0,
-    )
+    client = redis_client.connect(settings, timeout=2.0)
     try:
         async with client.pipeline() as pipe:
             pipe.setnx(REFUSED_COUNTER_KEY, 0)
@@ -961,6 +870,9 @@ async def serve(settings: Settings) -> None:
 def main() -> None:
     try:
         settings = load_settings()
+        # A proxy that cannot authenticate cannot read a grant, so it would
+        # refuse everything — safe, but silently so. Refuse to start instead.
+        redis_client.require_credentials(settings, "The egress proxy")
     except Exception as error:
         raise SystemExit(str(error)) from None
 

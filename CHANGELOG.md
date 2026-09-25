@@ -4,6 +4,22 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.46 - 2026-09-25
+
+`Security`: `M8-FIX-SEC-177`. Askwell's internal message store now requires a password, and
+each part of Askwell has its own login that can reach only what it needs. This matters because
+that store is where Askwell records what may leave your machine: a web search you asked for,
+an update check you agreed to, a conversation you switched to online AI. Until now any part of
+Askwell could write such a permission, including the part that reads your documents. A document
+built to exploit a bug in a file reader could have opened a route to the internet. Now only the
+part of Askwell that asked you can grant one, and the part that reads your documents is refused
+if it tries. A connection with no password is refused outright.
+
+The installer creates the new passwords for you. When you install this version over an older
+one, it adds them to your existing settings and changes nothing else. If you run Askwell from a
+copy of `.env.example`, set the three new `REDIS_*_PASSWORD` values: Askwell will not start
+without them, and it never falls back to running without a password.
+
 ## 0.7.45 - 2026-09-25
 
 `Changed`: `M8-KEY-FE-175`. When your online provider rejects your key or says your account has

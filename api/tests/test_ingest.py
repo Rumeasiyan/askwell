@@ -24,6 +24,7 @@ stays a test that touches no network.
 import asyncio
 
 import pytest
+from pydantic import SecretStr
 
 from askwell import ingest, worker
 from askwell.config import Settings
@@ -235,7 +236,17 @@ def test_concurrency_and_the_job_timeout_come_from_configuration(
 
     monkeypatch.setattr(arq.worker, "create_worker", fake_create_worker)
     monkeypatch.setattr(
-        worker, "load_settings", lambda: settings.model_copy(update={"ingest_concurrency": 3})
+        worker,
+        "load_settings",
+        lambda: settings.model_copy(
+            update={
+                "ingest_concurrency": 3,
+                # The worker refuses to start without its Redis user
+                # (`M8-FIX-SEC-177`); this test is about the other settings.
+                "redis_username": "worker",
+                "redis_password": SecretStr("pw"),
+            }
+        ),
     )
 
     worker.main()

@@ -10,7 +10,7 @@
 # What this script needs beside itself, and where it expects to find it:
 #
 #   REPO_ROOT (two directories above this script)/
-#     compose.yaml, .env.example, deploy/postgres, deploy/sandbox   — the stack
+#     compose.yaml, .env.example, deploy/postgres, deploy/sandbox, deploy/redis — the stack
 #     deploy/probe/askwell-probe                                    — the host probe (M7-PROBE-DEPLOY-137)
 #     deploy/inference/askwell-inference                             — native inference (M0-MODEL-DEPLOY-018)
 #     web/src-tauri/target/release/askwell-shell                      — the desktop shell binary (M7-TAURI-DEPLOY-181)
@@ -167,7 +167,7 @@ check_artefacts() {
 
 place_files() {
   mkdir -p "$INSTALL_PREFIX" "$BIN_DIR" "$DESKTOP_DIR" "$SYSTEMD_USER_DIR"
-  mkdir -p "$INSTALL_PREFIX/deploy/postgres" "$INSTALL_PREFIX/deploy/sandbox"
+  mkdir -p "$INSTALL_PREFIX/deploy/postgres" "$INSTALL_PREFIX/deploy/sandbox" "$INSTALL_PREFIX/deploy/redis"
 
   cp "$REPO_ROOT/compose.yaml" "$INSTALL_PREFIX/compose.yaml"
   if [ ! -f "$INSTALL_PREFIX/.env" ]; then
@@ -175,8 +175,12 @@ place_files() {
     generate_env_passwords "$INSTALL_PREFIX/.env"
     askwell_say "Generated database credentials in $INSTALL_PREFIX/.env"
   fi
+  # Every run, not only a fresh one: an upgrade from before Redis had users
+  # needs these generated too, or the stack refuses to start.
+  ensure_redis_passwords "$INSTALL_PREFIX/.env"
   cp -r "$REPO_ROOT/deploy/postgres/." "$INSTALL_PREFIX/deploy/postgres/"
   cp -r "$REPO_ROOT/deploy/sandbox/." "$INSTALL_PREFIX/deploy/sandbox/"
+  cp -r "$REPO_ROOT/deploy/redis/." "$INSTALL_PREFIX/deploy/redis/"
   cp "$REPO_ROOT/deploy/probe/askwell-probe" "$INSTALL_PREFIX/askwell-probe"
   cp "$REPO_ROOT/deploy/inference/askwell-inference" "$INSTALL_PREFIX/askwell-inference"
   chmod +x "$INSTALL_PREFIX/askwell-probe" "$INSTALL_PREFIX/askwell-inference"
