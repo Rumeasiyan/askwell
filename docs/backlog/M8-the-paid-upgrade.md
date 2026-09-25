@@ -497,9 +497,9 @@ Take option 1 of #730: Redis ACLs, one user per service. The API may write the g
 
 ---
 
-### M8-FIX-BE-178 — The approved statement of what online AI sends **[BLOCKED]**
+### M8-FIX-BE-178 — The approved statement of what online AI sends **[UNBLOCKED 2026-09-25]**
 
-> **Blocked on a product decision (#753).** The approved wording is not true of what the code sends: inferred facts as well as taught ones, schema notes that can carry a value from a table row, and memory that is global across conversations. The build agent halted rather than ship a false statement about what leaves the machine, which was correct every time. The `[BLOCKED]` marker keeps the runner from retrying it; change it to `[UNBLOCKED <date>]` once the product owner has chosen between narrowing the payload and rewording the statement.
+> **Unblocked 2026-09-25 (#753).** The first approved wording was not true of what the code sends. The product owner chose to keep the payload and state it honestly, and approved the replacement below verbatim. Every clause was checked against `askwell.agent.conflict.compose_conflict`, `askwell.agent.compose.delimit_candidates` and `askwell.table_infer` before approval.
 
 **Type:** Task
 
@@ -514,9 +514,9 @@ Take option 1 of #730: Redis ACLs, one user per service. The API may write the g
 **Context / Background**
 **Detailed Description:** `askwell.online.DISCLOSURE` is `None` and every online send is refused with `DISCLOSURE_UNDEFINED` until it is set (issue #737). The product owner approved the wording on 2026-09-25 (`../decisions.md`). Set it, as version `1`, to exactly:
 
-> When you ask in this conversation, Askwell sends your online AI provider your question, the passages from your files that it found relevant to it, and any facts you have taught Askwell that bear on it. It does not send whole files, earlier questions, database rows or anything from other conversations. A question Askwell cannot answer from your files sends nothing.
+> When you ask in this conversation, Askwell sends your online AI provider your question, the passages from your files that it found relevant to it, and what Askwell knows about your material that bears on the question: facts you have taught it, conclusions it has drawn about your files and databases on its own — including the names of your tables and columns — and, occasionally, a single value from one of your tables that it used to work out how the dates in a column are written. What Askwell knows is not tied to one conversation, so something you taught it elsewhere can be included. It does not send whole files, database query results, or the questions and answers from earlier turns. A question Askwell cannot answer from your files sends nothing.
 
-The only change from #737's draft is `<provider>` replaced with "your online AI provider": the statement is one constant, and a template that renders the provider's name would be a second place for it to drift. The wording was read from the code rather than assumed — `M8-ONLINE-BE-170` sends `compose_conflict`'s system prompt and user content, which is these three things and nothing else, and the local model receives the same prompt.
+This replaces #737's draft, which described the payload as "facts you have taught Askwell" and "does not send … database rows" when the code also sends inferred facts, schema notes carrying table and column names, and in one case a table cell (`askwell.table_infer` records the value that settled a column's date format). It also said "nothing from other conversations" while memory is global. The build agent found all three and halted rather than ship them — correctly, sixteen times.
 
 **Scope**
 - `DISCLOSURE` set to the approved text, version `1`.
@@ -541,7 +541,7 @@ The only change from #737's draft is `<provider>` replaced with "your online AI 
 **Dependencies & Assumptions**
 - **Dependencies:** M8-FIX-SEC-177, M8-ONLINE-FE-171, M8-KEY-BE-173.
 - **API / Data Touchpoints:** `api/src/askwell/online.py`; `api/tests/test_online.py`, `test_ask_online.py`, `test_provider_key.py`.
-- **Assumptions:** What `M8-ONLINE-BE-170` sends still matches the statement. If it has changed since #737 was written, stop and say so — a statement that has drifted from the code is worse than none.
+- **Assumptions:** What is sent still matches the statement clause by clause. **Re-check each clause against the code before setting it**, and if any has drifted, stop and say so — a statement that is not true of what leaves the machine is worse than refusing every send.
 
 **Testing Notes / Scenarios**
 - **Cold-start manual walkthrough:** Store a provider key, switch a conversation online, read the statement, confirm, ask, and confirm a request reaches the provider.
