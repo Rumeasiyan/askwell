@@ -100,6 +100,38 @@ Append-only. **Newest first.** Never edit an entry to change its meaning — if 
 
 ---
 
+## 2026-09-25 — Askwell is relicensed to GPLv3, so that spoken answers ship
+
+**Decision:** Askwell moves from Apache-2.0 to GPL-3.0-or-later. `AGENTS.md` C9 changes from "must permit redistribution under Apache-2.0" to "must be GPLv3-compatible, permit commercial use and redistribution, and not be gated". The release licence gate keeps refusing GPL-2.0-only, AGPL, SSPL, non-commercial, no-derivatives and unlicensed material, and stops refusing GPLv3. The mechanics are `M8-FIX-DOC-179`.
+
+**Why:** Voice synthesis needs `phonemizer` (GPLv3+) through `kokoro-onnx`, and the release gate built by `M7-DOC-DOC-163` failed on it (#619). The product owner requires voice in both directions. Every alternative was checked against PyPI on 2026-09-25 rather than from memory, and all route English pronunciation through espeak-ng, which is GPL: `espeakng` GPLv3, `piper-tts` GPL-3.0+, and even `misaki`, Apache-2.0 at its core, pulls `phonemizer-fork` and `espeakng-loader` in its English extra.
+
+Three ways out were put to the product owner. Removing espeak for a dictionary-only pronunciation keeps Apache-2.0 but mispronounces exactly what people's documents are full of: names, jargon, acronyms. Shipping voice input only keeps the licence and does not give what was asked for. Relicensing to GPLv3 gives voice both ways today with no loss of quality.
+
+The product owner first asked whether switching to **MIT** would resolve it. It would not, and this is worth recording because it is the natural first guess: the conflict does not come from Askwell's licence being Apache-2.0. It comes from GPLv3's own condition that a distributed work including GPL code be offered under GPL terms. MIT and Apache-2.0 are both permissive, and neither can override that. Only a GPL-compatible licence for the whole work resolves it.
+
+The trade-off, accepted knowingly: GPLv3 is copyleft. Anyone who distributes a *modified* Askwell must release their changes under GPLv3 too, and some organisations avoid GPL software as policy. This reverses the original reason for Apache-2.0 — "chosen deliberately for contribution and adoption", recorded in the PyMuPDF entry. That cost is smaller here than it looks. Askwell earns nothing from its licence, is free, and has no commercial fork to protect, and the people it is for install and use it; they do not redistribute it. Nothing has been published, so there is no Apache-2.0 release in anyone's hands to reconcile with.
+
+This is not legal advice. A lawyer's review before the first public release is advisable.
+
+**Consequences:** C9 now reads "GPLv3-compatible". A future GPL-2.0-only dependency is still a blocker, since GPL-2.0-only is incompatible with GPLv3. PyMuPDF (AGPL) stays rejected: AGPL's network clause is a different obligation. Reversing this later means removing every GPL dependency first, which is the engineering the relicence avoided.
+
+**Refs:** #619; `M8-FIX-DOC-179`; `M7-DOC-DOC-163`; `AGENTS.md` §3 C9; product owner's decision, 2026-09-25.
+
+---
+
+## 2026-09-25 — The online-AI disclosure is approved as written
+
+**Decision:** The statement shown before an online conversation's first send is, verbatim, version `1`: *"When you ask in this conversation, Askwell sends your online AI provider your question, the passages from your files that it found relevant to it, and any facts you have taught Askwell that bear on it. It does not send whole files, earlier questions, database rows or anything from other conversations. A question Askwell cannot answer from your files sends nothing."* The mechanics are `M8-FIX-BE-178`.
+
+**Why:** Online AI refuses every send until this exists, by design: the product never sends something it cannot describe. The draft in #737 was read from the code, not assumed. `M8-ONLINE-BE-170` sends the system prompt, the passages that cleared the threshold, the relevant memory facts and schema notes, and the question, which is exactly what the local model receives. Narrowing the payload first, for example by dropping memory facts, was rejected. It would change the prompt and need an eval run, to remove the one ingredient that makes an online answer as good as a local one. The only edit from the draft is `<provider>` becoming "your online AI provider", so that the statement is one constant rather than a template that can drift.
+
+**Consequences:** The statement lands only after Redis is authenticated (`M8-FIX-SEC-177`). An agent-written guard, `test_no_online_send_is_possible_until_redis_is_authenticated`, fails the build otherwise, because with a key stored, an unauthenticated Redis lets any container open a paid route to the user's provider. Any later change to what is sent needs a new version of this statement and a fresh confirmation from every conversation.
+
+**Refs:** #737, #730; `M8-FIX-SEC-177`, `M8-FIX-BE-178`; `api/src/askwell/online.py`; product owner's decision, 2026-09-25.
+
+---
+
 ## 2026-09-24 — `M8-ONLINE-FE-171`: the disclosure is enforced by the server, not only the screen; the confirmation is per conversation and per statement version, and outlives the authorisation; the undefined wording is `None` in code, tracked as #737; the marker reads the record; Settings loses its switch
 
 **Decision.** `askwell.online.DISCLOSURE` is the single statement of what an online conversation sends, as a `(version, text)` pair. It is `None`. Confirming it (`POST /conversations/{id}/online/disclosure` with the version shown) writes an `online_ai_disclosure_confirmed` decisions record naming the conversation and the version. A send needs the conversation online *and* the current version confirmed (`OnlineState.send_permitted`). `POST /ask` refuses an online conversation's question with `409` before inserting anything when that is false, and `askwell.ask._online_client` returns no provider client. So while `DISCLOSURE` is `None`, nothing can be confirmed and nothing is sent. `GET /conversations/{id}/online` adds `used_online` (any `online_ai_enabled` record for the conversation), `disclosure` and `send_permitted`. `POST /conversations` creates an empty local conversation. In the Ask screen, the marker, the disclosure and the per-conversation switch all sit in the composer's sticky band, the Ask button is disabled while the send is refused (the draft is kept), and each finished turn in a conversation that has used online AI is labelled *Answered locally* or *Answered online · model* from its `model_identity`. A turn that never reached the provider in a conversation that was online when asked records `requested: online, sent_online: false` in its trace backend. The Settings section's inert switch is removed.
