@@ -435,3 +435,174 @@ The constraint that survives, unchanged: local logging continues in full regardl
 - **Estimate:** 4–6 hours · **Priority:** Critical
 - **Labels / Component:** `phase:7`, test, security, `constraint:local-first`
 - **Granularity:** One procedure with one independent verification. Upper bound.
+
+---
+
+## Opening the gate, and keeping voice
+
+Three tickets from two product decisions made on 2026-09-25 (`../decisions.md`): the online-AI disclosure wording was approved, and Askwell is relicensed to GPLv3 so that spoken answers can ship. They are ordered on purpose — Redis is locked down before the disclosure is set, because the disclosure is the only thing still refusing every online send, and `api/tests/test_provider_key.py::test_no_online_send_is_possible_until_redis_is_authenticated` fails the build if the two land the other way round.
+
+---
+
+### M8-FIX-SEC-177 — Redis authentication, one user per service
+
+**Type:** Task
+
+**User Story**
+- **Actor:** someone who has stored a provider API key.
+- **User Need:** that only Askwell's own API can open a route off the machine with it.
+- **Business Value:** the egress proxy is C1's enforcement point and it trusts whatever Redis says, and Redis takes writes from every container.
+- *As someone who gave Askwell a paid key, I want only the part of Askwell that asked me to be able to spend it, so that a bug in document parsing cannot.*
+
+**Context / Background**
+**Detailed Description:** The egress proxy forwards a connection if Redis holds the right keys — `askwell:egress:permitted_host`, `askwell:egress:grant:*`, `askwell:egress:conversation:*`. Redis runs with no password and no ACL, so every service on the `internal` network can write them, including the worker, which parses untrusted documents. One `SET` from a compromised dependency opens egress, and nothing records it. Issue #730 has the full analysis.
+
+Take option 1 of #730: Redis ACLs, one user per service. The API may write the grant keys; the proxy may read them, write its own counters and run the one `DEL` pattern it uses at startup; the worker and voice service get the queue keys only. Passwords live in `.env` like the database's (C8), `.env.example` names them in the same change, and the three installers generate them. Moving grants into Postgres was rejected — it gives the proxy a database dependency it was deliberately built without and adds latency to every `CONNECT`. Signing grants was rejected as hand-rolled authentication over a store that already has it.
+
+**Scope**
+- A Redis ACL file with one user per service and the narrowest key patterns and commands each needs.
+- Every Redis client given its own user and password from the environment.
+- `.env.example` updated; the Linux, Windows and macOS installers generate the passwords.
+- The default user disabled, so an unauthenticated connection is refused outright.
+
+**Out of Scope**
+- Setting the online disclosure (`M8-FIX-BE-178`), which depends on this.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** An unauthenticated connection to Redis is refused. The worker and voice users cannot write any `askwell:egress:*` key — proved by a test that tries from each and is refused. The API can write grants, the proxy can read them, and everything that worked before still works: ingestion jobs, voice, web escalation, online grants.
+- **Edge Cases:** An existing install upgrading — the installer generates the new passwords rather than leaving Redis open or refusing to start. A password missing from `.env` — the service fails loudly at start rather than falling back to no authentication. The proxy's startup `DEL` — still permitted, and nothing broader.
+- **Permissions / Roles:** Single user, but five Redis users, one per service. That separation is the whole ticket.
+- **UI States:** None.
+- **Validation Rules:** No service holds a Redis permission it does not use. No password is committed (C8).
+- **Audit / Logging Requirements:** A refused Redis write is logged by the refusing client. State in the closing comment how C1 was preserved — the `constraint:local-first` label requires it.
+- **Analytics Events:** None.
+
+**Real-World Example Scenarios**
+- A malicious spreadsheet exploits a parsing bug in the worker and tries to set a permitted egress host. Redis refuses the write and the proxy never learns of it.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M8-ONLINE-SEC-169, M7-PACK-DEPLOY-142.
+- **API / Data Touchpoints:** `compose.yaml` `redis` service; every Redis client (`api`, `worker`, `voice`, `egress-proxy`); `.env.example`; the three installers under `deploy/`.
+- **Assumptions:** The Redis version in use supports ACL files. If the proxy's startup `DEL` pattern cannot be expressed narrowly, say so rather than granting it broad `DEL`.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** Bring the stack up from a fresh install, then `redis-cli` with no credentials and confirm refusal; as the worker user, try `SET askwell:egress:permitted_host x:443` and confirm refusal. Then ingest a file, use voice, escalate a question to the web, and confirm all still work.
+- **Other scenarios:** Remove the proxy's password from `.env` and confirm the proxy refuses to start.
+- **Known gaps:** None.
+
+**Effort & Granularity Check**
+- **Estimate:** 4 hours · **Priority:** Critical
+- **Labels / Component:** `phase:7`, `constraint:local-first`, security, deploy
+- **Granularity:** One ACL file, five clients, three installers.
+
+---
+
+### M8-FIX-BE-178 — The approved statement of what online AI sends
+
+**Type:** Task
+
+**Human review:** copy — this ticket renders wording a user reads. The runner stops and quotes it before the pull request is merged.
+
+**User Story**
+- **Actor:** someone about to send a question about confidential material to an online model.
+- **User Need:** to be told exactly what will leave the machine, in words they can hold Askwell to.
+- **Business Value:** online AI is built and refuses every send until this exists. The refusal is deliberate — the product never sends something it cannot describe.
+- *As someone deciding whether my client's documents may leave this laptop, I want a plain, accurate statement of what goes, so that the decision is mine and informed.*
+
+**Context / Background**
+**Detailed Description:** `askwell.online.DISCLOSURE` is `None` and every online send is refused with `DISCLOSURE_UNDEFINED` until it is set (issue #737). The product owner approved the wording on 2026-09-25 (`../decisions.md`). Set it, as version `1`, to exactly:
+
+> When you ask in this conversation, Askwell sends your online AI provider your question, the passages from your files that it found relevant to it, and any facts you have taught Askwell that bear on it. It does not send whole files, earlier questions, database rows or anything from other conversations. A question Askwell cannot answer from your files sends nothing.
+
+The only change from #737's draft is `<provider>` replaced with "your online AI provider": the statement is one constant, and a template that renders the provider's name would be a second place for it to drift. The wording was read from the code rather than assumed — `M8-ONLINE-BE-170` sends `compose_conflict`'s system prompt and user content, which is these three things and nothing else, and the local model receives the same prompt.
+
+**Scope**
+- `DISCLOSURE` set to the approved text, version `1`.
+- The tests that pinned the undecided state rewritten to pin the decided one, keeping a test that `None` still refuses every send.
+- The backlog's blocked table and `../ux/` wording updated to match.
+
+**Out of Scope**
+- Changing what is sent. That is `M8-ONLINE-BE-170`'s and would need an eval run.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** An online conversation shows the approved statement before its first send, a confirmation of version `1` is accepted, and the send then goes. `test_no_online_send_is_possible_until_redis_is_authenticated` passes because Redis is authenticated, not because the test was edited.
+- **Edge Cases:** A conversation that confirmed nothing — still refused with `NOT_CONFIRMED`. A future change to the statement — needs a new version and a fresh confirmation, which the existing mechanism already enforces.
+- **Permissions / Roles:** Single user — no roles.
+- **UI States:** The online conversation's pre-send disclosure, `M8-ONLINE-FE-171`.
+- **Validation Rules:** **Do not weaken or delete the Redis-ordering guard to make this pass.** If it fails, `M8-FIX-SEC-177` has not landed, and that is the thing to fix. The text is set verbatim.
+- **Audit / Logging Requirements:** Confirming the statement is a decisions record, as it already is.
+- **Analytics Events:** None (C1).
+
+**Real-World Example Scenarios**
+- A solicitor switches one conversation online, reads the statement, confirms, and asks — knowing the provider saw the question and the relevant passages, not the file.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M8-FIX-SEC-177, M8-ONLINE-FE-171, M8-KEY-BE-173.
+- **API / Data Touchpoints:** `api/src/askwell/online.py`; `api/tests/test_online.py`, `test_ask_online.py`, `test_provider_key.py`.
+- **Assumptions:** What `M8-ONLINE-BE-170` sends still matches the statement. If it has changed since #737 was written, stop and say so — a statement that has drifted from the code is worse than none.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** Store a provider key, switch a conversation online, read the statement, confirm, ask, and confirm a request reaches the provider.
+- **Other scenarios:** Set `DISCLOSURE` back to `None` in a test and confirm every send is refused again.
+- **Known gaps:** None.
+
+**Effort & Granularity Check**
+- **Estimate:** 2 hours · **Priority:** High
+- **Labels / Component:** `phase:7`, `constraint:local-first`, backend
+- **Granularity:** One constant and the tests around it.
+
+---
+
+### M8-FIX-DOC-179 — Relicense Askwell to GPLv3, so spoken answers ship
+
+**Type:** Task
+
+**User Story**
+- **Actor:** someone who wants to hear the answer as well as speak the question.
+- **User Need:** voice both ways, in a bundle that is legally clean.
+- **Business Value:** spoken answers depend on a GPLv3 library, and the product owner requires voice in both directions.
+- *As someone using Askwell hands-free, I want it to answer out loud, so that voice is a real way to use it and not half of one.*
+
+**Context / Background**
+**Detailed Description:** Voice synthesis (`kokoro-onnx`) requires `phonemizer`, GPLv3+. The release licence gate (`scripts/dev.sh notices`, `M7-DOC-DOC-163`) fails on it (#619). Every alternative checked against PyPI on 2026-09-25 routes English pronunciation through espeak-ng, which is GPL as well: `espeakng` GPLv3, `piper-tts` GPL-3.0+, and `misaki`'s English extra pulls `phonemizer-fork` and `espeakng-loader`. Removing espeak would mean a dictionary-only pronunciation that handles names and jargon worst, which is what people's documents contain.
+
+The product owner chose voice in both directions, and the only licence that ships it without that degradation is GPLv3 (`../decisions.md`, 2026-09-25). Changing to MIT was considered and does nothing: the conflict comes from GPLv3's own terms, which no permissive licence can override. Every other dependency and bundled model — Apache-2.0 and MIT throughout — is GPLv3-compatible.
+
+**Scope**
+- `LICENSE` replaced with the GPLv3 text.
+- `api/pyproject.toml`, `web/package.json` and any other package metadata declaring a licence changed to `GPL-3.0-or-later`.
+- `README.md`, `docs/PRD.md` and the About screen corrected to say GPLv3.
+- `AGENTS.md` C9 updated: bundled material must be **GPLv3-compatible** and permit commercial use and redistribution, and must not be gated. Stated as a decision, not a quiet edit.
+- The notices gate's disallow list changed: GPL-2.0-only (incompatible with GPLv3), AGPL and SSPL, non-commercial and no-derivatives terms, and unlicensed stay disallowed. GPLv3 and GPL-2.0-or-later are allowed. Its tests updated to pin both halves.
+- `NOTICES.md` regenerated; the gate passes.
+
+**Out of Scope**
+- Any change to what voice does. It already works.
+- Publishing a release (`AGENTS.md` §7).
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** `scripts/dev.sh notices` passes with `phonemizer` listed and accepted. Every place Askwell states its own licence says GPLv3. The gate still fails on a GPL-2.0-only or AGPL dependency — proved by the existing test pattern, not assumed.
+- **Edge Cases:** A dependency declaring only "GPL" with no version — flagged as unclear, not allowed by default. A bundled model with a non-commercial licence — still refused, as before.
+- **Permissions / Roles:** Single user — no roles.
+- **UI States:** The About screen's licence line.
+- **Validation Rules:** Do not allow-list `phonemizer` by name to make the gate pass — change the rule, so the gate stays meaningful for the next dependency.
+- **Audit / Logging Requirements:** None.
+- **Analytics Events:** None.
+
+**Real-World Example Scenarios**
+- Someone downloads Askwell, reads GPLv3 in the About screen, and gets a product that listens and answers aloud.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M7-DOC-DOC-163, M6-TTS-BE-130.
+- **API / Data Touchpoints:** `LICENSE`; package metadata; `README.md`; `docs/PRD.md`; `AGENTS.md` C9; `api/src/askwell/notices.py`; `scripts/generate_notices.py`; `web/components/settings/about.tsx`.
+- **Assumptions:** The GPLv3 text comes from the FSF's canonical copy, verbatim.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** Run `scripts/dev.sh notices` and confirm it passes. Open Settings → About and confirm GPLv3.
+- **Other scenarios:** Add a fake GPL-2.0-only package to the gate's test input and confirm it still fails.
+- **Known gaps:** Not legal advice; a lawyer's review before a public release is advisable.
+
+**Effort & Granularity Check**
+- **Estimate:** 3 hours · **Priority:** High
+- **Labels / Component:** `phase:7`, documentation, licensing
+- **Granularity:** One licence, one gate rule, the places that state it.
