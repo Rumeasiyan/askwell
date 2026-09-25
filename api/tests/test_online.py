@@ -425,12 +425,63 @@ async def test_a_revocation_names_the_destination_even_when_the_grant_was_alread
 DISCLOSED = online.Disclosure(version="test-1", text="Your question and the passages found for it.")
 
 
-async def test_while_the_payload_is_undefined_nothing_can_be_confirmed_and_nothing_sent(
+# `M8-FIX-BE-178`: typed out here rather than read from `online`, so a
+# change to either copy fails this test instead of passing along with it.
+APPROVED_V1 = (
+    "When you ask in this conversation, Askwell sends your online AI provider your question, "
+    "the passages from your files that it found relevant to it, and what Askwell knows about "
+    "your material that bears on the question: facts you have taught it, conclusions it has "
+    "drawn about your files and databases on its own — including the names of your tables "
+    "and columns — and, occasionally, a single value from one of your tables that it used to "
+    "work out how the dates in a column are written. What Askwell knows is not tied to one "
+    "conversation, so something you taught it elsewhere can be included. It does not send "
+    "whole files, database query results, or the questions and answers from earlier turns. "
+    "A question Askwell cannot answer from your files sends nothing."
+)
+
+
+def test_the_disclosure_is_the_approved_statement_verbatim_as_version_1() -> None:
+    """#737 as corrected by #753, approved 2026-09-25. Rewording it, even
+    to something truer, is a new version and a new approval."""
+    assert online.DISCLOSURE == online.Disclosure(version="1", text=APPROVED_V1)
+
+
+async def test_the_approved_statement_is_shown_and_its_version_confirmed_before_a_send(
     session: AsyncSession, settings: Settings, redis_store: dict[str, str]
 ) -> None:
+    """Online first, the statement shown, nothing permitted until version
+    `1` is confirmed — the real constant, not a test double."""
+    conversation_id = await _conversation(session)
+
+    state = await online.enable(session, settings, conversation_id)
+    await session.commit()
+    assert state.online and not state.send_permitted
+    assert state.as_dict()["disclosure"] == {
+        "defined": True,
+        "version": "1",
+        "text": APPROVED_V1,
+        "confirmed": False,
+    }
+
+    confirmed = await online.confirm_disclosure(session, settings, conversation_id, "1")
+    await session.commit()
+    assert confirmed.send_permitted
+    assert (await _decisions(session))[-1] == (
+        "online_ai_disclosure_confirmed",
+        {"conversation_id": str(conversation_id), "version": "1"},
+    )
+
+
+async def test_while_the_payload_is_undefined_nothing_can_be_confirmed_and_nothing_sent(
+    session: AsyncSession,
+    settings: Settings,
+    redis_store: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The ticket's safeguard: the product never sends something it cannot
-    describe. Online is authorised; a send is still not permitted."""
-    assert online.DISCLOSURE is None, "#737 decides the wording; until then this stays None"
+    describe. Online is authorised; a send is still not permitted. Kept
+    after the wording was set, because `None` must go on refusing."""
+    monkeypatch.setattr(online, "DISCLOSURE", None)
     conversation_id = await _conversation(session)
 
     state = await online.enable(session, settings, conversation_id)

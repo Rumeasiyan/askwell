@@ -41,10 +41,10 @@ compromised API process could, and it holds the database and the key too.
 **Nothing is sent before it is described** (`M8-ONLINE-FE-171`). Being
 online authorises the destination; it does not permit a send. A send also
 needs the conversation to have confirmed the current pre-send disclosure
-(`DISCLOSURE`), a decisions record naming the conversation. While
-`DISCLOSURE` is `None`, because the wording of what is sent is not decided
-yet (#737), nothing can be confirmed, so nothing is sent: `POST /ask` refuses
-the question and `askwell.ask._online_client` answers locally. The
+(`DISCLOSURE`), a decisions record naming the conversation. Were
+`DISCLOSURE` ever `None`, as it was until the wording was approved (#737,
+#753), nothing could be confirmed, so nothing would be sent: `POST /ask`
+refuses the question and `askwell.ask._online_client` answers locally. The
 confirmation outlives the authorisation. A conversation that lapses back to
 local and is switched on again is not asked again, unless the statement
 itself has changed, which is what its version is for.
@@ -118,10 +118,31 @@ class Disclosure:
     text: str
 
 
-# `M8-ONLINE-FE-171`: `None` until the wording is decided (#737). While it
-# is `None`, no conversation can confirm it and nothing is sent online. The
-# refusal is the safeguard. Do not fill this with a placeholder.
-DISCLOSURE: Disclosure | None = None
+# `M8-FIX-BE-178`: the wording the product owner approved on 2026-09-25
+# (#737, corrected by #753), verbatim. Every clause is a claim about what
+# `askwell.ask` sends: `compose_conflict` (the question, the passages that
+# cleared the threshold, the clarification answered this turn, and whatever
+# `memory.retrieve_relevant_facts` returns, which is global and includes
+# inferred facts and schema notes), `delimit_schema_notes` (table and column
+# names) and `table_infer.raise_table_inference` (the cell that settled a
+# column's date format). Change what is sent and this must change with it,
+# under a new version, so every conversation confirms it again. `None`
+# refuses every send; never replace it with a placeholder.
+DISCLOSURE: Disclosure | None = Disclosure(
+    version="1",
+    text=(
+        "When you ask in this conversation, Askwell sends your online AI provider your "
+        "question, the passages from your files that it found relevant to it, and what "
+        "Askwell knows about your material that bears on the question: facts you have "
+        "taught it, conclusions it has drawn about your files and databases on its own "
+        "— including the names of your tables and columns — and, occasionally, a "
+        "single value from one of your tables that it used to work out how the dates in "
+        "a column are written. What Askwell knows is not tied to one conversation, so "
+        "something you taught it elsewhere can be included. It does not send whole files, "
+        "database query results, or the questions and answers from earlier turns. A "
+        "question Askwell cannot answer from your files sends nothing."
+    ),
+)
 
 DISCLOSURE_UNDEFINED = (
     "What online AI would send has not been decided yet, so Askwell will not send "

@@ -389,6 +389,8 @@ The constraint that survives, unchanged: local logging continues in full regardl
 ### M8-ONLINE-TEST-176 — Online-mode release test: only the authorised destination
 
 > **Built 2026-09-25 as gate G13, and `BLOCKED` until #737.** The procedure is `../online-release-test.md`, the record `../online-test-log.md`, the automatable half `scripts/verify-online-egress.sh`. Everything that needs no send ran live and passed. The positive half (one question reaching the provider, and the capture of it) cannot run while #737 refuses every online send, so the gate records `BLOCKED` and holds the release. With this ticket all eight M8 tickets are built, but the milestone's exit condition ("a conversation can route to exactly one authorised destination") is not met until #737 is decided, so M8 has not landed. Reasoning: `../decisions.md`, 2026-09-25, `M8-ONLINE-TEST-176`.
+>
+> **#737 decided 2026-09-25 (`M8-FIX-BE-178`, `0.7.48`).** Online sends are no longer refused for want of a statement, so G13's positive half can run. It needs a real provider key and a network capture, which is a person's walkthrough, not the build's; until it is run and recorded in `../online-test-log.md`, G13 still reads `BLOCKED`.
 
 **Type:** Story
 

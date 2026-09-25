@@ -56,11 +56,11 @@ def test_a_provider_key_never_shows_its_value_in_a_repr() -> None:
 def test_no_online_send_is_possible_until_redis_is_authenticated() -> None:
     """Issue #730. With a key held, a conversation grant is a working route
     to a paid endpoint with the user's credential, and any container that can
-    write to Redis can write a grant. The one thing still refusing every
-    online send is the undecided disclosure (#737, `online.DISCLOSURE is
-    None`). This fails the moment that gate opens while Redis still takes
-    writes from anything on the internal network, so the two cannot land in
-    the wrong order by accident."""
+    write to Redis can write a grant. Until the disclosure was set (#737,
+    `M8-FIX-BE-178`), `online.DISCLOSURE is None` refused every online send.
+    Now that it is set, this passes only because Redis is authenticated
+    (`M8-FIX-SEC-177`); it fails if that authentication is ever removed while
+    sends are permitted. Do not weaken it to make a change pass."""
     compose = (Path(__file__).resolve().parents[2] / "compose.yaml").read_text()
     redis_service = compose.split("\n  redis:\n", 1)[1].split("\n  egress-proxy:\n", 1)[0]
     authenticated = "--requirepass" in redis_service or "--aclfile" in redis_service
@@ -88,7 +88,9 @@ async def _clean(db: AsyncSession) -> None:
     await db.execute(text("TRUNCATE audit_decisions"))
     # A passphrase change re-encrypts every stored credential; another
     # test's, under another test's install secret, would not decrypt.
-    await db.execute(text("DELETE FROM sources"))
+    # CASCADE: another suite's turns leave citations pointing at sources,
+    # and this test must not assume rows it did not create away (#752).
+    await db.execute(text("TRUNCATE sources CASCADE"))
     await db.execute(
         text("DELETE FROM settings WHERE key IN (:key, :verifier)"),
         {"key": provider_key.SETTING_KEY, "verifier": passphrase.VERIFIER_KEY},
