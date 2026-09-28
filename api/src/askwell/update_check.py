@@ -52,7 +52,7 @@ from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
 from askwell.logging import get_logger
-from askwell.settings_store import get_setting, set_setting
+from askwell.settings_store import delete_setting, get_setting, set_setting
 
 log = get_logger(__name__)
 
@@ -201,6 +201,14 @@ async def set_answer(session: AsyncSession, settings: Settings, answer: Answer) 
 
 
 async def _fetch(settings: Settings, client_factory: ClientFactory) -> tuple[Result, str | None]:
+    """`(OK, version)` for a published release, `(OK, None)` when nothing
+    has been published yet, `(UNREACHABLE, None)` otherwise.
+
+    The feed file exists only once the release procedure has written it
+    (`docs/release-procedure.md` §6a; issue #699), so before the first
+    release the host answers 404. That is the feed's honest answer — no
+    release — not a failure, and it must not tell the person Askwell could
+    not reach the file. An empty file says the same thing."""
     try:
         async with client_factory() as client:
             response = await client.get(
@@ -209,8 +217,10 @@ async def _fetch(settings: Settings, client_factory: ClientFactory) -> tuple[Res
                 # `docs/ux/settings.md` §7's own claim about what is sent.
                 headers={"User-Agent": f"Askwell/{__version__}"},
             )
+            if response.status_code == httpx.codes.NOT_FOUND:
+                return Result.OK, None
             response.raise_for_status()
-            return Result.OK, response.text.strip()
+            return Result.OK, response.text.strip() or None
     except httpx.HTTPError as error:
         log.info("update_check_unreachable", error=f"{type(error).__name__}: {error}")
         return Result.UNREACHABLE, None
@@ -241,7 +251,13 @@ async def run_check(
     now = datetime.now(UTC).isoformat()
     await set_setting(session, LAST_CHECKED_KEY, now)
     await set_setting(session, LAST_RESULT_KEY, result.value)
-    if remote_version is not None:
+    if result is Result.OK and remote_version is None:
+        # Nothing is published. A version remembered from an earlier check —
+        # including one the old feed read off `main` (issue #699) — is no
+        # longer something anyone can download, so it stops being known.
+        await delete_setting(session, LATEST_KNOWN_VERSION_KEY)
+        await delete_setting(session, LATEST_KNOWN_SINCE_KEY)
+    elif remote_version is not None:
         if remote_version != state.latest_known_version:
             # The date shown beside the version is when Askwell learned of
             # it, so it moves only when the version does — a weekly check

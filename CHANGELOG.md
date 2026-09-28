@@ -4,6 +4,15 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.58 - 2026-09-28
+
+`Fixed`: `M9-FIX-BE-210`. If you agreed to update checks, Askwell now tells you only about versions
+that have actually been released. Until now it could name a version that had no download. If no
+newer release exists, nothing is shown. If nothing has been released at all, **Check now** says
+this is the newest version and does not report a failure. A version Askwell learned about earlier
+that was never released is forgotten at the next check. The check is the same single request to
+the same place, and it still sends only your version number.
+
 ## 0.7.57 - 2026-09-28
 
 `Security`: `M9-FIX-SEC-209`. Askwell no longer starts with the example passwords from

@@ -201,7 +201,7 @@ Reply to each report with the pinned issue and the first of these that applies:
 | People who said no, or were never asked | **Not at all, from inside the product.** Only if they look at the repository, its release page, or the pinned issue |
 | People who reported the problem | Directly, in reply to their issue (§4.2) |
 
-A known defect makes the first row weaker than it reads. The feed is `main/VERSION`, which moves on every merged ticket, not on every release. So "a newer version exists" is already true most of the time, whether or not a release was published (issue #699). Until #699 is fixed, the update check cannot be relied on to carry an incident, and the pinned issue and release page are the only channels that do.
+The feed is `VERSION` on the `releases` branch, and only `docs/release-procedure.md` §6a writes it, after the artefacts are up and verified. So "a newer version exists" means a newer version was published. Until 0.7.58 the feed was `main`'s `VERSION`, which moved on every merged ticket and made this row unreliable (issue #699, fixed by `M9-FIX-BE-210`). The fixed release reaches opted-in installs only after §6a has run for it. If §6a is skipped, nobody is told.
 
 ### 4.4 Fix and publish
 

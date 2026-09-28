@@ -153,13 +153,17 @@ class Settings(BaseSettings):
 
     # `M7-UPDATE-BE-161`. A raw file, not an API endpoint — `docs/ux/settings.md`
     # §7's own claim ("a static version file, not an endpoint") is literally
-    # true only because this is this repository's own `VERSION` file, served
-    # as a static blob by `raw.githubusercontent.com` rather than by any
-    # server-side logic that could log a requester. Comparing against it is
-    # comparing against the same single source of truth AGENTS.md §7 already
-    # names — no second registry to keep in sync. See `docs/decisions.md`.
+    # true only because this is a plain file served as a static blob by
+    # `raw.githubusercontent.com` rather than by any server-side logic that
+    # could log a requester. It is `VERSION` on the `releases` branch, not on
+    # `main`: `main`'s moves on every merged ticket, so it advertised versions
+    # nobody published (issue #699, `M9-FIX-BE-210`). Only
+    # `docs/release-procedure.md` §6a writes the `releases` copy, after the
+    # artefacts are up. Until the first release creates that branch the file
+    # does not exist, and the check reads that as "nothing published". See
+    # `docs/decisions.md`.
     update_feed_host: str = "raw.githubusercontent.com"
-    update_feed_url: str = "https://raw.githubusercontent.com/Rumeasiyan/askwell/main/VERSION"
+    update_feed_url: str = "https://raw.githubusercontent.com/Rumeasiyan/askwell/releases/VERSION"
 
     # How often the weekly check is even *considered* — not the cadence it
     # runs at. `update_check_interval_seconds` (below) is what enforces "no

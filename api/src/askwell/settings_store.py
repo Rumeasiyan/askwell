@@ -27,3 +27,7 @@ async def set_setting(session: AsyncSession, key: str, value: str) -> None:
         ),
         {"key": key, "value": value},
     )
+
+
+async def delete_setting(session: AsyncSession, key: str) -> None:
+    await session.execute(text("DELETE FROM settings WHERE key = :key"), {"key": key})
