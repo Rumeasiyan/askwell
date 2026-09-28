@@ -13,6 +13,7 @@ the whole point of the arrangement being tested.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import importlib.util
 import json
@@ -178,3 +179,69 @@ def test_a_model_already_on_disk_is_not_fetched_again(
     monkeypatch.setattr(host.urllib.request, "urlopen", refuse)
     host._fetch_once(tmp_path, _request())
     assert _progress(tmp_path)["status"] == "ready"
+
+
+# --- M9-FIX-DEPLOY-211, issue #668: signals in the run directory ------------
+#
+# The API sees the models directory read-only, so the request, the progress
+# and the cancel flag are exchanged through the run directory. The model file
+# itself still lands in the models directory.
+
+
+def test_signals_go_through_the_run_directory_and_the_model_through_models(
+    host: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    models = tmp_path / "models"
+    run = tmp_path / "run"
+    models.mkdir()
+    monkeypatch.setattr(host.urllib.request, "urlopen", lambda *_a, **_k: _Response(_CONTENT))
+
+    host._fetch_once(models, _request(), run)
+
+    assert (models / "model.gguf").read_bytes() == _CONTENT
+    assert _progress(run)["status"] == "ready"
+    assert not (models / "fetch-progress.json").exists()
+
+
+def test_a_cancel_in_the_run_directory_stops_the_fetch(
+    host: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    models = tmp_path / "models"
+    run = tmp_path / "run"
+    models.mkdir()
+    run.mkdir()
+    (run / "fetch-cancel").write_text("", encoding="utf-8")
+    monkeypatch.setattr(host.urllib.request, "urlopen", lambda *_a, **_k: _Response(_CONTENT))
+
+    host._fetch_once(models, _request(), run)
+
+    assert _progress(run)["status"] == "paused"
+    assert not (models / "model.gguf").exists()
+    assert not (run / "fetch-cancel").exists()
+
+
+async def test_the_watcher_takes_its_request_from_the_run_directory(
+    host: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A request left in the models directory is not the contract any more —
+    the API cannot write there — so only the run directory's is acted on."""
+    models = tmp_path / "models"
+    run = tmp_path / "run"
+    models.mkdir()
+    run.mkdir()
+    (run / "fetch-request.json").write_text(json.dumps(_request()), encoding="utf-8")
+    monkeypatch.setattr(host.urllib.request, "urlopen", lambda *_a, **_k: _Response(_CONTENT))
+    monkeypatch.setattr(host, "FETCH_POLL_SECONDS", 0.01)
+
+    stopping = asyncio.Event()
+    watcher = asyncio.create_task(host.watch_for_fetch_requests(models, run, stopping))
+    for _ in range(200):
+        if (models / "model.gguf").exists():
+            break
+        await asyncio.sleep(0.01)
+    stopping.set()
+    await watcher
+
+    assert (models / "model.gguf").read_bytes() == _CONTENT
+    assert not (run / "fetch-request.json").exists()
+    assert _progress(run)["status"] == "ready"

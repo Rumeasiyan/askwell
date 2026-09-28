@@ -557,14 +557,17 @@ class Supervisor:
 #
 # So the one download in the product happens here, for the same reason
 # inference does: the host is where host things belong. The API writes a request
-# into the models directory and reads progress back from it; it never opens a
-# socket to anywhere. An air-gapped machine simply never writes a request and
+# into the run directory and reads progress back from it; it never opens a
+# socket to anywhere. The run directory, not the models directory: the API sees
+# the models directory read-only (`M9-FIX-DEPLOY-211`, issue #668). The model
+# itself still lands in the models directory. An air-gapped machine simply never writes a request and
 # uses the manual-file path instead.
 #
 # stdlib only, like the rest of this file — the host has whatever Python it has.
 
 FETCH_REQUEST = "fetch-request.json"
 FETCH_PROGRESS = "fetch-progress.json"
+FETCH_CANCEL = "fetch-cancel"
 FETCH_POLL_SECONDS = 1.0
 FETCH_CHUNK = 1024 * 1024
 
@@ -589,11 +592,11 @@ def _write_json_atomic(path: Path, payload: dict) -> None:
         print(f"askwell-inference[swap]: could not write result: {error}", file=sys.stderr)
 
 
-def _fetch_write(models_dir: Path, payload: dict) -> None:
+def _fetch_write(signal_dir: Path, payload: dict) -> None:
     """Publish progress the way `_write` publishes state: atomically."""
-    target = models_dir / FETCH_PROGRESS
+    target = signal_dir / FETCH_PROGRESS
     try:
-        models_dir.mkdir(parents=True, exist_ok=True)
+        signal_dir.mkdir(parents=True, exist_ok=True)
         temporary = target.with_suffix(".partial")
         temporary.write_text(json.dumps(payload), encoding="utf-8")
         os.replace(temporary, target)
@@ -602,7 +605,7 @@ def _fetch_write(models_dir: Path, payload: dict) -> None:
         print(f"askwell-inference[fetch]: could not write progress: {error}", file=sys.stderr)
 
 
-def _fetch_once(models_dir: Path, request: dict) -> None:
+def _fetch_once(models_dir: Path, request: dict, signal_dir: Path | None = None) -> None:
     """One model, resumable, verified against the checksum the API sent.
 
     The checksum is not optional and is not computed here: it comes from the
@@ -616,9 +619,11 @@ def _fetch_once(models_dir: Path, request: dict) -> None:
     total = int(request["size_bytes"])
     target = models_dir / filename
     part = target.with_suffix(target.suffix + ".part")
+    signals = signal_dir if signal_dir is not None else models_dir
+    cancel = signals / FETCH_CANCEL
 
     def publish(status: str, done: int, error: str | None = None) -> None:
-        _fetch_write(models_dir, {
+        _fetch_write(signals, {
             "filename": filename,
             "status": status,
             "downloaded_bytes": done,
@@ -649,8 +654,8 @@ def _fetch_once(models_dir: Path, request: dict) -> None:
                 done = 0
             with open(part, "ab" if append else "wb") as handle:
                 while True:
-                    if (models_dir / "fetch-cancel").exists():
-                        (models_dir / "fetch-cancel").unlink(missing_ok=True)
+                    if cancel.exists():
+                        cancel.unlink(missing_ok=True)
                         publish("paused", done)
                         return
                     chunk = response.read(FETCH_CHUNK)
@@ -676,15 +681,17 @@ def _fetch_once(models_dir: Path, request: dict) -> None:
     publish("ready", total)
 
 
-async def watch_for_fetch_requests(models_dir: Path, stopping: asyncio.Event) -> None:
+async def watch_for_fetch_requests(
+    models_dir: Path, run_dir: Path, stopping: asyncio.Event
+) -> None:
     """Do what the API asked, when it asks, and nothing when it does not."""
-    request_path = models_dir / FETCH_REQUEST
+    request_path = run_dir / FETCH_REQUEST
     while not stopping.is_set():
         try:
             if request_path.is_file():
                 request = json.loads(request_path.read_text(encoding="utf-8"))
                 request_path.unlink(missing_ok=True)
-                await asyncio.to_thread(_fetch_once, models_dir, request)
+                await asyncio.to_thread(_fetch_once, models_dir, request, run_dir)
         except (OSError, json.JSONDecodeError, KeyError, ValueError) as error:
             print(f"askwell-inference[fetch]: bad request: {error}", file=sys.stderr)
             request_path.unlink(missing_ok=True)
@@ -767,10 +774,11 @@ async def main() -> int:
     models_dir = Path(
         env("ASKWELL_MODELS_DIR", os.path.expanduser("~/.local/share/askwell/models"))
     ).expanduser()
-    running.append(asyncio.create_task(watch_for_fetch_requests(models_dir, stopping)))
-
     generation = next(s for s in supervisors if s.role == "generation")
     run_dir = generation.socket_path.parent
+    running.append(
+        asyncio.create_task(watch_for_fetch_requests(models_dir, run_dir, stopping))
+    )
     running.append(
         asyncio.create_task(watch_for_swap_requests(generation, run_dir, stopping, models_dir))
     )

@@ -4,6 +4,10 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.59 - 2026-09-28
+
+`Fixed`: `M9-FIX-DEPLOY-211`. When you place a model file by hand during first run, Askwell now names the folder on your own machine, for example `~/.local/share/askwell/models/…`. Before, it showed a path that exists only inside Askwell's container (`/models/…` or `/root/…`). Checking the file now also finds it where you put it. Before, a correctly placed file was reported missing. If the models folder does not exist yet, Askwell tells you where to create it. The first-run download now reaches the helper on your machine through Askwell's run folder, because Askwell can read the models folder but can no longer write to it. Update the host inference helper together with this version.
+
 ## 0.7.58 - 2026-09-28
 
 `Fixed`: `M9-FIX-BE-210`. If you agreed to update checks, Askwell now tells you only about versions

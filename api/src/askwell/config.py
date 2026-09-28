@@ -117,8 +117,10 @@ class Settings(BaseSettings):
     # embeddings are the wrong width for the schema entirely. Measured, not
     # assumed — see issue #89.
     #
-    # Used by the host-side supervisor only. The containers never see these;
-    # they reach all three through one socket.
+    # Used by the host-side supervisor, which is what loads them; the
+    # containers reach all three through one socket. The api container is
+    # also given `inference_model_path`, for its file name only
+    # (`generation_model_file`, issue #668).
     inference_binary: str = "llama-server"
     inference_context_size: int = Field(default=8192, ge=512, le=1_048_576)
 
@@ -658,6 +660,22 @@ class Settings(BaseSettings):
     def models_dir_shown(self) -> str:
         """Where to tell the user to place a model file."""
         return self.models_dir_display or str(self.models_dir)
+
+    @property
+    def generation_model_file(self) -> Path:
+        """The generation model as the API reads it: its file name inside
+        `models_dir`. `M9-FIX-DEPLOY-211`, issue #668.
+
+        `inference_model_path` is the host supervisor's path and means nothing
+        inside the container; only its name crosses, the same contract
+        `askwell.model_select` uses for a swap.
+        """
+        return self.models_dir / self.inference_model_path.name
+
+    @property
+    def generation_model_file_shown(self) -> str:
+        """`generation_model_file` as the user knows it on their machine."""
+        return f"{self.models_dir_shown.rstrip('/')}/{self.inference_model_path.name}"
 
     @property
     def database_host_port(self) -> tuple[str, int]:

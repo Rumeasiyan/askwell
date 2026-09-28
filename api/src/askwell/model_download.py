@@ -93,9 +93,12 @@ class DownloadProgress:
 ClientFactory = Callable[[], httpx.AsyncClient]
 
 # Both sides of the container boundary agree on these two names and nothing
-# else. The API writes the first; the host supervisor writes the second.
+# else. The API writes the first; the host supervisor writes the second. They
+# live in the run directory, not the models directory: the API sees the models
+# directory read-only (`M9-FIX-DEPLOY-211`, issue #668).
 FETCH_REQUEST = "fetch-request.json"
 FETCH_PROGRESS = "fetch-progress.json"
+FETCH_CANCEL = "fetch-cancel"
 
 # The host writes plain words; this maps them onto the states the screen knows.
 _HOST_STATUS = {
@@ -119,18 +122,27 @@ def _default_client() -> httpx.AsyncClient:
 class ModelDownloadManager:
     """One model download at a time, tracked in memory for this process.
 
-    `target_path` is `Settings.inference_model_path` — the same file the
-    native inference supervisor (`M0-MODEL-DEPLOY-018`) expects to find
-    already in place. This is what puts it there.
+    `target_path` is `Settings.generation_model_file` — the file the native
+    inference supervisor (`M0-MODEL-DEPLOY-018`) expects to find already in
+    place, as this process sees it. `shown_path` is the same file as the user
+    knows it on their machine, and is what every message names: in the stack
+    `target_path` is `/models/…`, a folder that does not exist for them
+    (issue #668). `signal_dir` is where the fetch request, progress and cancel
+    files are exchanged with the host — the run directory in the stack,
+    because the models directory is mounted read-only.
     """
 
     def __init__(
         self,
         target_path: Path,
         *,
+        shown_path: str | None = None,
+        signal_dir: Path | None = None,
         client_factory: ClientFactory = _default_client,
     ) -> None:
         self._target_path = target_path.expanduser()
+        self._shown_path = shown_path or str(self._target_path)
+        self._signal_dir = (signal_dir or self._target_path.parent).expanduser()
         self._client_factory = client_factory
         self._task: asyncio.Task[None] | None = None
         self._cancel = asyncio.Event()
@@ -141,8 +153,16 @@ class ModelDownloadManager:
         return self._target_path
 
     @property
+    def shown_path(self) -> str:
+        return self._shown_path
+
+    @property
     def _models_dir(self) -> Path:
         return self._target_path.parent
+
+    @property
+    def _shown_dir(self) -> str:
+        return self._shown_path.rsplit("/", 1)[0] if "/" in self._shown_path else "."
 
     def _write_request(self, spec: ModelSpec) -> None:
         """Ask the host to fetch this, and say exactly which bytes count.
@@ -152,9 +172,9 @@ class ModelDownloadManager:
         at the moment the catalogue was written, and a fetcher that decided for
         itself what "correct" meant would be no check at all.
         """
-        self._models_dir.mkdir(parents=True, exist_ok=True)
-        (self._models_dir / "fetch-cancel").unlink(missing_ok=True)
-        (self._models_dir / FETCH_REQUEST).write_text(
+        self._signal_dir.mkdir(parents=True, exist_ok=True)
+        (self._signal_dir / FETCH_CANCEL).unlink(missing_ok=True)
+        (self._signal_dir / FETCH_REQUEST).write_text(
             json.dumps(
                 {
                     "url": spec.url,
@@ -169,7 +189,7 @@ class ModelDownloadManager:
     def _host_progress(self) -> dict[str, object] | None:
         """What the host says it is doing, or nothing if it has not said."""
         try:
-            return dict(json.loads((self._models_dir / FETCH_PROGRESS).read_text(encoding="utf-8")))
+            return dict(json.loads((self._signal_dir / FETCH_PROGRESS).read_text(encoding="utf-8")))
         except (OSError, json.JSONDecodeError, TypeError, ValueError):
             return None
 
@@ -239,8 +259,12 @@ class ModelDownloadManager:
         spec = spec_for_tier(tier)
         already = self._bytes_on_disk(spec)
         needed = max(spec.size_bytes - already, 0) + _DISK_MARGIN_BYTES
+        # The nearest folder that exists, never created here: the API does not
+        # write into the models directory (read-only in the stack), and a
+        # missing one is the host's to create — `verify_manual` says where.
         parent = self._target_path.parent
-        parent.mkdir(parents=True, exist_ok=True)
+        while not parent.exists() and parent != parent.parent:
+            parent = parent.parent
         free = disk_usage(parent).free
         return free >= needed, needed, free
 
@@ -277,8 +301,8 @@ class ModelDownloadManager:
         # other side of the container boundary, and this directory is the only
         # thing both can touch.
         with contextlib.suppress(OSError):
-            (self._models_dir / "fetch-cancel").write_text("", encoding="utf-8")
-        (self._models_dir / FETCH_REQUEST).unlink(missing_ok=True)
+            (self._signal_dir / FETCH_CANCEL).write_text("", encoding="utf-8")
+        (self._signal_dir / FETCH_REQUEST).unlink(missing_ok=True)
         return self.snapshot(tier)
 
     def verify_manual(self, tier: str) -> DownloadProgress:
@@ -302,14 +326,26 @@ class ModelDownloadManager:
         `snapshot()` prefers `self._progress` over recomputing from disk.
         """
         spec = spec_for_tier(tier)
-        if not self._target_path.is_file():
+        if not self._models_dir.is_dir():
             result = DownloadProgress(
                 status=DownloadStatus.IDLE,
                 tier=tier,
                 display_name=spec.display_name,
                 downloaded_bytes=0,
                 total_bytes=spec.size_bytes,
-                error=f"No file found at {self._target_path}.",
+                error=(
+                    f"There is no folder at {self._shown_dir} yet. Create it, "
+                    f"then place the model file there as {self._shown_path}."
+                ),
+            )
+        elif not self._target_path.is_file():
+            result = DownloadProgress(
+                status=DownloadStatus.IDLE,
+                tier=tier,
+                display_name=spec.display_name,
+                downloaded_bytes=0,
+                total_bytes=spec.size_bytes,
+                error=f"No file found at {self._shown_path}.",
             )
         else:
             digest = _sha256_file(self._target_path)
@@ -340,7 +376,7 @@ class ModelDownloadManager:
                         downloaded_bytes=self._target_path.stat().st_size,
                         total_bytes=spec.size_bytes,
                         error=(
-                            f"The file at {self._target_path} does not match any model "
+                            f"The file at {self._shown_path} does not match any model "
                             "Askwell recognises — it may be corrupt, incomplete, or the "
                             "wrong file. Re-download it, or replace it with the correct file."
                         ),
@@ -376,7 +412,11 @@ class ModelDownloadManager:
                     "tier": spec.tier,
                     "display_name": spec.display_name,
                     "filename": spec.filename,
-                    "path": str(path),
+                    "path": (
+                        str(path)
+                        if self._shown_path == str(self._target_path)
+                        else f"{self._shown_dir}/{filename}"
+                    ),
                 }
             )
         return alternatives
