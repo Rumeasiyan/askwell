@@ -4,8 +4,9 @@ How an Askwell version becomes a downloadable release. `M7-TAURI-DEPLOY-184`.
 
 **Signing is not part of this.** Askwell ships unsigned — `docs/decisions.md`
 (2026-08-26, "No trademark, unsigned distribution, and Apache-2.0 stays") settled that on
-cost, not on engineering, and it is not reopened here. Real signing is `M7-TAURI-DEPLOY-184a`,
-deferred and blocked on a purchase.
+cost, not on engineering, and it is not reopened here. Buying signing certificates
+was decided against on 2026-09-28; `M7-TAURI-DEPLOY-184a` stays only as the record of what signing
+would take.
 
 **What this procedure cannot yet do.** No pipeline produces a real installable bundle per
 platform — `web/src-tauri/tauri.conf.json` has `bundle.active: false`, and issue #559 tracks

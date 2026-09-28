@@ -1826,7 +1826,7 @@ Cold start. Ask a question on the shipped model — no marker. Open settings, pl
 
 ### M7-TAURI-DEPLOY-184a — Code signing and Apple notarisation **[BLOCKED]**
 
-> **Deferred: not scheduled.** Blocked on a purchase, not on engineering. Do not start it until certificates exist. The `[BLOCKED]` marker keeps the build runner from scheduling it (`scripts/build-runner.sh`, `ticket_is_blocked`); when both certificates exist, change it to `[UNBLOCKED <date>]` as the M8 credit tickets did. Tracked in #636.
+> **Not doing — decided 2026-09-28.** The product owner decided not to buy code-signing certificates (`../decisions.md`). Askwell ships unsigned with published checksums. This ticket stays in the backlog, marked `[BLOCKED]`, only as the record of what signing would take if that decision is ever reversed. The `[BLOCKED]` marker keeps the build runner from scheduling it (`scripts/build-runner.sh`, `ticket_is_blocked`); when both certificates exist, change it to `[UNBLOCKED <date>]` as the M8 credit tickets did. Tracked in #636.
 
 **Type:** Task
 
