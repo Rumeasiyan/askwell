@@ -2,7 +2,7 @@
 
 **Goal:** The release blockers found by the triage of 2026-09-28 fixed, so the product does what it says for a real user on a clean machine.
 
-**Phase:** 7 (`../build-plan.md`) · **Depends on:** M8 · **Tickets:** 15 · **Estimated:** 49 hours
+**Phase:** 7 (`../build-plan.md`) · **Depends on:** M8 · **Tickets:** 16 · **Estimated:** 55 hours
 
 **Exit condition:** Installable downloads for Linux, Windows and macOS are built by CI, a fresh install on Linux works end to end without a manual step, answers read as prose with every claim cited, the clarification loop and conflict resolution actually remember, the audit chain holds through prune and restore, and every test that exists runs.
 
@@ -53,6 +53,60 @@
 - **Estimate:** 4 hours · **Priority:** Critical
 - **Labels / Component:** `phase:7`, deploy
 - **Granularity:** The fix named in #698, #700, and its tests.
+
+---
+
+### M9-FIX-BE-215 — An answer that covers nothing is an abstention, and nothing internal leaks into it
+
+**Type:** Task
+
+**User Story**
+- **Actor:** someone asking about something their files do not cover, but come close to.
+- **User Need:** a plain "nothing in your files answers this", with what to add — not prose that half-answers it.
+- **Business Value:** C5 is the promise the product is built on, and its first measurement (2026-09-28) was **0.07 against a pass bar of 0.90**.
+
+**Context / Background**
+**Detailed Description:** Issue #769 has the full evidence. In short: near-miss questions retrieve passages above threshold, so the turn skips the formal abstention path and the model writes its refusal as prose — `Not covered: …` — which the user sees instead of the abstention surface. The same answers leak raw prompt delimiters (`<retrieved-content index="1" chunk_id="…">` and the passage text), spam citation markers with no claim attached (`[1] [2] … [15]`), and repeat `Not covered:` lines. The model is mostly *not* inventing; the product is presenting a correct refusal in the wrong shape and leaking internals while it does.
+
+**Do not lower the retrieval threshold.** `AGENTS.md` C5 forbids it: it would move the number while making the product worse (`../success-metrics.md` §2).
+
+**Scope**
+- An answer with no grounded, cited claim, whose content is entirely `Not covered` lines, becomes an abstention: routed through `compose_abstention` with the aspects the model named, so the user gets the full abstention surface.
+- Any delimiter block (`<retrieved-content …>`, `<tool-result>`, `<web-content>`, `<memory-facts>`, `<schema-notes>`) stripped from answer text before it is stored or shown.
+- A citation marker rendered only when attached to a claim.
+- Duplicate `Not covered:` lines collapsed.
+- `abstention.v1` run **with and without** `ASKWELL_GENERATION_THINKING_DIRECTIVE`, both results recorded in `../BRAIN.md`'s Eval baseline section — `0.7.21` (#629) may have caused the delimiter echo, and nobody knows yet.
+
+**Out of Scope**
+- The threshold.
+- Partial answers that genuinely answer part of the question — those stay answers, with their uncovered part named.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** `abstention.v1` is re-run and its score recorded honestly, pass or fail. No answer in `abstention.v1` or `grounded_qa.v1` contains a delimiter tag or an unattached citation marker. A question the corpus does not answer shows the abstention surface, with its escalation offers.
+- **Edge Cases:** An answer with one real cited claim and one `Not covered` line — stays a partial answer, not an abstention. `grounded_qa.v1` — must not regress; an answerable question must not start abstaining. Report its score before and after.
+- **Permissions / Roles:** Single user — no roles.
+- **UI States:** `../ux/ask.md` §5 Abstained and Partial; `../states-and-edge-cases.md` §2.
+- **Validation Rules:** Do not weaken, skip or re-score `abstention.v1`, and do not lower the pass bar or the threshold. If the bar is still not met, record the real number and file what remains — an honest 0.6 is worth more than a manufactured 0.9. C7: delimiter content is never shown to the user.
+- **Audit / Logging Requirements:** Unchanged.
+- **Analytics Events:** None (C1).
+
+**Real-World Example Scenarios**
+- A user asks for the termination notice period; the handbook only has the resignation notice. They see "Nothing in your files answers this", the closest material named, and an offer to add a source — not a paragraph about resignation.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M2-ABSTAIN-BE-054, M2-PARTIAL-BE-057, M2-EVAL-TEST-064.
+- **API / Data Touchpoints:** `api/src/askwell/ask.py` `_run_generation`; `api/src/askwell/agent/partial.py`; `api/src/askwell/agent/abstain.py`; `eval/`.
+- **Assumptions:** The eval suite finishes within a build session on this host (it took about thirty minutes on 2026-09-28).
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** Ask "What is the notice period for terminating an employee?" against `eval/fixtures/corpus` and confirm the abstention surface.
+- **Other scenarios:** `scripts/dev.sh eval --suite abstention.v1` and `--suite grounded_qa.v1`, before and after, with and without the directive.
+- **Known gaps:** Close #769 and #625 with the recorded numbers.
+
+**Effort & Granularity Check**
+- **Estimate:** 6 hours · **Priority:** Critical
+- **Labels / Component:** `phase:7`, `constraint:grounding`, `constraint:injection`, `eval`, backend
+- **Granularity:** One routing rule, one strip, one eval comparison.
 
 ---
 

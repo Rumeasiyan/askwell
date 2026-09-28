@@ -11,7 +11,7 @@
 >
 > **As of 2026-09-25: every milestone's tickets are built — M0 through M8, 213 tickets — and the product is not yet release-ready.** Three tickets remain, added from two product decisions that morning (`docs/decisions.md`, 2026-09-25): `M8-FIX-SEC-177` (Redis authentication, #730), then `M8-FIX-BE-178` (the approved online-AI disclosure, #737), and `M8-FIX-DOC-179` (relicensing to GPLv3 so spoken answers ship, #619). All three are built: `M8-FIX-SEC-177` (`0.7.46`), `M8-FIX-DOC-179` (`0.7.47`) and `M8-FIX-BE-178` (`0.7.48`), so online AI can send. G13's positive half (`docs/online-release-test.md` §4.3) is owed: it needs a person with a real provider key and a capture. `M7-TAURI-DEPLOY-184a` (code signing) is `[BLOCKED]` on certificates the owner has to buy, and v1 ships unsigned by decision.
 >
-> **What "not release-ready" means.** About 228 issues are open, 64 of them bugs, filed by the build's own audit agents along the way. Some are real: #719 (re-indexing a cited document fails), #728 (the conflict resolution control writes no memory fact), #727 (the conflict layout can box the wrong sentence), #734 (online mode still runs the tool loop locally). **The abstention eval has never been run** — C5's pass bar is ≥ 0.90 and the Eval baseline section at the bottom of this file still reads "Not yet established" (#625). Nothing has been verified on Windows or macOS (#590, #592).
+> **What "not release-ready" means.** About 228 issues are open, 64 of them bugs, filed by the build's own audit agents along the way. Some are real: #719 (re-indexing a cited document fails), #728 (the conflict resolution control writes no memory fact), #727 (the conflict layout can box the wrong sentence), #734 (online mode still runs the tool loop locally). **The abstention eval was run for the first time on 2026-09-28 and scored 0.07 against a 0.90 bar** (#769) — see the Eval baseline section at the bottom of this file. `M9-FIX-BE-215` is the fix, first in M9. Nothing has been verified on Windows or macOS (#590, #592).
 >
 > **Next, in order:** run G13's positive half with a real key and record it in `docs/online-test-log.md`; run the eval suites and record the baseline; triage the open issues into ship-blockers and noise, and **write the ship-blockers as backlog tickets** — the queue builds `docs/backlog/`, never the tracker, so an issue alone is never built; re-record the walkthrough video, which predates the six screen fixes.
 >
@@ -2150,7 +2150,11 @@ Screens before schema is deliberate: drawing a screen surfaces the missing butto
 
 ## Eval baseline
 
-Not yet established. First run at the end of Phase 1.
+| Date | Suite | Version | Model / profile | Mean | Worst-of-3 | Bar | Result |
+| ---- | ----- | ------- | --------------- | ---- | ---------- | --- | ------ |
+| 2026-09-28 | `abstention.v1` | `0.7.48` | Qwen3.5-4B-Q4_K_M / balanced | **0.07** | 0.07 | 0.90 | **FAIL** |
+
+The first measurement of C5, run by the orchestrating session. 14 of 15 tasks score 0. Mostly this is not invention. Near-miss questions retrieve passages above threshold and skip the formal abstention path, and the model writes its refusal as prose (`Not covered: …`). The same answers leak raw prompt delimiters and spam unattached citation markers. Full analysis in #769. The fix is `M9-FIX-BE-215`, placed first in M9. **The threshold must not be lowered to move this number** (C5). Whether `0.7.21`'s thinking prefill (#629) contributed is not yet known; that ticket measures it both ways. Result file: `eval/results/abstention.v1-20260928T012322Z.json` (gitignored, on the build host).
 
 | Model | Suite | Overall | Worst-case | Date |
 | ----- | ----- | ------- | ---------- | ---- |
