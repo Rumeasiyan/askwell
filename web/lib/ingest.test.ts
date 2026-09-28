@@ -91,6 +91,23 @@ test("a drop waiting on a stage that does not exist says which stage", () => {
   assert.match(sentence, /Nothing has been copied/);
 });
 
+test("files waiting for the passphrase say so and say what to do", () => {
+  const sentence = queueSentence(
+    state({
+      counts: { queued: 0, running: 0, parked: 2, failed: 0, done: 0 },
+      awaiting: { stage: "unlock", ticket: "", documents: 2 },
+      stages: [
+        { name: "extract", ticket: "M1-EXTRACT-ING-026", built: true },
+        { name: "chunk", ticket: "M1-INDEX-ING-031", built: true },
+        { name: "embed", ticket: "M1-INDEX-ING-032", built: true },
+      ],
+    }),
+  );
+
+  assert.match(sentence, /2 files are waiting for your passphrase/);
+  assert.match(sentence, /Unlock Askwell in Settings/);
+});
+
 test("one file waiting is not described as one files", () => {
   const sentence = queueSentence(
     state({ counts: { queued: 0, running: 0, parked: 1, failed: 0, done: 0 } }),

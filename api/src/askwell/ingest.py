@@ -67,7 +67,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from askwell import chunk, clarify, embed, extract, roots
+from askwell import chunk, clarify, embed, extract, passphrase, roots
 from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
@@ -377,6 +377,85 @@ async def _park(
     )
 
 
+# What a job parked for the passphrase is `awaiting`. Not a stage name, so
+# `resume` never revives it at startup — a fresh worker is locked, and would
+# only park it again. `revive_unlocked` is what does.
+AWAITING_UNLOCK = "unlock"
+
+
+async def _wait_for_unlock(
+    factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    work: Work,
+    *,
+    reached: str | None,
+) -> None:
+    """Park a document until Askwell is unlocked, and say so. `M9-FIX-BE-205`.
+
+    A passphrase is set and this process does not hold the key, so the stage
+    could neither encrypt the new passages nor read the stored ones. That is
+    not something a retry fixes, and failing the file three times would put a
+    perfectly good document in red for the user having not typed a
+    passphrase yet. So the job waits, parked, with `awaiting` naming why —
+    the progress surface turns that into a sentence — and the attempt it was
+    on is given back, the same courtesy `resume` extends to an interrupted
+    one. The stage raised before writing anything (`chunk` and `embed` both
+    resolve the key first), so there is nothing half-done to undo.
+    """
+    async with session_scope(factory) as session:
+        await session.execute(
+            text(
+                "UPDATE ingest_jobs SET state = 'parked', stage = :reached, "
+                "awaiting = :awaiting, attempts = GREATEST(attempts - 1, 0), "
+                "bytes_done = NULL, bytes_total = NULL, finished_at = now() "
+                "WHERE document_id = :id"
+            ),
+            {"reached": reached, "awaiting": AWAITING_UNLOCK, "id": work.document_id},
+        )
+        await session.execute(
+            text("UPDATE documents SET status = 'queued' WHERE id = :id AND deleted_at IS NULL"),
+            {"id": work.document_id},
+        )
+        await refresh_source(session, work.source_id, settings.ocr_confidence_threshold, settings)
+
+    log.info("ingest_waiting_for_unlock", document_id=str(work.document_id), reached=reached)
+
+
+async def revive_unlocked(factory: async_sessionmaker[AsyncSession], settings: Settings) -> int:
+    """Return every job parked for the passphrase to the queue, once this
+    process can decrypt. `M9-FIX-BE-205`.
+
+    Checked here rather than trusted from the caller: the worker calls this
+    the moment the API hands it the key, and again on every reconcile, which
+    also covers the passphrase being removed while files waited — the key is
+    then the install secret's, and there is nothing left to wait for. Still
+    locked, it does nothing, so a reconcile never spins a parked job through
+    the pipeline only to park it again.
+    """
+    async with session_scope(factory) as session:
+        try:
+            await passphrase.current_key(session, settings)
+        except passphrase.Locked:
+            return 0
+        result = await session.execute(
+            text(
+                "UPDATE ingest_jobs SET state = 'queued', stage = NULL, awaiting = NULL, "
+                "started_at = NULL, finished_at = NULL "
+                "WHERE state = 'parked' AND awaiting = :awaiting "
+                "RETURNING document_id"
+            ),
+            {"awaiting": AWAITING_UNLOCK},
+        )
+        revived = [row[0] for row in result.all()]
+    if revived:
+        log.info("ingest_revived_after_unlock", documents=len(revived))
+        # Not unique: the id for this document's attempt is the one the
+        # locked run already used, and arq would refuse it. The rows have just
+        # left `parked`, so this runs once per unlock, never on a timer.
+        await dispatch(settings, revived, unique=False)
+    return len(revived)
+
+
 async def _finish(
     factory: async_sessionmaker[AsyncSession], settings: Settings, work: Work
 ) -> None:
@@ -558,6 +637,11 @@ async def process(
 
         try:
             await stage.run(work, report, factory, settings)
+        except passphrase.Locked:
+            # Not a failure of the file, and not worth an attempt: nothing
+            # about it changes until the passphrase is entered (#508).
+            await _wait_for_unlock(factory, settings, work, reached=reached)
+            return "locked"
         except Exception as error:  # a stage may raise anything at all
             await _fail(factory, settings, work, stage=stage, attempts=attempts, error=error)
             return "failed"

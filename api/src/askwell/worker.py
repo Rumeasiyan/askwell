@@ -253,6 +253,9 @@ async def reconcile_queue(ctx: dict[str, Any]) -> int:
     """
     from askwell import ingest
 
+    # Files that waited for the passphrase go back on the queue first, so the
+    # reconcile below dispatches them. A no-op while this process is locked.
+    await ingest.revive_unlocked(ctx["sessions"], ctx["settings"])
     return await ingest.reconcile(ctx["sessions"], ctx["settings"])
 
 
@@ -319,7 +322,17 @@ async def run_update_check(ctx: dict[str, Any]) -> bool:
 
 
 async def startup(ctx: dict[str, Any]) -> None:
-    from askwell import backup, embed, ingest, log_export, log_prune, reapply, restore, sandbox
+    from askwell import (
+        backup,
+        embed,
+        ingest,
+        log_export,
+        log_prune,
+        reapply,
+        restore,
+        sandbox,
+        worker_unlock,
+    )
     from askwell.crash_report import install_loop_handler
 
     settings: Settings = ctx["settings"]
@@ -329,6 +342,27 @@ async def startup(ctx: dict[str, Any]) -> None:
     engine = build_engine(settings)
     ctx["engine"] = engine
     ctx["sessions"] = session_factory(engine)
+
+    # Before anything is dispatched, so the API can hand over its unlock as
+    # soon as this process exists (`M9-FIX-BE-205`, #508). This process
+    # starts locked like every other; the files that waited for the
+    # passphrase are revived the moment the key arrives.
+    sessions = ctx["sessions"]
+
+    async def revive() -> int:
+        return await ingest.revive_unlocked(sessions, settings)
+
+    try:
+        ctx["unlock_server"] = await worker_unlock.serve(settings, sessions, revive)
+    except OSError as error:
+        # Not fatal: an install with no passphrase never needs this, and one
+        # with a passphrase says why its files are waiting rather than losing
+        # them. The log names the socket that could not be opened.
+        log.warning(
+            "worker_unlock_unavailable",
+            socket=str(settings.worker_unlock_socket),
+            error=f"{type(error).__name__}: {error}",
+        )
 
     log.info(
         "worker_startup",
@@ -452,6 +486,11 @@ async def _reclaim_sandbox_orphans(
 
 
 async def shutdown(ctx: dict[str, Any]) -> None:
+    from askwell import worker_unlock
+
+    unlock_server = ctx.get("unlock_server")
+    if unlock_server is not None:
+        await worker_unlock.close(unlock_server, ctx["settings"].worker_unlock_socket)
     engine = ctx.get("engine")
     if engine is not None:
         await engine.dispose()

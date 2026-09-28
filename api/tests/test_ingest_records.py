@@ -39,7 +39,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from askwell import chunk as chunk_module
-from askwell import extract, extract_pdf, ingest
+from askwell import extract, extract_pdf, ingest, passphrase
 from askwell.config import Settings
 from askwell.db.engine import session_scope
 from askwell.extract_common import WrongPassword
@@ -1611,6 +1611,117 @@ async def test_a_document_parked_for_a_stage_still_unbuilt_is_left_alone(
     ).one()
     assert row[0] == "parked"
     assert row[1] == "embed"
+
+
+async def test_a_locked_install_parks_a_new_file_and_says_why_rather_than_failing_it(
+    factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    tmp_path: Path,
+    unreachable_queue: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`M9-FIX-BE-205`, #508: a passphrase is set and this process has not
+    been unlocked. The file waits — parked, naming the passphrase — and is
+    never marked failed, however many times it is tried: nothing about it
+    changes until someone types the passphrase, so spending attempts on it
+    would put a good document in red."""
+    await nominate(session, str(tmp_path))
+    written(tmp_path, "contract.pdf")
+    documents = await recorded(session, tmp_path, "contract.pdf")
+
+    async def locked(
+        work: Work, report: Report, factory: async_sessionmaker[AsyncSession], _settings: Settings
+    ) -> None:
+        raise passphrase.Locked("A passphrase is set. Unlock before anything decrypts.")
+
+    monkeypatch.setattr(ingest, "STAGES", (Stage("chunk", "M1-INDEX-ING-031", locked),))
+
+    # More times than a failure is allowed: each one hands its attempt back.
+    for tried in range(ingest.MAX_ATTEMPTS + 1):
+        if tried:
+            await session.execute(
+                text("UPDATE ingest_jobs SET state = 'queued' WHERE document_id = :id"),
+                {"id": documents[0]},
+            )
+            await session.commit()
+        assert await ingest.process(factory, unreachable_queue, documents[0]) == "locked"
+
+    row = (
+        await session.execute(
+            text(
+                "SELECT j.state, j.awaiting, j.attempts, j.error, d.status "
+                "FROM ingest_jobs j JOIN documents d ON d.id = j.document_id "
+                "WHERE j.document_id = :id"
+            ),
+            {"id": documents[0]},
+        )
+    ).one()
+    assert row[0] == "parked"
+    assert row[1] == ingest.AWAITING_UNLOCK
+    assert row[2] == 0
+    assert row[3] is None
+    assert row[4] == "queued"
+
+    snapshot = await ingest.snapshot(session, unreachable_queue)
+    assert snapshot["awaiting"]["stage"] == ingest.AWAITING_UNLOCK
+    assert snapshot["awaiting"]["documents"] == 1
+    assert snapshot["counts"]["failed"] == 0
+
+    # A worker restart must not spin it back through the pipeline to park
+    # again — it is still locked.
+    assert await ingest.resume(session) == 0
+    await session.commit()
+
+
+async def test_a_file_waiting_for_the_passphrase_is_revived_only_once_unlocked(
+    factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    tmp_path: Path,
+    unreachable_queue: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await nominate(session, str(tmp_path))
+    written(tmp_path, "contract.pdf")
+    documents = await recorded(session, tmp_path, "contract.pdf")
+    await session.execute(
+        text(
+            "UPDATE ingest_jobs SET state = 'parked', stage = 'extract', awaiting = :awaiting "
+            "WHERE document_id = :id"
+        ),
+        {"awaiting": ingest.AWAITING_UNLOCK, "id": documents[0]},
+    )
+    await session.commit()
+
+    unlocked = False
+
+    async def current_key(_session: AsyncSession, _settings: Settings) -> bytes:
+        if not unlocked:
+            raise passphrase.Locked("A passphrase is set. Unlock before anything decrypts.")
+        return b"k" * 44
+
+    monkeypatch.setattr(passphrase, "current_key", current_key)
+
+    assert await ingest.revive_unlocked(factory, unreachable_queue) == 0
+    state = (
+        await session.execute(
+            text("SELECT state FROM ingest_jobs WHERE document_id = :id"), {"id": documents[0]}
+        )
+    ).scalar_one()
+    assert state == "parked"
+    await session.commit()
+
+    unlocked = True
+    assert await ingest.revive_unlocked(factory, unreachable_queue) == 1
+    row = (
+        await session.execute(
+            text("SELECT state, awaiting, stage FROM ingest_jobs WHERE document_id = :id"),
+            {"id": documents[0]},
+        )
+    ).one()
+    assert row[0] == "queued"
+    assert row[1] is None
+    assert row[2] is None
+    assert await ingest.pending(session) == documents
 
 
 async def test_reconcile_re_dispatches_work_the_queue_forgot(

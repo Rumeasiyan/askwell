@@ -396,6 +396,16 @@ export function queueSentence(state: IngestState): string {
     return `Indexing ${first.filename}${within}${behind}.`;
   }
 
+  // M9-FIX-BE-205 (issue 508): a passphrase is set and Askwell has not been
+  // unlocked since it started. Nothing is wrong with the files, and nothing
+  // moves until the passphrase is entered — so say exactly that.
+  if (state.awaiting?.stage === "unlock") {
+    return (
+      `${countOf(state.awaiting.documents, "file is", "files are")} waiting for your ` +
+      "passphrase. Unlock Askwell in Settings and indexing carries on by itself."
+    );
+  }
+
   if (state.counts.parked > 0 && missing) {
     return (
       `${countOf(state.counts.parked, "file is", "files are")} recorded and waiting. ` +

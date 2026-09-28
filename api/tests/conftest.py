@@ -76,6 +76,8 @@ def settings() -> Settings:
         # A socket path that does not exist: inference reads as not running,
         # which is the state before the host-side supervisor is started.
         inference_socket=Path("/nonexistent/askwell-test/inference.sock"),
+        # Same, for the worker's unlock channel: no worker is listening.
+        worker_unlock_socket=Path("/nonexistent/askwell-test/worker-unlock.sock"),
         egress_proxy_host="127.0.0.1",
         egress_proxy_port=1,
         health_probe_timeout_seconds=0.5,

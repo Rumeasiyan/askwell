@@ -348,3 +348,49 @@ async def test_current_key_with_no_passphrase_matches_the_install_secret_alone(
 ) -> None:
     install_secret = crypto.load_or_create_install_secret(settings.install_secret_path)
     assert await passphrase.current_key(session, settings) == crypto.derive_key(install_secret)
+
+
+@pytestmark_db
+async def test_a_key_left_over_from_before_a_change_reads_as_locked(
+    session: AsyncSession, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`M9-FIX-BE-205`: the worker holds the key the API handed it, and the
+    API can change the passphrase underneath it. Until the new key arrives,
+    the old one must read as locked — encrypting new passages under it would
+    leave them unreadable by every other process."""
+    await passphrase.set_passphrase(
+        session, settings, "correct horse battery staple", acknowledged_no_recovery=True
+    )
+    old_key = passphrase.held_key()
+    await passphrase.change_passphrase(
+        session, settings, "correct horse battery staple", "a brand new passphrase!!"
+    )
+    await session.commit()
+
+    monkeypatch.setattr(passphrase, "_unlocked_key", old_key)
+    assert await passphrase.status(session) == {"enabled": True, "locked": True}
+    with pytest.raises(passphrase.Locked):
+        await passphrase.current_key(session, settings)
+    assert old_key is not None
+    assert await passphrase.adopt_key(session, old_key) is False
+
+
+@pytestmark_db
+async def test_another_process_can_adopt_only_the_right_key(
+    session: AsyncSession, settings: Settings
+) -> None:
+    await passphrase.set_passphrase(
+        session, settings, "correct horse battery staple", acknowledged_no_recovery=True
+    )
+    await session.commit()
+    right = passphrase.held_key()
+    assert right is not None
+    passphrase._reset_lock_state_for_tests()
+
+    install_secret = crypto.load_or_create_install_secret(settings.install_secret_path)
+    wrong = crypto.derive_key(install_secret, "not the right one")
+    assert await passphrase.adopt_key(session, wrong) is False
+    assert passphrase.held_key() is None
+
+    assert await passphrase.adopt_key(session, right) is True
+    assert await passphrase.current_key(session, settings) == right

@@ -418,10 +418,10 @@ async def run(
     async with session_scope(factory) as session:
         # Resolved once per document, not per chunk: a passphrase set mid-loop
         # (another request, this same process) should not leave one document
-        # half plaintext and half encrypted. `CredentialsLocked` (a passphrase
-        # set, this — the worker — process not unlocked) propagates and fails
-        # this job the way every other stage failure does; the worker's own
-        # unlock gap is `M7-SEC-BE-151`'s, not new here.
+        # half plaintext and half encrypted. `passphrase.Locked` (a passphrase
+        # set, this — the worker — process not yet unlocked by the API)
+        # propagates before anything is written, and `ingest.process` parks
+        # the job until unlock rather than failing it (`M9-FIX-BE-205`).
         key = await passphrase.current_key(session, settings)
         content_encrypted = await passphrase.is_enabled(session)
 
