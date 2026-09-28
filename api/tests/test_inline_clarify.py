@@ -30,7 +30,11 @@ _SETTINGS = Settings(
     sandbox_owner_password="pw",  # type: ignore[arg-type]
     sandbox_readonly_password="pw",  # type: ignore[arg-type]
 )
-_TABLES = "sources, documents, document_pages, chunks, memory, schema_notes, clarifications"
+# `settings`: start from the default clarification cap rather than whatever an
+# earlier module left there (#706).
+_TABLES = (
+    "sources, documents, document_pages, chunks, memory, schema_notes, clarifications, settings"
+)
 
 
 @pytest.fixture
