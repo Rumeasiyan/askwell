@@ -7,6 +7,7 @@ single `session`) because it opens several short transactions itself, the
 same reason `test_citation_check.py` does.
 """
 
+import json
 import uuid
 from collections.abc import AsyncIterator
 
@@ -18,6 +19,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from askwell import reapply
 from askwell.config import Settings
 from askwell.inference.client import InferenceClient
+from askwell.memory import retrieve_relevant_facts
+from askwell.review import answer_clarification
+from askwell.table_infer import infer_csv, raise_table_inference
 
 pytestmark = pytest.mark.requires_db
 
@@ -292,6 +296,205 @@ async def test_a_subject_touching_nothing_resolves_to_no_dependencies(
     )
 
     assert dependencies == []
+
+
+# --- table-column clarifications (#361) --------------------------------------
+
+
+async def _column_clarification(
+    session: AsyncSession, source_id: uuid.UUID, *, subject: str, table_name: str
+) -> uuid.UUID:
+    """A pending clarification shaped like `askwell.table_infer` raises one."""
+    clarification_id = uuid.uuid4()
+    await session.execute(
+        text(
+            "INSERT INTO clarifications (id, source_id, subject, question, evidence, status) "
+            "VALUES (:id, :source_id, :subject, :question, CAST(:evidence AS jsonb), 'pending')"
+        ),
+        {
+            "id": clarification_id,
+            "source_id": source_id,
+            "subject": subject,
+            "question": f"What is {subject}?",
+            "evidence": json.dumps(
+                {"kind": "column_distribution", "table_name": table_name, "trigger": "table_column"}
+            ),
+        },
+    )
+    return clarification_id
+
+
+def _table_evidence(table_name: str) -> dict[str, object]:
+    return {"kind": "column_distribution", "table_name": table_name, "trigger": "table_column"}
+
+
+@pytest.mark.asyncio
+async def test_a_column_answer_matches_only_the_column_of_the_table_it_was_asked_about(
+    session: AsyncSession,
+) -> None:
+    # Two sheets of one workbook share a column name. The bare subject alone
+    # would match both; the answer is about one.
+    source_id = await _source(session, "workbook")
+    clarification_id = await _column_clarification(
+        session, source_id, subject="st_cd", table_name="data.xlsx:North"
+    )
+    north = await _schema_note(session, source_id, table_name="data.xlsx:North")
+    await _schema_note(session, source_id, table_name="data.xlsx:South")
+
+    dependencies = await reapply.resolve_dependencies(
+        session,
+        source_id=source_id,
+        subject="st_cd",
+        evidence=_table_evidence("data.xlsx:North"),
+        options=None,
+        clarification_id=clarification_id,
+    )
+
+    assert {d.target_id for d in dependencies if d.kind == "schema_note"} == {north}
+
+
+@pytest.mark.asyncio
+async def test_a_column_answer_never_matches_a_table_named_like_the_column(
+    session: AsyncSession,
+) -> None:
+    # Without a table in the evidence a subject may name a table position.
+    # With one, it names a column of that table and nothing else.
+    source_id = await _source(session, "workbook")
+    clarification_id = await _column_clarification(
+        session, source_id, subject="orders", table_name="shop.csv"
+    )
+    await _schema_note(session, source_id, table_name="orders", column_name=None)
+
+    dependencies = await reapply.resolve_dependencies(
+        session,
+        source_id=source_id,
+        subject="orders",
+        evidence=_table_evidence("shop.csv"),
+        options=None,
+        clarification_id=clarification_id,
+    )
+
+    assert [d for d in dependencies if d.kind == "schema_note"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_column_that_no_longer_has_an_inferred_note_attaches_to_nothing_else(
+    session: AsyncSession,
+) -> None:
+    # The column the question was about is gone: its note was retired before
+    # the answer arrived. The answer must not find some other column instead.
+    source_id = await _source(session, "orders")
+    clarification_id = await _column_clarification(
+        session, source_id, subject="st_cd", table_name="orders.csv"
+    )
+    gone = await _schema_note(session, source_id, table_name="orders.csv")
+    await session.execute(
+        text("UPDATE schema_notes SET superseded_by = id WHERE id = :id"), {"id": gone}
+    )
+    await _schema_note(session, source_id, table_name="orders.csv", column_name="st_code")
+
+    dependencies = await reapply.resolve_dependencies(
+        session,
+        source_id=source_id,
+        subject="st_cd",
+        evidence=_table_evidence("orders.csv"),
+        options=None,
+        clarification_id=clarification_id,
+    )
+
+    assert [d for d in dependencies if d.kind == "schema_note"] == []
+
+
+@pytest.mark.asyncio
+async def test_answering_one_files_column_question_does_not_dismiss_another_files(
+    session: AsyncSession,
+) -> None:
+    source_a = await _source(session, "a")
+    source_b = await _source(session, "b")
+    this_one = await _column_clarification(session, source_a, subject="date", table_name="a.csv")
+    await _column_clarification(session, source_b, subject="date", table_name="b.csv")
+
+    dependencies = await reapply.resolve_dependencies(
+        session,
+        source_id=source_a,
+        subject="date",
+        evidence=_table_evidence("a.csv"),
+        options=None,
+        clarification_id=this_one,
+    )
+
+    assert [d for d in dependencies if d.kind == "conflict"] == []
+
+
+@pytest.mark.asyncio
+async def test_an_unscoped_answer_does_not_dismiss_a_column_question(
+    session: AsyncSession,
+) -> None:
+    # A document abbreviation or a database column answered as bare `st_cd`
+    # says nothing about one CSV's ambiguous `st_cd` column.
+    source_a = await _source(session, "a")
+    source_b = await _source(session, "b")
+    this_one = await _clarification(session, source_a, subject="st_cd")
+    await _column_clarification(session, source_b, subject="st_cd", table_name="b.csv")
+
+    dependencies = await reapply.resolve_dependencies(
+        session,
+        source_id=source_a,
+        subject="st_cd",
+        evidence=None,
+        options=None,
+        clarification_id=this_one,
+    )
+
+    assert [d for d in dependencies if d.kind == "conflict"] == []
+
+
+@pytest.mark.asyncio
+async def test_answering_a_csv_column_question_teaches_the_next_question_about_it(
+    factory: async_sessionmaker[AsyncSession], settings: Settings
+) -> None:
+    # The ticket's acceptance criterion, end to end: a CSV raises a question
+    # about `st_cd`, the answer promotes that column's note, and the note the
+    # next question retrieves is the user's answer.
+    raw = b"id,st_cd\n1,10\n2,banana\n3,2026-01-01\n4,true\n"
+    inference = infer_csv("orders.csv", raw)
+    async with factory() as session:
+        source_id = await _source(session, "orders")
+        await raise_table_inference(session, source_id, inference)
+        clarification_id = (
+            await session.execute(
+                text("SELECT id FROM clarifications WHERE source_id = :id AND subject = 'st_cd'"),
+                {"id": source_id},
+            )
+        ).scalar_one()
+        outcome = await answer_clarification(
+            session, clarification_id, "Store code: the branch that took the order."
+        )
+        await session.commit()
+    assert outcome.reapply_job_id is not None
+
+    await reapply.run_job(factory, settings, outcome.reapply_job_id)
+
+    async with factory() as session:
+        found = await retrieve_relevant_facts(
+            session, question="Which st_cd has the most orders?", source_id=source_id
+        )
+        active = (
+            await session.execute(
+                text(
+                    "SELECT table_name, column_name, origin, description FROM schema_notes "
+                    "WHERE source_id = :id AND superseded_by IS NULL ORDER BY column_name"
+                ),
+                {"id": source_id},
+            )
+        ).all()
+
+    user_notes = [note for note in found.notes if note.origin == "user"]
+    assert [(n.table_name, n.column_name, n.description) for n in user_notes] == [
+        ("orders.csv", "st_cd", "Store code: the branch that took the order.")
+    ]
+    # The other column's inferred note is untouched.
+    assert [(row[1], row[2]) for row in active] == [("id", "inferred"), ("st_cd", "user")]
 
 
 # --- enqueue and de-duplication ----------------------------------------------

@@ -4,6 +4,7 @@ and identifier logic is in `test_table_load.py`; everything here needs a
 real, separate Postgres instance to prove.
 """
 
+import json
 import os
 import uuid
 from collections.abc import AsyncIterator
@@ -264,3 +265,106 @@ async def test_answering_a_date_format_clarification_reloads_the_column_as_a_rea
     # Day-first: `03/04/2026` -> 3 April, `05/06/2026` -> 5 June.
     assert values[0][1].isoformat() == "2026-04-03"
     assert values[1][1].isoformat() == "2026-06-05"
+
+
+async def test_date_format_answers_are_read_from_evidence_and_from_the_old_subject_shape(
+    factory: async_sessionmaker[AsyncSession], tmp_path: Path
+) -> None:
+    # #361 moved the table out of the subject and into the evidence. A sheet
+    # name contains a colon (`data.xlsx:North`), which the old subject parse
+    # split in the wrong place. An answer recorded before the change still
+    # carries `"{table}: {column}"` and is still honoured.
+    from askwell.table_load import _date_format_overrides
+
+    csv_path = tmp_path / "registrations.csv"
+    csv_path.write_text("name\nAnna\n")
+    source_id = await _make_source(factory, "registrations", csv_path)
+    options = json.dumps(["DD/MM/YYYY (day first)", "MM/DD/YYYY (month first)"])
+    async with factory() as session:
+        for subject, evidence, answer in (
+            (
+                "registered",
+                {"trigger": "date_format", "table_name": "data.xlsx:North"},
+                "DD/MM/YYYY (day first)",
+            ),
+            ("old.csv: joined", {"trigger": "date_format"}, "MM/DD/YYYY (month first)"),
+            ("data.xlsx:South: left", {"trigger": "date_format"}, "DD/MM/YYYY (day first)"),
+        ):
+            await session.execute(
+                text(
+                    "INSERT INTO clarifications "
+                    "(id, source_id, subject, question, options, evidence, status, answer) "
+                    "VALUES (:id, :source_id, :subject, 'which?', CAST(:options AS jsonb), "
+                    "CAST(:evidence AS jsonb), 'answered', :answer)"
+                ),
+                {
+                    "id": uuid.uuid4(),
+                    "source_id": source_id,
+                    "subject": subject,
+                    "options": options,
+                    "evidence": json.dumps(evidence),
+                    "answer": answer,
+                },
+            )
+        await session.commit()
+
+        overrides = await _date_format_overrides(session, source_id)
+
+    assert overrides == {
+        ("data.xlsx:North", "registered"): True,
+        ("old.csv", "joined"): False,
+        ("data.xlsx:South", "left"): True,
+    }
+
+
+async def test_the_reapply_job_for_a_date_format_answer_reloads_the_column_itself(
+    factory: async_sessionmaker[AsyncSession], table_settings: Settings, tmp_path: Path
+) -> None:
+    # #361: the compound subject matched no schema note, so answering queued
+    # no job and nothing reloaded unless `reload_source` was called by hand.
+    from askwell import reapply
+
+    csv_path = tmp_path / "registrations.csv"
+    csv_path.write_text("name,registered\nAnna,03/04/2026\nBen,05/06/2026\n")
+    source_id = await _make_source(factory, "registrations", csv_path)
+    await process_table_source(factory, table_settings, source_id, str(csv_path))
+
+    async with factory() as session:
+        clarification_id, options, database = (
+            await session.execute(
+                text(
+                    "SELECT c.id, c.options, s.sandbox_db FROM clarifications c "
+                    "JOIN sources s ON s.id = c.source_id WHERE c.source_id = :id "
+                    "AND c.evidence->>'trigger' = 'date_format'"
+                ),
+                {"id": source_id},
+            )
+        ).one()
+        outcome = await answer_clarification(session, clarification_id, options[0])
+        await session.commit()
+    assert outcome.reapply_job_id is not None
+
+    await reapply.run_job(factory, table_settings, outcome.reapply_job_id)
+
+    import psycopg
+
+    admin_url = table_settings.sandbox_database_url.get_secret_value()
+    dsn = admin_url.rsplit("/", 1)[0] + f"/{database}"
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        column = conn.execute(
+            "SELECT data_type FROM information_schema.columns "
+            "WHERE table_name = 'registrations_csv' AND column_name = 'registered'"
+        ).fetchall()
+    assert column[0][0] == "date"
+
+    async with factory() as session:
+        note = (
+            await session.execute(
+                text(
+                    "SELECT origin, description FROM schema_notes WHERE source_id = :id "
+                    "AND column_name = 'registered' AND superseded_by IS NULL"
+                ),
+                {"id": source_id},
+            )
+        ).one()
+    assert note == ("user", options[0])

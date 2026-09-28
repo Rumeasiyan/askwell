@@ -280,6 +280,26 @@ def test_mixed_number_format_raises_a_units_and_currency_question() -> None:
     assert any("currency" in c.question for c in candidates)
 
 
+def test_a_named_column_question_has_the_bare_column_as_its_subject() -> None:
+    # #361: `askwell.reapply.resolve_dependencies` matches the subject against
+    # `schema_notes.column_name` exactly. A `"t.csv: st_cd"` subject matched
+    # nothing, so the answer never reached the note.
+    from askwell.table_infer import HeaderDetection
+
+    header_row = ["st_cd", "dt_reg"]
+    data = [["10", "01/02/2026"], ["banana", "03/04/2026"], ["true", "05/06/2026"]]
+    header = HeaderDetection(HeaderVerdict.PRESENT, 1.0, header_row, "forced for the test")
+    columns = infer_column_types(data, header.names)
+    candidates = build_candidates("t.csv", header, columns, data)
+
+    by_trigger = {c.trigger: c for c in candidates}
+    assert by_trigger["table_column"].subject == "st_cd"
+    assert by_trigger["date_format"].subject == "dt_reg"
+    assert by_trigger["table_column"].evidence["table_name"] == "t.csv"
+    assert by_trigger["date_format"].evidence["table_name"] == "t.csv"
+    assert by_trigger["table_column"].evidence["kind"] == "column_distribution"
+
+
 # --- end-to-end CSV parsing ---------------------------------------------
 
 
