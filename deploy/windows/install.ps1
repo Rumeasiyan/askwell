@@ -21,6 +21,15 @@
                                                                           Python on this host's
                                                                           PATH, same as Linux)
         web\src-tauri\target\release\askwell-shell.exe                  — the desktop shell
+        web\out\                                                        — the built interface
+                                                                          compose.yaml mounts (#766)
+        images\*.tar                                                    — the container images,
+                                                                          saved (optional)
+
+    A release zip ships this layout, assembled by scripts/release-artefact.sh
+    in .github/workflows/release.yml (M9-REL-DEPLOY-214). `images\` is what
+    a release adds that a source checkout lacks, so nothing is built from
+    source or pulled here.
 
     Podman on Windows only runs containers inside a WSL2 virtual machine —
     there is no native Windows container runtime — so this checks
@@ -171,6 +180,12 @@ function Test-AskwellArtefacts {
         Write-AskwellSay "    cd $RepoRoot\web\src-tauri; cargo tauri build --no-bundle"
         $missing = $true
     }
+    $webIndex = Join-Path $RepoRoot 'web\out\index.html'
+    if (-not (Test-Path $webIndex)) {
+        Write-AskwellSay "Missing: $webIndex"
+        Write-AskwellSay '  The interface has not been built. Build it first with: scripts/dev.sh web-build'
+        $missing = $true
+    }
     if ($missing) {
         Write-AskwellDie 'One or more required files are missing (listed above). This installer places what a release build produces; it does not build them. Nothing has been copied.'
         exit 1
@@ -230,6 +245,13 @@ function Copy-AskwellFiles {
         exit 1
     }
 
+    # Replaced, not merged: a file an older interface had and this one does
+    # not must not keep being served.
+    $webDest = Join-Path $InstallPrefix 'web\out'
+    if (Test-Path $webDest) { Remove-Item $webDest -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path (Join-Path $InstallPrefix 'web') | Out-Null
+    Copy-Item (Join-Path $RepoRoot 'web\out') $webDest -Recurse -Force
+
     $shellDest = Join-Path $InstallPrefix 'askwell-shell.exe'
     Copy-Item $ShellBin $shellDest -Force
     if (-not (Test-Path $shellDest)) {
@@ -238,6 +260,31 @@ function Copy-AskwellFiles {
     }
 
     Write-AskwellSay "Application files placed under $InstallPrefix"
+}
+
+# ---------------------------------------------------------------- 5a. container images
+
+# Before the stack task is registered: `up` uses an image already present
+# and builds or pulls only one that is missing. This needs a running Podman
+# machine, which this installer does not create (issue #808), so a failure
+# names that cause as well as a damaged download.
+function Import-AskwellImages {
+    $archives = Get-AskwellBundledImages $RepoRoot
+    if ($archives.Count -eq 0) {
+        Write-AskwellSay 'No bundled container images; the stack will use the images already on this machine.'
+        return
+    }
+    foreach ($archive in $archives) {
+        Write-AskwellSay "Loading container image $(Split-Path -Leaf $archive)..."
+        & podman load -q -i $archive | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-AskwellDie ("Could not load the container image $archive. Check that Podman's machine " +
+                "is running (podman machine init, then podman machine start), and that the download " +
+                "matches SHA256SUMS (docs/installing.md), then run this installer again.")
+            exit 1
+        }
+    }
+    Write-AskwellSay 'Container images loaded.'
 }
 
 # ---------------------------------------------------------------- 6. data dirs
@@ -382,6 +429,7 @@ function Main {
     Test-AskwellPrevious
     Test-AskwellArtefacts
     Copy-AskwellFiles
+    Import-AskwellImages
     New-AskwellDataDirs
     Invoke-AskwellProbe
     Register-AskwellShortcuts

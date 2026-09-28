@@ -269,5 +269,13 @@ case "$out" in *"<string>/data/askwell-inference</string>"*) ok "inference agent
 case "$out" in *"com.askwell.inference"*) ok "inference agent has its own label, distinct from the app" ;;
                *) bad "inference agent has its own label, distinct from the app" ;; esac
 
+# --- bundled images (M9-REL-DEPLOY-214) --------------------------------------
+fresh
+check "a source checkout has no bundled images" "$(bundled_image_archives "$TMP")" ""
+mkdir -p "$TMP/images"
+check "an empty images/ lists nothing" "$(bundled_image_archives "$TMP")" ""
+: > "$TMP/images/redis.tar"; : > "$TMP/images/api.tar"; : > "$TMP/images/notes.txt"
+check "lists only *.tar, sorted" "$(bundled_image_archives "$TMP" | tr '\n' ' ')" "$TMP/images/api.tar $TMP/images/redis.tar "
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

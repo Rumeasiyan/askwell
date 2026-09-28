@@ -15,6 +15,8 @@
 #     deploy/inference/askwell-inference                             — native inference (M0-MODEL-DEPLOY-018)
 #     web/src-tauri/target/release/bundle/macos/Askwell.app           — the desktop shell,
 #                                                                       already bundled (M7-TAURI-DEPLOY-181)
+#     web/out/                                                         — the built interface compose.yaml mounts (#766)
+#     images/*.tar                                                     — the container images, saved (optional)
 #
 # Three things are specific to this platform and have no Linux or Windows
 # equivalent:
@@ -37,8 +39,11 @@
 #      gap this ticket can close. This script therefore never attempts to
 #      verify a signature and never claims one exists.
 #
-# A release tarball ships this same layout — there is no packaging step yet
-# that produces anything else (issue #559, open for Linux and Windows too).
+# A release tarball ships this same layout, assembled by
+# scripts/release-artefact.sh in .github/workflows/release.yml
+# (M9-REL-DEPLOY-214), with the container images saved under `images/` so
+# nothing is built from source or pulled here. A source checkout has no
+# `images/` and uses the images already in the Podman machine.
 # The one artefact this script cannot produce itself is the bundled `.app`:
 # building it needs the Rust toolchain and, to actually be a `.app` rather
 # than a bare binary, `cargo tauri build`'s bundling step, which a
@@ -185,6 +190,11 @@ check_artefacts() {
     askwell_say "    cd $REPO_ROOT/web/src-tauri && cargo tauri build"
     missing=1
   fi
+  if [ ! -f "$REPO_ROOT/web/out/index.html" ]; then
+    askwell_say "Missing: $REPO_ROOT/web/out/index.html"
+    askwell_say "  The interface has not been built. Build it first with: scripts/dev.sh web-build"
+    missing=1
+  fi
   if [ "$missing" -eq 1 ]; then
     askwell_die "One or more required files are missing (listed above). This installer places what a release build produces; it does not build them. Nothing has been copied."
     exit 1
@@ -213,6 +223,12 @@ place_files() {
   cp "$REPO_ROOT/deploy/inference/askwell-inference" "$INSTALL_PREFIX/askwell-inference"
   chmod +x "$INSTALL_PREFIX/askwell-probe" "$INSTALL_PREFIX/askwell-inference"
 
+  # Replaced, not merged: a file an older interface had and this one does
+  # not must not keep being served.
+  rm -rf "$INSTALL_PREFIX/web/out"
+  mkdir -p "$INSTALL_PREFIX/web"
+  cp -R "$REPO_ROOT/web/out" "$INSTALL_PREFIX/web/out"
+
   rm -rf "$APP_DIR"
   cp -R "$SHELL_BUNDLE" "$APP_DIR"
   if [ ! -d "$APP_DIR" ]; then
@@ -226,6 +242,30 @@ place_files() {
   fi
 
   askwell_say "Application placed at $APP_DIR; stack files under $INSTALL_PREFIX"
+}
+
+# ---------------------------------------------------------------- 6a. container images
+
+# Into the Podman machine check_runtime has already started, and before the
+# stack agent is loaded: `up` uses an image already present and builds or
+# pulls only one that is missing.
+load_images() {
+  local archives archive
+  archives="$(bundled_image_archives "$REPO_ROOT")"
+  if [ -z "$archives" ]; then
+    askwell_say "No bundled container images; the stack will use the images already in the Podman machine."
+    return 0
+  fi
+  while IFS= read -r archive; do
+    askwell_say "Loading container image $(basename "$archive")..."
+    podman load -q -i "$archive" >/dev/null || {
+      askwell_die "Could not load the container image $archive. The download may be damaged — check it against SHA256SUMS (docs/installing.md) and run this installer again."
+      exit 1
+    }
+  done <<EOF_ARCHIVES
+$archives
+EOF_ARCHIVES
+  askwell_say "Container images loaded."
 }
 
 # ---------------------------------------------------------------- 7. data dirs
@@ -293,7 +333,10 @@ launch() {
   askwell_say "Starting Askwell..."
   open "$APP_DIR"
   askwell_say "Askwell is starting. Its window will open shortly."
-  if command -v codesign >/dev/null 2>&1 && ! codesign -dv "$APP_DIR" >/dev/null 2>&1; then
+  # The release build is ad-hoc signed, which Apple silicon needs to run it at
+  # all but which names no developer, so Gatekeeper still warns. Only a real
+  # signing identity lists an Authority.
+  if command -v codesign >/dev/null 2>&1 && ! codesign -dv "$APP_DIR" 2>&1 | grep -q '^Authority='; then
     askwell_say "Askwell is unsigned (docs/installing.md explains why). If macOS refuses to open it, System Settings -> Privacy & Security has an 'Open Anyway' button after the first attempt."
   fi
 }
@@ -306,6 +349,7 @@ main() {
   check_previous_install
   check_artefacts
   place_files
+  load_images
   create_data_dirs
   run_probe
   register_stack_and_inference

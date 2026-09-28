@@ -306,6 +306,19 @@ function Get-AskwellInferenceTaskArguments {
     return "`"$ScriptPath`""
 }
 
+# ---------------------------------------------------------------- bundled images
+
+# The container images a release artefact carries (M9-REL-DEPLOY-214),
+# sorted by name. Same contract as deploy/linux/lib.sh's
+# bundled_image_archives: a release saves every image compose.yaml names
+# into `images\`, and a source checkout has none, so this returns nothing.
+function Get-AskwellBundledImages {
+    param([string]$Root)
+    $dir = Join-Path $Root 'images'
+    if (-not (Test-Path $dir -PathType Container)) { return @() }
+    return @(Get-ChildItem -Path $dir -Filter '*.tar' -File | Sort-Object Name | ForEach-Object { $_.FullName })
+}
+
 # ---------------------------------------------------------------- quarantine
 
 # Whether a file that should exist after a plain copy is missing is, on its

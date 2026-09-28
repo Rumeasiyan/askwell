@@ -184,6 +184,18 @@ Test-Check 'inference task arguments name the real supervisor script' $inference
 
 Remove-Item -Path $tmp -Recurse -Force -ErrorAction SilentlyContinue
 
+# --- bundled images (M9-REL-DEPLOY-214) ----------------------------------------
+$imgRoot = New-AskwellTempDir
+Test-Check 'a source checkout has no bundled images' (@(Get-AskwellBundledImages $imgRoot)).Count 0
+New-Item -ItemType Directory -Force -Path (Join-Path $imgRoot 'images') | Out-Null
+Set-Content -Path (Join-Path $imgRoot 'images\redis.tar') -Value ''
+Set-Content -Path (Join-Path $imgRoot 'images\api.tar') -Value ''
+Set-Content -Path (Join-Path $imgRoot 'images\notes.txt') -Value ''
+$images = @(Get-AskwellBundledImages $imgRoot)
+Test-Check 'lists only *.tar' $images.Count 2
+Test-Check 'sorted by name' (Split-Path -Leaf $images[0]) 'api.tar'
+Remove-Item -Path $imgRoot -Recurse -Force -ErrorAction SilentlyContinue
+
 Write-Host ''
 Write-Host "$script:Pass passed, $script:Fail failed"
 if ($script:Fail -gt 0) { exit 1 }

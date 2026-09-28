@@ -1,0 +1,330 @@
+# Downloadable releases for Linux, Windows and macOS, as a draft GitHub
+# release. M9-REL-DEPLOY-214.
+#
+# One job per platform builds the desktop shell on that platform's own
+# GitHub-hosted runner, because this project's build host has Linux only.
+# The draft job then builds the container images and the interface once,
+# assembles each platform's artefact with scripts/release-artefact.sh (the
+# layout deploy/<platform>/'s installer already expects), checksums them
+# with scripts/release-checksums.sh, and creates the draft.
+#
+# It never publishes. A person, or the orchestrating session on instruction,
+# turns the draft into a release (AGENTS.md §7; docs/release-procedure.md §5).
+# The draft is marked a pre-release: the first release stays one until the
+# product owner has tested Windows and macOS (docs/decisions.md, 2026-09-28).
+#
+# Unsigned, by decision (docs/decisions.md, 2026-09-28). The macOS build is
+# ad-hoc signed, which names no developer and so is not signing in that
+# sense: Apple silicon refuses to run code with no signature at all, and
+# Gatekeeper still warns exactly as docs/installing.md describes.
+#
+# No secret beyond GitHub's own token (C8). Model weights are not bundled;
+# the installed app fetches or finds them as it already does
+# (M7-OFFLINE-DEPLOY-144). The network is used here to build, as it is by
+# `scripts/dev.sh lock` and `web-install`; nothing built here reaches it.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag for the draft: v<VERSION>, or v<VERSION>-<suffix> for a throwaway test"
+        required: true
+
+permissions:
+  contents: read
+
+# One run per tag at a time, and never cancelled: a cancelled run part-way
+# through replacing a draft is the one way to leave a partial one behind.
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+  # Docker on hosted runners; Podman locally. Same images, same commands.
+  ASKWELL_CONTAINER: docker
+  # The CLI's 2.11 line matches the locked `tauri` 2.11 crate
+  # (web/src-tauri/Cargo.lock). crates.io, 2026-09-28: Apache-2.0 OR MIT.
+  # A build tool, not shipped.
+  TAURI_CLI_VERSION: "2.11.5"
+
+jobs:
+  version:
+    name: Tag matches VERSION
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag
+        id: check
+        # The artefacts are named from VERSION, so a tag that disagrees with
+        # it would publish one version's files under another's name.
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag '$TAG' is not v<major>.<minor>.<patch>[-<suffix>]."
+            exit 1
+          fi
+          case "$TAG" in
+            "v$version" | "v$version"-*) ;;
+            *)
+              echo "::error::Tag '$TAG' does not match VERSION $version (use v$version, or v$version-<suffix> for a test)."
+              exit 1
+              ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  linux:
+    name: Linux — desktop shell
+    needs: version
+    # The oldest supported hosted image, so the binary links against the
+    # oldest glibc and runs on more of the distributions people actually have.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    outputs:
+      arch: ${{ steps.pack.outputs.arch }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the WebView and GTK build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
+            libayatana-appindicator3-dev libxdo-dev libssl-dev build-essential
+
+      - name: Install the Tauri CLI
+        run: cargo install tauri-cli --version "$TAURI_CLI_VERSION" --locked
+
+      - name: Build the shell
+        # No bundle: deploy/linux/install.sh places the bare binary, and a
+        # .deb or AppImage would be a second install path that skips the
+        # Podman and stack setup the installer does.
+        working-directory: web/src-tauri
+        run: cargo tauri build --no-bundle --config "{\"version\":\"$VERSION\"}"
+
+      - name: Pack the shell
+        id: pack
+        # A tarball, because an Actions artifact does not keep the executable bit.
+        run: |
+          tar -czf shell.tar.gz -C web/src-tauri/target/release askwell-shell
+          echo "arch=$(uname -m)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shell-linux
+          path: shell.tar.gz
+          retention-days: 3
+          if-no-files-found: error
+
+  windows:
+    name: Windows — desktop shell
+    needs: version
+    runs-on: windows-latest
+    timeout-minutes: 60
+    outputs:
+      arch: ${{ steps.pack.outputs.arch }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Tauri CLI
+        run: cargo install tauri-cli --version "$TAURI_CLI_VERSION" --locked
+
+      - name: Build the shell
+        # No bundle, as on Linux: deploy/windows/install.ps1 places the bare
+        # .exe, and an .msi would skip its virtualisation and Podman checks.
+        working-directory: web/src-tauri
+        run: cargo tauri build --no-bundle --config "{\"version\":\"$VERSION\"}"
+
+      - name: Pack the shell
+        id: pack
+        run: |
+          tar -czf shell.tar.gz -C web/src-tauri/target/release askwell-shell.exe
+          echo "arch=$(uname -m)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shell-windows
+          path: shell.tar.gz
+          retention-days: 3
+          if-no-files-found: error
+
+  macos:
+    name: macOS — desktop shell
+    needs: version
+    runs-on: macos-latest
+    timeout-minutes: 60
+    outputs:
+      arch: ${{ steps.pack.outputs.arch }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Tauri CLI
+        run: cargo install tauri-cli --version "$TAURI_CLI_VERSION" --locked
+
+      - name: Build the application bundle
+        # deploy/macos/install.sh places Askwell.app, so this is the one
+        # platform that bundles. `signingIdentity: "-"` is an ad-hoc
+        # signature — see this file's header.
+        working-directory: web/src-tauri
+        run: >-
+          cargo tauri build --bundles app
+          --config "{\"version\":\"$VERSION\",\"bundle\":{\"macOS\":{\"signingIdentity\":\"-\"}}}"
+
+      - name: Pack the bundle
+        id: pack
+        run: |
+          tar -czf shell.tar.gz -C web/src-tauri/target/release bundle/macos/Askwell.app
+          echo "arch=$(uname -m)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shell-macos
+          path: shell.tar.gz
+          retention-days: 3
+          if-no-files-found: error
+
+  release:
+    name: Draft release
+    needs: [version, linux, windows, macos]
+    # Runs even when a platform failed, so that it can say which one — and
+    # then stops before anything is created or replaced.
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Every platform built
+        env:
+          RESULT_VERSION: ${{ needs.version.result }}
+          RESULT_LINUX: ${{ needs.linux.result }}
+          RESULT_WINDOWS: ${{ needs.windows.result }}
+          RESULT_MACOS: ${{ needs.macos.result }}
+        run: |
+          failed=""
+          [ "$RESULT_VERSION" = success ] || failed="$failed tag-check ($RESULT_VERSION)"
+          [ "$RESULT_LINUX" = success ] || failed="$failed Linux ($RESULT_LINUX)"
+          [ "$RESULT_WINDOWS" = success ] || failed="$failed Windows ($RESULT_WINDOWS)"
+          [ "$RESULT_MACOS" = success ] || failed="$failed macOS ($RESULT_MACOS)"
+          if [ -n "$failed" ]; then
+            echo "::error title=No draft release::Not every platform built, so no draft was created or replaced:$failed"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        # The images, their saved copies and three artefacts do not fit in
+        # what a hosted runner leaves free by default.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Build the API image
+        run: scripts/dev.sh build-api
+
+      - name: Build the interface
+        run: |
+          scripts/dev.sh build-web
+          scripts/dev.sh web-install --frozen-lockfile
+          scripts/dev.sh web-build
+
+      - name: Save the container images
+        # Every image compose.yaml names, so an installed machine needs
+        # neither the source to build from nor a registry to pull from.
+        run: |
+          mkdir -p dist/images
+          images="$(sed -n 's/^[[:space:]]*image:[[:space:]]*//p' compose.yaml | sort -u)"
+          [ -n "$images" ] || { echo "::error::compose.yaml names no images"; exit 1; }
+          for image in $images; do
+            case "$image" in
+              localhost/*) ;;
+              *) docker pull "$image" ;;
+            esac
+            docker save -o "dist/images/$(printf '%s' "$image" | tr '/:' '__').tar" "$image"
+          done
+          ls -l dist/images
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: shell-*
+          path: dist/shells
+
+      - name: Assemble the artefacts
+        env:
+          ARCH_LINUX: ${{ needs.linux.outputs.arch }}
+          ARCH_WINDOWS: ${{ needs.windows.outputs.arch }}
+          ARCH_MACOS: ${{ needs.macos.outputs.arch }}
+        run: |
+          mkdir -p web/src-tauri/target/release
+          for platform in linux windows macos; do
+            tar -xzf "dist/shells/shell-$platform/shell.tar.gz" -C web/src-tauri/target/release
+          done
+          out="dist/askwell-$VERSION"
+          scripts/release-artefact.sh linux "$ARCH_LINUX" dist/images "$out"
+          scripts/release-artefact.sh windows "$ARCH_WINDOWS" dist/images "$out"
+          scripts/release-artefact.sh macos "$ARCH_MACOS" dist/images "$out"
+
+      - name: Checksums
+        run: |
+          out="dist/askwell-$VERSION"
+          scripts/release-checksums.sh "$out"
+          count="$(wc -l < "$out/SHA256SUMS")"
+          [ "$count" -eq 3 ] || { echo "::error::SHA256SUMS covers $count files, not one per platform"; exit 1; }
+          (cd "$out" && sha256sum -c SHA256SUMS)
+
+      - name: Replace any earlier draft for this tag
+        # A re-run replaces its draft rather than adding a second one. A
+        # published release is never touched: that is a person's decision.
+        run: |
+          releases="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" \
+            --jq ".[] | select(.tag_name == \"$TAG\") | \"\(.id) \(.draft)\"")"
+          while read -r id draft; do
+            [ -n "$id" ] || continue
+            if [ "$draft" != true ]; then
+              echo "::error::A published release already exists for $TAG; this workflow never replaces one."
+              exit 1
+            fi
+          done <<< "$releases"
+          while read -r id draft; do
+            [ -n "$id" ] || continue
+            echo "Deleting earlier draft $id for $TAG"
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
+          done <<< "$releases"
+
+      - name: Create the draft
+        id: create
+        run: |
+          gh release create "$TAG" dist/askwell-"$VERSION"/* \
+            --draft --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "Askwell $VERSION" \
+            --notes-file docs/release-notes-template.md
+
+      - name: Remove a partly uploaded draft
+        # An upload that failed part-way leaves a draft missing an artefact,
+        # which is the partial set this workflow exists not to produce.
+        if: ${{ failure() && steps.create.outcome == 'failure' }}
+        run: |
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases" \
+            --jq ".[] | select(.tag_name == \"$TAG\" and .draft) | .id" |
+            while read -r id; do gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"; done

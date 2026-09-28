@@ -130,6 +130,22 @@ human_bytes() {
   }'
 }
 
+# ---------------------------------------------------------------- bundled images
+
+# The container images a release artefact carries (M9-REL-DEPLOY-214), one
+# path per line, sorted. A release saves every image compose.yaml names into
+# `images/`, so the installer loads them instead of building from source it
+# does not ship or pulling from a registry. A source checkout has no
+# `images/` and prints nothing: its images are the ones already built on
+# this machine.
+bundled_image_archives() {
+  local root="$1" f
+  [ -d "$root/images" ] || return 0
+  for f in "$root/images"/*.tar; do
+    if [ -f "$f" ]; then printf '%s\n' "$f"; fi
+  done | sort
+}
+
 # ---------------------------------------------------------------- paths
 
 # No XDG on macOS: `~/Library/Application Support` is the platform's own

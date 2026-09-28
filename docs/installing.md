@@ -18,18 +18,18 @@ Signing certificates cost money every year — an Apple Developer enrolment and 
 
 ## Verify what you downloaded — do this first
 
-Every release publishes a `SHA256SUMS` file alongside the binaries. Compare before you install.
+Every release publishes a `SHA256SUMS` file alongside the downloads — one for each of Linux (`askwell-<version>-linux-x86_64.tar.gz`), Windows (`askwell-<version>-windows-x86_64.zip`) and macOS (`askwell-<version>-macos-arm64.tar.gz`). Compare before you unpack anything.
 
 **Linux and macOS**
 
 ```
-shasum -a 256 Askwell-<version>.<ext>
+shasum -a 256 askwell-<version>-<platform>-<arch>.tar.gz
 ```
 
 **Windows (PowerShell)**
 
 ```
-Get-FileHash Askwell-<version>.exe -Algorithm SHA256
+Get-FileHash askwell-<version>-windows-x86_64.zip -Algorithm SHA256
 ```
 
 The value must match the line for your file in `SHA256SUMS` on the release page. **If it does not match, stop.** Do not run it, and open an issue — a mismatch means the file was altered between our build and your disk, and that is worth knowing about.
@@ -38,14 +38,14 @@ The value must match the line for your file in `SHA256SUMS` on the release page.
 
 ## Linux
 
-No warning, nothing to bypass.
+No warning, nothing to bypass. Unpack the download and run its installer from a terminal:
 
 ```
-sudo dnf install ./askwell-<version>.rpm     # Fedora, RHEL
-sudo apt install ./askwell-<version>.deb     # Debian, Ubuntu
+tar -xzf askwell-<version>-linux-x86_64.tar.gz
+askwell-<version>-linux-x86_64/deploy/linux/install.sh
 ```
 
-Or run the AppImage directly after `chmod +x`.
+It installs Podman if it is missing (asking for your password to do so), loads Askwell's containers from the download, and opens the Askwell window. Afterwards Askwell is in your applications menu.
 
 ---
 
@@ -53,8 +53,15 @@ Or run the AppImage directly after `chmod +x`.
 
 macOS will refuse the first launch: **"Askwell cannot be opened because the developer cannot be verified."**
 
-1. Open the `.dmg` and drag Askwell to Applications, as usual.
-2. Try to open it. You will get the refusal. Click **Done**.
+1. Unpack the download and run its installer from Terminal:
+
+   ```
+   tar -xzf askwell-<version>-macos-arm64.tar.gz
+   askwell-<version>-macos-arm64/deploy/macos/install.sh
+   ```
+
+   It installs Podman with Homebrew if it is missing, loads Askwell's containers, places Askwell in Applications and tries to open it.
+2. You will get the refusal. Click **Done**.
 3. Open **System Settings → Privacy & Security**, scroll to Security. There is a line saying Askwell was blocked, with an **Open Anyway** button.
 4. Click it, then confirm.
 
@@ -73,6 +80,14 @@ Only run that after the checksum matches. It is the same decision as clicking Op
 ---
 
 ## Windows
+
+Unpack the zip (right-click → **Extract All**), then open PowerShell in the unpacked folder and run its installer:
+
+```
+powershell -ExecutionPolicy Bypass -File deploy\windows\install.ps1
+```
+
+`-ExecutionPolicy Bypass` applies to this one command only; Windows otherwise refuses to run a script that came from the internet. The installer checks virtualisation, installs Podman if it is missing, loads Askwell's containers and opens the Askwell window.
 
 SmartScreen will show **"Windows protected your PC"** with **Don't run** as the default button.
 

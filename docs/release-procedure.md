@@ -8,15 +8,14 @@ cost, not on engineering, and it is not reopened here. Buying signing certificat
 was decided against on 2026-09-28; `M7-TAURI-DEPLOY-184a` stays only as the record of what signing
 would take.
 
-**What this procedure cannot yet do.** No pipeline produces a real installable bundle per
-platform — `web/src-tauri/tauri.conf.json` has `bundle.active: false`, and issue #559 tracks
-building one. Today's release artefact is the trimmed-repository tarball layout
-`deploy/linux/install.sh`'s own header describes (compose stack, `deploy/`, the built shell
-binary, the native inference binary), one per platform, assembled by hand or by a future CI
-job once #559 lands. This procedure covers what happens **after** the artefacts exist —
-checksumming and publishing them — not producing them. Do not treat a release built this way
-as proof the installers work end to end on a clean machine; that walkthrough is still blocked
-on #559, and separately on real macOS/Windows test hardware (#590, #592).
+**Where the artefacts come from.** `.github/workflows/release.yml` (`M9-REL-DEPLOY-214`)
+builds them: one job per platform builds the desktop shell on GitHub's own Linux, Windows and
+macOS runners, and a final job builds the container images and the interface, assembles one
+artefact per platform with `scripts/release-artefact.sh`, checksums them, and attaches all of
+it to a **draft** pre-release. It never publishes. Each artefact is the trimmed-repository
+layout `deploy/<platform>/`'s installer header describes, plus `web/out/` and the saved
+container images under `images/`. A built artefact is not proof the installers work end to
+end on a clean machine: Windows and macOS need the product owner's own hardware (#590, #592).
 
 ---
 
@@ -45,19 +44,29 @@ say so above the changelog, in the words §2 of that document gives.
 
 ## 2. Assemble the artefacts
 
-For each platform being released, build the trimmed tarball layout `deploy/<platform>/install.sh`
-expects (see that script's header comment for the exact file list) and place every artefact for
-the release into one directory, e.g. `dist/askwell-<version>/`:
+Push the version tag, or run the workflow by hand with the tag as its input:
 
 ```
-askwell-<version>-linux.tar.gz
-askwell-<version>-windows.zip
-askwell-<version>-macos.tar.gz
+git tag v<version> && git push origin v<version>
+# or, without pushing a tag yet:
+gh workflow run release.yml -f tag=v<version>
 ```
 
-Naming is illustrative — match whatever the packaging step actually produces once #559 exists.
-**Do not publish a partial platform set silently** — if a platform's artefact could not be
-built, that is a release blocker to raise, not a reason to ship the other two quietly.
+The tag must be `v<VERSION>`, or `v<VERSION>-<suffix>` for a throwaway test; anything else is
+refused before any build starts. The run produces a draft release named `Askwell <version>`
+holding:
+
+```
+askwell-<version>-linux-x86_64.tar.gz
+askwell-<version>-windows-x86_64.zip
+askwell-<version>-macos-arm64.tar.gz
+SHA256SUMS
+```
+
+**The workflow will not produce a partial platform set.** If any platform's job fails, the
+draft job stops before creating or replacing anything, and its error names the platform that
+failed. Fix it and re-run: a re-run for the same tag deletes that tag's earlier draft and
+creates a new one, and refuses outright if a **published** release already has that tag.
 
 ## 3. The restore gate
 
@@ -122,24 +131,25 @@ it does not wave it through (`M7-QA-TEST-168`).
 
 ## 4. Generate checksums
 
-```
-scripts/release-checksums.sh dist/askwell-<version>/
-```
-
-This writes `SHA256SUMS` into that directory, one line per artefact, and refuses to run
-against an empty directory (an empty `SHA256SUMS` is indistinguishable from "verified" at a
-glance, and only step 2 having actually produced something makes that true). Read the printed
-output before continuing — it lists exactly what will be published.
+The workflow already ran `scripts/release-checksums.sh` over the three artefacts, required
+exactly three lines, and checked them with `sha256sum -c` before attaching anything. Read
+`SHA256SUMS` on the draft before continuing — it lists exactly what will be published. The
+script refuses an empty directory (an empty `SHA256SUMS` looks the same as "verified" at a
+glance), so a draft without one did not come from this workflow.
 
 ## 5. Publish
 
-Create the GitHub release and upload every artefact **and** `SHA256SUMS` itself:
+The draft already carries every artefact **and** `SHA256SUMS`, with
+`docs/release-notes-template.md` as its notes. Fill in the notes' placeholders (the changelog
+entry, the schema revision), then publish the draft — this is the step a person performs, or
+the orchestrating session on instruction; nothing does it automatically:
 
 ```
-gh release create v<version> dist/askwell-<version>/* \
-  --title "Askwell <version>" \
-  --notes-file docs/release-notes-template.md
+gh release edit v<version> --draft=false
 ```
+
+It stays a pre-release until the product owner's own Windows and macOS testing is done
+(`docs/decisions.md`, 2026-09-28); only then add `--prerelease=false`.
 
 `docs/release-notes-template.md` links `docs/installing.md` prominently, above the artefact
 list — the same ordering `docs/installing.md` itself uses (verification before the bypass) and
