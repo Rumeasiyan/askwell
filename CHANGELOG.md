@@ -4,6 +4,17 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.54 - 2026-09-28
+
+`Fixed`: `M9-FIX-BE-206`. Questions Askwell answers in several steps, looking in both your documents
+and a connected database, are now as honest as simple ones. Until now such an answer never said
+when two of your sources disagreed, never named the part of the question it could not answer, and
+never used what you had taught Askwell. Now it writes "Conflicting sources on …" with both
+positions, adds a "Not covered: …" line for each part it could not find, and can cite a fact you
+taught it, which shows as memory in the margin and on the Memory screen. The same holds when
+Askwell stops after eight steps: the note that it stopped early is now its own paragraph, below
+the answer.
+
 ## 0.7.53 - 2026-09-28
 
 `Fixed`: `M9-FIX-BE-205`. Setting a passphrase no longer stops new files being indexed. Until now,
