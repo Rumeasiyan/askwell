@@ -2,9 +2,9 @@
 
 **Goal:** The release blockers found by the triage of 2026-09-28 fixed, so the product does what it says for a real user on a clean machine.
 
-**Phase:** 7 (`../build-plan.md`) · **Depends on:** M8 · **Tickets:** 14 · **Estimated:** 43 hours
+**Phase:** 7 (`../build-plan.md`) · **Depends on:** M8 · **Tickets:** 15 · **Estimated:** 49 hours
 
-**Exit condition:** A fresh install on Linux works end to end without a manual step, answers read as prose with every claim cited, the clarification loop and conflict resolution actually remember, the audit chain holds through prune and restore, and every test that exists runs.
+**Exit condition:** Installable downloads for Linux, Windows and macOS are built by CI, a fresh install on Linux works end to end without a manual step, answers read as prose with every claim cited, the clarification loop and conflict resolution actually remember, the audit chain holds through prune and restore, and every test that exists runs.
 
 > **Where these came from.** Every ticket in M0–M8 was built, and the build's own audit agents filed what they found on the way: about 230 issues, 69 of them bugs. The queue builds this directory, never the tracker, so none of those would ever have been fixed. On 2026-09-28 the open bugs were triaged. Eight were already fixed and were closed after checking the code or the live stack. The fourteen tickets below are the ones that stop the product doing what it claims. Each names its issues, which hold the full evidence. They are ordered by harm: install first, then what every user sees, then correctness, then safety, then the test suite. That way, whatever fits in the remaining build budget is the part that matters most.
 >
@@ -622,5 +622,55 @@
 - **Estimate:** 3 hours · **Priority:** Critical
 - **Labels / Component:** `phase:7`, test
 - **Granularity:** The fix named in #724, #696, #706, #752, and its tests.
+
+---
+### M9-REL-DEPLOY-214 — Downloadable releases for Linux, Windows and macOS, built in CI
+
+**Type:** Task
+
+**User Story**
+- **Actor:** someone who wants to try Askwell and has never heard of Podman or cargo.
+- **User Need:** a download for their operating system.
+- **Business Value:** the product owner has authorised a release once the build is done (`../decisions.md`, 2026-09-28). Nothing today produces anything to release: `web/src-tauri/tauri.conf.json` has `"bundle": {"active": false}`, and no workflow runs `cargo tauri build`.
+
+**Context / Background**
+**Detailed Description:** Issue #559 has the full analysis. Its recommendation was Linux-only; widen it to all three platforms, because GitHub Actions provides Linux, Windows and macOS runners and this build host has only Linux. The build then produces the Windows and macOS downloads without that hardware, and the product owner will test them by hand once the build is done.
+
+A workflow triggered by a version tag (and runnable by hand) that, per platform, builds the Tauri shell with bundling enabled, exports the container images, and assembles the artefact tree each installer (`M7-PACK-DEPLOY-139`/`140`/`141`) already expects, then generates `SHA256SUMS` with `scripts/release-checksums.sh`. Unsigned, as decided. Model weights are not bundled; the installers fetch or place them as they already do (`M7-OFFLINE-DEPLOY-144`).
+
+**Scope**
+- A release workflow with a Linux, a Windows and a macOS job.
+- Tauri bundling enabled; unsigned.
+- Container images exported alongside, in the layout the installers expect.
+- Checksums generated; artefacts attached to a **draft** GitHub release. The workflow never publishes on its own.
+
+**Out of Scope**
+- Signing or notarisation (decided against, 2026-09-28).
+- Publishing. A person, or the orchestrating session on instruction, turns the draft into a release.
+- Bundling model weights.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** Running the workflow on a test tag produces a draft release with one artefact per platform and a `SHA256SUMS` that verifies them. The Linux artefact installs on a clean Linux account with `deploy/linux/install.sh` and reaches a working Ask screen.
+- **Edge Cases:** One platform's job fails — the draft is not created with a partial set; the failure names the platform. A re-run for the same tag — replaces the draft rather than duplicating it.
+- **Permissions / Roles:** Single user — no roles.
+- **UI States:** None.
+- **Validation Rules:** No secret in the workflow beyond GitHub's own token (C8). Nothing is published automatically (`AGENTS.md` §7).
+- **Audit / Logging Requirements:** None.
+- **Analytics Events:** None (C1). The built app still makes no outbound call.
+
+**Dependencies & Assumptions**
+- **Dependencies:** M7-PACK-DEPLOY-139, M7-PACK-DEPLOY-140, M7-PACK-DEPLOY-141, M7-OFFLINE-DEPLOY-144.
+- **API / Data Touchpoints:** `.github/workflows/`; `web/src-tauri/tauri.conf.json`; `scripts/release-checksums.sh`; `docs/release-procedure.md` §2 and §5.
+- **Assumptions:** GitHub-hosted macOS and Windows runners are available to this repository. If they are not, say so and build Linux only, rather than faking the other two.
+
+**Testing Notes / Scenarios**
+- **Cold-start manual walkthrough:** Run the workflow on a throwaway tag, download the Linux artefact to a clean account, verify its checksum, install it, and ask a question. Delete the throwaway draft afterwards.
+- **Other scenarios:** Break the Windows job deliberately and confirm no partial draft appears.
+- **Known gaps:** The Windows and macOS artefacts are built but not proven to install until the product owner's own testing (#590, #592). Close #559 with what was verified.
+
+**Effort & Granularity Check**
+- **Estimate:** 6 hours · **Priority:** Critical
+- **Labels / Component:** `phase:7`, deploy
+- **Granularity:** One workflow, three jobs, one draft release.
 
 ---

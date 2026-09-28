@@ -18,6 +18,26 @@ Keeping the `None` path, rather than deleting it now that it is unreachable, is 
 
 ---
 
+## 2026-09-28 — Release decisions: unsigned for good, no legal review, publish when M9 is done
+
+**Decision:** Five decisions by the product owner, recorded together because they all shape the first release.
+
+1. **No code-signing certificates.** Not deferred — decided. Askwell ships unsigned with published checksums. `M7-TAURI-DEPLOY-184a` stays `[BLOCKED]` only as the record of what signing would take; #636 is closed.
+2. **No branch protection on `main` for now** (#623). CI passing stays a convention the build loop enforces by never merging on red, not a repository setting.
+3. **Windows and macOS are tested by hand by the product owner once the build is done** (#590, #592). Nothing on this build host can do it.
+4. **No legal review of the GPLv3 relicence** before release. The recommendation to have one was declined.
+5. **Publish a release once everything is done.** This is the explicit instruction `AGENTS.md` §7 requires before anything is published.
+
+**What "done" means for (5):** every M9 ticket landed; the abstention eval run and recorded, with C5's ≥ 0.90 bar reported honestly as met or not met; and the release checklist (`docs/release-checklist.md`) run, with every gate that cannot run on this host — the cold-cable offline test, Windows and macOS — recorded as *not run*, never as passed. The release is **`1.0.0`**, which `AGENTS.md` §7 names as the first pilot-ready build. It is published as a GitHub **pre-release** until the product owner's own Windows and macOS testing is done, then marked a full release. Shipping untested platform installers as final would claim more than has been checked.
+
+**Why:** Signing was a conversion cost, not a blocker. A first-launch warning costs some installs, and certificates cost money every year for a free product; the owner judged the trade. The rest are the owner's calls on risk and timing for a free, single-maintainer product, and the reasoning is theirs. Recording them stops a later session re-raising any of them as open. `M9-REL-DEPLOY-214` exists because (5) cannot be carried out otherwise: nothing produced an installable download (#559).
+
+**Consequences:** No future session raises signing, branch protection or legal review as blockers. A release is published by the orchestrating session without asking again, once "done" above is true. Its notes state plainly what was not verified.
+
+**Refs:** #636, #623, #590, #592, #559; `M7-TAURI-DEPLOY-184a`, `M9-REL-DEPLOY-214`; `docs/release-procedure.md`; product owner's decisions, 2026-09-28.
+
+---
+
 ## 2026-09-25 — `M8-FIX-DOC-179`: the licence gate asks "compatible with GPLv3?", an unclear licence fails it, and AGPL stays refused although GPLv3 could carry it
 
 **Decision.** The relicence decided earlier today is carried out. `LICENSE` is the FSF's GPLv3 text, fetched from `gnu.org/licenses/gpl-3.0.txt` and byte-identical to the copy Fedora ships in `/usr/share/licenses/cockpit-bridge/GPL-3.0.txt`. `api/pyproject.toml`, `web/package.json` and `web/src-tauri/Cargo.toml` declare `GPL-3.0-or-later`. The About screen, `README.md`, `docs/PRD.md`, `SUPPORT.md` and `llms.txt` say GPLv3. In `askwell.notices`, `DISALLOWED_LICENSES` loses every GPL that can be taken under v3 (`GPL-2.0-or-later`, `GPL-3.0*`, `GPL-1.0-or-later`) and keeps `GPL-1.0-only`, `GPL-2.0-only` and SPDX's deprecated `GPL-1.0`/`GPL-2.0`, which mean "only". A new `UNCLEAR_LICENSES` holds a GPL with no version (`GPL`, `GNU GPL`), a v2 with no "only" or "or later" (`GPLv2`, `GPL-2`), and no licence at all (`UNVERIFIED`, `UNKNOWN`, empty). `scripts/generate_notices.py` fails the gate on either list.
