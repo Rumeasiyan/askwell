@@ -4,6 +4,16 @@ Append-only. **Newest first.** Never edit an entry to change its meaning — if 
 
 **Bar for an entry:** something a competent person would later ask *"why is it like this?"* about. Architecture changes, dependency choices, resolved `docs/PRD.md` §11 questions, reversals. **Not** routine implementation choices — those are visible in the diff.
 
+## 2026-09-28 — `M9-TEST-TEST-213`: the web test script runs every `*.test.ts` by glob, not by a list
+
+**Decision.** `web/package.json`'s `test` script is `node --test --experimental-strip-types '**/*.test.ts'`. The explicit list of files it replaces is gone. The glob is quoted so Node expands it, not the shell. `sh` has no recursive `**`, so an unquoted pattern would only match one directory level.
+
+**Why.** The list had already dropped four files. `lib/document-dates.test.ts` went unrun from `M2-PARTIAL-FE-058` until `M7-FIX-BE-170a`, and `lib/setup.test.ts` and `lib/storage.test.ts` were still unrun when this ticket started. `lib/answer-annotations.test.ts` was on #724's list too, but it had been added since. A forgotten file prints the same green `# fail 0` as a passing one, which is the failure `AGENTS.md` §6 forbids. Two other options were rejected. Adding the missing names (#724 option 1) fixes today's list and leaves the next new file just as easy to forget. A guard script that compares the list against the tree (option 3) catches the mistake instead of making it impossible, and it would be one more check to keep correct. Node 22, which the web image pins (`web/Dockerfile`), expands globs itself and skips `node_modules` unless it is named explicitly. The pattern is `**` rather than `lib/**` so that a test added under `app/` or `components/` also runs. Verified in the image: the glob matches exactly the 39 `lib/*.test.ts` files, and the count went from 584 to 592 tests, all passing.
+
+**Consequences.** Any `*.test.ts` in `web/` runs in `scripts/dev.sh web-check` and CI. A file that should not run has to be renamed, not left off a list. If `web/` ever holds `.test.ts` files in a directory that is not `node_modules` but is also not ours (a vendored tree, say), the pattern will pick them up and needs narrowing then.
+
+**Refs:** #724, `M9-TEST-TEST-213`; `web/package.json`.
+
 ## 2026-09-28 — `M9-FIX-FE-212`: the record of what was sent keeps inferred facts apart, as they stood at the send; an older record claims neither origin
 
 **Decision.** `askwell.ask._sent_contents` records `inferred_fact_ids`, the subset of `memory_fact_ids` whose `origin` was `inferred` when the provider request was built. `memory_fact_ids` keeps its meaning (every fact sent). The trace's **show what was sent** (`web/lib/trace.ts`, `transmissionLines`) counts the rest as "facts you taught Askwell" and the subset as "conclusions Askwell drew on its own", and calls schema notes "notes on your tables". A record without `inferred_fact_ids` says "things Askwell knows about your material". This is #760's option 1.

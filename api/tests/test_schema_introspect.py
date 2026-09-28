@@ -235,7 +235,9 @@ def test_sqlserver_inventory_groups_foreign_keys() -> None:
 
 # --- write_schema_inventory, against Askwell's own database -----------------
 
-_TABLES = "sources, schema_notes, audit_decisions"
+# `settings`: a test below lowers the clarification cap, and a cap left at 1
+# changes what the next module's clarification tests raise (#706).
+_TABLES = "sources, schema_notes, audit_decisions, settings"
 
 
 @pytest_asyncio.fixture
