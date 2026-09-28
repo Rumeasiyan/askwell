@@ -90,13 +90,18 @@ automatable half. The packet capture is read by hand, per that document's §6.
 Also before checksumming or publishing, run `scripts/dev.sh notices`. It regenerates
 `NOTICES.md` from what is actually installed in the built images (never hand-edited) and fails
 if any shipped Python package, JavaScript package, or bundled model carries a licence on
-`askwell.notices`'s disallowed list, or one it cannot place (a bare "GPL", no licence at all) —
+`askwell.notices`'s disallowed list, or one it cannot place — anything not on its short list of
+known-compatible SPDX identifiers, such as a bare "GPL", no licence at all, or free text like
+"GNU Affero" (`M9-FIX-SEC-209`) —
 C9's GPLv3-compatible/commercial-use/ungated requirement, evidenced rather than merely asserted
 (`M7-DOC-DOC-163`, `M8-FIX-DOC-179`). **A failed run blocks the release.** Commit the
 regenerated `NOTICES.md` if it changed. An unclear licence is resolved by a person reading the
-package's actual terms and recording the answer, never by adding the package's name to a list.
+package's actual terms and recording the answer — a free-text string mapped to SPDX in
+`scripts/generate_notices.py`'s `_FREE_TEXT_TO_SPDX`, with its evidence — never by adding the
+package's name to a list.
 `phonemizer` (GPLv3+), red from 2026-09-23 under #619, passes since Askwell was relicensed to
-GPLv3 (`docs/decisions.md`, 2026-09-25).
+GPLv3 (`docs/decisions.md`, 2026-09-25). `pypdfium2` has been red since 2026-09-28 on its
+free-text "dependency licenses" (#797), which needs the review this gate asks for.
 
 ## 3c. The security review gate
 

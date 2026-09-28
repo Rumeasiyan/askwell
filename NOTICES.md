@@ -70,8 +70,8 @@ Verified against the model's own registry entry before being written here (`AGEN
 | pgvector | 0.5.0 | MIT |
 | phonemizer | 3.4.0 | GPL-3.0-or-later |
 | pillow | 12.3.0 | MIT-CMU |
-| primp | 2.0.1 | MIT License |
-| protobuf | 7.36.2 | 3-Clause BSD License |
+| primp | 2.0.1 | MIT |
+| protobuf | 7.36.2 | BSD-3-Clause |
 | psycopg | 3.3.6 | LGPL-3.0-only |
 | psycopg-binary | 3.3.6 | LGPL-3.0-only |
 | psycopg-pool | 3.3.2 | LGPL-3.0-only |

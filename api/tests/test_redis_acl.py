@@ -14,6 +14,7 @@ housekeeping. Two halves:
 
 import os
 import re
+import subprocess
 import uuid
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
@@ -175,6 +176,73 @@ def test_every_password_placeholder_is_filled_by_the_start_script() -> None:
     # No password in plain text: the template carries hashes only (`#`), never
     # a `>password`, so a committed file cannot hold a credential (C8).
     assert not re.search(r"(^|\s)>", ACL.read_text(encoding="utf-8"))
+
+
+# --- the start script refuses the published placeholders (`M9-FIX-SEC-209`) ---
+
+REDIS_PASSWORDS = ("REDIS_API_PASSWORD", "REDIS_WORKER_PASSWORD", "REDIS_PROXY_PASSWORD")
+
+
+def _run_start(passwords: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    """Run `start.sh` as the Redis container would. Only its refusals are
+    exercised here: past them it renders into `/tmp` and execs Redis, which
+    the `requires_db` tests below cover against a real server."""
+    env = {"PATH": os.environ["PATH"], **passwords}
+    return subprocess.run(
+        ["sh", str(START), "redis-server"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+
+def _example_values() -> dict[str, str]:
+    values = dict(
+        re.findall(
+            r"^(REDIS_[A-Z]+_PASSWORD)=(.*)$",
+            (REPO_ROOT / ".env.example").read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+    )
+    assert set(values) == set(REDIS_PASSWORDS)
+    return values
+
+
+def test_a_hand_copied_env_example_stops_redis_naming_every_placeholder() -> None:
+    """The ticket's cold start: `cp .env.example .env` and bring the stack up."""
+    result = _run_start(_example_values())
+    assert result.returncode != 0
+    assert "Refusing to start" in result.stderr
+    for name in REDIS_PASSWORDS:
+        assert name in result.stderr
+
+
+def test_one_placeholder_among_real_passwords_is_refused_and_named_alone() -> None:
+    passwords = {name: uuid.uuid4().hex + uuid.uuid4().hex for name in REDIS_PASSWORDS}
+    passwords["REDIS_WORKER_PASSWORD"] = "change-me-redis-worker"
+    result = _run_start(passwords)
+    assert result.returncode != 0
+    refusal = next(line for line in result.stderr.splitlines() if "Refusing" in line)
+    assert "REDIS_WORKER_PASSWORD" in refusal
+    assert "REDIS_API_PASSWORD" not in refusal
+    assert "REDIS_PROXY_PASSWORD" not in refusal
+
+
+def test_any_change_me_value_is_a_placeholder_not_only_the_published_three() -> None:
+    """The installers treat every `change-me*` value as unset; so does Redis."""
+    passwords = {name: uuid.uuid4().hex + uuid.uuid4().hex for name in REDIS_PASSWORDS}
+    passwords["REDIS_API_PASSWORD"] = "change-me"
+    result = _run_start(passwords)
+    assert result.returncode != 0
+    assert "REDIS_API_PASSWORD" in result.stderr
+
+
+def test_a_missing_password_is_still_refused_before_the_placeholder_check() -> None:
+    result = _run_start({"REDIS_API_PASSWORD": "x" * 64, "REDIS_WORKER_PASSWORD": "y" * 64})
+    assert result.returncode != 0
+    assert "REDIS_PROXY_PASSWORD is not set" in result.stderr
 
 
 # --- compose, read as text -----------------------------------------------------
