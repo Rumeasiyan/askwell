@@ -15,6 +15,7 @@ import docx
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from askwell import chunk as chunk_module
@@ -256,3 +257,209 @@ async def test_re_running_chunk_replaces_rather_than_duplicates(
 
     assert len(rows) == first_run_count
     assert rows == list(range(len(rows)))
+
+
+async def _cite(session: AsyncSession, chunk_id: uuid.UUID) -> uuid.UUID:
+    """An answer citing one passage, written the way `askwell.ask` writes it."""
+    conversation_id = uuid.uuid4()
+    message_id = uuid.uuid4()
+    await session.execute(
+        text("INSERT INTO conversations (id) VALUES (:id)"), {"id": conversation_id}
+    )
+    await session.execute(
+        text(
+            "INSERT INTO messages (id, conversation_id, role, content) "
+            "VALUES (:id, :conversation_id, 'assistant', 'Ninety days.')"
+        ),
+        {"id": message_id, "conversation_id": conversation_id},
+    )
+    await session.execute(
+        text(
+            "INSERT INTO citations (message_id, chunk_id, claim_ordinal, quoted_span) "
+            "VALUES (:message_id, :chunk_id, 0, 'ninety days')"
+        ),
+        {"message_id": message_id, "chunk_id": chunk_id},
+    )
+    await session.commit()
+    return message_id
+
+
+async def _chunks(session: AsyncSession, document_id: uuid.UUID) -> list[tuple]:
+    rows = await session.execute(
+        text(
+            "SELECT id, content, superseded_at, embedding IS NULL, content_tsv IS NULL "
+            "FROM chunks WHERE document_id = :id ORDER BY superseded_at NULLS LAST, ordinal"
+        ),
+        {"id": document_id},
+    )
+    return [tuple(row) for row in rows.all()]
+
+
+def _text_work(tmp_path: Path, document_id: uuid.UUID) -> Work:
+    return Work(
+        document_id=document_id,
+        source_id=uuid.uuid4(),
+        path=str(tmp_path / "terms.txt"),
+        filename="terms.txt",
+        mime="text/plain",
+        sha256="0" * 64,
+    )
+
+
+async def _noop_report(_done: int, _total: int) -> None:
+    return None
+
+
+async def test_re_chunking_a_cited_document_retires_the_cited_passage_and_keeps_its_text(
+    factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    tmp_path: Path,
+    unreachable_queue: Settings,
+) -> None:
+    """Issue #719: the chunk stage deleted every passage of the document and
+    failed on `fk_citations_chunk_id_chunks` the moment one was cited. The
+    cited passage now survives, unsearchable, holding exactly the text the
+    old answer cited (C4 — never repointed at the new wording); the new
+    passages are the only live ones."""
+    (tmp_path / "terms.txt").write_text("Either party may terminate on ninety days notice.")
+    await nominate(session, str(tmp_path))
+    document_id = (await recorded(session, tmp_path, "terms.txt"))[0]
+    work = _text_work(tmp_path, document_id)
+    await extract.run(work, _noop_report, factory, unreachable_queue)
+    await chunk_module.run(work, _noop_report, factory, unreachable_queue)
+
+    [(cited_id, cited_content, superseded_at, _, _)] = await _chunks(session, document_id)
+    assert superseded_at is None
+    await _cite(session, cited_id)
+
+    (tmp_path / "terms.txt").write_text("Either party may terminate on thirty days notice.")
+    await extract.run(work, _noop_report, factory, unreachable_queue)
+    await chunk_module.run(work, _noop_report, factory, unreachable_queue)
+
+    rows = await _chunks(session, document_id)
+    live = [row for row in rows if row[2] is None]
+    retired = [row for row in rows if row[2] is not None]
+    assert [row[1] for row in live] == ["Either party may terminate on thirty days notice."]
+    assert live[0][0] != cited_id
+    assert retired == [(cited_id, cited_content, retired[0][2], True, True)]
+
+    resolved = (
+        await session.execute(
+            text(
+                "SELECT c.content, c.superseded_at IS NOT NULL FROM citations ci "
+                "JOIN chunks c ON c.id = ci.chunk_id"
+            )
+        )
+    ).one()
+    assert resolved == ("Either party may terminate on ninety days notice.", True)
+
+
+async def test_an_uncited_passage_is_still_deleted_by_a_re_chunk(
+    factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    tmp_path: Path,
+    unreachable_queue: Settings,
+) -> None:
+    """Only a cited passage is kept. Retiring every old passage would grow the
+    table by a copy of the document on every re-index for nothing."""
+    (tmp_path / "terms.txt").write_text("Either party may terminate on ninety days notice.")
+    await nominate(session, str(tmp_path))
+    document_id = (await recorded(session, tmp_path, "terms.txt"))[0]
+    work = _text_work(tmp_path, document_id)
+    await extract.run(work, _noop_report, factory, unreachable_queue)
+    await chunk_module.run(work, _noop_report, factory, unreachable_queue)
+    [(first_id, *_)] = await _chunks(session, document_id)
+
+    await chunk_module.run(work, _noop_report, factory, unreachable_queue)
+
+    rows = await _chunks(session, document_id)
+    assert len(rows) == 1
+    assert rows[0][0] != first_id
+    assert rows[0][2] is None
+
+
+async def test_a_second_re_chunk_keeps_the_first_retirement_date(
+    factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    tmp_path: Path,
+    unreachable_queue: Settings,
+) -> None:
+    """The date a passage was replaced is when it stopped being the file's
+    text; a later re-index does not move it."""
+    (tmp_path / "terms.txt").write_text("Either party may terminate on ninety days notice.")
+    await nominate(session, str(tmp_path))
+    document_id = (await recorded(session, tmp_path, "terms.txt"))[0]
+    work = _text_work(tmp_path, document_id)
+    await extract.run(work, _noop_report, factory, unreachable_queue)
+    await chunk_module.run(work, _noop_report, factory, unreachable_queue)
+    [(cited_id, *_)] = await _chunks(session, document_id)
+    await _cite(session, cited_id)
+
+    await chunk_module.run(work, _noop_report, factory, unreachable_queue)
+    first_date = next(row[2] for row in await _chunks(session, document_id) if row[0] == cited_id)
+    await chunk_module.run(work, _noop_report, factory, unreachable_queue)
+    rows = await _chunks(session, document_id)
+
+    assert next(row[2] for row in rows if row[0] == cited_id) == first_date
+    assert len([row for row in rows if row[2] is None]) == 1
+    assert len(rows) == 2
+
+
+async def test_re_indexing_a_cited_document_gets_past_the_chunk_stage(
+    factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    tmp_path: Path,
+    unreachable_queue: Settings,
+) -> None:
+    """The walkthrough that found #719, through the real re-index and the real
+    pipeline: a cited document used to land in `attention` at stage `chunk`.
+    It now parks at `embed`, the one stage this module leaves unbuilt."""
+    (tmp_path / "terms.txt").write_text("Either party may terminate on ninety days notice.")
+    await nominate(session, str(tmp_path))
+    document_id = (await recorded(session, tmp_path, "terms.txt"))[0]
+    assert await ingest.process(factory, unreachable_queue, document_id) == "parked"
+    [(cited_id, *_)] = await _chunks(session, document_id)
+    await _cite(session, cited_id)
+
+    source_id = (
+        await session.execute(
+            text("SELECT source_id FROM documents WHERE id = :id"), {"id": document_id}
+        )
+    ).scalar_one()
+    (tmp_path / "terms.txt").write_text("Either party may terminate on thirty days notice.")
+    await ingest.reindex_source(session, source_id, unreachable_queue)
+    await session.commit()
+
+    assert await ingest.process(factory, unreachable_queue, document_id) == "parked"
+    job = (
+        await session.execute(
+            text("SELECT state, stage, error FROM ingest_jobs WHERE document_id = :id"),
+            {"id": document_id},
+        )
+    ).one()
+    assert job.error is None
+    assert job.stage == "chunk"
+    assert len(await _chunks(session, document_id)) == 2
+
+
+async def test_a_retired_passage_cannot_keep_a_search_path(
+    factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    tmp_path: Path,
+    unreachable_queue: Settings,
+) -> None:
+    """The constraint behind the retirement: a superseded passage that kept
+    its search vector would still answer questions about text the file no
+    longer contains."""
+    (tmp_path / "terms.txt").write_text("Either party may terminate on ninety days notice.")
+    await nominate(session, str(tmp_path))
+    document_id = (await recorded(session, tmp_path, "terms.txt"))[0]
+    work = _text_work(tmp_path, document_id)
+    await extract.run(work, _noop_report, factory, unreachable_queue)
+    await chunk_module.run(work, _noop_report, factory, unreachable_queue)
+    [(chunk_id, *_)] = await _chunks(session, document_id)
+
+    with pytest.raises(IntegrityError):
+        await session.execute(
+            text("UPDATE chunks SET superseded_at = now() WHERE id = :id"), {"id": chunk_id}
+        )

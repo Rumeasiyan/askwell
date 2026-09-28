@@ -389,7 +389,7 @@ async def _detect_abbreviations(
             "SELECT c.content, c.content_encrypted, d.filename, c.page_from FROM chunks c "
             "JOIN documents d ON d.id = c.document_id "
             "WHERE d.source_id = :source_id AND d.deleted_at IS NULL "
-            "AND d.superseded_by IS NULL AND d.status = 'ready'"
+            "AND d.superseded_by IS NULL AND d.status = 'ready' AND c.superseded_at IS NULL"
         ),
         {"source_id": source_id},
     )

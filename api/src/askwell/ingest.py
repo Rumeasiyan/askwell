@@ -1331,6 +1331,10 @@ async def reindex_source(
     if not document_ids:
         return Reindexed(found=True, documents=0, document_ids=[])
 
+    # A document with no job row would otherwise be set `queued` below with
+    # nothing that will ever pick it up (issue #720). `enqueue` writes the
+    # missing rows and leaves existing ones for the reset that follows.
+    await enqueue(session, source_id, document_ids)
     await session.execute(
         text(
             "UPDATE ingest_jobs SET state = 'queued', attempts = 0, error = NULL, "

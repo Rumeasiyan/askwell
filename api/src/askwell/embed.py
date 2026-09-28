@@ -176,7 +176,7 @@ async def run(
             await session.execute(
                 text(
                     "SELECT id, content, content_encrypted FROM chunks WHERE document_id = :id "
-                    "AND embedding IS NULL ORDER BY ordinal"
+                    "AND embedding IS NULL AND superseded_at IS NULL ORDER BY ordinal"
                 ),
                 {"id": work.document_id},
             )

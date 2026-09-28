@@ -644,7 +644,7 @@ async def _reembed_corpus(
                 await session.execute(
                     text(
                         "SELECT id, content, content_encrypted FROM chunks "
-                        "WHERE content IS NOT NULL AND embedding IS NULL "
+                        "WHERE content IS NOT NULL AND embedding IS NULL AND superseded_at IS NULL "
                         "ORDER BY id LIMIT :batch"
                     ),
                     {"batch": settings.embedding_batch_size},

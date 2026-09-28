@@ -436,6 +436,12 @@ class Chunk(Base):
 
     __tablename__ = "chunks"
     __table_args__ = (
+        # A passage a re-index retired is reachable through its citation and
+        # nothing else: no embedding, no search vector (`M9-FIX-BE-203`).
+        CheckConstraint(
+            "superseded_at IS NULL OR (embedding IS NULL AND content_tsv IS NULL)",
+            name="superseded_is_unsearchable",
+        ),
         Index("ix_chunks_document_id", "document_id"),
         Index("ix_chunks_content_tsv", "content_tsv", postgresql_using="gin"),
     )
@@ -463,6 +469,13 @@ class Chunk(Base):
     # embedding model is a configuration change plus a re-embed, not a schema
     # edit — the migration reads it.
     embedding: Mapped[Any | None] = mapped_column(Vector())
+
+    # Set when a re-index replaced this passage and an answer still cites it
+    # (`M9-FIX-BE-203`, issue #719). The row keeps `content` so the old
+    # citation resolves to exactly the text it cited; `askwell.chunk.run`
+    # deletes a replaced passage nothing cites instead. Every reader that
+    # means "the document as it is now" filters on `superseded_at IS NULL`.
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class SchemaNote(Base):
@@ -967,7 +980,8 @@ class Citation(Base):
     measured. "Did any answer contain an uncited claim?" has to be answerable.
 
     The foreign key to `chunks` is deliberately NOT cascade-delete. A deleted
-    document's chunk row survives precisely so the citation still resolves.
+    document's chunk row survives precisely so the citation still resolves,
+    and so does a cited passage a re-index replaced (`Chunk.superseded_at`).
     """
 
     __tablename__ = "citations"

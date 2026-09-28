@@ -108,6 +108,7 @@ async def suggested_questions(session: AsyncSession, settings: Settings) -> list
             text(
                 "SELECT DISTINCT ON (document_id) document_id, heading, content, "
                 "content_encrypted FROM chunks WHERE document_id = ANY(:ids) "
+                "AND superseded_at IS NULL "
                 "ORDER BY document_id, ordinal"
             ),
             {"ids": document_ids},

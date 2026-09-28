@@ -425,8 +425,26 @@ async def run(
         key = await passphrase.current_key(session, settings)
         content_encrypted = await passphrase.is_enabled(session)
 
+        # Replace this document's passages without breaking an old answer
+        # (`M9-FIX-BE-203`, issue #719). A passage nothing cites is deleted.
+        # A cited one cannot be — `citations.chunk_id` is deliberately not
+        # cascade-delete — and must not be repointed at the new text (C4), so
+        # it is retired: kept with its `content`, stripped of both search
+        # paths. Retired rows already superseded by an earlier re-index stay
+        # as they are, with their original date.
         await session.execute(
-            text("DELETE FROM chunks WHERE document_id = :id"), {"id": work.document_id}
+            text(
+                "DELETE FROM chunks c WHERE c.document_id = :id "
+                "AND NOT EXISTS (SELECT 1 FROM citations ci WHERE ci.chunk_id = c.id)"
+            ),
+            {"id": work.document_id},
+        )
+        await session.execute(
+            text(
+                "UPDATE chunks SET superseded_at = now(), embedding = NULL, content_tsv = NULL "
+                "WHERE document_id = :id AND superseded_at IS NULL"
+            ),
+            {"id": work.document_id},
         )
         for ordinal, chunk in enumerate(chunks):
             stored_content = (

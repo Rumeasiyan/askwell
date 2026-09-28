@@ -168,7 +168,8 @@ async def resolve_dependencies(
         chunk_rows = await session.execute(
             text(
                 "SELECT c.id, d.filename FROM chunks c JOIN documents d ON d.id = c.document_id "
-                "WHERE c.document_id = ANY(:document_ids) AND c.content IS NOT NULL"
+                "WHERE c.document_id = ANY(:document_ids) AND c.content IS NOT NULL "
+                "AND c.superseded_at IS NULL"
             ),
             {"document_ids": document_ids},
         )
@@ -391,12 +392,18 @@ async def _reembed_chunk(session: AsyncSession, settings: Settings, chunk_id: uu
 
     row = (
         await session.execute(
-            text("SELECT content, content_encrypted FROM chunks WHERE id = :id"), {"id": chunk_id}
+            text(
+                "SELECT content, content_encrypted FROM chunks "
+                "WHERE id = :id AND superseded_at IS NULL"
+            ),
+            {"id": chunk_id},
         )
     ).first()
     if row is None or not row[0]:
         # The chunk is gone (document deleted or superseded since this item
-        # was queued) or was already cleared — nothing to re-embed.
+        # was queued), was already cleared, or a re-index retired it while it
+        # kept its text for an old citation (`M9-FIX-BE-203`) — nothing to
+        # re-embed. A retired passage must stay unsearchable.
         return
     content, content_encrypted = row[0], row[1]
     if content_encrypted:

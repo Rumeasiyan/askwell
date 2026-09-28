@@ -670,7 +670,7 @@ _SEARCH_EXTENT_SQL = text(
     "FROM chunks c "
     "JOIN documents d ON d.id = c.document_id "
     "JOIN sources s ON s.id = d.source_id "
-    "WHERE d.deleted_at IS NULL AND d.superseded_by IS NULL "
+    "WHERE d.deleted_at IS NULL AND d.superseded_by IS NULL AND c.superseded_at IS NULL "
     "AND (CAST(:source_id AS uuid) IS NULL OR d.source_id = CAST(:source_id AS uuid))"
 )
 
@@ -710,7 +710,8 @@ async def _abstain_reason(
                 await db.execute(
                     text(
                         "SELECT count(*) FROM chunks c JOIN documents d ON d.id = c.document_id "
-                        "WHERE d.deleted_at IS NULL AND d.superseded_by IS NULL"
+                        "WHERE d.deleted_at IS NULL AND d.superseded_by IS NULL "
+                        "AND c.superseded_at IS NULL"
                     )
                 )
             ).scalar_one()
