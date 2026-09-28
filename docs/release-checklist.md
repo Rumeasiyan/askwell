@@ -137,7 +137,7 @@ one is disposed of in the release entry under the gate named; none may be carrie
 
 | Issue | Holds | Why |
 | ----- | ----- | --- |
-| #698 | G10, G11, G12 | No installer applies database migrations, so a cold install has no schema |
+| #771 | G10, G11 | A fresh install leaves `ASKWELL_ROOTS_MOUNT` empty, so the first folder a person adds is not readable without editing `.env` by hand. How wide the default read-only view should be is a product decision, escalated on the issue |
 | #689 | G9 | Private vulnerability reporting is off; the one security route `SECURITY.md` gives does not exist |
 | #710 | G3 | `eval/bench.py` exits 0 for a scored suite below its bar. Not a hold by itself: G3 is compared by hand until it lands |
 | #615 | G11 | Settings → Storage → **Export and prune** is a disabled button reading "Not built yet", a dead control, so W9.1 is `FAIL`; and there is no backup control, so W9.4 runs from a terminal |

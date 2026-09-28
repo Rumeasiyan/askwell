@@ -16,6 +16,11 @@
 # deploy/*.
 
 : "${ASKWELL_MIN_PODMAN_VERSION:=4.3}"
+# `podman compose` is only a front end for an external provider (issue #767).
+# The stack relies on docker-compose behaviour — `--no-attach` on the session
+# units, `service_completed_successfully` for the `migrate` service — and
+# `--no-attach` arrived in Docker Compose 2.20.
+: "${ASKWELL_MIN_COMPOSE_VERSION:=2.20}"
 
 # ---------------------------------------------------------------- messaging
 
@@ -103,6 +108,35 @@ podman_meets_minimum() {
   parsed="$(parse_podman_version "$reported")"
   [ -n "$parsed" ] || return 1
   version_ge "$parsed" "$ASKWELL_MIN_PODMAN_VERSION"
+}
+
+# ---------------------------------------------------------------- compose provider
+
+# Parses `podman compose version`'s "Docker Compose version v5.1.1" into
+# "5.1.1". Prints nothing for any other provider (podman-compose says
+# "podman-compose version …"), because only docker-compose is verified with
+# this stack (issue #767). Takes the raw output so tests need no podman.
+parse_compose_provider_version() {
+  printf '%s\n' "$1" | sed -nE 's/^Docker Compose version v?([0-9]+(\.[0-9]+){1,2}).*/\1/p' | head -n1
+}
+
+compose_provider_meets_minimum() {
+  local parsed
+  parsed="$(parse_compose_provider_version "$1")"
+  [ -n "$parsed" ] || return 1
+  version_ge "$parsed" "$ASKWELL_MIN_COMPOSE_VERSION"
+}
+
+# The command that installs docker-compose, where it has been checked
+# against the distribution's own repository (Fedora's `docker-compose`,
+# 5.5.1 on 2026-09-28). Elsewhere the package name or its version differs
+# by release — Debian's `docker-compose` was the old 1.x line for years —
+# so the installer names the upstream instructions instead of guessing.
+compose_install_cmd() {
+  case "$1" in
+    dnf) echo "dnf install -y docker-compose" ;;
+    *) return 1 ;;
+  esac
 }
 
 # ---------------------------------------------------------------- disk space
@@ -303,6 +337,76 @@ ensure_redis_passwords() {
   fi
 }
 
+# ---------------------------------------------------------------- database
+
+# The named volumes `compose.yaml` declares, as Podman names them (the
+# project is `name: askwell`). Everything Askwell keeps outside the data
+# directory lives in these: the database (index, extracted text, memory,
+# conversations, audit log), the imported-database sandbox, the queue, and
+# `/var/lib/askwell` (stored backups, crash reports, traces). install.test.sh
+# checks this list against compose.yaml so the two cannot drift.
+ASKWELL_VOLUMES="askwell_postgres-data askwell_sandbox-data askwell_redis-data askwell_askwell-state"
+
+# Brings the schema to the image's migration head by running compose's own
+# one-shot `migrate` service (M9-FIX-DEPLOY-200, issue #698), which starts
+# Postgres first if it is not already up. The same service runs on every
+# stack start; the installer runs it here as well so that it can wait for
+# the result and stop on a failure, rather than register a stack that will
+# never serve and then say it is done. A schema already at head is a no-op.
+#
+# Output goes to `log_file`, whose "Running upgrade" lines are Alembic's
+# own record of what it applied. Returns the migration's exit status.
+run_database_migration() {
+  local compose_path="$1" env_path="$2" log_file="$3"
+  mkdir -p "$(dirname "$log_file")"
+  "${ASKWELL_PODMAN:-podman}" compose -f "$compose_path" --env-file "$env_path" \
+    run --rm migrate > "$log_file" 2>&1
+}
+
+# How many migrations a run applied, read from its log. 0 is "already at
+# head", which the installer reports as exactly that.
+migrations_applied() {
+  grep -c 'Running upgrade' "$1" 2>/dev/null || true
+}
+
+# Where a plain uninstall keeps `.env` (issue #765). The default install
+# prefix is inside the data directory but is removed with the application
+# files, and `.env` holds the passwords the kept `postgres-data` volume was
+# initialised with. A reinstall that generated new ones could not log in to
+# its own database, so the uninstaller moves `.env` here and `place_files`
+# moves it back. `--purge-data` removes it with the rest of the data
+# directory, because by then the database it opens is gone too.
+kept_env_path() {
+  printf '%s/askwell.env\n' "$1"
+}
+
+# Stops the stack's containers, by the install's own compose files. Used
+# before an upgrade migrates (issue #768), so the old version's `api` and
+# `worker` are never serving against a schema newer than their own.
+stop_stack_containers() {
+  local compose_path="$1" env_path="$2"
+  "${ASKWELL_PODMAN:-podman}" compose -f "$compose_path" --env-file "$env_path" down >/dev/null 2>&1
+}
+
+# Removes every volume in ASKWELL_VOLUMES (issue #700), by name rather than
+# through `compose down -v`, so it works whether or not compose.yaml is
+# still on disk — the uninstaller has removed it by the time it asks. `-f`
+# also removes a stopped container still holding one. Prints each volume it
+# could not remove and returns 1 if there was any, so the caller reports
+# only what actually happened.
+purge_stack_volumes() {
+  local podman_bin="${ASKWELL_PODMAN:-podman}" volume failed=0
+  for volume in $ASKWELL_VOLUMES; do
+    "$podman_bin" volume exists "$volume" 2>/dev/null || continue
+    "$podman_bin" volume rm -f "$volume" >/dev/null 2>&1 || true
+    if "$podman_bin" volume exists "$volume" 2>/dev/null; then
+      printf '%s\n' "$volume"
+      failed=1
+    fi
+  done
+  return "$failed"
+}
+
 # ---------------------------------------------------------------- generated files
 
 desktop_entry_contents() {
@@ -366,6 +470,13 @@ EOF
 # and systemd restarts it" — the stack half of "killing either results in a
 # supervised restart".
 #
+# `--no-attach migrate` (M9-FIX-DEPLOY-200): `migrate` is the one service
+# meant to exit, and exiting 0 is its success. Attached, that exit alone
+# trips `--abort-on-container-exit` and stops the whole stack a few seconds
+# after it starts — seen on the real stack with docker-compose v5.1.1. Not
+# attached, it is not watched; a failed migration still stops `up`, because
+# `api` and `worker` wait on it with `service_completed_successfully`.
+#
 # `StartLimitIntervalSec=300`/`StartLimitBurst=5` (in `[Unit]`, verified
 # against `man systemd.unit` on this host's systemd 258 — the rate-limit
 # keys live there, not in `[Service]`) is the backoff cap: past 5 restarts in
@@ -375,19 +486,24 @@ EOF
 # half. `ExecStop` runs `compose down` explicitly so `systemctl --user stop`
 # (and a session logout, which stops `WantedBy=default.target` units) leaves
 # no orphaned container, matching this ticket's own Validation Rule.
+# `Requires=podman.socket`: docker-compose, the provider `podman compose`
+# runs (issue #767), talks to Podman through its API socket and fails with
+# "Cannot connect to the Docker daemon" when the socket is not listening —
+# reproduced on the build host by stopping it. The installer enables it too.
 systemd_stack_unit_contents() {
   local compose_path="$1" env_path="$2" working_dir="$3"
   cat <<EOF
 [Unit]
 Description=Askwell container stack
-After=network-online.target
+After=network-online.target podman.socket
+Requires=podman.socket
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
 [Service]
 Type=simple
 WorkingDirectory=$working_dir
-ExecStart=podman compose -f $compose_path --env-file $env_path up --abort-on-container-exit
+ExecStart=podman compose -f $compose_path --env-file $env_path up --abort-on-container-exit --no-attach migrate
 ExecStop=podman compose -f $compose_path --env-file $env_path down
 Restart=on-failure
 RestartSec=5

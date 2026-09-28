@@ -50,6 +50,8 @@ One machine. A **Tauri desktop shell** owns the window and the native file dialo
 
 The count went down by one despite adding the egress proxy. Every container is still something a non-technical user must have working unaided, so the rule stands: **resist an eighth, and if one is added, say here why it earned its place.**
 
+`migrate` (`M9-FIX-DEPLOY-200`) is a container but not a running one. It is the API image running `alembic upgrade head` as the table owner, and it exits before `api` and `worker` start. There is nothing to keep working: it either brings the schema to the image's head or stops the stack from serving on the wrong one. It earned its place because the app role cannot run DDL (C6), and before it existed nothing on an installed copy ever migrated (#698). Reasoning: `decisions.md`, 2026-09-28.
+
 ### 2.1 Platform support
 
 **Linux, Windows and macOS from v1.** Native inference is what makes that possible — the alternative, containerised inference everywhere, would have left the `accelerated` and `workstation` profiles unreachable on Apple Silicon, where a Linux container runs inside a VM with no Metal passthrough.

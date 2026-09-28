@@ -120,6 +120,64 @@ check_runtime() {
   askwell_say "Podman installed: $(podman --version)"
 }
 
+# ---------------------------------------------------------------- 1a. compose provider
+
+# Issue #767: `podman compose` runs an external provider and the Podman
+# package brings none, so a machine where the step above has just installed
+# Podman can have no `podman compose` at all. Checked before anything is
+# copied, and by name: docker-compose is the one provider this stack is
+# verified with.
+check_compose_provider() {
+  ensure_podman_socket
+  local reported
+  reported="$(podman compose version 2>/dev/null || true)"
+  if compose_provider_meets_minimum "$reported"; then
+    askwell_say "Compose provider found: $(printf '%s\n' "$reported" | grep -m1 'Docker Compose version')"
+    return 0
+  fi
+
+  local found="none"
+  [ -n "$reported" ] && found="$(printf '%s\n' "$reported" | head -n1)"
+  local mgr cmd
+  mgr="$(detect_pkg_manager)" || mgr=unknown
+  if ! cmd="$(compose_install_cmd "$mgr")" || ! have_admin_path; then
+    askwell_die "Askwell runs its containers through 'podman compose', which needs Docker Compose $ASKWELL_MIN_COMPOSE_VERSION or newer installed as its provider (podman-compose is not supported). Found: $found. Install Docker Compose (docs.docker.com/compose/install/linux), then run this installer again. Nothing has been copied."
+    exit 1
+  fi
+
+  askwell_say "Askwell runs its containers through 'podman compose', which needs Docker Compose $ASKWELL_MIN_COMPOSE_VERSION or newer (found: $found). This installer needs to run:"
+  askwell_say "  sudo $cmd"
+  confirm "Install Docker Compose now?" || { askwell_die "Docker Compose is required. Install it and re-run this installer. Nothing has been copied."; exit 1; }
+  if [ "$(id -u)" -eq 0 ]; then
+    sh -c "$cmd"
+  else
+    sudo sh -c "$cmd"
+  fi
+  reported="$(podman compose version 2>/dev/null || true)"
+  compose_provider_meets_minimum "$reported" || {
+    askwell_die "The Docker Compose install finished, but 'podman compose version' still does not report Docker Compose $ASKWELL_MIN_COMPOSE_VERSION or newer (it said: ${reported:-nothing}). Nothing has been copied."
+    exit 1
+  }
+  askwell_say "Compose provider installed: $(printf '%s\n' "$reported" | grep -m1 'Docker Compose version')"
+}
+
+# docker-compose reaches Podman through its API socket, which Podman ships
+# as a systemd --user socket unit that a fresh account has disabled. Without
+# it every `podman compose` command fails with "Cannot connect to the Docker
+# daemon". Enabled, not only started, because the stack unit needs it at
+# every login.
+ensure_podman_socket() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+  if systemctl --user is-enabled --quiet podman.socket 2>/dev/null && systemctl --user is-active --quiet podman.socket 2>/dev/null; then
+    return 0
+  fi
+  systemctl --user enable --now podman.socket 2>/dev/null || {
+    askwell_die "Could not enable Podman's API socket (systemctl --user enable --now podman.socket failed), which docker-compose needs to reach Podman. Run that command yourself to see why, then run this installer again. Nothing has been copied."
+    exit 1
+  }
+  askwell_say "Podman's API socket enabled for this account (podman.socket), so docker-compose can reach Podman."
+}
+
 # ---------------------------------------------------------------- 2. disk space
 
 check_disk_space() {
@@ -180,7 +238,14 @@ place_files() {
   mkdir -p "$INSTALL_PREFIX/deploy/postgres" "$INSTALL_PREFIX/deploy/sandbox" "$INSTALL_PREFIX/deploy/redis"
 
   cp "$REPO_ROOT/compose.yaml" "$INSTALL_PREFIX/compose.yaml"
-  if [ ! -f "$INSTALL_PREFIX/.env" ]; then
+  local kept_env
+  kept_env="$(kept_env_path "$DATA_DIR")"
+  if [ ! -f "$INSTALL_PREFIX/.env" ] && [ -f "$kept_env" ]; then
+    # Issue #765: the database volumes outlived a plain uninstall, and these
+    # are the passwords they were initialised with.
+    mv "$kept_env" "$INSTALL_PREFIX/.env"
+    askwell_say "Restored the database credentials the previous uninstall kept, so this install opens the database it left in place."
+  elif [ ! -f "$INSTALL_PREFIX/.env" ]; then
     cp "$REPO_ROOT/.env.example" "$INSTALL_PREFIX/.env"
     generate_env_passwords "$INSTALL_PREFIX/.env"
     askwell_say "Generated database credentials in $INSTALL_PREFIX/.env"
@@ -239,6 +304,57 @@ create_data_dirs() {
   askwell_say "Data directory: $DATA_DIR"
 }
 
+# ---------------------------------------------------------------- 6a. stop the old version
+
+# Issue #768: on an upgrade the old version's containers are still serving.
+# They stop before the schema moves, and register_stack_and_inference starts
+# the new ones after, so no code ever runs against a schema newer than its
+# own. The unit is stopped first because Restart=on-failure would otherwise
+# bring the containers straight back; `down` then also catches containers
+# the desktop shell started itself. Only on an upgrade: a fresh install has
+# nothing running.
+stop_previous_stack() {
+  is_previous_install "$DATA_DIR" || return 0
+  if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active --quiet askwell-stack.service 2>/dev/null; then
+    systemctl --user stop askwell-stack.service 2>/dev/null || {
+      askwell_die "Could not stop the running Askwell (systemctl --user stop askwell-stack.service failed), so the upgrade stopped before changing the database. The new application files are in place; run this installer again."
+      exit 1
+    }
+  fi
+  stop_stack_containers "$INSTALL_PREFIX/compose.yaml" "$INSTALL_PREFIX/.env" || {
+    askwell_die "Could not stop the running Askwell's containers (podman compose down failed), so the upgrade stopped before changing the database. The new application files are in place; run this installer again."
+    exit 1
+  }
+  askwell_say "Stopped the running Askwell so its database can be upgraded; the new version starts once the upgrade is done."
+}
+
+# ---------------------------------------------------------------- 6b. database schema
+
+# Issue #698: before this step existed nothing ever ran a migration, so a
+# fresh install started against an empty database and an upgrade ran new code
+# against the old schema. Runs before the stack is registered so that a
+# failure stops the install here, named, rather than after it has said done.
+migrate_database() {
+  local log="$DATA_DIR/logs/migrate.log" applied rc
+  askwell_say "Bringing Askwell's database up to date (the first run also starts the database)..."
+  if run_database_migration "$INSTALL_PREFIX/compose.yaml" "$INSTALL_PREFIX/.env" "$log"; then
+    applied="$(migrations_applied "$log")"
+    if [ "${applied:-0}" -eq 0 ]; then
+      askwell_say "Database schema already up to date; no migrations to apply."
+    else
+      askwell_say "Database schema up to date: applied $applied migration(s)."
+    fi
+    return 0
+  else
+    rc=$?
+  fi
+  printf '\n' >&2
+  tail -n 20 "$log" >&2 || true
+  printf '\n' >&2
+  askwell_die "The database migration (alembic upgrade head, run as the stack's migrate service) failed with exit status $rc (its last lines are above, the full output is in $log). The install stopped at this step and is not complete: nothing after it was done. The upgrade runs as one transaction, so the database is left as it was before this step. Run this installer again once the cause is fixed."
+  exit 1
+}
+
 # ---------------------------------------------------------------- 7. probe
 
 run_probe() {
@@ -279,7 +395,12 @@ register_stack_and_inference() {
     return 0
   fi
 
-  if systemctl --user enable --now askwell-stack.service 2>/dev/null && systemctl --user enable --now askwell-inference.service 2>/dev/null; then
+  # `restart`, not `enable --now`: on an upgrade the units are already
+  # active, and `--now` on an active unit does nothing, so the old version
+  # kept running (issue #768). `restart` starts a stopped unit as well.
+  if systemctl --user enable askwell-stack.service askwell-inference.service 2>/dev/null \
+    && systemctl --user restart askwell-stack.service 2>/dev/null \
+    && systemctl --user restart askwell-inference.service 2>/dev/null; then
     askwell_say "Askwell's container stack and native inference process registered to run with your session, independent of the app window (systemd --user)."
   else
     askwell_say "Wrote the stack and inference unit files but could not enable one of them. Check with: systemctl --user status askwell-stack.service askwell-inference.service"
@@ -305,12 +426,15 @@ launch() {
 main() {
   askwell_say "Installing Askwell $VERSION"
   check_runtime
+  check_compose_provider
   check_disk_space
   check_previous_install
   check_artefacts
   place_files
   load_images
   create_data_dirs
+  stop_previous_stack
+  migrate_database
   run_probe
   register_desktop_entry
   register_stack_and_inference
@@ -320,4 +444,7 @@ main() {
   askwell_say "Done. Askwell is also available any time from your applications menu."
 }
 
-main "$@"
+# Run, not sourced: install.test.sh sources this file to exercise one step.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi

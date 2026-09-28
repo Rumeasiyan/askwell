@@ -4,6 +4,36 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.62 - 2026-09-28
+
+`Fixed`: `M9-FIX-DEPLOY-200`. A fresh install now has a database to work with, and an upgrade
+brings the database up to date. Before, no installer ever set the database up, so a new install
+could not store or answer anything, and an upgrade left the database on the old version. Now the
+installer does it, says how many changes it applied (or that there were none), and stops with the
+reason if it fails, rather than reporting an install that cannot work. Askwell also checks the
+database every time it starts, and does not start serving on one that is out of date.
+
+`Fixed`: `uninstall --purge-data` (`-PurgeData` on Windows) now removes all of Askwell's data, as
+it said it did. Before, it removed only the data directory and left the database behind, including
+the index, extracted text and memory, and a reinstall afterwards could not open its own database.
+The confirmation now lists everything that goes, including stored backups and crash reports, and
+the uninstaller reports only what it actually removed. A plain uninstall now says that the
+database is kept.
+
+`Fixed`: Upgrading over a running Askwell now stops it before updating the database and starts
+the new version afterwards. Before, the old version kept running against the updated database
+until the next login.
+
+`Fixed`: Uninstalling without `--purge-data` (`-PurgeData`), then installing again, now opens the
+database that was kept. Before, the reinstall generated new database passwords the kept database
+had never seen, and could not open it.
+
+`Fixed`: The installers now check for Docker Compose 2.20 or newer before copying anything.
+Askwell runs its containers through it, and Podman does not bring it. On Fedora and macOS they
+offer to install it; elsewhere they say what to install. On Linux the installer also turns on
+Podman's API socket, which Docker Compose needs. Before, a new machine could fail partway through
+the install with an error about a missing compose provider or Docker daemon.
+
 ## 0.7.61 - 2026-09-28
 
 `Added`: `M9-REL-DEPLOY-214`. Askwell can now be built as a download for Linux, Windows and macOS. Pushing a version tag, or running the release workflow by hand, builds one download per platform on GitHub's own machines, with a `SHA256SUMS` file covering them. It attaches them to a draft release that nobody else can see until a person publishes it. If any platform fails to build, no draft is made, and the failure names the platform. Running it again for the same tag replaces the draft. Each download carries the containers Askwell runs in, so installing no longer has to build them from source or fetch them from the internet. The macOS app is ad-hoc signed, which Apple silicon needs before it will run it. It is still not signed by a known developer, so macOS still warns the first time. **Installing Askwell** now describes these downloads and how to run each one's installer.
