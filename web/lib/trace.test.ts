@@ -455,6 +455,7 @@ function transmission(overrides: Partial<TraceTransmission> = {}): TraceTransmis
       question: true,
       chunk_ids: ["a", "b", "c"],
       memory_fact_ids: ["f"],
+      inferred_fact_ids: [],
       schema_note_ids: [],
       clarification_answer: false,
     },
@@ -502,8 +503,43 @@ test("transmissionLines names schema notes and a clarification answer only when 
   assert.equal(
     lines[1],
     "4210 bytes: Askwell's instructions (conflicting_sources.v1), your question, " +
-      "1 passage from your files, 2 notes on a database, your answer to the clarification.",
+      "1 passage from your files, 2 notes on your tables, your answer to the clarification.",
   );
+});
+
+// M9-FIX-FE-212 (issue 760): the approved disclosure separates facts the user
+// taught from conclusions Askwell drew on its own; the trace must too.
+test("transmissionLines says an inferred fact was inferred, not taught", () => {
+  const base = transmission();
+  const lines = transmissionLines(
+    transmission({
+      contents: { ...base.contents!, memory_fact_ids: ["f1", "f2", "f3"], inferred_fact_ids: ["f2", "f3"] },
+    }),
+  );
+  assert.equal(
+    lines[1],
+    "4210 bytes: Askwell's instructions (conflicting_sources.v1), your question, " +
+      "3 passages from your files, 1 fact you taught Askwell, 2 conclusions Askwell drew on its own.",
+  );
+  assert.equal(lines[1]?.includes("3 facts you taught"), false);
+});
+
+test("transmissionLines names only inferred facts when nothing sent was taught", () => {
+  const base = transmission();
+  const lines = transmissionLines(
+    transmission({ contents: { ...base.contents!, memory_fact_ids: ["f1"], inferred_fact_ids: ["f1"] } }),
+  );
+  assert.equal(lines[1]?.endsWith("3 passages from your files, 1 conclusion Askwell drew on its own."), true);
+  assert.equal(lines[1]?.includes("taught"), false);
+});
+
+test("transmissionLines claims neither origin for a record that predates the split", () => {
+  const base = transmission();
+  const legacy = { ...base.contents!, memory_fact_ids: ["f1", "f2"] };
+  delete legacy.inferred_fact_ids;
+  const lines = transmissionLines(transmission({ contents: legacy }));
+  assert.equal(lines[1]?.endsWith("3 passages from your files, 2 things Askwell knows about your material."), true);
+  assert.equal(lines[1]?.includes("taught"), false);
 });
 
 test("buildTraceCopyText carries what was sent under the backend line", () => {

@@ -35,6 +35,7 @@ from .test_ask_api import (
     _FakeInferenceClient,
     _patch_client,
     _seed_chunk,
+    _seed_memory_fact,
     _truncate,
     _vector,
     _with_session,
@@ -215,6 +216,7 @@ def test_online_generation_keeps_retrieval_and_citations_and_names_the_backend(
     assert contents["question"] is True
     assert contents["chunk_ids"] == [str(chunk_id)]
     assert contents["memory_fact_ids"] == [] and contents["schema_note_ids"] == []
+    assert contents["inferred_fact_ids"] == []
     assert contents["clarification_answer"] is False
     assert contents["prompt_version"]
     (recorded,) = _requests_recorded(database_url, message_id)
@@ -227,6 +229,41 @@ def test_online_generation_keeps_retrieval_and_citations_and_names_the_backend(
     serialised = json.dumps(recorded)
     for text_sent in ("notice period", "Notice is ninety days", "ninety days [1]"):
         assert text_sent not in serialised
+
+
+def test_what_was_sent_tells_a_taught_fact_from_an_inferred_one(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """`M9-FIX-FE-212` (#760): the approved statement separates facts the
+    user taught from conclusions Askwell drew on its own, so the record of
+    what left does too. A confirmed inference is `origin = 'correction'` by
+    the time it is sent (`memory.confirm_memory_fact`), so it counts as
+    taught."""
+    _truncate(database_url)
+    settings = _online_settings(settings, tmp_path)
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "Notice is ninety days.", vector)
+    taught = _seed_memory_fact(database_url, subject="notice period", fact="ninety days")
+    confirmed = _seed_memory_fact(
+        database_url, subject="notice period for staff", fact="ninety days", origin="correction"
+    )
+    inferred = _seed_memory_fact(
+        database_url, subject="notice period for contractors", fact="thirty days", origin="inferred"
+    )
+    _patch_client(monkeypatch, _FakeInferenceClient(settings, tokens=["LOCAL"], vector=vector))
+    fake = _Provider(lambda _r: httpx.Response(200, content=_sse("Ninety days [1].")))
+    _go_online(monkeypatch, settings, fake)
+
+    _events_seen, message_id = _ask(settings, monkeypatch, tmp_path, database_url)
+
+    _content, trace, _citations, _audit = _stored(database_url, message_id)
+    contents = trace["backend"]["transmission"]["contents"]
+    assert sorted(contents["memory_fact_ids"]) == sorted(
+        str(i) for i in (taught, confirmed, inferred)
+    )
+    assert contents["inferred_fact_ids"] == [str(inferred)]
+    (recorded,) = _requests_recorded(database_url, message_id)
+    assert recorded["contents"]["inferred_fact_ids"] == [str(inferred)]
 
 
 def test_an_uncovered_question_still_abstains_and_nothing_is_sent(

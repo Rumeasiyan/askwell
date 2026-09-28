@@ -54,6 +54,10 @@ export interface TraceTransmission {
     question: boolean;
     chunk_ids: string[];
     memory_fact_ids: string[];
+    /** The subset of `memory_fact_ids` Askwell inferred on its own, as it
+     * stood at the send (`M9-FIX-FE-212`, issue 760). Absent on a record written
+     * before it was kept, when the two cannot be told apart. */
+    inferred_fact_ids?: string[];
     schema_note_ids: string[];
     clarification_answer: boolean;
   } | null;
@@ -384,6 +388,25 @@ const OUTCOME_LABELS: Record<string, string> = {
   interrupted: "The connection was lost partway through the answer.",
 };
 
+/** The memory facts a request carried, in the approved disclosure's own
+ * terms (`askwell.online.DISCLOSURE`): "facts you have taught it" apart from
+ * "conclusions it has drawn … on its own" (issue 760). A record from before the
+ * split was kept cannot tell the two apart, so it claims neither. */
+function memoryFactParts(factIds: string[], inferredIds: string[] | undefined): string[] {
+  if (factIds.length === 0) return [];
+  if (inferredIds === undefined) {
+    return [plural(factIds.length, "thing Askwell knows about your material", "things Askwell knows about your material")];
+  }
+  const inferred = factIds.filter((id) => inferredIds.includes(id)).length;
+  const taught = factIds.length - inferred;
+  const parts: string[] = [];
+  if (taught > 0) parts.push(plural(taught, "fact you taught Askwell", "facts you taught Askwell"));
+  if (inferred > 0) {
+    parts.push(plural(inferred, "conclusion Askwell drew on its own", "conclusions Askwell drew on its own"));
+  }
+  return parts;
+}
+
 /** What one provider request carried and how it ended, as plain lines for
  * the trace's "show what was sent" (`M8-ONLINE-OBS-172`). A request whose
  * connection was never made says that nothing left, and nothing else. */
@@ -401,11 +424,9 @@ export function transmissionLines(transmission: TraceTransmission): string[] {
     const parts = [`Askwell's instructions (${contents.prompt_version})`];
     if (contents.question) parts.push("your question");
     parts.push(plural(contents.chunk_ids.length, "passage from your files", "passages from your files"));
-    if (contents.memory_fact_ids.length > 0) {
-      parts.push(plural(contents.memory_fact_ids.length, "fact you taught Askwell", "facts you taught Askwell"));
-    }
+    parts.push(...memoryFactParts(contents.memory_fact_ids, contents.inferred_fact_ids));
     if (contents.schema_note_ids.length > 0) {
-      parts.push(plural(contents.schema_note_ids.length, "note on a database", "notes on a database"));
+      parts.push(plural(contents.schema_note_ids.length, "note on your tables", "notes on your tables"));
     }
     if (contents.clarification_answer) parts.push("your answer to the clarification");
     lines.push(`${plural(transmission.request_bytes, "byte", "bytes")}: ${parts.join(", ")}.`);

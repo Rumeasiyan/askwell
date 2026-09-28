@@ -1366,11 +1366,18 @@ def _sent_contents(
     candidates: list[Candidate],
     *,
     clarification_answer: bool,
-    memory_fact_ids: list[uuid.UUID],
-    schema_note_ids: list[uuid.UUID],
+    memory: RelevantMemory,
 ) -> dict[str, Any]:
     """What a provider request built from `composed` carries, by reference.
     `M8-ONLINE-OBS-172`.
+
+    `inferred_fact_ids` is the subset of `memory_fact_ids` Askwell inferred
+    on its own, as it stood when the request left (`M9-FIX-FE-212`, #760):
+    the approved disclosure (`askwell.online.DISCLOSURE`) separates facts
+    the user taught from conclusions Askwell drew, and the trace is where
+    the user checks the send against it. A fact confirmed before the send
+    is no longer `inferred` (`memory.confirm_memory_fact`), so it counts as
+    taught.
 
     Identifiers, never text: the passages and facts are already stored, and
     encrypted when a passphrase is set (`M7-SEC-BE-152`). A second copy of
@@ -1383,8 +1390,9 @@ def _sent_contents(
         "prompt_version": composed.prompt_version,
         "question": True,
         "chunk_ids": [str(candidate.chunk_id) for candidate in candidates],
-        "memory_fact_ids": [str(i) for i in memory_fact_ids],
-        "schema_note_ids": [str(i) for i in schema_note_ids],
+        "memory_fact_ids": [str(fact.id) for fact in memory.facts],
+        "inferred_fact_ids": [str(fact.id) for fact in memory.facts if fact.origin == "inferred"],
+        "schema_note_ids": [str(note.id) for note in memory.notes],
         "clarification_answer": clarification_answer,
     }
 
@@ -2185,8 +2193,7 @@ async def _run_generation(
                 composed,
                 candidates,
                 clarification_answer=memory_fact is not None,
-                memory_fact_ids=memory_fact_ids,
-                schema_note_ids=schema_note_ids,
+                memory=relevant_memory,
             )
 
             turn.emit("step", {"label": "Writing your answer.", "kind": "compose"})
