@@ -335,33 +335,57 @@ async def test_a_full_restore_recovers_rows_and_reembeds(
 
 async def test_a_restore_onto_a_machine_that_has_started_keeps_one_chain(
     factory: async_sessionmaker[AsyncSession],
+    app_database_url: str,
     settings: Settings,
     inference_serving: None,
     tmp_path: Path,
 ) -> None:
     """Issue #697. A clean machine starts Askwell before anyone restores
     anything, so the startup version record runs first. It must leave the
-    audit tables empty, or the backup's own genesis record forks the chain."""
-    from askwell.update_check import record_running_version
+    audit tables empty, or the backup's own genesis record forks the chain.
+
+    The start, the restore and the later upgrade run as `askwell_app`
+    (`M9-FIX-SEC-208`), restricted exactly as at runtime; the owner
+    `factory` only makes the backup and clears the machine."""
+    from askwell import update_check
+    from askwell.audit import Store, prune_boundaries, verify
 
     path = await _make_backup(factory, settings, content="alpha beta gamma")
     await _reset_to_clean_machine(factory)
-    started = settings.model_copy(update={"running_version_path": tmp_path / "running_version"})
-    await record_running_version(factory, started)
 
-    async with factory() as session:
-        job_id = await enqueue(
-            session, settings, path=path, restore_passphrase=None, replace_existing=False
-        )
-        await session.commit()
+    engine = create_async_engine(
+        app_database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    )
+    app = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        started = settings.model_copy(update={"running_version_path": tmp_path / "running_version"})
+        assert await update_check.record_running_version(app, started) is None
 
-    await run_job(factory, settings, job_id, None)
+        async with app() as session:
+            job_id = await enqueue(
+                session, settings, path=path, restore_passphrase=None, replace_existing=False
+            )
+            await session.commit()
 
-    async with factory() as session:
-        job = await get_job(session, job_id)
-        assert job is not None
-        assert job.status == "done"
-        assert job.chain_verified is True
+        await run_job(app, settings, job_id, None)
+
+        async with app() as session:
+            job = await get_job(session, job_id)
+            assert job is not None
+            assert job.status == "done"
+            assert job.chain_verified is True
+
+        # The restored machine is later upgraded: the record chains onto the
+        # restored history rather than starting a second one.
+        started.running_version_path.write_text("0.0.1\n", encoding="utf-8")
+        assert await update_check.record_running_version(app, started) == "upgrade_applied"
+        async with app() as session:
+            for store in Store:
+                boundaries = await prune_boundaries(session) if store is Store.INTERACTIONS else []
+                result = await verify(session, store, prune_boundaries=boundaries)
+                assert result.intact, f"{store}: {result}"
+    finally:
+        await engine.dispose()
 
 
 async def test_replace_existing_clears_prior_non_audit_data(

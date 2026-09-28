@@ -32,6 +32,17 @@ it was — `askwell.worker.startup`'s `resume` returns the job to `queued` and
 a re-run recomputes the same cutoff from the job's own stored value, so
 retrying is not distinguishable from running once.
 
+**The delete is not this module's to run.** `askwell_app` has no `DELETE`
+on either audit table (C6), so the rows are removed by
+`askwell_prune_interactions()`, a `SECURITY DEFINER` function migration
+`f4b8d2c6a915` defines (issue #682). It refuses unless the newest decisions
+record is an `interactions_pruned` written in the same transaction, and it
+deletes exactly what that record describes: rows before its `cutoff`, as many
+as its `pruned_count`, ending at its `boundary_hash`. That is why the record
+is written before the delete, not after it. Its owning role holds `DELETE`
+on `audit_interactions` alone, so the database, not this module, enforces
+that decisions are never pruned.
+
 **The boundary that keeps `askwell.audit.verify` honest.** Deleting the
 *oldest* rows of a hash chain is, from the chain's own shape, indistinguishable
 from someone deleting them by hand — that is exactly what `Break.UNLINKED`/
@@ -302,15 +313,15 @@ async def run_job(sessions: async_sessionmaker[AsyncSession], job_id: uuid.UUID)
                 log.info("log_prune_done", job_id=str(job_id), pruned=0)
                 return
 
-            pruned_ids = [row[0] for row in rows]
+            pruned_count = len(rows)
             boundary_hash = rows[-1][1]
             range_start = rows[0][2]
             range_end = rows[-1][2]
 
-            await session.execute(
-                text(f"DELETE FROM {Store.INTERACTIONS.value} WHERE id = ANY(:ids)"),
-                {"ids": pruned_ids},
-            )
+            # The record first: `askwell_prune_interactions()` deletes only
+            # what the newest decisions record, written in this transaction,
+            # describes (migration `f4b8d2c6a915`, issue #682). `askwell_app`
+            # has no `DELETE` on an audit table, so this is the only way in.
             await record(
                 session,
                 Store.DECISIONS,
@@ -318,20 +329,21 @@ async def run_job(sessions: async_sessionmaker[AsyncSession], job_id: uuid.UUID)
                 {
                     "job_id": str(job_id),
                     "cutoff": cutoff.astimezone(UTC).isoformat(),
-                    "pruned_count": str(len(pruned_ids)),
+                    "pruned_count": str(pruned_count),
                     "range_start": range_start.astimezone(UTC).isoformat(),
                     "range_end": range_end.astimezone(UTC).isoformat(),
                     "boundary_hash": boundary_hash,
                 },
             )
+            await session.execute(text("SELECT askwell_prune_interactions()"))
             await session.execute(
                 text(
                     "UPDATE prune_jobs SET status = 'done', finished_at = now(), "
                     "pruned_count = :count, boundary_hash = :hash WHERE id = :id"
                 ),
-                {"id": job_id, "count": len(pruned_ids), "hash": boundary_hash},
+                {"id": job_id, "count": pruned_count, "hash": boundary_hash},
             )
-        log.info("log_prune_done", job_id=str(job_id), pruned=len(pruned_ids))
+        log.info("log_prune_done", job_id=str(job_id), pruned=pruned_count)
     except Exception as error:
         log.warning(
             "log_prune_failed", job_id=str(job_id), error=f"{type(error).__name__}: {error}"
