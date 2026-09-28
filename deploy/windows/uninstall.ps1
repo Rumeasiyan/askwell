@@ -6,6 +6,10 @@
     document Askwell indexed, in place on the user's own disk untouched by
     Askwell — alone unless -PurgeData is given, which still asks for
     confirmation before deleting anything.
+
+    -PurgeData removes both places Askwell keeps data (issue #700): the data
+    directory and the Podman volumes that hold the database. See
+    deploy/linux/uninstall.sh for why removing only the directory was wrong.
 #>
 
 [CmdletBinding()]
@@ -55,17 +59,53 @@ function Main {
     Write-AskwellSay 'Askwell application files removed.'
 
     if ($PurgeData) {
+        $volumes = $script:AskwellVolumes -join ' '
+        if (-not (Confirm-Askwell "Delete all of Askwell's data? This removes its database (your corpus's index and extracted text, memory, conversations and audit log), imported databases, stored backups and crash reports, and the data directory ($DataDir`: settings, models, logs). Your own files are not touched; they stay where you put them. Copy out any backup you want to keep first - there is no undo.")) {
+            Write-AskwellSay "Askwell's data left in place: the data directory $DataDir and the database volumes ($volumes)."
+            return
+        }
+        Remove-AskwellData
+    } else {
         if (Test-Path $DataDir) {
-            if (-not (Confirm-Askwell "Delete Askwell's data directory ($DataDir)? This removes your corpus's index, memory and settings — not the files themselves, which live where you put them.")) {
-                Write-AskwellSay "Data directory left in place: $DataDir"
-                return
-            }
-            Remove-Item -Path $DataDir -Recurse -Force
+            Write-AskwellSay "Data directory left in place: $DataDir (use -PurgeData to remove it)"
+        }
+        Write-AskwellSay "Askwell's database volumes are also left in place, so reinstalling keeps your index and memory (use -PurgeData to remove them)."
+    }
+}
+
+# Says only what it did: each half is reported from what is on disk
+# afterwards, and a volume that would not go is named with the command that
+# removes it.
+function Remove-AskwellData {
+    $failed = $false
+    $volumes = $script:AskwellVolumes -join ' '
+    $podman = Get-Command podman -ErrorAction SilentlyContinue
+    if ($podman) {
+        $left = Remove-AskwellVolumes -Podman $podman.Source
+        if ($left.Count -eq 0) {
+            Write-AskwellSay "Database volumes removed: $volumes"
+        } else {
+            Write-AskwellSay "Could not remove these volumes: $($left -join ' '). Stop anything still using them, then run: podman volume rm -f $($left -join ' ')"
+            $failed = $true
+        }
+    } else {
+        Write-AskwellSay "Podman is not on PATH, so the database volumes ($volumes) could not be checked or removed. If they exist, remove them with: podman volume rm -f $volumes"
+        $failed = $true
+    }
+    if (Test-Path $DataDir) {
+        Remove-Item -Path $DataDir -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path $DataDir) {
+            Write-AskwellSay "Could not remove the data directory: $DataDir"
+            $failed = $true
+        } else {
             Write-AskwellSay "Data directory removed: $DataDir"
         }
-    } elseif (Test-Path $DataDir) {
-        Write-AskwellSay "Data directory left in place: $DataDir (use -PurgeData to remove it)"
     }
+    if ($failed) {
+        Write-AskwellDie "Askwell's data was not fully removed (see above)."
+        exit 1
+    }
+    Write-AskwellSay "All of Askwell's data has been removed."
 }
 
 Main

@@ -295,6 +295,59 @@ file and needs rebuilding.
 EOF
 }
 
+# ---------------------------------------------------------------- database
+
+# Mirrors deploy/linux/lib.sh; the same functions, for the same reasons.
+
+# The named volumes `compose.yaml` declares, as Podman names them (the
+# project is `name: askwell`). Everything Askwell keeps outside the data
+# directory lives in these: the database (index, extracted text, memory,
+# conversations, audit log), the imported-database sandbox, the queue, and
+# `/var/lib/askwell` (stored backups, crash reports, traces). install.test.sh
+# checks this list against compose.yaml so the two cannot drift.
+ASKWELL_VOLUMES="askwell_postgres-data askwell_sandbox-data askwell_redis-data askwell_askwell-state"
+
+# Brings the schema to the image's migration head by running compose's own
+# one-shot `migrate` service (M9-FIX-DEPLOY-200, issue #698), which starts
+# Postgres first if it is not already up. The same service runs on every
+# stack start; the installer runs it here as well so that it can wait for
+# the result and stop on a failure, rather than register a stack that will
+# never serve and then say it is done. A schema already at head is a no-op.
+#
+# Output goes to `log_file`, whose "Running upgrade" lines are Alembic's
+# own record of what it applied. Returns the migration's exit status.
+run_database_migration() {
+  local compose_path="$1" env_path="$2" log_file="$3"
+  mkdir -p "$(dirname "$log_file")"
+  "${ASKWELL_PODMAN:-podman}" compose -f "$compose_path" --env-file "$env_path" \
+    run --rm migrate > "$log_file" 2>&1
+}
+
+# How many migrations a run applied, read from its log. 0 is "already at
+# head", which the installer reports as exactly that.
+migrations_applied() {
+  grep -c 'Running upgrade' "$1" 2>/dev/null || true
+}
+
+# Removes every volume in ASKWELL_VOLUMES (issue #700), by name rather than
+# through `compose down -v`, so it works whether or not compose.yaml is
+# still on disk — the uninstaller has removed it by the time it asks. `-f`
+# also removes a stopped container still holding one. Prints each volume it
+# could not remove and returns 1 if there was any, so the caller reports
+# only what actually happened.
+purge_stack_volumes() {
+  local podman_bin="${ASKWELL_PODMAN:-podman}" volume failed=0
+  for volume in $ASKWELL_VOLUMES; do
+    "$podman_bin" volume exists "$volume" 2>/dev/null || continue
+    "$podman_bin" volume rm -f "$volume" >/dev/null 2>&1 || true
+    if "$podman_bin" volume exists "$volume" 2>/dev/null; then
+      printf '%s\n' "$volume"
+      failed=1
+    fi
+  done
+  return "$failed"
+}
+
 # ---------------------------------------------------------------- generated files
 
 # `RunAtLoad` starts Askwell once, at login, matching "start with the
@@ -339,7 +392,9 @@ EOF
 # watch, so `ProgramArguments` runs compose in the foreground instead —
 # `--abort-on-container-exit` makes that foreground process exit non-zero the
 # moment any container dies, which is what `KeepAlive`/`SuccessfulExit=false`
-# needs in order to restart it.
+# needs in order to restart it. `--no-attach migrate` keeps the one service
+# that is meant to exit from tripping that; see deploy/linux/lib.sh's
+# systemd_stack_unit_contents (M9-FIX-DEPLOY-200).
 #
 # Known, disclosed limitation (issue #607, decided in docs/decisions.md this
 # date): unlike systemd's `StartLimitBurst`, launchd has no configurable cap
@@ -370,6 +425,8 @@ launch_agent_stack_plist_contents() {
     <string>$env_path</string>
     <string>up</string>
     <string>--abort-on-container-exit</string>
+    <string>--no-attach</string>
+    <string>migrate</string>
   </array>
   <key>WorkingDirectory</key>
   <string>$working_dir</string>

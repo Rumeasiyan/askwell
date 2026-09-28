@@ -11,13 +11,13 @@ Written before it is needed, because rollback preparedness discovered during an 
 | | Status on 2026-09-24 |
 | --- | --- |
 | Schema rollback, current migration chain | **Rehearsed on Linux**, against a scratch database: head → two back → head, and head → empty → head. Every one of the 27 migrations has a working `downgrade()`. Record: `docs/manual-tests/M7-OPS-DOC-165.md` Part B2 |
-| Rollback on an installed copy, any platform | **Not possible yet.** The installers never run migrations (issue #698). An installed user has no way to downgrade, or even upgrade, the schema. The dev stack is the only place the steps in §1.1 run |
-| macOS, Windows rehearsal | **Not run.** There is no test hardware (#590, #592), and each depends on #698 |
+| Rollback on an installed copy, any platform | **Possible, not yet rehearsed.** Since `M9-FIX-DEPLOY-200` (#698) every stack start runs `compose.yaml`'s `migrate` service, and an installed user can run a downgrade through the same service (§1.1 step 2). The rehearsal on a real install is #711 |
+| macOS, Windows rehearsal | **Not run.** There is no test hardware (#590, #592) |
 | A previous release to roll back to | **None exists.** `gh release list` is empty. The first rehearsal against two real releases happens after the first two are published |
 | Local crash reports | **Built and tested.** §3 |
 | Telling users a release is broken | **Only partly possible, and not for everyone.** §4.3 states exactly who can be reached |
 
-An honest halt here is worth more than a procedure that reads as finished. Until #698 is fixed, a user reporting a broken release gets §4.2's reply. That reply is a workaround, not a rollback.
+An honest halt here is worth more than a procedure that reads as finished. Until #711 rehearses §1 on a real install, treat the installed-copy steps as written but unproven.
 
 ---
 
@@ -40,13 +40,15 @@ Keep `askwell-backup.zip` outside the install prefix. §1.2 deletes the volumes,
 
 **Which revision to roll back to.** Each release records its schema revision (`docs/release-procedure.md` §1). Roll back to the revision the *older* release names. If the two releases name the same revision, skip step 2: the schema did not change between them.
 
-**Order matters.** The downgrade must run with the **newer** build still installed. The older build does not know the newer migrations exist, so it cannot undo them. The steps below run on the dev stack today. On an installed copy they wait on #698. The installed form is shown so that it exists when #698 lands. It has been run against the dev stack, not against an install.
+**Order matters.** The downgrade must run with the **newer** build still installed. The older build does not know the newer migrations exist, so it cannot undo them. The dev-stack form has been rehearsed. The installed form uses the stack's own `migrate` service (#698); it has been run against an isolated copy of the stack, not yet against a real install (#711).
 
 1. **Stop the app processes, leave Postgres running.**
 
    ```
    podman compose stop api worker
    ```
+
+   On an installed copy, stop the session's stack service first, then start Postgres alone. Otherwise the service restarts the stack, and every start runs `migrate`, which would upgrade the schema straight back to the newer head: Linux `systemctl --user stop askwell-stack.service`; macOS `launchctl unload ~/Library/LaunchAgents/com.askwell.stack.plist`; Windows `Stop-ScheduledTask -TaskName AskwellStack`. Then `podman compose --env-file .env up -d postgres` from the install prefix.
 
 2. **Downgrade the schema with the newer build.**
 
@@ -57,15 +59,14 @@ Keep `askwell-backup.zip` outside the install prefix. §1.2 deletes the volumes,
    scripts/dev.sh db current        # must print <older-release-revision>
    ```
 
-   Installed copy (after #698). This runs as the **owner** role, whose password is already in the install's own `.env`. The app role has no DDL grant, and must not get one (C6):
+   Installed copy. The `migrate` service already connects as the **owner** role, from the install's own `.env`. The app role has no DDL grant, and must not get one (C6):
 
    ```
    cd <install prefix>              # Linux: ~/.local/share/askwell/app
                                     # macOS: ~/Library/Application Support/Askwell/app
                                     # Windows: %LOCALAPPDATA%\Askwell\app
-   podman compose --env-file .env run --rm --no-deps -w /app/api \
-     -e ASKWELL_DATABASE_URL="postgresql://askwell:<POSTGRES_PASSWORD from .env>@postgres:5432/askwell" \
-     api alembic downgrade <older-release-revision>
+   podman compose --env-file .env run --rm migrate alembic downgrade <older-release-revision>
+   podman compose --env-file .env run --rm migrate alembic current   # must print <older-release-revision>
    ```
 
 3. **Install the older release over the newer one.** Run the older release's own installer. It keeps the data directory and `.env` ("Existing Askwell installation found … Its data is left untouched") and replaces the application files.
@@ -88,18 +89,13 @@ Use this path when path A does not apply: a migration that cannot be reversed (�
 
 It needs a backup made by **the older version or earlier**. A newer backup is refused. Anything added after that backup was taken is lost: sources added, questions asked, memory confirmed.
 
-1. **Uninstall the newer version, and remove its database volumes.** The volumes hold the index, memory, settings and both audit logs. **This cannot be undone.** Removing them is what makes the target empty, and restore refuses to merge into a database that already has data. `uninstall --purge-data` does **not** remove them today (issue #700), so remove them by name:
+1. **Uninstall the newer version, and remove its database volumes.** The volumes hold the index, memory, settings and both audit logs, and the `askwell-state` volume holds stored backups and crash reports: **copy the backup you are restoring out first. This cannot be undone.** Removing them is what makes the target empty, and restore refuses to merge into a database that already has data. `uninstall --purge-data` (`-PurgeData` on Windows) removes the volumes and the data directory together, and reports each one it removed (#700).
 
-   ```
-   cd <install prefix>
-   podman compose --env-file .env down -v
-   ```
-
-   Keep `.env`. A new install that finds it reuses its passwords. If `.env` is deleted while the volumes survive, the next install cannot log in to its own database (#700).
+   The next install generates new passwords, which is correct against the new, empty volumes. Uninstalling *without* `--purge-data` keeps the volumes but not `.env`, and the next install then cannot log in to its own database; its migration step stops and says so (#765).
 
 2. **Install the older release** (the table in §1.1 step 3).
 
-3. **Bring the schema to the older release's head.** Restore refuses otherwise (`SchemaNotCurrent`). On an install this also waits on #698.
+3. **Bring the schema to the older release's head.** Restore refuses otherwise (`SchemaNotCurrent`). The older release's installer does this itself: it runs the stack's `migrate` service and stops, naming the failure, if it cannot.
 
 4. **Restore.** There is no restore screen yet (#615). Restore reads the backup from a path **inside the api container**, so copy it onto the state volume first. Not `/tmp`: in the container that can be the read-only folders mount (`ASKWELL_ROOTS_MOUNT`), and the copy fails.
 
@@ -188,7 +184,7 @@ For the maintainer, from the first credible report.
 Reply to each report with the pinned issue and the first of these that applies:
 
 1. **A fixed release exists:** install it over the broken one. The installer keeps the data.
-2. **Path A applies and the reporter can run it** (§1.1, today only from a source checkout, #698): the exact older revision and commands.
+2. **Path A applies and the reporter can run it** (§1.1): the exact older revision and commands.
 3. **Otherwise:** stop using the affected part. Do not uninstall and do not delete anything. If backup still works, take one now (§1). Wait for the fixed release. Say which part is affected, and that nothing about their files on disk is at risk, since Askwell indexes them in place and never modifies them.
 
 ### 4.3 How users learn a release is broken — and who cannot

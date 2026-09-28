@@ -289,10 +289,12 @@ function Get-AskwellInferenceTaskName {
 # `podman compose up -d` returns immediately, leaving nothing for the
 # scheduled task's restart-on-failure to watch, so this runs compose in the
 # foreground and relies on `--abort-on-container-exit` to turn "a container
-# died" into "the task's own process exited non-zero".
+# died" into "the task's own process exited non-zero". `--no-attach migrate`
+# keeps the one service that is meant to exit from tripping that; see
+# deploy/linux/lib.sh's systemd_stack_unit_contents (M9-FIX-DEPLOY-200).
 function Get-AskwellStackTaskArguments {
     param([string]$ComposePath, [string]$EnvPath)
-    return "compose -f `"$ComposePath`" --env-file `"$EnvPath`" up --abort-on-container-exit"
+    return "compose -f `"$ComposePath`" --env-file `"$EnvPath`" up --abort-on-container-exit --no-attach migrate"
 }
 
 # The argument string passed to the resolved Python interpreter to run
@@ -304,6 +306,69 @@ function Get-AskwellStackTaskArguments {
 function Get-AskwellInferenceTaskArguments {
     param([string]$ScriptPath)
     return "`"$ScriptPath`""
+}
+
+# ---------------------------------------------------------------- database (M9-FIX-DEPLOY-200)
+
+# Mirrors deploy/linux/lib.sh's database section; see it for the reasoning.
+# The named volumes compose.yaml declares, as Podman names them (project
+# `name: askwell`): the database, the imported-database sandbox, the queue,
+# and /var/lib/askwell (stored backups, crash reports, traces).
+$script:AskwellVolumes = @('askwell_postgres-data', 'askwell_sandbox-data', 'askwell_redis-data', 'askwell_askwell-state')
+
+# compose's own one-shot `migrate` service (issue #698): `alembic upgrade
+# head` as the owner role, starting Postgres first if it is not up. One quoted
+# string, like Get-AskwellStackTaskArguments, because Start-Process joins an
+# argument array without quoting and a profile path can contain a space.
+function Get-AskwellMigrationArguments {
+    param([string]$ComposePath, [string]$EnvPath)
+    return "compose -f `"$ComposePath`" --env-file `"$EnvPath`" run --rm migrate"
+}
+
+# Runs the migration and returns its exit code, with stdout and stderr both
+# in $LogPath (Alembic logs to stderr). Start-Process with redirected files
+# rather than `2>&1`: under Windows PowerShell 5.1 with
+# $ErrorActionPreference = 'Stop', a native command's stderr redirected that
+# way becomes a terminating error, which would turn Alembic's ordinary INFO
+# lines into an installer crash.
+function Invoke-AskwellMigration {
+    param([string]$Podman, [string]$ComposePath, [string]$EnvPath, [string]$LogPath)
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LogPath) | Out-Null
+    $errPath = "$LogPath.stderr"
+    $proc = Start-Process -FilePath $Podman -ArgumentList (Get-AskwellMigrationArguments $ComposePath $EnvPath) `
+        -NoNewWindow -Wait -PassThru -RedirectStandardOutput $LogPath -RedirectStandardError $errPath
+    if (Test-Path $errPath) {
+        Get-Content $errPath | Add-Content $LogPath
+        Remove-Item $errPath -Force
+    }
+    return $proc.ExitCode
+}
+
+# How many migrations a run applied, from Alembic's own "Running upgrade"
+# lines. 0 is "already at head".
+function Get-AskwellMigrationsApplied {
+    param([string]$LogPath)
+    if (-not (Test-Path $LogPath)) { return 0 }
+    return @(Select-String -Path $LogPath -Pattern 'Running upgrade' -SimpleMatch).Count
+}
+
+# Removes every volume in $script:AskwellVolumes by name (issue #700), so it
+# works after compose.yaml has gone. Returns the names it could not remove —
+# empty means every one is gone — so the caller reports only what happened.
+# 'Continue' locally: `volume exists` answers "no" through its exit code, and
+# must not become a terminating error under the callers' 'Stop'.
+function Remove-AskwellVolumes {
+    param([string]$Podman = 'podman')
+    $ErrorActionPreference = 'Continue'
+    $left = @()
+    foreach ($volume in $script:AskwellVolumes) {
+        & $Podman volume exists $volume *> $null
+        if ($LASTEXITCODE -ne 0) { continue }
+        & $Podman volume rm -f $volume *> $null
+        & $Podman volume exists $volume *> $null
+        if ($LASTEXITCODE -eq 0) { $left += $volume }
+    }
+    return ,$left
 }
 
 # ---------------------------------------------------------------- quarantine

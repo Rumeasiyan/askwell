@@ -4,6 +4,22 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.49 - 2026-09-28
+
+`Fixed`: `M9-FIX-DEPLOY-200`. A fresh install now has a database to work with, and an upgrade
+brings the database up to date. Before, no installer ever set the database up, so a new install
+could not store or answer anything, and an upgrade left the database on the old version. Now the
+installer does it, says how many changes it applied (or that there were none), and stops with the
+reason if it fails, rather than reporting an install that cannot work. Askwell also checks the
+database every time it starts, and does not start serving on one that is out of date.
+
+`Fixed`: `uninstall --purge-data` (`-PurgeData` on Windows) now removes all of Askwell's data, as
+it said it did. Before, it removed only the data directory and left the database behind, including
+the index, extracted text and memory, and a reinstall afterwards could not open its own database.
+The confirmation now lists everything that goes, including stored backups and crash reports, and
+the uninstaller reports only what it actually removed. A plain uninstall now says that the
+database is kept.
+
 ## 0.7.48 - 2026-09-25
 
 `Added`: `M8-FIX-BE-178`. Online AI can now send. Before a conversation's first online question,

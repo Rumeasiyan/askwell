@@ -179,8 +179,34 @@ if ($stackArgs -match '--abort-on-container-exit') {
     Test-Bad 'stack task arguments run compose in the foreground (--abort-on-container-exit)' $stackArgs '--abort-on-container-exit'
 }
 
+if ($stackArgs -match '--abort-on-container-exit --no-attach migrate') {
+    Test-Ok 'stack task arguments do not let migrate''s successful exit stop the stack'
+} else {
+    Test-Bad 'stack task arguments do not let migrate''s successful exit stop the stack' $stackArgs '--no-attach migrate'
+}
+
 $inferenceArgs = Get-AskwellInferenceTaskArguments -ScriptPath 'C:\Askwell\askwell-inference'
 Test-Check 'inference task arguments name the real supervisor script' $inferenceArgs '"C:\Askwell\askwell-inference"'
+
+# --- database migration and purge (M9-FIX-DEPLOY-200, #698, #700) -----------
+$migrationArgs = Get-AskwellMigrationArguments -ComposePath 'C:\Users\A B\Askwell\compose.yaml' -EnvPath 'C:\Users\A B\Askwell\.env'
+Test-Check 'the migration runs compose''s own migrate service, paths quoted' $migrationArgs `
+    'compose -f "C:\Users\A B\Askwell\compose.yaml" --env-file "C:\Users\A B\Askwell\.env" run --rm migrate'
+
+$migrateLog = Join-Path $tmp 'migrate.log'
+Set-Content -Path $migrateLog -Value @(
+    'INFO  [alembic.runtime.migration] Running upgrade  -> a1, first',
+    'INFO  [alembic.runtime.migration] Running upgrade a1 -> b2, second'
+)
+Test-Check 'a fresh schema reports each migration applied' (Get-AskwellMigrationsApplied $migrateLog) 2
+Set-Content -Path $migrateLog -Value 'INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.'
+Test-Check 'an upgrade with nothing pending reports zero applied' (Get-AskwellMigrationsApplied $migrateLog) 0
+Test-Check 'a missing log reports zero applied' (Get-AskwellMigrationsApplied (Join-Path $tmp 'absent.log')) 0
+
+$composeText = Get-Content (Join-Path $Here '..\..\compose.yaml') -Raw
+$composeVolumes = ([regex]::Match($composeText, '(?ms)^volumes:\r?\n(.*)\z').Groups[1].Value -split '\r?\n' |
+    Where-Object { $_ -match '^  ([a-z][a-z-]*):' } | ForEach-Object { 'askwell_' + $Matches[1] }) | Sort-Object
+Test-Check 'AskwellVolumes names every volume compose.yaml declares' (($script:AskwellVolumes | Sort-Object) -join ' ') ($composeVolumes -join ' ')
 
 Remove-Item -Path $tmp -Recurse -Force -ErrorAction SilentlyContinue
 

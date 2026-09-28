@@ -249,6 +249,38 @@ function New-AskwellDataDirs {
     Write-AskwellSay "Data directory: $DataDir"
 }
 
+# ---------------------------------------------------------------- 6a. database schema
+
+# Issue #698: nothing used to run a migration, so a fresh install had no
+# schema and an upgrade ran new code against the old one. Runs before the
+# stack task is registered, so a failure stops the install here, named.
+function Invoke-AskwellDatabaseMigration {
+    $podman = Get-Command podman -ErrorAction SilentlyContinue
+    if (-not $podman) {
+        Write-AskwellDie 'Podman is not on PATH, so the database could not be brought up to date. The install stopped at this step and is not complete.'
+        exit 1
+    }
+    $log = Join-Path $DataDir 'logs\migrate.log'
+    Write-AskwellSay 'Bringing Askwell''s database up to date (the first run also starts the database)...'
+    $code = Invoke-AskwellMigration -Podman $podman.Source -ComposePath (Join-Path $InstallPrefix 'compose.yaml') `
+        -EnvPath (Join-Path $InstallPrefix '.env') -LogPath $log
+    if ($code -ne 0) {
+        if (Test-Path $log) { Get-Content $log -Tail 20 | ForEach-Object { Write-Host $_ } }
+        Write-AskwellDie ("The database migration (alembic upgrade head, run as the stack's migrate service) " +
+            "failed with exit status $code (its last lines are above, the full output is in $log). The install " +
+            "stopped at this step and is not complete: nothing after it was done. The upgrade runs as one " +
+            "transaction, so the database is left as it was before this step. Run this installer again once " +
+            "the cause is fixed.")
+        exit 1
+    }
+    $applied = Get-AskwellMigrationsApplied $log
+    if ($applied -eq 0) {
+        Write-AskwellSay 'Database schema already up to date; no migrations to apply.'
+    } else {
+        Write-AskwellSay "Database schema up to date: applied $applied migration(s)."
+    }
+}
+
 # ---------------------------------------------------------------- 7. probe
 
 function Invoke-AskwellProbe {
@@ -383,6 +415,7 @@ function Main {
     Test-AskwellArtefacts
     Copy-AskwellFiles
     New-AskwellDataDirs
+    Invoke-AskwellDatabaseMigration
     Invoke-AskwellProbe
     Register-AskwellShortcuts
     Register-AskwellStackTask

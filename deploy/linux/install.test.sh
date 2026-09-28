@@ -22,7 +22,7 @@ fresh() {
   export HOME="$TMP/home"
   unset XDG_DATA_HOME XDG_CONFIG_HOME ASKWELL_DATA_DIR ASKWELL_INSTALL_PREFIX \
         ASKWELL_BIN_DIR ASKWELL_DESKTOP_DIR ASKWELL_SYSTEMD_USER_DIR \
-        ASKWELL_REQUIRED_INSTALL_BYTES
+        ASKWELL_REQUIRED_INSTALL_BYTES ASKWELL_PODMAN
   mkdir -p "$HOME"
   # shellcheck source=./lib.sh
   . "$HERE/lib.sh"
@@ -250,6 +250,9 @@ case "$out" in *"ExecStart=podman compose -f /data/compose.yaml --env-file /data
 case "$out" in *"ExecStop=podman compose -f /data/compose.yaml --env-file /data/.env down"*)
                  ok "stack unit stops by tearing the compose stack down" ;;
                *) bad "stack unit stops by tearing the compose stack down" ;; esac
+case "$out" in *"up --abort-on-container-exit --no-attach migrate"*)
+                 ok "stack unit does not let migrate's successful exit stop the stack" ;;
+               *) bad "stack unit does not let migrate's successful exit stop the stack" ;; esac
 case "$out" in *"Restart=on-failure"*) ok "stack unit restarts on failure" ;;
                *) bad "stack unit restarts on failure" ;; esac
 case "$out" in *"StartLimitIntervalSec=300"*"StartLimitBurst=5"*)
@@ -265,6 +268,152 @@ case "$out" in *"After=askwell-stack.service"*"Wants=askwell-stack.service"*)
 case "$out" in *"StartLimitIntervalSec=300"*"StartLimitBurst=5"*)
                  ok "inference unit caps restarts (StartLimitIntervalSec/StartLimitBurst)" ;;
                *) bad "inference unit caps restarts (StartLimitIntervalSec/StartLimitBurst)" ;; esac
+
+# --- database migration and purge (M9-FIX-DEPLOY-200, #698, #700) -----------
+# A fake podman that records its arguments and keeps "volumes" as files, so
+# these run with no podman and no stack. The real thing — a fresh install,
+# an upgrade, a purge and a reinstall — is the manual walkthrough in
+# docs/manual-tests/M9-FIX-DEPLOY-200.md.
+#
+# Sets FP to its directory, which also holds a systemctl that does nothing:
+# uninstall.sh talks to the real user manager otherwise, and a test must
+# never disable a unit on the machine running it.
+fake_podman() {
+  local dir="$TMP/fakepodman"
+  FP="$dir"
+  mkdir -p "$dir/volumes"
+  printf '#!/bin/sh\nexit 0\n' > "$dir/systemctl"; chmod +x "$dir/systemctl"
+  cat > "$dir/podman" <<'SH'
+#!/usr/bin/env bash
+dir="$(dirname "$0")"
+printf '%s\n' "$*" >> "$dir/calls"
+case "$1 $2" in
+  "volume exists") [ -e "$dir/volumes/$3" ] ;;
+  "volume rm") v="$4"; case " ${STUCK:-} " in *" $v "*) exit 1 ;; esac; rm -f "$dir/volumes/$v" ;;
+  compose*) printf '%b' "${MIGRATE_OUTPUT:-}"; exit "${MIGRATE_EXIT:-0}" ;;
+  *) exit 99 ;;
+esac
+SH
+  chmod +x "$dir/podman"
+  export ASKWELL_PODMAN="$dir/podman"
+}
+
+fresh; fake_podman; fp="$FP"
+log="$TMP/data/logs/migrate.log"
+MIGRATE_OUTPUT='INFO  [alembic.runtime.migration] Running upgrade  -> a1, first\nINFO  [alembic.runtime.migration] Running upgrade a1 -> b2, second\n' \
+  run_database_migration /p/compose.yaml /p/.env "$log" && r=0 || r=1
+check "a successful migration returns success" "$r" 0
+check "the migration runs compose's own migrate service against the install's files" \
+  "$(cat "$fp/calls")" "compose -f /p/compose.yaml --env-file /p/.env run --rm migrate"
+check "its output is kept in the log, creating the logs directory" "$(grep -c 'Running upgrade' "$log")" "2"
+check "a fresh schema reports each migration applied" "$(migrations_applied "$log")" "2"
+
+fresh; fake_podman
+log="$TMP/migrate.log"
+MIGRATE_OUTPUT='INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.\n' \
+  run_database_migration /p/compose.yaml /p/.env "$log" && r=0 || r=1
+check "an upgrade with nothing pending is a success, not an error" "$r" 0
+check "an upgrade with nothing pending reports zero applied" "$(migrations_applied "$log")" "0"
+
+fresh; fake_podman
+log="$TMP/migrate.log"
+MIGRATE_EXIT=1 MIGRATE_OUTPUT='sqlalchemy.exc.ProgrammingError: boom\n' \
+  run_database_migration /p/compose.yaml /p/.env "$log" && r=0 || r=1
+check "a failed migration is a failure the installer sees" "$r" 1
+check "a failed migration's error is in the log" "$(grep -c 'boom' "$log")" "1"
+
+# install.sh must act on that failure: stop, and never reach the steps that
+# say Askwell is installed. Run the real function with the real script's
+# definitions, the install steps after it replaced by markers.
+fresh; fake_podman
+out="$(
+  cd "$TMP" && MIGRATE_EXIT=1 MIGRATE_OUTPUT='boom: relation already exists\n' bash -c '
+    set -Eeuo pipefail
+    . "'"$HERE"'/install.sh"
+    DATA_DIR="'"$TMP"'/data"; INSTALL_PREFIX="/p"
+    migrate_database
+    echo REACHED_NEXT_STEP
+  ' 2>&1
+)" && r=0 || r=1
+check "install.sh stops when the migration fails" "$r" 1
+case "$out" in *REACHED_NEXT_STEP*) bad "a failed migration never lets the install carry on" ;;
+               *) ok "a failed migration never lets the install carry on" ;; esac
+case "$out" in *"database migration"*"failed"*"not complete"*) ok "the failure is named, and the install says it is not complete" ;;
+               *) bad "the failure is named, and the install says it is not complete (got: $out)" ;; esac
+case "$out" in *"boom: relation already exists"*) ok "the migration's own error is shown" ;;
+               *) bad "the migration's own error is shown" ;; esac
+case "$out" in *"schema already up to date"*|*"schema up to date"*) bad "a failed migration never reports the schema as up to date" ;;
+               *) ok "a failed migration never reports the schema as up to date" ;; esac
+
+fresh; fake_podman
+out="$(
+  cd "$TMP" && MIGRATE_OUTPUT='' bash -c '
+    set -Eeuo pipefail
+    . "'"$HERE"'/install.sh"
+    DATA_DIR="'"$TMP"'/data"; INSTALL_PREFIX="/p"
+    migrate_database
+  ' 2>&1
+)" && r=0 || r=1
+check "install.sh carries on when nothing is pending" "$r" 0
+case "$out" in *"already up to date"*) ok "nothing pending is reported as already up to date" ;;
+               *) bad "nothing pending is reported as already up to date (got: $out)" ;; esac
+
+fresh
+compose_volumes="$(sed -n '/^volumes:/,$p' "$HERE/../../compose.yaml" | grep -E '^  [a-z][a-z-]*:' | sed -E 's/^  ([a-z-]+):.*/askwell_\1/' | sort | tr '\n' ' ')"
+lib_volumes="$(printf '%s\n' $ASKWELL_VOLUMES | sort | tr '\n' ' ')"
+check "ASKWELL_VOLUMES names every volume compose.yaml declares" "$lib_volumes" "$compose_volumes"
+case "$(sed -n '/^name:/p' "$HERE/../../compose.yaml")" in
+  "name: askwell") ok "compose's project name is the askwell_ prefix the volume names assume" ;;
+  *) bad "compose's project name is the askwell_ prefix the volume names assume" ;; esac
+
+fresh; fake_podman; fp="$FP"
+for v in $ASKWELL_VOLUMES; do : > "$fp/volumes/$v"; done
+purge_stack_volumes > "$TMP/left" && r=0 || r=1
+check "purge removes every volume and reports success" "$r" 0
+check "no volume survives a purge" "$(ls "$fp/volumes" | wc -l | tr -d ' ')" "0"
+
+fresh; fake_podman; fp="$FP"
+purge_stack_volumes > "$TMP/left" && r=0 || r=1
+check "purging volumes that were never created is not an error" "$r" 0
+
+fresh; fake_podman; fp="$FP"
+for v in $ASKWELL_VOLUMES; do : > "$fp/volumes/$v"; done
+STUCK="askwell_postgres-data" purge_stack_volumes > "$TMP/left" && r=0 || r=1
+check "a volume that will not go makes the purge fail" "$r" 1
+check "the volume that will not go is named" "$(cat "$TMP/left")" "askwell_postgres-data"
+check "the others are still removed" "$(ls "$fp/volumes")" "askwell_postgres-data"
+
+# uninstall.sh --purge-data, end to end against the fake podman and a
+# throwaway HOME: the data directory and the volumes both go, and it says so.
+fresh; fake_podman; fp="$FP"
+for v in $ASKWELL_VOLUMES; do : > "$fp/volumes/$v"; done
+mkdir -p "$HOME/.local/share/askwell/models"
+out="$(PATH="$fp:$PATH" bash "$HERE/uninstall.sh" --purge-data --yes 2>&1)" && r=0 || r=1
+check "uninstall --purge-data succeeds" "$r" 0
+check "uninstall --purge-data removes the database volumes" "$(ls "$fp/volumes" | wc -l | tr -d ' ')" "0"
+[ -d "$HOME/.local/share/askwell" ] && r=1 || r=0
+check "uninstall --purge-data removes the data directory" "$r" 0
+case "$out" in *"Database volumes removed"*"Data directory removed"*"All of Askwell's data has been removed"*)
+                 ok "uninstall --purge-data says what it removed" ;;
+               *) bad "uninstall --purge-data says what it removed (got: $out)" ;; esac
+
+fresh; fake_podman; fp="$FP"
+for v in $ASKWELL_VOLUMES; do : > "$fp/volumes/$v"; done
+mkdir -p "$HOME/.local/share/askwell"
+out="$(PATH="$fp:$PATH" STUCK="askwell_postgres-data" bash "$HERE/uninstall.sh" --purge-data --yes 2>&1)" && r=0 || r=1
+check "a purge that could not remove a volume exits non-zero" "$r" 1
+case "$out" in *"All of Askwell's data has been removed"*) bad "a partial purge never claims everything was removed" ;;
+               *) ok "a partial purge never claims everything was removed" ;; esac
+case "$out" in *"askwell_postgres-data"*) ok "a partial purge names the volume left behind" ;;
+               *) bad "a partial purge names the volume left behind" ;; esac
+
+fresh; fake_podman; fp="$FP"
+for v in $ASKWELL_VOLUMES; do : > "$fp/volumes/$v"; done
+mkdir -p "$HOME/.local/share/askwell"
+out="$(PATH="$fp:$PATH" bash "$HERE/uninstall.sh" 2>&1)" && r=0 || r=1
+check "an uninstall without --purge-data keeps every volume" "$(ls "$fp/volumes" | wc -l | tr -d ' ')" "4"
+case "$out" in *"database volumes are also left in place"*) ok "an uninstall without --purge-data says the volumes stay" ;;
+               *) bad "an uninstall without --purge-data says the volumes stay" ;; esac
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -235,6 +235,33 @@ create_data_dirs() {
   askwell_say "Data directory: $DATA_DIR"
 }
 
+# ---------------------------------------------------------------- 7a. database schema
+
+# Issue #698: before this step existed nothing ever ran a migration, so a
+# fresh install started against an empty database and an upgrade ran new code
+# against the old schema. Runs before the stack is registered so that a
+# failure stops the install here, named, rather than after it has said done.
+migrate_database() {
+  local log="$DATA_DIR/logs/migrate.log" applied rc
+  askwell_say "Bringing Askwell's database up to date (the first run also starts the database)..."
+  if run_database_migration "$INSTALL_PREFIX/compose.yaml" "$INSTALL_PREFIX/.env" "$log"; then
+    applied="$(migrations_applied "$log")"
+    if [ "${applied:-0}" -eq 0 ]; then
+      askwell_say "Database schema already up to date; no migrations to apply."
+    else
+      askwell_say "Database schema up to date: applied $applied migration(s)."
+    fi
+    return 0
+  else
+    rc=$?
+  fi
+  printf '\n' >&2
+  tail -n 20 "$log" >&2 || true
+  printf '\n' >&2
+  askwell_die "The database migration (alembic upgrade head, run as the stack's migrate service) failed with exit status $rc (its last lines are above, the full output is in $log). The install stopped at this step and is not complete: nothing after it was done. The upgrade runs as one transaction, so the database is left as it was before this step. Run this installer again once the cause is fixed."
+  exit 1
+}
+
 # ---------------------------------------------------------------- 8. probe
 
 run_probe() {
@@ -307,6 +334,7 @@ main() {
   check_artefacts
   place_files
   create_data_dirs
+  migrate_database
   run_probe
   register_stack_and_inference
   register_session_start
@@ -315,4 +343,7 @@ main() {
   askwell_say "Done. Askwell is also available any time from $APP_DIR."
 }
 
-main "$@"
+# Run, not sourced: install.test.sh sources this file to exercise one step.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi

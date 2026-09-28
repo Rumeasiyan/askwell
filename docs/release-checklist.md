@@ -137,7 +137,8 @@ one is disposed of in the release entry under the gate named; none may be carrie
 
 | Issue | Holds | Why |
 | ----- | ----- | --- |
-| #698 | G10, G11, G12 | No installer applies database migrations, so a cold install has no schema |
+| #766 | G10, G11 | No installer places `web/out`, so an installed API has no interface to serve. Found while fixing #698, whose own hold (no schema on a cold install) is gone |
+| #767 | G10 | The installers neither install nor check a compose provider, and the stack's `migrate` service is verified with docker-compose only. A cold install on a machine where the installer has just installed Podman may have no `podman compose` at all |
 | #699 | G12 | The update feed reads `main`'s `VERSION`, so it advertises versions that were never released. It carries `constraint:local-first`, so it cannot be `ACCEPTED` |
 | #689 | G9 | Private vulnerability reporting is off; the one security route `SECURITY.md` gives does not exist |
 | #710 | G3 | `eval/bench.py` exits 0 for a scored suite below its bar. Not a hold by itself: G3 is compared by hand until it lands |

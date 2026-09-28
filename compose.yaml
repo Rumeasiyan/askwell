@@ -158,6 +158,48 @@ services:
     networks: [internal]
     restart: unless-stopped
 
+  migrate:
+    # Brings the schema to this image's migration head, then exits
+    # (`M9-FIX-DEPLOY-200`, issue #698). `api` and `worker` wait for it to
+    # finish successfully, so every way the stack starts — the installers'
+    # session units, the desktop shell's `up -d`, a person typing `podman
+    # compose up` — migrates first: a fresh install gets its schema, an
+    # upgrade gets its pending migrations, and a stack with nothing pending
+    # gets a no-op. A migration that fails stops `api` and `worker` from
+    # starting at all, and `up` exits non-zero naming this service — rather
+    # than serving new code against an old schema.
+    #
+    # The one service that connects as the table owner, because it is the one
+    # that runs DDL. `askwell_app` has no DDL grant by design (C6, and
+    # `docs/decisions.md` 2026-09-22), so the app cannot migrate itself, and
+    # this keeps the owner password out of every long-running process.
+    #
+    # An older image started against a newer schema fails here with "Can't
+    # locate revision" — the correct refusal: rollback means downgrading with
+    # the newer build first (`docs/rollback-and-incidents.md`).
+    image: localhost/askwell-api:dev
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      ASKWELL_DATABASE_URL: postgresql://${POSTGRES_USER:-askwell}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-askwell}
+      # Required by the shared `Settings` model that `env.py` loads, never
+      # opened here — the same gap `egress-proxy` and `voice` carry (#524).
+      ASKWELL_SANDBOX_DATABASE_URL: postgresql://${SANDBOX_POSTGRES_USER:-askwell_sandbox}:${SANDBOX_POSTGRES_PASSWORD:?set SANDBOX_POSTGRES_PASSWORD in .env}@sandbox:5432/postgres
+      ASKWELL_SANDBOX_OWNER_PASSWORD: ${SANDBOX_OWNER_PASSWORD:?set SANDBOX_OWNER_PASSWORD in .env}
+      ASKWELL_SANDBOX_READONLY_PASSWORD: ${SANDBOX_READONLY_PASSWORD:?set SANDBOX_READONLY_PASSWORD in .env}
+      ASKWELL_ENVIRONMENT: ${ASKWELL_ENVIRONMENT:-development}
+      ASKWELL_LOG_LEVEL: ${ASKWELL_LOG_LEVEL:-INFO}
+    # Postgres and nothing else: a migration has nothing to reach.
+    networks: [internal]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Runs once per `up` and exits. Restarting it would re-run a failed
+    # migration in a loop instead of letting the failure be seen.
+    restart: "no"
+
   egress-proxy:
     image: localhost/askwell-api:dev
     build:
@@ -430,6 +472,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      # The schema at this image's head before anything reads it. See `migrate`.
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   worker:
@@ -488,6 +533,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      # The schema at this image's head before anything reads it. See `migrate`.
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
 networks:
