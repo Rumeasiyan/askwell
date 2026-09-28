@@ -23,10 +23,12 @@ reads the "Not covered:" lines back out of its output unchanged.
 `split_conflict_answer` reads the new "Conflicting sources on ...:" line the
 same way.
 
-The memory-fact hook is inert until M3: `compose_conflict`'s `memory_fact`
-parameter, when given, is delimited into the prompt as a `<memory-fact>`
-block the prompt asks the model to treat as resolving; nothing in this
-milestone ever passes one.
+`compose_conflict`'s `memory_fact` parameter, when given, is delimited into
+the prompt as a `<memory-fact>` block the prompt asks the model to treat as
+resolving. `M3-INLINE-FE-085` passes one when an inline clarification was
+just answered. A conflict the user resolved from the Ask screen
+(`askwell.conflict_resolution`, `M9-FIX-FE-204`) arrives instead as an
+ordinary `retrieved_facts` entry on the next question.
 
 `M3-APPLY-RET-078` adds a second, unrelated memory input: `retrieved_facts`/
 `retrieved_notes`, whatever `askwell.memory.retrieve_relevant_facts` found

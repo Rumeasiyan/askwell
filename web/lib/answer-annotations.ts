@@ -184,6 +184,9 @@ const BULLET_LINE_RE = /\n[ \t]*(?:[-*•]|\d+[.)])\s/g;
 
 const CITED_LINE_RE = /\[\d+\]\s*[.!?]$/;
 
+/** How many cited claims above a conflict line are unambiguously its positions. */
+const ABOVE_POSITIONS = 2;
+
 /**
  * Split a conflict answer's `cleanedText` into the prose around it and the
  * positions themselves, so each position renders as its own record rather
@@ -194,12 +197,15 @@ const CITED_LINE_RE = /\[\d+\]\s*[.!?]$/;
  * the first non-blank text after `conflictAt` to the next blank line. The
  * local model often writes them *before* the line instead — the live answer
  * GH-643 was filed against did — so when the paragraph after holds no cited
- * sentence at all, the run of lines directly above the line is used, as long
- * as every one of them is blank or ends in a cited sentence. Only then: a
- * cited paragraph below means the model followed the prompt, and reaching
- * above it too would turn an ordinary cited sentence into a position. Fewer than two
- * positions either way is `null`, and the answer renders as prose, as it did
- * before: one cited sentence beside an uncited one is not two records.
+ * sentence, the run of lines directly above it is used, as long as every one
+ * of them is blank or ends in a cited sentence, the run holds exactly the two
+ * cited claims the answer makes before the line, and, when anything follows
+ * the line, both are list items. Anything looser boxes an unrelated cited
+ * sentence as a side of the disagreement (GH-727). A cited paragraph
+ * below means the model followed the prompt, and reaching above it too would
+ * turn an ordinary cited sentence into a position. Fewer than two positions
+ * either way is `null`, and the answer renders as prose, as it did before:
+ * one cited sentence beside an uncited one is not two records.
  *
  * Sentences, not lines, because a model that forgets the line break between
  * two positions would otherwise put both in one block, which is the run-on
@@ -222,6 +228,15 @@ export function layoutConflict(text: string, conflictAt: number): ConflictLayout
     return placePositions(text, claims, afterStart, afterEnd);
   }
 
+  // Above the line, only when there is no choice to make (GH-727). The run
+  // must hold every cited claim written before the line, and exactly two: with
+  // three, nothing in the text says whether that is a three-way conflict or
+  // two positions under an unrelated fact ("Payment is due in 45 days" above
+  // two notice periods), and boxing the wrong one presents it as a side of
+  // the disagreement, which C4 forbids. When anything follows the line, it may
+  // be part of the conflict (a memory position is written as uncited prose),
+  // so the two are taken only if the model marked them as list items itself.
+  // Otherwise prose, which is what the answer was before any of this.
   const head = text.slice(0, conflictAt);
   let aboveStart = head.length;
   const lines = head.split("\n");
@@ -231,7 +246,15 @@ export function layoutConflict(text: string, conflictAt: number): ConflictLayout
     aboveStart = lines.slice(0, index).join("\n").length + (index > 0 ? 1 : 0);
   }
   aboveStart += text.slice(aboveStart).length - text.slice(aboveStart).trimStart().length;
-  return placePositions(text, claims, Math.min(aboveStart, conflictAt), head.trimEnd().length);
+  const regionStart = Math.min(aboveStart, conflictAt);
+  // `placePositions` still needs both inside the run, so a cited claim further
+  // up, past an uncited line, leaves one there and lays out nothing.
+  const cited = claims.filter((claim) => claim.end <= conflictAt);
+  if (cited.length !== ABOVE_POSITIONS) return null;
+  const bulleted = (claim: { end: number }) =>
+    BULLET_RE.test(text.slice(text.lastIndexOf("\n", claim.end - 1) + 1, claim.end).trimStart());
+  if (afterStart < text.length && !cited.every(bulleted)) return null;
+  return placePositions(text, claims, regionStart, head.trimEnd().length);
 }
 
 function placePositions(

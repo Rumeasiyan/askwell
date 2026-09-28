@@ -45,6 +45,7 @@ import {
   skipClarification,
 } from "@/lib/clarifications";
 import { documentHref, pageLabel } from "@/lib/citations";
+import { conflictChoices, resolveConflict, type ConflictResolution } from "@/lib/conflict-resolution";
 import {
   documentDateLabel,
   sortByDateAndSupersession,
@@ -1721,7 +1722,7 @@ function AnsweredContent({ turn }: { turn: AskTurn }) {
         <EscalationOffer turn={turn} addSourceLabel={addSourceActionLabel(turn.dbState)} />
       ) : null}
       {partial ? <WebAnswerBlock turn={turn} /> : null}
-      {conflict ? <ResolveOffer topic={annotations.conflictTopic!} citations={turn.citations} /> : null}
+      {conflict ? <ResolveOffer turn={turn} topic={annotations.conflictTopic!} /> : null}
       {annotations.resolvedByMemory !== null ? (
         <ResolvedByMemoryNote fact={annotations.resolvedByMemory} />
       ) : null}
@@ -1893,52 +1894,102 @@ function UncoveredBlock({ items }: { items: string[] }) {
 }
 
 /**
- * The resolve offer (`docs/ux/ask.md` §5, this ticket's own scope line: "an
- * offer to resolve which writes a memory fact once memory exists in M3.
- * Until then the offer records the user's choice as a pending resolution
- * and says so"). Options are the turn's own cited documents — the same
- * dates and citations the reader just weighed — never a re-typed summary
- * of each position, since the card above already stated it with a
- * citation.
+ * The resolve offer (`docs/ux/ask.md` §5: "Offers to resolve, which writes a
+ * memory fact"). Options are the turn's own cited documents, one per
+ * document and in the records' date order (`conflictChoices`), never a
+ * re-typed summary of each position, since the record above already stated
+ * it with a citation.
  *
- * Client-only state, not sent anywhere (C1): there is nothing to write yet
- * (`askwell.agent.conflict`'s own `memory_fact` hook is inert until M3), so
- * the honest interface is a choice that is remembered for this turn, in
- * this tab, and says plainly that it does not survive past that.
+ * A choice is written to memory (`M9-FIX-FE-204`, GH-728) through
+ * `askwell.conflict_resolution`, which builds the fact from the stored answer
+ * and its citations; the next question on the topic reads it back. Choosing
+ * again for the same topic supersedes the earlier fact rather than adding a
+ * second one, so "Choose again" is offered once saved.
  */
-function ResolveOffer({ topic, citations }: { topic: string; citations: CitationCard[] }) {
-  const [resolvedChunkId, setResolvedChunkId] = useState<string | null>(null);
-  const resolved = citations.find((card) => card.chunkId === resolvedChunkId) ?? null;
+function ResolveOffer({ turn, topic }: { turn: AskTurn; topic: string }) {
+  const documentIds = useMemo(
+    () => [...new Set(turn.citations.map((card) => card.documentId))].sort(),
+    [turn.citations],
+  );
+  const dates = useDocumentDates(documentIds, true);
+  const choices = conflictChoices(turn.citations, dates);
+  const [state, setState] = useState<
+    | { kind: "choosing" }
+    | { kind: "saving"; documentId: string }
+    | { kind: "saved"; filename: string; resolution: ConflictResolution }
+    | { kind: "failed"; filename: string; message: string }
+  >({ kind: "choosing" });
 
-  if (resolved !== null) {
+  const messageId = turn.serverId;
+  if (messageId === null || turn.status !== "completed" || choices.length < 2) return null;
+
+  const choose = (card: CitationCard) => {
+    setState({ kind: "saving", documentId: card.documentId });
+    resolveConflict(messageId, card.documentId).then(
+      (resolution) => setState({ kind: "saved", filename: card.filename, resolution }),
+      (error: unknown) =>
+        setState({
+          kind: "failed",
+          filename: card.filename,
+          message: error instanceof Error ? error.message : "Askwell could not be reached.",
+        }),
+    );
+  };
+
+  if (state.kind === "saved") {
     return (
-      <p className="ask-micro" style={{ textTransform: "none" }}>
-        Noted {resolved.filename} as current{topic === "" ? "" : ` for ${topic}`}. This is not saved yet — Askwell
-        will remember it once memory ships.
-      </p>
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1" role="status">
+        <p className="ask-micro" style={{ textTransform: "none" }}>
+          Saved to memory: {state.filename} is current for {state.resolution.subject}. Askwell will use this the next
+          time you ask about it.
+        </p>
+        <Link href="/memory" className="ask-micro ask-navigates" style={{ textTransform: "none" }}>
+          See it in Memory
+        </Link>
+        <button
+          type="button"
+          onClick={() => setState({ kind: "choosing" })}
+          className="ask-micro ask-navigates"
+          style={{ textTransform: "none" }}
+        >
+          Choose again
+        </button>
+      </div>
     );
   }
 
-  if (citations.length < 2) return null;
-
+  const saving = state.kind === "saving";
   return (
     <div className="flex flex-col gap-2">
       <p className="ask-micro" style={{ textTransform: "none" }}>
-        Which one is current?
+        Which one is current{topic === "" ? "" : ` for ${topic}`}? Askwell will remember your answer.
       </p>
       <div className="flex flex-wrap gap-2">
-        {citations.map((card) => (
-          <button
-            key={card.chunkId}
-            type="button"
-            onClick={() => setResolvedChunkId(card.chunkId)}
-            className="ask-navigates px-3 py-1"
-            style={{ border: "1px solid var(--rule-strong)", fontSize: "var(--t-ui)" }}
-          >
-            {card.filename}
-          </button>
-        ))}
+        {choices.map((card) => {
+          const date = dates.get(card.documentId);
+          const own = date?.documentDate != null ? documentDateLabel(date) : null;
+          return (
+            <button
+              key={card.documentId}
+              type="button"
+              disabled={saving}
+              aria-busy={saving && state.documentId === card.documentId}
+              onClick={() => choose(card)}
+              className="ask-navigates px-3 py-1"
+              style={{ border: "1px solid var(--rule-strong)", fontSize: "var(--t-ui)" }}
+            >
+              {card.filename}
+              {own !== null ? ` · ${own.date}` : ""}
+              {saving && state.documentId === card.documentId ? " — saving…" : ""}
+            </button>
+          );
+        })}
       </div>
+      {state.kind === "failed" ? (
+        <p className="ask-micro" role="alert" style={{ textTransform: "none" }}>
+          {state.filename} was not saved as current. {state.message} Choose again to retry.
+        </p>
+      ) : null}
     </div>
   );
 }

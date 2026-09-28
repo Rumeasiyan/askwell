@@ -4,6 +4,18 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.52 - 2026-09-28
+
+`Fixed`: `M9-FIX-FE-204`. Telling Askwell which of two conflicting documents is current now saves
+the answer. Until now "Which one is current?" kept the choice only until the tab closed, and said
+memory had not shipped. Choosing a document now writes a fact you can see on the Memory screen,
+and the next question on the same topic is answered from that document. Choosing the other one
+later replaces the fact rather than adding a second. The offer lists each document once, in the
+same date order as the records above it. Separately, when the model writes the conflicting
+positions above the "Conflicting sources" line, an unrelated cited sentence above them is no
+longer boxed as one side of the disagreement; if Askwell cannot tell which sentences are the
+positions, the answer reads as prose.
+
 ## 0.7.51 - 2026-09-28
 
 `Fixed`: `M9-FIX-BE-203`. Re-indexing works for documents Askwell has already cited. Until now a
