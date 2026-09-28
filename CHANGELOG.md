@@ -4,6 +4,12 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.61 - 2026-09-28
+
+`Added`: `M9-REL-DEPLOY-214`. Askwell can now be built as a download for Linux, Windows and macOS. Pushing a version tag, or running the release workflow by hand, builds one download per platform on GitHub's own machines, with a `SHA256SUMS` file covering them. It attaches them to a draft release that nobody else can see until a person publishes it. If any platform fails to build, no draft is made, and the failure names the platform. Running it again for the same tag replaces the draft. Each download carries the containers Askwell runs in, so installing no longer has to build them from source or fetch them from the internet. The macOS app is ad-hoc signed, which Apple silicon needs before it will run it. It is still not signed by a known developer, so macOS still warns the first time. **Installing Askwell** now describes these downloads and how to run each one's installer.
+
+`Fixed`: #766. The installers now copy Askwell's interface into place. Before, an installed Askwell had no screens to show. Each installer also loads the containers that come with the download before it starts them.
+
 ## 0.7.60 - 2026-09-28
 
 `Fixed`: `M9-FIX-FE-212`. When you use online AI, **show what was sent** in **How did you get this?** now tells facts you taught Askwell apart from conclusions Askwell drew on its own, in the same words as the statement you confirmed before sending. Before, it called every memory fact one "you taught", including ones Askwell had inferred itself. A fact you confirmed before the question counts as taught. Notes Askwell keeps about your tables are now called "notes on your tables" rather than "notes on a database", because they can come from a spreadsheet too. An answer recorded before this version cannot tell the two kinds of fact apart, so its trace says "things Askwell knows about your material" instead of guessing.

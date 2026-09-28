@@ -14,11 +14,16 @@
 #     deploy/probe/askwell-probe                                    — the host probe (M7-PROBE-DEPLOY-137)
 #     deploy/inference/askwell-inference                             — native inference (M0-MODEL-DEPLOY-018)
 #     web/src-tauri/target/release/askwell-shell                      — the desktop shell binary (M7-TAURI-DEPLOY-181)
+#     web/out/                                                         — the built interface compose.yaml mounts (#766)
+#     images/*.tar                                                     — the container images, saved (optional)
 #
 # A release tarball ships this same layout (a trimmed export of the
-# repository, not a separate bundle format) — there is no packaging step yet
-# that produces anything else, and inventing one is out of this ticket's
-# scope (see docs/decisions.md, this date; issue #559). The one artefact this
+# repository, not a separate bundle format), assembled by
+# scripts/release-artefact.sh in .github/workflows/release.yml
+# (M9-REL-DEPLOY-214). `images/` is what a release adds that a source
+# checkout lacks: without it, compose would have to build the API image from
+# source the tarball does not carry. A checkout has no `images/` and uses
+# the images already built on this machine. The one artefact this
 # script cannot produce itself is the compiled shell binary: building it needs
 # the Rust toolchain, which a non-technical installing user must never be
 # asked for, so its absence is a refusal naming the missing file and the
@@ -157,6 +162,11 @@ check_artefacts() {
     askwell_say "    cd $REPO_ROOT/web/src-tauri && cargo tauri build --no-bundle"
     missing=1
   fi
+  if [ ! -f "$REPO_ROOT/web/out/index.html" ]; then
+    askwell_say "Missing: $REPO_ROOT/web/out/index.html"
+    askwell_say "  The interface has not been built. Build it first with: scripts/dev.sh web-build"
+    missing=1
+  fi
   if [ "$missing" -eq 1 ]; then
     askwell_die "One or more required files are missing (listed above). This installer places what a release build produces; it does not build them. Nothing has been copied."
     exit 1
@@ -185,11 +195,41 @@ place_files() {
   cp "$REPO_ROOT/deploy/inference/askwell-inference" "$INSTALL_PREFIX/askwell-inference"
   chmod +x "$INSTALL_PREFIX/askwell-probe" "$INSTALL_PREFIX/askwell-inference"
 
+  # Replaced, not merged: a file an older interface had and this one does
+  # not must not keep being served.
+  rm -rf "$INSTALL_PREFIX/web/out"
+  mkdir -p "$INSTALL_PREFIX/web"
+  cp -r "$REPO_ROOT/web/out" "$INSTALL_PREFIX/web/out"
+
   cp "$SHELL_BIN" "$INSTALL_PREFIX/askwell"
   chmod +x "$INSTALL_PREFIX/askwell"
   ln -sf "$INSTALL_PREFIX/askwell" "$BIN_DIR/askwell"
 
   askwell_say "Application files placed under $INSTALL_PREFIX"
+}
+
+# ---------------------------------------------------------------- 5a. container images
+
+# Before the stack unit is enabled: `up` uses an image already present and
+# builds or pulls only one that is missing, so loading first is what keeps
+# an installed machine from needing the source or a registry.
+load_images() {
+  local archives archive
+  archives="$(bundled_image_archives "$REPO_ROOT")"
+  if [ -z "$archives" ]; then
+    askwell_say "No bundled container images; the stack will use the images already on this machine."
+    return 0
+  fi
+  while IFS= read -r archive; do
+    askwell_say "Loading container image $(basename "$archive")..."
+    podman load -q -i "$archive" >/dev/null || {
+      askwell_die "Could not load the container image $archive. The download may be damaged — check it against SHA256SUMS (docs/installing.md) and run this installer again."
+      exit 1
+    }
+  done <<EOF_ARCHIVES
+$archives
+EOF_ARCHIVES
+  askwell_say "Container images loaded."
 }
 
 # ---------------------------------------------------------------- 6. data dirs
@@ -269,6 +309,7 @@ main() {
   check_previous_install
   check_artefacts
   place_files
+  load_images
   create_data_dirs
   run_probe
   register_desktop_entry

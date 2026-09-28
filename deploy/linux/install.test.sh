@@ -266,5 +266,13 @@ case "$out" in *"StartLimitIntervalSec=300"*"StartLimitBurst=5"*)
                  ok "inference unit caps restarts (StartLimitIntervalSec/StartLimitBurst)" ;;
                *) bad "inference unit caps restarts (StartLimitIntervalSec/StartLimitBurst)" ;; esac
 
+# --- bundled images (M9-REL-DEPLOY-214) --------------------------------------
+fresh
+check "a source checkout has no bundled images" "$(bundled_image_archives "$TMP")" ""
+mkdir -p "$TMP/images"
+check "an empty images/ lists nothing" "$(bundled_image_archives "$TMP")" ""
+: > "$TMP/images/redis.tar"; : > "$TMP/images/api.tar"; : > "$TMP/images/notes.txt"
+check "lists only *.tar, sorted" "$(bundled_image_archives "$TMP" | tr '\n' ' ')" "$TMP/images/api.tar $TMP/images/redis.tar "
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
