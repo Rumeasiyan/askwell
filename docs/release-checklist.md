@@ -73,7 +73,7 @@ before a day goes into the manual ones.
 
 | # | Gate | Pass condition | How to run it | Evidence lives in |
 | - | ---- | -------------- | ------------- | ----------------- |
-| G1 | **Version and changelog** | `VERSION` is the version being released. `CHANGELOG.md`'s top heading is that version. `api/tests/test_release_discipline.py` passes | `cat VERSION`; `head CHANGELOG.md`; `scripts/dev.sh run alembic heads` | Release entry: the version, the commit SHA every other gate ran against, and the schema revision `docs/release-procedure.md` §1 records |
+| G1 | **Version and changelog** | `VERSION` is the version being released. `CHANGELOG.md`'s top heading is that version. `api/tests/test_release_discipline.py` passes. The update feed (`releases` branch `VERSION`) still names the previous release, or does not exist before the first: only `docs/release-procedure.md` §6a moves it, after publishing | `cat VERSION`; `head CHANGELOG.md`; `scripts/dev.sh run alembic heads`; `curl -s https://raw.githubusercontent.com/Rumeasiyan/askwell/releases/VERSION` | Release entry: the version, the commit SHA every other gate ran against, and the schema revision `docs/release-procedure.md` §1 records |
 | G2 | **Automated checks** | Every command exits 0 on the release commit, and CI (`.github/workflows/ci.yml`) is green for that SHA | `scripts/dev.sh check`; `scripts/dev.sh test-db`; `scripts/dev.sh web-check`; `bash scripts/guards.test.sh`; `bash scripts/gate.test.sh` | Release entry: the final summary line of each command, and the CI run URL |
 | G3 | **Eval gate: eight categories, 165 tasks** | Every row of the eval table below reads `PASS`. All eight suites ran on the release commit, with the model and profile the release ships as default | Below the table | `docs/release-evidence/<version>/eval/`: the eight result JSON files |
 | G4 | **Offline: the cable-unplugged test** | A `pass` entry for this `VERSION` in `docs/offline-test-log.md` | `docs/offline-release-test.md` | `docs/offline-test-log.md` |
@@ -138,7 +138,6 @@ one is disposed of in the release entry under the gate named; none may be carrie
 | Issue | Holds | Why |
 | ----- | ----- | --- |
 | #698 | G10, G11, G12 | No installer applies database migrations, so a cold install has no schema |
-| #699 | G12 | The update feed reads `main`'s `VERSION`, so it advertises versions that were never released. It carries `constraint:local-first`, so it cannot be `ACCEPTED` |
 | #689 | G9 | Private vulnerability reporting is off; the one security route `SECURITY.md` gives does not exist |
 | #710 | G3 | `eval/bench.py` exits 0 for a scored suite below its bar. Not a hold by itself: G3 is compared by hand until it lands |
 | #615 | G11 | Settings → Storage → **Export and prune** is a disabled button reading "Not built yet", a dead control, so W9.1 is `FAIL`; and there is no backup control, so W9.4 runs from a terminal |

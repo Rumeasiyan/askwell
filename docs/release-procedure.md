@@ -164,6 +164,39 @@ A mismatch here means the upload is broken, not that anything was tampered with 
 the same check a suspicious user will run, so it must pass before the release is announced
 anywhere.
 
+## 6a. Publish the update feed
+
+Only after step 6 passes, point the update check at this release. The check reads `VERSION`
+on the `releases` branch (`Settings.update_feed_url`), not on `main`: `main`'s moves on every
+merged ticket, so reading it advertised versions nobody published (issue #699). **This step is
+the only thing that writes that file.** Until it runs, no install is told this release exists.
+
+```
+git fetch origin
+git worktree add --detach ../askwell-releases
+cd ../askwell-releases
+git switch releases 2>/dev/null || git switch --orphan releases   # --orphan: first release only
+printf '%s\n' "<version>" > VERSION
+git add VERSION
+git commit -m "chore(release): <version> is published"
+git push origin releases
+cd - && git worktree remove ../askwell-releases
+```
+
+Then read it back the way an install does:
+
+```
+curl -s https://raw.githubusercontent.com/Rumeasiyan/askwell/releases/VERSION
+```
+
+It must print `<version>`. The host caches for a few minutes, so an older value straight after
+the push is not a failure; read it again. The branch holds this one file and nothing else.
+Nothing merges into it, and no ticket's pull request touches it.
+
+**Never move it to a lower version.** The check only reports a *higher* one, so lowering it
+tells nobody anything. A broken release is withdrawn by releasing a fix under a new patch
+number (`docs/rollback-and-incidents.md` §4.3).
+
 ## 7. Cold-start install verification
 
 `docs/installing.md`'s instructions must be followed exactly, as written, on a machine that

@@ -50,6 +50,18 @@ def test_version_comparison(candidate: str, current: str, expected: bool) -> Non
     assert update_check._version_gt(candidate, current) is expected
 
 
+def test_the_feed_is_the_releases_branch_not_main() -> None:
+    """Issue #699: `main`'s `VERSION` moves on every merged ticket. The feed
+    is the copy only the release procedure writes, on the same host, so the
+    permitted destination (C1) is unchanged."""
+    defaults = Settings.model_fields
+    url = httpx.URL(str(defaults["update_feed_url"].default))
+
+    assert url.path == "/Rumeasiyan/askwell/releases/VERSION"
+    assert url.scheme == "https"
+    assert url.host == defaults["update_feed_host"].default == "raw.githubusercontent.com"
+
+
 # --- database-backed ---------------------------------------------------------
 
 
@@ -117,6 +129,16 @@ def _ok_client_factory(version_text: str) -> update_check.ClientFactory:
     def _handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["User-Agent"].startswith("Askwell/")
         return httpx.Response(200, text=version_text)
+
+    def _factory() -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+
+    return _factory
+
+
+def _status_client_factory(status: int, body: str = "") -> update_check.ClientFactory:
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, text=body)
 
     def _factory() -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.MockTransport(_handler))
@@ -254,6 +276,96 @@ async def test_an_unreachable_feed_is_silent_and_retried_next_week(
     assert state.last_result is Result.UNREACHABLE
     assert state.latest_known_version is None
     assert state.last_checked_at is not None
+
+
+@pytestmark_db
+async def test_the_check_reads_the_published_feed_and_nothing_else(
+    session: AsyncSession, settings: Settings, egress_calls: _EgressCalls
+) -> None:
+    """With the newest published release equal to the running one, nothing is
+    shown, however far `main` has moved — `main` is never asked."""
+    requested: list[httpx.URL] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request.url)
+        return httpx.Response(200, text=f"{update_check.__version__}\n")
+
+    state = await run_check(
+        session,
+        settings,
+        manual=True,
+        client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(_handler)),
+    )
+    await session.commit()
+
+    assert [str(url) for url in requested] == [settings.update_feed_url]
+    assert state.last_result is Result.OK
+    assert state.update_available is False
+
+
+@pytestmark_db
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [(404, "404: Not Found"), (200, ""), (200, "\n")],
+    ids=["no-releases-branch-yet", "empty-file", "blank-file"],
+)
+async def test_no_release_published_shows_nothing_and_is_not_an_error(
+    session: AsyncSession,
+    settings: Settings,
+    egress_calls: _EgressCalls,
+    status: int,
+    body: str,
+) -> None:
+    """Before the first release the feed file does not exist. That is the
+    feed's answer — nothing published — not an unreachable feed."""
+    state = await run_check(
+        session, settings, manual=True, client_factory=_status_client_factory(status, body)
+    )
+    await session.commit()
+
+    assert state.last_result is Result.OK
+    assert state.latest_known_version is None
+    assert state.latest_known_since is None
+    assert state.update_available is False
+    assert state.last_checked_at is not None
+
+
+@pytestmark_db
+async def test_no_release_published_forgets_a_version_the_old_feed_advertised(
+    session: AsyncSession, settings: Settings, egress_calls: _EgressCalls
+) -> None:
+    """An install that checked against `main` before this fix remembers an
+    unreleased version. The first check against the real feed must drop it,
+    or the marker keeps pointing at a download that does not exist."""
+    await run_check(session, settings, manual=True, client_factory=_ok_client_factory("99.0.0"))
+    await session.commit()
+
+    state = await run_check(
+        session, settings, manual=True, client_factory=_status_client_factory(404)
+    )
+    await session.commit()
+
+    assert state.latest_known_version is None
+    assert state.latest_known_since is None
+    assert state.update_available is False
+
+
+@pytestmark_db
+async def test_a_server_error_is_still_unreachable_and_keeps_what_was_known(
+    session: AsyncSession, settings: Settings, egress_calls: _EgressCalls
+) -> None:
+    """Only 404 means "nothing published". Any other failure says nothing
+    about releases, so a version already found stays found."""
+    await run_check(session, settings, manual=True, client_factory=_ok_client_factory("99.0.0"))
+    await session.commit()
+
+    state = await run_check(
+        session, settings, manual=True, client_factory=_status_client_factory(503)
+    )
+    await session.commit()
+
+    assert state.last_result is Result.UNREACHABLE
+    assert state.latest_known_version == "99.0.0"
 
 
 @pytestmark_db
