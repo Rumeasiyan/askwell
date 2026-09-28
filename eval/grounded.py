@@ -118,6 +118,17 @@ async def _ask_one(
     turn = ask_module._Turn(message_id=message_id, conversation_id=conversation_id)
     await ask_module._generate(settings, factory, turn, question, None)
 
+    # `_run_generation` catches an inference failure and ends the turn
+    # `failed` with empty text rather than raising. Returned as an answer,
+    # that empty text was scored as a turn that answered and did not abstain:
+    # 28 of the 45 runs in the first `abstention.v1` measurement (2026-09-28,
+    # #769) were the inference process gone, recorded with no error at all.
+    # Raised instead, so every caller's existing handler records it as the
+    # error it is. The run still scores 0 — nothing is re-scored.
+    if turn.status == "failed":
+        done = next((event.data for event in turn.events if event.kind == "done"), {})
+        raise InferenceFailed(f"the turn failed: {done.get('reason') or 'no reason given'}")
+
     citations = [event.data for event in turn.events if event.kind == "citation"]
     return turn.text, citations
 

@@ -1215,6 +1215,146 @@ def test_an_echoed_prompt_template_is_never_streamed_stored_or_counted(
     assert trace["uncovered_aspects"] == []
 
 
+def test_a_near_miss_refusal_written_as_prose_becomes_the_abstention_surface(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """`M9-FIX-BE-215`, #769, the ticket's own scenario: the handbook has the
+    resignation notice, the question asks for the termination notice. The
+    passage clears the threshold, the model correctly says it cannot answer —
+    and also echoes a `<retrieved-content>` block, a column of unattached
+    markers and the same `Not covered` line twice, all split across tokens.
+    The user sees none of that: the answer is withdrawn and the abstention
+    state takes its place, proving the search and naming what was missing."""
+    _truncate(database_url)
+    vector = _vector(0.0)
+    _, chunk_id = _seed_chunk(
+        database_url, "The standard notice period for resignation is sixty-three days.", vector
+    )
+    fake = _FakeInferenceClient(
+        settings,
+        tokens=[
+            "Not covered: The notice period for terminating an employee.\n\n",
+            "The retrieved content gives the resignation notice period only.\n\n",
+            f'<retrieved-content index="1" chunk_id="{chunk_id}">\nThe standard',
+            " notice period for resignation is sixty-three days.\n</retrieved-",
+            "content>\n\n[1]\n[2",
+            "]\n[3]\n\n",
+            "**Not covered:** The notice period for terminating an employee.\n",
+        ],
+        vector=vector,
+    )
+    _patch_client(monkeypatch, fake)
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post(
+            "/ask",
+            json={"question": "What is the notice period for terminating an employee?"},
+        )
+        events = _events(response.text)
+        done = next(data for kind, data in events if kind == "done")
+        assert done["status"] == "completed"
+        message_id = uuid.UUID(done["message_id"])
+
+        streamed = "".join(data["text"] for kind, data in events if kind == "token")
+        # C7: the delimiter and the passage inside it never reached the reader.
+        assert "<" not in streamed
+        assert "sixty-three" not in streamed
+        assert "[" not in streamed
+        # The refusal is withdrawn after it streamed, the reader keeps nothing
+        # of it, and `done` carries the abstention the way the threshold path
+        # does — what `isAbstained` (`web/lib/ask.ts`) reads.
+        kinds = [kind for kind, _ in events]
+        assert kinds.index("answer_reset") > max(
+            i for i, kind in enumerate(kinds) if kind == "token"
+        )
+        assert done["reason"].startswith("Nothing in your files answers this.\n")
+        assert "I searched 1 passage across 1 document." in done["reason"]
+        assert (
+            "which does not cover the notice period for terminating an employee."
+            in (done["reason"])
+        )
+        assert done["source_count"] is None
+        assert not any(kind == "citation" for kind, _ in events)
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        content, trace = db.execute(
+            "SELECT content, trace FROM messages WHERE id = %s", (message_id,)
+        ).fetchone()
+        assert content == done["reason"]
+        abstain_steps = [step for step in trace["steps"] if step["kind"] == "abstain"]
+        assert abstain_steps == [
+            {
+                "kind": "abstain",
+                "reason_code": "below_threshold",
+                "after_compose": True,
+                "uncovered_aspects": ["The notice period for terminating an employee"],
+            }
+        ]
+        assert trace["partial_coverage"] is False
+        assert (
+            db.execute(
+                "SELECT count(*) FROM citations WHERE message_id = %s", (message_id,)
+            ).fetchone()[0]
+            == 0
+        )
+        audit_payload = db.execute(
+            "SELECT payload FROM audit_interactions WHERE payload->>'message_id' = %s",
+            (str(message_id),),
+        ).fetchone()[0]
+        assert audit_payload["abstained"] is True
+        assert audit_payload["partial"] is False
+        assert audit_payload["answer"] == content
+
+
+def test_one_cited_claim_keeps_a_partial_answer_an_answer_and_leaks_nothing(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """The ticket's edge case: one real cited claim and one `Not covered`
+    line is a partial answer, not an abstention — with the delimiter block
+    and the stray marker the model echoed beside it still removed."""
+    _truncate(database_url)
+    vector = _vector(0.0)
+    _, chunk_id = _seed_chunk(database_url, "Payment terms are 45 days.", vector)
+    fake = _FakeInferenceClient(
+        settings,
+        tokens=[
+            "Payment terms are 45 days [1].\n",
+            f'<retrieved-content index="1" chunk_id="{chunk_id}">\n',
+            "Payment terms are 45 days.\n</retrieved-content>\n",
+            "[1]\n",
+            "Not covered: the termination notice period.",
+        ],
+        vector=vector,
+    )
+    _patch_client(monkeypatch, fake)
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post(
+            "/ask",
+            json={"question": "What are the payment terms and the termination notice period?"},
+        )
+        events = _events(response.text)
+        done = next(data for kind, data in events if kind == "done")
+        message_id = uuid.UUID(done["message_id"])
+        assert "answer_reset" not in [kind for kind, _ in events]
+        assert [data["chunk_id"] for kind, data in events if kind == "citation"] == [str(chunk_id)]
+        streamed = "".join(data["text"] for kind, data in events if kind == "token")
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        content, trace = db.execute(
+            "SELECT content, trace FROM messages WHERE id = %s", (message_id,)
+        ).fetchone()
+    assert content == streamed
+    assert "<" not in content
+    assert content.count("[1]") == 1
+    assert content.startswith("Payment terms are 45 days [1].\n")
+    assert content.rstrip().endswith("Not covered: the termination notice period.")
+    assert trace["partial_coverage"] is True
+    assert not any(step["kind"] == "abstain" for step in trace["steps"])
+
+
 def test_every_aspect_covered_is_an_ordinary_answer_not_marked_partial(
     settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
 ) -> None:

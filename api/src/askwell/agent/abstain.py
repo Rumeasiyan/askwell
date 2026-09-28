@@ -20,6 +20,7 @@ caught rather than merged.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -53,6 +54,25 @@ def _sources_clause(document_count: int, database_count: int) -> str:
     return " and ".join(parts) if parts else "your files"
 
 
+def _aspect_phrase(aspect: str) -> str:
+    """One aspect the model named, as it reads mid-sentence: "The notice
+    period." becomes "the notice period". Only a leading article is
+    lowercased — the aspect usually starts with a name ("Meridian Loom's
+    policy"), which must keep its capital."""
+    phrase = aspect.strip().rstrip(".").strip()
+    first, _, rest = phrase.partition(" ")
+    if first in ("The", "A", "An") and rest:
+        return f"{first.lower()} {rest}"
+    return phrase
+
+
+def _aspects_clause(uncovered: Sequence[str]) -> str:
+    phrases = list(dict.fromkeys(p for p in map(_aspect_phrase, uncovered) if p))
+    if len(phrases) <= 1:
+        return phrases[0] if phrases else "this"
+    return f"{', '.join(phrases[:-1])} or {phrases[-1]}"
+
+
 def compose_abstention(
     *,
     reason_code: AbstainReason,
@@ -60,6 +80,7 @@ def compose_abstention(
     document_count: int,
     database_count: int,
     nearest_heading: str | None,
+    uncovered: Sequence[str] = (),
 ) -> str:
     """The full three-part abstention message: situation, proof, next action.
 
@@ -67,6 +88,11 @@ def compose_abstention(
     have nothing to prove a search against — the acceptance criteria's own
     edge case, "there is no nearest material" — so they skip the proof
     sentence entirely rather than rendering it with the counts zeroed out.
+
+    `uncovered` is what the model said was missing when a turn cleared the
+    threshold and still found nothing to answer with (`M9-FIX-BE-215`). It
+    names what the closest material does not cover — `docs/ux/ask.md` §6's
+    "which does not cover payment terms" — in place of "this".
     """
     if reason_code == "empty_corpus":
         return (
@@ -83,8 +109,11 @@ def compose_abstention(
 
     sources = _sources_clause(document_count, database_count)
     proof = f"I searched {_plural(passage_count, 'passage')} across {sources}."
+    covers = _aspects_clause(uncovered)
     if nearest_heading:
-        proof += f" The closest material was about {nearest_heading}, which does not cover this."
+        proof += (
+            f" The closest material was about {nearest_heading}, which does not cover {covers}."
+        )
     else:
         proof += " The search found nothing close."
 

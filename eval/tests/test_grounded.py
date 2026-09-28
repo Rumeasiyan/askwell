@@ -128,3 +128,36 @@ def test_fixture_corpus_covers_the_ticket_scope() -> None:
     assert len(NOTICE_SCAN_LINES) == 5
     assert len(SPEC_SECTIONS) == 6
     assert len(FIGURES_ROWS) == 5
+
+
+def test_a_failed_turn_is_an_error_not_an_empty_answer(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """#769: the inference process went away 28 runs into the first
+    `abstention.v1` measurement, every later turn ended `failed` with empty
+    text, and the harness scored that text as an answer that did not
+    abstain — with no error recorded anywhere. Raised as `InferenceFailed`,
+    every suite's existing handler records it as the error it is."""
+    import asyncio
+    from contextlib import asynccontextmanager
+
+    import pytest
+    from eval import grounded
+
+    from askwell.inference.client import InferenceFailed
+
+    class _Db:
+        async def execute(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+    @asynccontextmanager
+    async def _scope(_factory: object):  # type: ignore[no-untyped-def]
+        yield _Db()
+
+    async def _failing_generate(_settings, _factory, turn, _question, _source_id) -> None:  # type: ignore[no-untyped-def]
+        turn.status = "failed"
+        turn.emit("done", {"status": "failed", "reason": "The assistant is unavailable."})
+
+    monkeypatch.setattr(grounded, "session_scope", _scope)
+    monkeypatch.setattr(grounded.ask_module, "_generate", _failing_generate)
+
+    with pytest.raises(InferenceFailed, match="The assistant is unavailable"):
+        asyncio.run(grounded._ask_one(None, None, "Who is the CEO?"))  # type: ignore[arg-type]

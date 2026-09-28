@@ -72,6 +72,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from askwell import egress
 from askwell.agent.claims import segment_claims
+from askwell.agent.scrub import scrub_answer
 from askwell.audit import Store, record
 from askwell.config import ConfigurationError, Settings
 from askwell.db.engine import session_scope
@@ -541,12 +542,17 @@ async def compose_and_generate_web_answer(
     except (InferenceUnavailable, InferenceFailed):
         return None
 
+    # `M9-FIX-BE-215` (C7): a `<web-content>` block the model copies out of
+    # the prompt is never shown, and a marker no claim carries is not
+    # rendered — scrubbed before the claims below are numbered, so their
+    # ordinals match the stored text.
+    text = scrub_answer(completion.text)
     records: list[WebCitationRecord] = []
-    for claim in segment_claims(completion.text):
+    for claim in segment_claims(text):
         for index in claim.indices:
             if 1 <= index <= len(results):
                 records.append(web_citation_record(results[index - 1], claim.ordinal))
-    return completion.text, records
+    return text, records
 
 
 def web_search_trace_steps(
