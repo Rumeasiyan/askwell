@@ -65,6 +65,87 @@ def test_verify_manual_with_no_file_names_the_expected_filename(client: TestClie
     assert "gguf" in (body["error"] or "")
 
 
+@pytest.fixture
+def stack_client(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> tuple[TestClient, Path, Path]:
+    """The API as the stack runs it (`M9-FIX-DEPLOY-211`, issue #668): the
+    models directory mounted somewhere the user has never heard of, the host
+    supervisor's own model path passed in for its file name, and the folder
+    as the user knows it passed alongside."""
+
+    async def fixed_secret(_db: object) -> bytes:
+        return b"0" * 32
+
+    monkeypatch.setattr(sessions, "secret", fixed_secret)
+    monkeypatch.setattr("askwell.middleware.sessions.secret", fixed_secret)
+
+    built = tmp_path / "out"
+    built.mkdir()
+    (built / "index.html").write_text("<!doctype html><title>Askwell</title>")
+    mounted = tmp_path / "mounted-models"
+    mounted.mkdir()
+    run = tmp_path / "run"
+    run.mkdir()
+    client = TestClient(
+        create_app(
+            settings.model_copy(
+                update={
+                    "web_assets_dir": built,
+                    "inference_model_path": Path("/home/someone/models/Qwen-host.gguf"),
+                    "models_dir": mounted,
+                    "models_dir_display": "~/askwell-models",
+                    "inference_socket": run / "inference.sock",
+                }
+            )
+        )
+    )
+    return client, mounted, run
+
+
+def test_first_run_names_the_folder_on_the_users_machine(
+    stack_client: tuple[TestClient, Path, Path], tmp_path: Path
+) -> None:
+    client, _mounted, _run = stack_client
+    with client:
+        with_session(client)
+        response = client.post("/setup/model/verify-manual", json={"tier": "light"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["target_path"] == "~/askwell-models/Qwen-host.gguf"
+    assert body["error"] == "No file found at ~/askwell-models/Qwen-host.gguf."
+    assert str(tmp_path) not in response.text
+
+
+def test_first_run_finds_a_file_placed_in_the_mounted_folder(
+    stack_client: tuple[TestClient, Path, Path],
+) -> None:
+    """A file placed where the words say is the file the check reads — not
+    `inference_model_path`'s own host path, which does not exist in here."""
+    client, mounted, _run = stack_client
+    (mounted / "Qwen-host.gguf").write_bytes(b"not the catalog's bytes")
+    with client:
+        with_session(client)
+        response = client.post("/setup/model/verify-manual", json={"tier": "light"})
+    body = response.json()
+    assert body["status"] == "failed"
+    assert "~/askwell-models/Qwen-host.gguf" in body["error"]
+
+
+def test_first_run_cancels_through_the_run_directory(
+    stack_client: tuple[TestClient, Path, Path],
+) -> None:
+    """The models directory is read-only in the stack; the cancel flag the host
+    watches for is written to the run directory, and nothing into models."""
+    client, mounted, run = stack_client
+    with client:
+        with_session(client)
+        response = client.post("/setup/model/cancel", json={"tier": "light"})
+    assert response.status_code == 200
+    assert (run / "fetch-cancel").exists()
+    assert list(mounted.iterdir()) == []
+
+
 def test_cancel_with_nothing_running_is_a_no_op(client: TestClient) -> None:
     with client:
         with_session(client)

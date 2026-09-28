@@ -58,7 +58,8 @@ def _true(value: str | None) -> bool:
 
 def _model_dict(manager: ModelDownloadManager, progress: DownloadProgress) -> dict[str, object]:
     body = progress.as_dict()
-    body["target_path"] = str(manager.target_path)
+    # As the user knows it, never `/models/…` (issue #668).
+    body["target_path"] = manager.shown_path
     # Skipped while a transfer is actively moving: `GET /setup` is polled
     # every second during exactly that state, and hashing another multi-GB
     # sibling file on every one of those polls would cost far more than the
@@ -155,7 +156,7 @@ async def run_startup_discovery(
         "model_startup_discovery",
         tier=tier,
         status=str(progress.status),
-        target_path=str(manager.target_path),
+        target_path=manager.shown_path,
         resolved_tier=progress.resolved_tier,
         alternatives=[a["filename"] for a in alternatives],
         error=progress.error,
@@ -195,7 +196,14 @@ def register_setup(
     factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """Attach `/setup/*`. Register before the interface catch-all."""
-    manager = ModelDownloadManager(settings.inference_model_path)
+    # `M9-FIX-DEPLOY-211`, issue #668: read from the mounted models directory,
+    # named as the folder on the user's machine, and asked of the host through
+    # the run directory — the models directory is read-only here.
+    manager = ModelDownloadManager(
+        settings.generation_model_file,
+        shown_path=settings.generation_model_file_shown,
+        signal_dir=settings.inference_socket.parent,
+    )
     app.state.model_download = manager
 
     @app.get("/setup")

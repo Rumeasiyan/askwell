@@ -294,3 +294,104 @@ def test_available_alternatives_is_empty_when_the_models_dir_does_not_exist(
 ) -> None:
     manager = ModelDownloadManager(tmp_path / "missing-dir" / "model.gguf")
     assert manager.available_alternatives() == []
+
+
+# --- M9-FIX-DEPLOY-211, issue #668: the folder on the user's machine ---------
+#
+# In the stack the API reads the models directory at `/models`, read-only. The
+# words name the folder as the user knows it; the request, progress and cancel
+# files go through the run directory; nothing is written into the models
+# directory.
+
+
+def _stack_manager(tmp_path: Path) -> tuple[ModelDownloadManager, Path, Path]:
+    models = tmp_path / "models"
+    run = tmp_path / "run"
+    models.mkdir()
+    run.mkdir()
+    manager = ModelDownloadManager(
+        models / "model.gguf",
+        shown_path="~/.local/share/askwell/models/model.gguf",
+        signal_dir=run,
+    )
+    return manager, models, run
+
+
+def test_verify_manual_names_the_folder_on_the_users_machine(tmp_path: Path) -> None:
+    manager, _models, _run = _stack_manager(tmp_path)
+    result = manager.verify_manual("light")
+    assert result.status == DownloadStatus.IDLE
+    assert result.error == "No file found at ~/.local/share/askwell/models/model.gguf."
+    assert str(tmp_path) not in (result.error or "")
+
+
+def test_a_corrupt_file_is_named_by_the_folder_on_the_users_machine(tmp_path: Path) -> None:
+    manager, models, _run = _stack_manager(tmp_path)
+    (models / "model.gguf").write_bytes(b"not a real model")
+    result = manager.verify_manual("light")
+    assert result.status == DownloadStatus.FAILED
+    assert "~/.local/share/askwell/models/model.gguf" in (result.error or "")
+    assert str(tmp_path) not in (result.error or "")
+
+
+def test_a_placed_file_is_found_through_the_mounted_directory(tmp_path: Path) -> None:
+    manager, models, _run = _stack_manager(tmp_path)
+    (models / "model.gguf").write_bytes(_CONTENT)
+    assert manager.verify_manual("light").status == DownloadStatus.READY
+
+
+def test_no_models_folder_yet_says_where_to_create_it(tmp_path: Path) -> None:
+    manager = ModelDownloadManager(
+        tmp_path / "missing" / "model.gguf",
+        shown_path="~/.local/share/askwell/models/model.gguf",
+        signal_dir=tmp_path,
+    )
+    result = manager.verify_manual("light")
+    assert result.status == DownloadStatus.IDLE
+    assert result.error is not None
+    assert "no folder at ~/.local/share/askwell/models yet" in result.error
+    assert "Create it" in result.error
+    assert not (tmp_path / "missing").exists()
+
+
+async def test_the_fetch_signals_go_through_the_run_directory_only(tmp_path: Path) -> None:
+    manager, models, run = _stack_manager(tmp_path)
+
+    await manager.start("light")
+    assert json.loads((run / FETCH_REQUEST).read_text(encoding="utf-8"))["sha256"] == _SPEC.sha256
+
+    (run / FETCH_PROGRESS).write_text(
+        json.dumps({"filename": "model.gguf", "status": "downloading", "downloaded_bytes": 7}),
+        encoding="utf-8",
+    )
+    assert manager.snapshot("light").downloaded_bytes == 7
+
+    await manager.cancel("light")
+    assert (run / "fetch-cancel").exists()
+    assert not (run / FETCH_REQUEST).exists()
+
+    assert list(models.iterdir()) == [], "the API never writes into the models directory"
+
+
+def test_the_disk_check_never_creates_the_models_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[Path] = []
+
+    def usage(path: Path) -> object:
+        seen.append(path)
+        return type("Usage", (), {"free": 10**12})()
+
+    monkeypatch.setattr("askwell.model_download.disk_usage", usage)
+    manager = ModelDownloadManager(tmp_path / "missing" / "model.gguf", signal_dir=tmp_path)
+    has_enough, _needed, _free = manager.disk_space_needed("light")
+    assert has_enough
+    assert not (tmp_path / "missing").exists()
+    assert seen == [tmp_path]
+
+
+def test_alternatives_are_named_in_the_folder_on_the_users_machine(tmp_path: Path) -> None:
+    manager, models, _run = _stack_manager(tmp_path)
+    (models / "other.gguf").write_bytes(_CONTENT_OTHER)
+    alternatives = manager.available_alternatives()
+    assert [a["path"] for a in alternatives] == ["~/.local/share/askwell/models/other.gguf"]
