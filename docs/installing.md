@@ -45,7 +45,7 @@ tar -xzf askwell-<version>-linux-x86_64.tar.gz
 askwell-<version>-linux-x86_64/deploy/linux/install.sh
 ```
 
-It installs Podman if it is missing (asking for your password to do so), loads Askwell's containers from the download, and opens the Askwell window. Afterwards Askwell is in your applications menu.
+It installs Podman if it is missing (asking for your password to do so), and Docker Compose, which Askwell uses to run its containers through Podman. On Fedora it offers to install Docker Compose for you. On other distributions it stops before copying anything and tells you to install Docker Compose 2.20 or newer yourself (docs.docker.com/compose/install/linux). It then loads Askwell's containers from the download, sets up Askwell's database, and opens the Askwell window. Afterwards Askwell is in your applications menu.
 
 ---
 
@@ -60,7 +60,7 @@ macOS will refuse the first launch: **"Askwell cannot be opened because the deve
    askwell-<version>-macos-arm64/deploy/macos/install.sh
    ```
 
-   It installs Podman with Homebrew if it is missing, loads Askwell's containers, places Askwell in Applications and tries to open it.
+   It installs Podman and Docker Compose with Homebrew if they are missing, loads Askwell's containers, sets up Askwell's database, places Askwell in Applications and tries to open it.
 2. You will get the refusal. Click **Done**.
 3. Open **System Settings → Privacy & Security**, scroll to Security. There is a line saying Askwell was blocked, with an **Open Anyway** button.
 4. Click it, then confirm.
@@ -87,7 +87,7 @@ Unpack the zip (right-click → **Extract All**), then open PowerShell in the un
 powershell -ExecutionPolicy Bypass -File deploy\windows\install.ps1
 ```
 
-`-ExecutionPolicy Bypass` applies to this one command only; Windows otherwise refuses to run a script that came from the internet. The installer checks virtualisation, installs Podman if it is missing, loads Askwell's containers and opens the Askwell window.
+`-ExecutionPolicy Bypass` applies to this one command only; Windows otherwise refuses to run a script that came from the internet. The installer checks virtualisation and installs Podman if it is missing. If Docker Compose is missing, it stops and names the command that installs it (`winget install -e --id Docker.DockerCompose`); run that, open a new PowerShell, and run the installer again. It then loads Askwell's containers, sets up Askwell's database and opens the Askwell window.
 
 SmartScreen will show **"Windows protected your PC"** with **Don't run** as the default button.
 

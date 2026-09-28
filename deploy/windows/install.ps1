@@ -130,6 +130,28 @@ function Test-AskwellRuntime {
     Write-AskwellSay "Podman installed: $((& podman --version) -join ' ')"
 }
 
+# ---------------------------------------------------------------- 1a. compose provider
+
+# Issue #767: `podman compose` runs an external provider, and docker-compose
+# is the one this stack is verified with. Refused by name before anything is
+# copied. Not installed from here: winget does not refresh this session's
+# PATH, so a provider installed now would still not be found until the next.
+function Test-AskwellComposeProvider {
+    $reported = ''
+    try { $reported = (& podman compose version 2>$null) -join "`n" } catch { }
+    if (Test-AskwellComposeMeetsMinimum $reported) {
+        Write-AskwellSay "Compose provider found: Docker Compose $(ConvertFrom-AskwellComposeVersion $reported)"
+        return
+    }
+    $found = 'none'
+    if ($reported) { $found = ($reported -split "`n")[0] }
+    Write-AskwellDie ("Askwell runs its containers through 'podman compose', which needs Docker Compose " +
+        "$script:AskwellMinComposeVersion or newer installed as its provider (podman-compose is not supported). " +
+        "Found: $found. Install it with: winget install -e --id Docker.DockerCompose - then open a new " +
+        "PowerShell and run this installer again. Nothing has been copied.")
+    exit 1
+}
+
 # ---------------------------------------------------------------- 2. disk space
 
 function Test-AskwellDiskSpace {
@@ -218,7 +240,13 @@ function Copy-AskwellFiles {
     Copy-Item (Join-Path $RepoRoot 'compose.yaml') (Join-Path $InstallPrefix 'compose.yaml') -Force
 
     $envFile = Join-Path $InstallPrefix '.env'
-    if (-not (Test-Path $envFile)) {
+    $keptEnv = Get-AskwellKeptEnvPath $DataDir
+    if (-not (Test-Path $envFile) -and (Test-Path $keptEnv)) {
+        # Issue #765: the database volumes outlived a plain uninstall, and
+        # these are the passwords they were initialised with.
+        Move-Item $keptEnv $envFile
+        Write-AskwellSay 'Restored the database credentials the previous uninstall kept, so this install opens the database it left in place.'
+    } elseif (-not (Test-Path $envFile)) {
         Copy-Item (Join-Path $RepoRoot '.env.example') $envFile
         Set-AskwellEnvPasswords $envFile
         Write-AskwellSay "Generated database credentials in $envFile"
@@ -294,6 +322,61 @@ function New-AskwellDataDirs {
     New-Item -ItemType Directory -Force -Path (Join-Path $DataDir 'models') | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $DataDir 'logs') | Out-Null
     Write-AskwellSay "Data directory: $DataDir"
+}
+
+# ---------------------------------------------------------------- 6a. stop the old version
+
+# Issue #768: on an upgrade the old version's containers are still serving.
+# They stop before the schema moves, and Register-AskwellStackTask starts the
+# new ones after. Stopping the task ends `podman compose up` without always
+# stopping its containers, so `down` follows. Only on an upgrade.
+function Stop-AskwellPreviousStack {
+    if (-not (Test-AskwellPreviousInstall $DataDir)) { return }
+    $podman = Get-Command podman -ErrorAction SilentlyContinue
+    if (-not $podman) {
+        Write-AskwellDie 'Podman is not on PATH, so the running Askwell could not be stopped before its database is upgraded. The install stopped at this step and is not complete.'
+        exit 1
+    }
+    Stop-ScheduledTask -TaskName (Get-AskwellStackTaskName) -ErrorAction SilentlyContinue
+    $code = Stop-AskwellStackContainers -Podman $podman.Source -ComposePath (Join-Path $InstallPrefix 'compose.yaml') `
+        -EnvPath (Join-Path $InstallPrefix '.env')
+    if ($code -ne 0) {
+        Write-AskwellDie "Could not stop the running Askwell's containers (podman compose down exited $code), so the upgrade stopped before changing the database. The new application files are in place; run this installer again."
+        exit 1
+    }
+    Write-AskwellSay 'Stopped the running Askwell so its database can be upgraded; the new version starts once the upgrade is done.'
+}
+
+# ---------------------------------------------------------------- 6b. database schema
+
+# Issue #698: nothing used to run a migration, so a fresh install had no
+# schema and an upgrade ran new code against the old one. Runs before the
+# stack task is registered, so a failure stops the install here, named.
+function Invoke-AskwellDatabaseMigration {
+    $podman = Get-Command podman -ErrorAction SilentlyContinue
+    if (-not $podman) {
+        Write-AskwellDie 'Podman is not on PATH, so the database could not be brought up to date. The install stopped at this step and is not complete.'
+        exit 1
+    }
+    $log = Join-Path $DataDir 'logs\migrate.log'
+    Write-AskwellSay 'Bringing Askwell''s database up to date (the first run also starts the database)...'
+    $code = Invoke-AskwellMigration -Podman $podman.Source -ComposePath (Join-Path $InstallPrefix 'compose.yaml') `
+        -EnvPath (Join-Path $InstallPrefix '.env') -LogPath $log
+    if ($code -ne 0) {
+        if (Test-Path $log) { Get-Content $log -Tail 20 | ForEach-Object { Write-Host $_ } }
+        Write-AskwellDie ("The database migration (alembic upgrade head, run as the stack's migrate service) " +
+            "failed with exit status $code (its last lines are above, the full output is in $log). The install " +
+            "stopped at this step and is not complete: nothing after it was done. The upgrade runs as one " +
+            "transaction, so the database is left as it was before this step. Run this installer again once " +
+            "the cause is fixed.")
+        exit 1
+    }
+    $applied = Get-AskwellMigrationsApplied $log
+    if ($applied -eq 0) {
+        Write-AskwellSay 'Database schema already up to date; no migrations to apply.'
+    } else {
+        Write-AskwellSay "Database schema up to date: applied $applied migration(s)."
+    }
 }
 
 # ---------------------------------------------------------------- 7. probe
@@ -425,12 +508,15 @@ function Start-Askwell {
 function Main {
     Write-AskwellSay "Installing Askwell $Version"
     Test-AskwellRuntime
+    Test-AskwellComposeProvider
     Test-AskwellDiskSpace
     Test-AskwellPrevious
     Test-AskwellArtefacts
     Copy-AskwellFiles
     Import-AskwellImages
     New-AskwellDataDirs
+    Stop-AskwellPreviousStack
+    Invoke-AskwellDatabaseMigration
     Invoke-AskwellProbe
     Register-AskwellShortcuts
     Register-AskwellStackTask

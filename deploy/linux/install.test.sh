@@ -22,7 +22,7 @@ fresh() {
   export HOME="$TMP/home"
   unset XDG_DATA_HOME XDG_CONFIG_HOME ASKWELL_DATA_DIR ASKWELL_INSTALL_PREFIX \
         ASKWELL_BIN_DIR ASKWELL_DESKTOP_DIR ASKWELL_SYSTEMD_USER_DIR \
-        ASKWELL_REQUIRED_INSTALL_BYTES
+        ASKWELL_REQUIRED_INSTALL_BYTES ASKWELL_PODMAN
   mkdir -p "$HOME"
   # shellcheck source=./lib.sh
   . "$HERE/lib.sh"
@@ -247,9 +247,14 @@ out="$(systemd_stack_unit_contents "/data/compose.yaml" "/data/.env" "/data")"
 case "$out" in *"ExecStart=podman compose -f /data/compose.yaml --env-file /data/.env up --abort-on-container-exit"*)
                  ok "stack unit runs compose in the foreground so systemd can supervise it" ;;
                *) bad "stack unit runs compose in the foreground so systemd can supervise it" ;; esac
+case "$out" in *"Requires=podman.socket"*) ok "stack unit requires Podman's API socket, which docker-compose talks to (#767)" ;;
+               *) bad "stack unit requires Podman's API socket, which docker-compose talks to (#767)" ;; esac
 case "$out" in *"ExecStop=podman compose -f /data/compose.yaml --env-file /data/.env down"*)
                  ok "stack unit stops by tearing the compose stack down" ;;
                *) bad "stack unit stops by tearing the compose stack down" ;; esac
+case "$out" in *"up --abort-on-container-exit --no-attach migrate"*)
+                 ok "stack unit does not let migrate's successful exit stop the stack" ;;
+               *) bad "stack unit does not let migrate's successful exit stop the stack" ;; esac
 case "$out" in *"Restart=on-failure"*) ok "stack unit restarts on failure" ;;
                *) bad "stack unit restarts on failure" ;; esac
 case "$out" in *"StartLimitIntervalSec=300"*"StartLimitBurst=5"*)
@@ -273,6 +278,396 @@ mkdir -p "$TMP/images"
 check "an empty images/ lists nothing" "$(bundled_image_archives "$TMP")" ""
 : > "$TMP/images/redis.tar"; : > "$TMP/images/api.tar"; : > "$TMP/images/notes.txt"
 check "lists only *.tar, sorted" "$(bundled_image_archives "$TMP" | tr '\n' ' ')" "$TMP/images/api.tar $TMP/images/redis.tar "
+
+# --- database migration and purge (M9-FIX-DEPLOY-200, #698, #700) -----------
+# A fake podman that records its arguments and keeps "volumes" as files, so
+# these run with no podman and no stack. The real thing — a fresh install,
+# an upgrade, a purge and a reinstall — is the manual walkthrough in
+# docs/manual-tests/M9-FIX-DEPLOY-200.md.
+#
+# Sets FP to its directory, which also holds a systemctl that does nothing:
+# uninstall.sh talks to the real user manager otherwise, and a test must
+# never disable a unit on the machine running it.
+fake_podman() {
+  local dir="$TMP/fakepodman"
+  FP="$dir"
+  mkdir -p "$dir/volumes"
+  printf '#!/bin/sh\nexit 0\n' > "$dir/systemctl"; chmod +x "$dir/systemctl"
+  cat > "$dir/podman" <<'SH'
+#!/usr/bin/env bash
+dir="$(dirname "$0")"
+printf '%s\n' "$*" >> "$dir/calls"
+case "$1 $2" in
+  "volume exists") [ -e "$dir/volumes/$3" ] ;;
+  "volume rm") v="$4"; case " ${STUCK:-} " in *" $v "*) exit 1 ;; esac; rm -f "$dir/volumes/$v" ;;
+  compose*) printf '%b' "${MIGRATE_OUTPUT:-}"; exit "${MIGRATE_EXIT:-0}" ;;
+  *) exit 99 ;;
+esac
+SH
+  chmod +x "$dir/podman"
+  export ASKWELL_PODMAN="$dir/podman"
+}
+
+fresh; fake_podman; fp="$FP"
+log="$TMP/data/logs/migrate.log"
+MIGRATE_OUTPUT='INFO  [alembic.runtime.migration] Running upgrade  -> a1, first\nINFO  [alembic.runtime.migration] Running upgrade a1 -> b2, second\n' \
+  run_database_migration /p/compose.yaml /p/.env "$log" && r=0 || r=1
+check "a successful migration returns success" "$r" 0
+check "the migration runs compose's own migrate service against the install's files" \
+  "$(cat "$fp/calls")" "compose -f /p/compose.yaml --env-file /p/.env run --rm migrate"
+check "its output is kept in the log, creating the logs directory" "$(grep -c 'Running upgrade' "$log")" "2"
+check "a fresh schema reports each migration applied" "$(migrations_applied "$log")" "2"
+
+fresh; fake_podman
+log="$TMP/migrate.log"
+MIGRATE_OUTPUT='INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.\n' \
+  run_database_migration /p/compose.yaml /p/.env "$log" && r=0 || r=1
+check "an upgrade with nothing pending is a success, not an error" "$r" 0
+check "an upgrade with nothing pending reports zero applied" "$(migrations_applied "$log")" "0"
+
+fresh; fake_podman
+log="$TMP/migrate.log"
+MIGRATE_EXIT=1 MIGRATE_OUTPUT='sqlalchemy.exc.ProgrammingError: boom\n' \
+  run_database_migration /p/compose.yaml /p/.env "$log" && r=0 || r=1
+check "a failed migration is a failure the installer sees" "$r" 1
+check "a failed migration's error is in the log" "$(grep -c 'boom' "$log")" "1"
+
+# install.sh must act on that failure: stop, and never reach the steps that
+# say Askwell is installed. Run the real function with the real script's
+# definitions, the install steps after it replaced by markers.
+fresh; fake_podman
+out="$(
+  cd "$TMP" && MIGRATE_EXIT=1 MIGRATE_OUTPUT='boom: relation already exists\n' bash -c '
+    set -Eeuo pipefail
+    . "'"$HERE"'/install.sh"
+    DATA_DIR="'"$TMP"'/data"; INSTALL_PREFIX="/p"
+    migrate_database
+    echo REACHED_NEXT_STEP
+  ' 2>&1
+)" && r=0 || r=1
+check "install.sh stops when the migration fails" "$r" 1
+case "$out" in *REACHED_NEXT_STEP*) bad "a failed migration never lets the install carry on" ;;
+               *) ok "a failed migration never lets the install carry on" ;; esac
+case "$out" in *"database migration"*"failed"*"not complete"*) ok "the failure is named, and the install says it is not complete" ;;
+               *) bad "the failure is named, and the install says it is not complete (got: $out)" ;; esac
+case "$out" in *"boom: relation already exists"*) ok "the migration's own error is shown" ;;
+               *) bad "the migration's own error is shown" ;; esac
+case "$out" in *"schema already up to date"*|*"schema up to date"*) bad "a failed migration never reports the schema as up to date" ;;
+               *) ok "a failed migration never reports the schema as up to date" ;; esac
+
+fresh; fake_podman
+out="$(
+  cd "$TMP" && MIGRATE_OUTPUT='' bash -c '
+    set -Eeuo pipefail
+    . "'"$HERE"'/install.sh"
+    DATA_DIR="'"$TMP"'/data"; INSTALL_PREFIX="/p"
+    migrate_database
+  ' 2>&1
+)" && r=0 || r=1
+check "install.sh carries on when nothing is pending" "$r" 0
+case "$out" in *"already up to date"*) ok "nothing pending is reported as already up to date" ;;
+               *) bad "nothing pending is reported as already up to date (got: $out)" ;; esac
+
+fresh
+compose_volumes="$(sed -n '/^volumes:/,$p' "$HERE/../../compose.yaml" | grep -E '^  [a-z][a-z-]*:' | sed -E 's/^  ([a-z-]+):.*/askwell_\1/' | sort | tr '\n' ' ')"
+lib_volumes="$(printf '%s\n' $ASKWELL_VOLUMES | sort | tr '\n' ' ')"
+check "ASKWELL_VOLUMES names every volume compose.yaml declares" "$lib_volumes" "$compose_volumes"
+case "$(sed -n '/^name:/p' "$HERE/../../compose.yaml")" in
+  "name: askwell") ok "compose's project name is the askwell_ prefix the volume names assume" ;;
+  *) bad "compose's project name is the askwell_ prefix the volume names assume" ;; esac
+
+fresh; fake_podman; fp="$FP"
+for v in $ASKWELL_VOLUMES; do : > "$fp/volumes/$v"; done
+purge_stack_volumes > "$TMP/left" && r=0 || r=1
+check "purge removes every volume and reports success" "$r" 0
+check "no volume survives a purge" "$(ls "$fp/volumes" | wc -l | tr -d ' ')" "0"
+
+fresh; fake_podman; fp="$FP"
+purge_stack_volumes > "$TMP/left" && r=0 || r=1
+check "purging volumes that were never created is not an error" "$r" 0
+
+fresh; fake_podman; fp="$FP"
+for v in $ASKWELL_VOLUMES; do : > "$fp/volumes/$v"; done
+STUCK="askwell_postgres-data" purge_stack_volumes > "$TMP/left" && r=0 || r=1
+check "a volume that will not go makes the purge fail" "$r" 1
+check "the volume that will not go is named" "$(cat "$TMP/left")" "askwell_postgres-data"
+check "the others are still removed" "$(ls "$fp/volumes")" "askwell_postgres-data"
+
+# uninstall.sh --purge-data, end to end against the fake podman and a
+# throwaway HOME: the data directory and the volumes both go, and it says so.
+fresh; fake_podman; fp="$FP"
+for v in $ASKWELL_VOLUMES; do : > "$fp/volumes/$v"; done
+mkdir -p "$HOME/.local/share/askwell/models"
+out="$(PATH="$fp:$PATH" bash "$HERE/uninstall.sh" --purge-data --yes 2>&1)" && r=0 || r=1
+check "uninstall --purge-data succeeds" "$r" 0
+check "uninstall --purge-data removes the database volumes" "$(ls "$fp/volumes" | wc -l | tr -d ' ')" "0"
+[ -d "$HOME/.local/share/askwell" ] && r=1 || r=0
+check "uninstall --purge-data removes the data directory" "$r" 0
+case "$out" in *"Database volumes removed"*"Data directory removed"*"All of Askwell's data has been removed"*)
+                 ok "uninstall --purge-data says what it removed" ;;
+               *) bad "uninstall --purge-data says what it removed (got: $out)" ;; esac
+
+fresh; fake_podman; fp="$FP"
+for v in $ASKWELL_VOLUMES; do : > "$fp/volumes/$v"; done
+mkdir -p "$HOME/.local/share/askwell"
+out="$(PATH="$fp:$PATH" STUCK="askwell_postgres-data" bash "$HERE/uninstall.sh" --purge-data --yes 2>&1)" && r=0 || r=1
+check "a purge that could not remove a volume exits non-zero" "$r" 1
+case "$out" in *"All of Askwell's data has been removed"*) bad "a partial purge never claims everything was removed" ;;
+               *) ok "a partial purge never claims everything was removed" ;; esac
+case "$out" in *"askwell_postgres-data"*) ok "a partial purge names the volume left behind" ;;
+               *) bad "a partial purge names the volume left behind" ;; esac
+
+fresh; fake_podman; fp="$FP"
+for v in $ASKWELL_VOLUMES; do : > "$fp/volumes/$v"; done
+mkdir -p "$HOME/.local/share/askwell"
+out="$(PATH="$fp:$PATH" bash "$HERE/uninstall.sh" 2>&1)" && r=0 || r=1
+check "an uninstall without --purge-data keeps every volume" "$(ls "$fp/volumes" | wc -l | tr -d ' ')" "4"
+case "$out" in *"database volumes are also left in place"*) ok "an uninstall without --purge-data says the volumes stay" ;;
+               *) bad "an uninstall without --purge-data says the volumes stay" ;; esac
+
+# --- compose provider (#767) ------------------------------------------------
+fresh
+check "reads docker-compose's version" "$(parse_compose_provider_version 'Docker Compose version v5.1.1')" "5.1.1"
+check "reads it after podman's provider banner" \
+  "$(parse_compose_provider_version "$(printf '>>>> Executing external compose provider "/usr/bin/docker-compose". <<<<\n\nDocker Compose version v2.20.2\n')")" "2.20.2"
+check "podman-compose is not read as a supported provider" "$(parse_compose_provider_version 'podman-compose version 1.5.0')" ""
+compose_provider_meets_minimum 'Docker Compose version v5.1.1' && r=0 || r=1
+check "docker-compose 5.1.1 meets the minimum" "$r" 0
+compose_provider_meets_minimum 'Docker Compose version v2.20.0' && r=0 || r=1
+check "docker-compose 2.20.0 meets the minimum (--no-attach)" "$r" 0
+compose_provider_meets_minimum 'Docker Compose version v2.19.1' && r=0 || r=1
+check "docker-compose 2.19 is refused" "$r" 1
+compose_provider_meets_minimum 'podman-compose version 1.5.0' && r=0 || r=1
+check "podman-compose is refused" "$r" 1
+compose_provider_meets_minimum '' && r=0 || r=1
+check "no provider at all is refused" "$r" 1
+check "dnf installs Fedora's docker-compose" "$(compose_install_cmd dnf)" "dnf install -y docker-compose"
+compose_install_cmd apt >/dev/null && r=0 || r=1
+check "apt gets no guessed package name" "$r" 1
+
+# install.sh refuses, by name, before copying anything, when there is no
+# provider and no verified way to install one.
+fresh; fake_podman
+out="$(
+  cd "$TMP" && MIGRATE_OUTPUT='podman-compose version 1.5.0\n' PATH="$(fake_path_with):$FP:/usr/bin:/bin" bash -c '
+    set -Eeuo pipefail
+    . "'"$HERE"'/install.sh"
+    detect_pkg_manager() { echo apt; }
+    podman() { "$ASKWELL_PODMAN" "$@"; }
+    check_compose_provider
+    echo REACHED_NEXT_STEP
+  ' 2>&1
+)" && r=0 || r=1
+check "install.sh stops without a supported compose provider" "$r" 1
+case "$out" in *REACHED_NEXT_STEP*) bad "no provider never lets the install carry on" ;; *) ok "no provider never lets the install carry on" ;; esac
+case "$out" in *"Docker Compose 2.20 or newer"*"Found: podman-compose version 1.5.0"*"Nothing has been copied"*)
+                 ok "the refusal names what is needed and what was found" ;;
+               *) bad "the refusal names what is needed and what was found (got: $out)" ;; esac
+
+fresh; fake_podman
+out="$(
+  cd "$TMP" && MIGRATE_OUTPUT='Docker Compose version v5.1.1\n' PATH="$FP:$PATH" bash -c '
+    set -Eeuo pipefail
+    . "'"$HERE"'/install.sh"
+    podman() { "$ASKWELL_PODMAN" "$@"; }
+    check_compose_provider
+  ' 2>&1
+)" && r=0 || r=1
+check "install.sh carries on with docker-compose 5.1.1" "$r" 0
+case "$out" in *"Compose provider found: Docker Compose version v5.1.1"*) ok "the provider found is named" ;;
+               *) bad "the provider found is named (got: $out)" ;; esac
+
+# Podman's API socket: docker-compose cannot reach Podman without it.
+socket_systemctl() {
+  cat > "$FP/systemctl" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$(dirname "$0")/systemctl.calls"
+case "$*" in
+  *is-enabled*|*is-active*) [ "${SOCKET_ON:-0}" = 1 ] ;;
+  *"enable --now"*) [ "${ENABLE_FAILS:-0}" = 0 ] ;;
+  *) exit 0 ;;
+esac
+SH
+  chmod +x "$FP/systemctl"
+}
+run_ensure_socket() {
+  PATH="$FP:$PATH" bash -c '
+    set -Eeuo pipefail
+    . "'"$HERE"'/install.sh"
+    ensure_podman_socket
+    echo REACHED_NEXT_STEP
+  ' 2>&1
+}
+
+fresh; fake_podman; socket_systemctl
+out="$(run_ensure_socket)" && r=0 || r=1
+check "a disabled socket is enabled and the install carries on" "$r" 0
+case "$(cat "$FP/systemctl.calls")" in *"--user enable --now podman.socket"*) ok "the socket is enabled for every login, not only started" ;;
+                                       *) bad "the socket is enabled for every login, not only started" ;; esac
+case "$out" in *"API socket enabled"*) ok "enabling the socket is reported" ;; *) bad "enabling the socket is reported (got: $out)" ;; esac
+
+fresh; fake_podman; socket_systemctl
+out="$(SOCKET_ON=1 run_ensure_socket)" && r=0 || r=1
+check "an enabled, listening socket is left alone" "$r" 0
+case "$(cat "$FP/systemctl.calls")" in *"enable --now"*) bad "nothing is enabled that already is" ;; *) ok "nothing is enabled that already is" ;; esac
+case "$out" in *"API socket enabled"*) bad "no claim to have enabled what already was" ;; *) ok "no claim to have enabled what already was" ;; esac
+
+fresh; fake_podman; socket_systemctl
+out="$(ENABLE_FAILS=1 run_ensure_socket)" && r=0 || r=1
+check "a socket that cannot be enabled stops the install" "$r" 1
+case "$out" in *REACHED_NEXT_STEP*) bad "it never carries on without the socket" ;; *) ok "it never carries on without the socket" ;; esac
+case "$out" in *"podman.socket"*"Nothing has been copied"*) ok "the failure names the socket" ;; *) bad "the failure names the socket (got: $out)" ;; esac
+
+# --- an upgrade stops the old version before migrating (#768) --------------
+# A systemctl that records what it was asked and answers is-active from
+# $STACK_ACTIVE.
+recording_systemctl() {
+  cat > "$FP/systemctl" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$(dirname "$0")/systemctl.calls"
+case "$*" in *is-active*) [ "${STACK_ACTIVE:-0}" = 1 ] ;; *) exit 0 ;; esac
+SH
+  chmod +x "$FP/systemctl"
+}
+
+fresh; fake_podman; recording_systemctl; fp="$FP"
+out="$(
+  cd "$TMP" && PATH="$fp:$PATH" bash -c '
+    set -Eeuo pipefail
+    . "'"$HERE"'/install.sh"
+    DATA_DIR="'"$TMP"'/data"; INSTALL_PREFIX="/p"
+    stop_previous_stack
+  ' 2>&1
+)" && r=0 || r=1
+check "a fresh install has nothing to stop" "$r" 0
+check "a fresh install touches no container" "$(cat "$fp/calls" 2>/dev/null)" ""
+case "$out" in *"Stopped the running Askwell"*) bad "a fresh install never says it stopped anything" ;;
+               *) ok "a fresh install never says it stopped anything" ;; esac
+
+fresh; fake_podman; recording_systemctl; fp="$FP"
+write_install_record "$TMP/data" 0.7.0 install
+out="$(
+  cd "$TMP" && STACK_ACTIVE=1 PATH="$fp:$PATH" bash -c '
+    set -Eeuo pipefail
+    . "'"$HERE"'/install.sh"
+    DATA_DIR="'"$TMP"'/data"; INSTALL_PREFIX="/p"
+    stop_previous_stack
+  ' 2>&1
+)" && r=0 || r=1
+check "an upgrade stops the running version" "$r" 0
+case "$(cat "$fp/systemctl.calls")" in *"--user stop askwell-stack.service"*) ok "the stack unit is stopped first, so Restart= cannot bring it back" ;;
+                                       *) bad "the stack unit is stopped first, so Restart= cannot bring it back" ;; esac
+check "then its containers are taken down by the install's own files" "$(cat "$fp/calls")" "compose -f /p/compose.yaml --env-file /p/.env down"
+case "$out" in *"Stopped the running Askwell"*) ok "an upgrade says it stopped the old version" ;;
+               *) bad "an upgrade says it stopped the old version (got: $out)" ;; esac
+
+fresh; fake_podman; recording_systemctl; fp="$FP"
+write_install_record "$TMP/data" 0.7.0 install
+out="$(
+  cd "$TMP" && MIGRATE_EXIT=125 PATH="$fp:$PATH" bash -c '
+    set -Eeuo pipefail
+    . "'"$HERE"'/install.sh"
+    DATA_DIR="'"$TMP"'/data"; INSTALL_PREFIX="/p"
+    stop_previous_stack
+    echo REACHED_NEXT_STEP
+  ' 2>&1
+)" && r=0 || r=1
+check "an upgrade that cannot stop the old containers stops" "$r" 1
+case "$out" in *REACHED_NEXT_STEP*) bad "it never goes on to migrate under running code" ;; *) ok "it never goes on to migrate under running code" ;; esac
+case "$out" in *"Stopped the running Askwell"*) bad "it never claims the old version stopped" ;; *) ok "it never claims the old version stopped" ;; esac
+
+fresh; fake_podman; recording_systemctl; fp="$FP"
+PATH="$fp:$PATH" bash -c '
+  set -Eeuo pipefail
+  . "'"$HERE"'/install.sh"
+  INSTALL_PREFIX="'"$TMP"'/p"; SYSTEMD_USER_DIR="'"$TMP"'/units"; mkdir -p "$SYSTEMD_USER_DIR"
+  register_stack_and_inference
+' >/dev/null 2>&1 && r=0 || r=1
+check "registering the stack succeeds" "$r" 0
+case "$(cat "$fp/systemctl.calls")" in
+  *"--user restart askwell-stack.service"*"--user restart askwell-inference.service"*) ok "the units are restarted, so an upgrade runs the new version" ;;
+  *) bad "the units are restarted, so an upgrade runs the new version (got: $(cat "$fp/systemctl.calls"))" ;; esac
+case "$(cat "$fp/systemctl.calls")" in *"enable --now"*) bad "no enable --now, a no-op on an active unit" ;; *) ok "no enable --now, a no-op on an active unit" ;; esac
+
+# The order in main: stop, then migrate, then start the new version.
+order="$(sed -n '/^main() {/,/^}/p' "$HERE/install.sh" | grep -E '^  (stop_previous_stack|migrate_database|register_stack_and_inference|place_files|check_compose_provider|check_runtime)$' | sed 's/^ *//' | tr '\n' ' ')"
+check "main checks the provider, places files, stops, migrates, then starts" "$order" \
+  "check_runtime check_compose_provider place_files stop_previous_stack migrate_database register_stack_and_inference "
+
+# --- a plain uninstall keeps the credentials the kept volumes need (#765) --
+fresh
+check "the kept .env lives in the data directory" "$(kept_env_path /d)" "/d/askwell.env"
+
+fresh; fake_podman; fp="$FP"
+for v in $ASKWELL_VOLUMES; do : > "$fp/volumes/$v"; done
+prefix="$HOME/.local/share/askwell/app"; mkdir -p "$prefix"
+printf 'POSTGRES_PASSWORD=original\n' > "$prefix/.env"
+out="$(PATH="$fp:$PATH" bash "$HERE/uninstall.sh" 2>&1)" && r=0 || r=1
+kept="$HOME/.local/share/askwell/askwell.env"
+check "a plain uninstall succeeds" "$r" 0
+[ -d "$prefix" ] && r=1 || r=0
+check "a plain uninstall still removes the application files" "$r" 0
+check "a plain uninstall keeps the database credentials" "$(cat "$kept" 2>/dev/null)" "POSTGRES_PASSWORD=original"
+check "the kept credentials are readable by this account only" "$(stat -c %a "$kept" 2>/dev/null)" "600"
+case "$out" in *"Database credentials kept at $kept"*) ok "a plain uninstall says where the credentials are kept" ;;
+               *) bad "a plain uninstall says where the credentials are kept (got: $out)" ;; esac
+
+fresh; fake_podman; fp="$FP"
+for v in $ASKWELL_VOLUMES; do : > "$fp/volumes/$v"; done
+prefix="$HOME/.local/share/askwell/app"; mkdir -p "$prefix"
+printf 'POSTGRES_PASSWORD=original\n' > "$prefix/.env"
+PATH="$fp:$PATH" bash "$HERE/uninstall.sh" --purge-data --yes >/dev/null 2>&1 && r=0 || r=1
+check "a purge succeeds" "$r" 0
+[ -e "$HOME/.local/share/askwell/askwell.env" ] && r=1 || r=0
+check "a purge keeps no credentials for a database it removed" "$r" 0
+
+# place_files restores them. A release tree made of placeholders, enough for
+# place_files to run end to end.
+fake_release_tree() {
+  local root="$TMP/release"
+  mkdir -p "$root/deploy/postgres" "$root/deploy/sandbox" "$root/deploy/redis" \
+    "$root/deploy/probe" "$root/deploy/inference" "$root/web/out" "$root/web/src-tauri/target/release"
+  cp "$HERE/../../.env.example" "$root/.env.example"
+  : > "$root/compose.yaml"; : > "$root/web/out/index.html"
+  : > "$root/deploy/probe/askwell-probe"; : > "$root/deploy/inference/askwell-inference"
+  : > "$root/web/src-tauri/target/release/askwell-shell"
+  echo "$root"
+}
+run_place_files() {
+  bash -c '
+    set -Eeuo pipefail
+    . "'"$HERE"'/install.sh"
+    REPO_ROOT="'"$1"'"; SHELL_BIN="$REPO_ROOT/web/src-tauri/target/release/askwell-shell"
+    DATA_DIR="'"$TMP"'/data"; INSTALL_PREFIX="'"$TMP"'/prefix"
+    BIN_DIR="'"$TMP"'/bin"; DESKTOP_DIR="'"$TMP"'/desktop"; SYSTEMD_USER_DIR="'"$TMP"'/units"
+    place_files
+  ' 2>&1
+}
+
+fresh; root="$(fake_release_tree)"
+mkdir -p "$TMP/data"; printf 'POSTGRES_PASSWORD=original\n' > "$TMP/data/askwell.env"
+out="$(run_place_files "$root")" && r=0 || r=1
+check "a reinstall over kept volumes places its files" "$r" 0
+check "a reinstall uses the kept credentials, not new ones" "$(grep '^POSTGRES_PASSWORD=' "$TMP/prefix/.env")" "POSTGRES_PASSWORD=original"
+[ -e "$TMP/data/askwell.env" ] && r=1 || r=0
+check "the kept copy is moved, not left behind" "$r" 0
+case "$out" in *"Restored the database credentials"*) ok "a reinstall says it restored the credentials" ;;
+               *) bad "a reinstall says it restored the credentials (got: $out)" ;; esac
+case "$out" in *"Generated database credentials"*) bad "a reinstall with kept credentials never generates new ones" ;;
+               *) ok "a reinstall with kept credentials never generates new ones" ;; esac
+
+fresh; root="$(fake_release_tree)"
+out="$(run_place_files "$root")" && r=0 || r=1
+check "a fresh install places its files" "$r" 0
+case "$(grep '^POSTGRES_PASSWORD=' "$TMP/prefix/.env")" in
+  "POSTGRES_PASSWORD="|*change-me*) bad "a fresh install generates its own credentials" ;;
+  *) ok "a fresh install generates its own credentials" ;; esac
+
+fresh; root="$(fake_release_tree)"
+mkdir -p "$TMP/prefix" "$TMP/data"
+printf 'POSTGRES_PASSWORD=current\n' > "$TMP/prefix/.env"; printf 'POSTGRES_PASSWORD=stale\n' > "$TMP/data/askwell.env"
+run_place_files "$root" >/dev/null && r=0 || r=1
+check "an upgrade never replaces the install's own credentials" "$(grep '^POSTGRES_PASSWORD=' "$TMP/prefix/.env")" "POSTGRES_PASSWORD=current"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

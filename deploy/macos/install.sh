@@ -137,6 +137,35 @@ check_runtime() {
   askwell_say "Podman machine is running."
 }
 
+# ---------------------------------------------------------------- 1a. compose provider
+
+# Issue #767: `podman compose` runs an external provider and Homebrew's
+# podman brings none. Checked before anything is copied, and by name:
+# docker-compose is the one provider this stack is verified with.
+check_compose_provider() {
+  local reported found="none"
+  reported="$(podman compose version 2>/dev/null || true)"
+  if compose_provider_meets_minimum "$reported"; then
+    askwell_say "Compose provider found: $(printf '%s\n' "$reported" | grep -m1 'Docker Compose version')"
+    return 0
+  fi
+  [ -n "$reported" ] && found="$(printf '%s\n' "$reported" | head -n1)"
+  if ! command -v brew >/dev/null 2>&1; then
+    askwell_die "Askwell runs its containers through 'podman compose', which needs Docker Compose $ASKWELL_MIN_COMPOSE_VERSION or newer installed as its provider (podman-compose is not supported). Found: $found. Install it (with Homebrew: $(compose_install_cmd)), then run this installer again. Nothing has been copied."
+    exit 1
+  fi
+  askwell_say "Askwell runs its containers through 'podman compose', which needs Docker Compose $ASKWELL_MIN_COMPOSE_VERSION or newer (found: $found). This installer needs to run:"
+  askwell_say "  $(compose_install_cmd)"
+  confirm "Install Docker Compose now?" || { askwell_die "Docker Compose is required. Install it and re-run this installer. Nothing has been copied."; exit 1; }
+  brew install docker-compose
+  reported="$(podman compose version 2>/dev/null || true)"
+  compose_provider_meets_minimum "$reported" || {
+    askwell_die "Homebrew finished, but 'podman compose version' still does not report Docker Compose $ASKWELL_MIN_COMPOSE_VERSION or newer (it said: ${reported:-nothing}). Nothing has been copied."
+    exit 1
+  }
+  askwell_say "Compose provider installed: $(printf '%s\n' "$reported" | grep -m1 'Docker Compose version')"
+}
+
 # ---------------------------------------------------------------- 2. roots-mount window
 
 # Not a gate — informational, printed once, matching the accepted design in
@@ -208,7 +237,14 @@ place_files() {
   mkdir -p "$INSTALL_PREFIX/deploy/postgres" "$INSTALL_PREFIX/deploy/sandbox" "$INSTALL_PREFIX/deploy/redis"
 
   cp "$REPO_ROOT/compose.yaml" "$INSTALL_PREFIX/compose.yaml"
-  if [ ! -f "$INSTALL_PREFIX/.env" ]; then
+  local kept_env
+  kept_env="$(kept_env_path "$DATA_DIR")"
+  if [ ! -f "$INSTALL_PREFIX/.env" ] && [ -f "$kept_env" ]; then
+    # Issue #765: the database volumes outlived a plain uninstall, and these
+    # are the passwords they were initialised with.
+    mv "$kept_env" "$INSTALL_PREFIX/.env"
+    askwell_say "Restored the database credentials the previous uninstall kept, so this install opens the database it left in place."
+  elif [ ! -f "$INSTALL_PREFIX/.env" ]; then
     cp "$REPO_ROOT/.env.example" "$INSTALL_PREFIX/.env"
     generate_env_passwords "$INSTALL_PREFIX/.env"
     askwell_say "Generated database credentials in $INSTALL_PREFIX/.env"
@@ -273,6 +309,51 @@ EOF_ARCHIVES
 create_data_dirs() {
   mkdir -p "$DATA_DIR" "$DATA_DIR/models" "$DATA_DIR/logs"
   askwell_say "Data directory: $DATA_DIR"
+}
+
+# ---------------------------------------------------------------- 7a. stop the old version
+
+# Issue #768: on an upgrade the old version's containers are still serving.
+# They stop before the schema moves, and register_stack_and_inference loads
+# the new LaunchAgent after, so no code runs against a schema newer than its
+# own. The LaunchAgent is unloaded first because KeepAlive would otherwise
+# restart it; `down` then also catches containers the desktop shell started
+# itself. Only on an upgrade: a fresh install has nothing running.
+stop_previous_stack() {
+  is_previous_install "$DATA_DIR" || return 0
+  launchctl unload "$LAUNCH_AGENTS_DIR/com.askwell.stack.plist" >/dev/null 2>&1 || true
+  stop_stack_containers "$INSTALL_PREFIX/compose.yaml" "$INSTALL_PREFIX/.env" || {
+    askwell_die "Could not stop the running Askwell's containers (podman compose down failed), so the upgrade stopped before changing the database. The new application files are in place; run this installer again."
+    exit 1
+  }
+  askwell_say "Stopped the running Askwell so its database can be upgraded; the new version starts once the upgrade is done."
+}
+
+# ---------------------------------------------------------------- 7b. database schema
+
+# Issue #698: before this step existed nothing ever ran a migration, so a
+# fresh install started against an empty database and an upgrade ran new code
+# against the old schema. Runs before the stack is registered so that a
+# failure stops the install here, named, rather than after it has said done.
+migrate_database() {
+  local log="$DATA_DIR/logs/migrate.log" applied rc
+  askwell_say "Bringing Askwell's database up to date (the first run also starts the database)..."
+  if run_database_migration "$INSTALL_PREFIX/compose.yaml" "$INSTALL_PREFIX/.env" "$log"; then
+    applied="$(migrations_applied "$log")"
+    if [ "${applied:-0}" -eq 0 ]; then
+      askwell_say "Database schema already up to date; no migrations to apply."
+    else
+      askwell_say "Database schema up to date: applied $applied migration(s)."
+    fi
+    return 0
+  else
+    rc=$?
+  fi
+  printf '\n' >&2
+  tail -n 20 "$log" >&2 || true
+  printf '\n' >&2
+  askwell_die "The database migration (alembic upgrade head, run as the stack's migrate service) failed with exit status $rc (its last lines are above, the full output is in $log). The install stopped at this step and is not complete: nothing after it was done. The upgrade runs as one transaction, so the database is left as it was before this step. Run this installer again once the cause is fixed."
+  exit 1
 }
 
 # ---------------------------------------------------------------- 8. probe
@@ -344,6 +425,7 @@ launch() {
 main() {
   askwell_say "Installing Askwell $VERSION"
   check_runtime
+  check_compose_provider
   check_roots_mount
   check_disk_space
   check_previous_install
@@ -351,6 +433,8 @@ main() {
   place_files
   load_images
   create_data_dirs
+  stop_previous_stack
+  migrate_database
   run_probe
   register_stack_and_inference
   register_session_start
@@ -359,4 +443,7 @@ main() {
   askwell_say "Done. Askwell is also available any time from $APP_DIR."
 }
 
-main "$@"
+# Run, not sourced: install.test.sh sources this file to exercise one step.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi
