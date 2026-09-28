@@ -4,6 +4,18 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.56 - 2026-09-28
+
+`Fixed`: `M9-FIX-SEC-208`. Pruning old interactions from the log now works. Until now, a prune
+was refused by the database on every real install, so the log kept growing past the retention
+window you set. Pruning still removes only interactions older than the window, only after you have
+exported them, and the log check still reports the chain as intact afterwards. Nothing else in
+Askwell can delete from the log.
+
+`Security`: a development database could carry a permission, made by no migration, that let any
+part of Askwell delete interaction records. An upgrade now removes it, so every install has the
+same permissions.
+
 ## 0.7.55 - 2026-09-28
 
 `Fixed`: `M9-FIX-BE-207`. Explaining a column in a spreadsheet or CSV file now teaches Askwell

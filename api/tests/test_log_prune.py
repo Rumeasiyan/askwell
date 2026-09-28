@@ -4,6 +4,11 @@ prune boundary `askwell.audit.verify` needs to stay honest about it.
 
 Against a real Postgres, like `test_log_export.py` — `run_job` opens several
 short transactions of its own and needs a `factory`, not a single `session`.
+
+Every prune here runs as `askwell_app`, through `app_database_url`. Issue
+#682 shipped because these tests used to connect as the superuser owner,
+who bypasses the grants C6 rests on — so a `DELETE` `askwell_app` could never
+run passed. The owner connection only cleans up.
 """
 
 import uuid
@@ -13,11 +18,21 @@ from datetime import UTC, datetime, timedelta
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from askwell.audit import GENESIS, Store, canonical_payload, compute_hash, prune_boundaries, verify
+from askwell.audit import (
+    GENESIS,
+    Store,
+    canonical_payload,
+    compute_hash,
+    prune_boundaries,
+    record,
+    verify,
+)
 from askwell.log_budget import set_retention_months
 from askwell.log_prune import (
+    PRUNE_COMPLETED,
     PruneNotExported,
     PruneRequiresConfirmation,
     enqueue,
@@ -30,19 +45,25 @@ pytestmark = pytest.mark.requires_db
 TABLES = "audit_decisions, audit_interactions, export_jobs, prune_jobs, settings, memory"
 
 
+def _async(url: str) -> str:
+    return url.replace("postgresql://", "postgresql+psycopg://", 1)
+
+
 @pytest_asyncio.fixture
-async def factory(database_url: str) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
-    async_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
-    engine = create_async_engine(async_url)
-    sessions = async_sessionmaker(engine, expire_on_commit=False)
-    async with sessions() as opened:
-        await opened.execute(text(f"TRUNCATE {TABLES} CASCADE"))
-        await opened.commit()
-    yield sessions
-    async with sessions() as opened:
-        await opened.execute(text(f"TRUNCATE {TABLES} CASCADE"))
-        await opened.commit()
+async def factory(
+    database_url: str, app_database_url: str
+) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    """Sessions as `askwell_app`, restricted exactly as at runtime. The
+    owner engine truncates before and after, and does nothing else."""
+    owner = create_async_engine(_async(database_url))
+    async with owner.begin() as connection:
+        await connection.execute(text(f"TRUNCATE {TABLES} CASCADE"))
+    engine = create_async_engine(_async(app_database_url))
+    yield async_sessionmaker(engine, expire_on_commit=False)
     await engine.dispose()
+    async with owner.begin() as connection:
+        await connection.execute(text(f"TRUNCATE {TABLES} CASCADE"))
+    await owner.dispose()
 
 
 @pytest_asyncio.fixture
@@ -219,8 +240,6 @@ async def test_changing_the_window_changes_what_is_prunable(
 async def test_decisions_and_memory_are_never_touched_by_a_prune(
     factory: async_sessionmaker[AsyncSession], session: AsyncSession
 ) -> None:
-    from askwell.audit import record
-
     await _seed_interactions(session, [400, 5])
     await record(session, Store.DECISIONS, "source_added", {"name": "contracts"})
     await session.execute(
@@ -289,3 +308,158 @@ async def test_a_prune_interrupted_before_the_delete_commits_leaves_the_chain_in
         assert job.status == "done"
         assert job.pruned_count == 1
         assert job.boundary_hash == rows[0]["hash"]
+
+
+# --- nothing but a recorded prune can delete ---------------------------------
+
+
+def _refused(error: DBAPIError) -> bool:
+    return getattr(error.orig, "sqlstate", None) == "42501"  # insufficient_privilege
+
+
+async def _interaction_count(session: AsyncSession) -> int:
+    return int(
+        (await session.execute(text("SELECT count(*) FROM audit_interactions"))).scalar_one()
+    )
+
+
+async def test_the_app_role_itself_cannot_delete_an_interaction(
+    factory: async_sessionmaker[AsyncSession], session: AsyncSession
+) -> None:
+    """Issue #682's other half: the grant a development database once
+    drifted into. The migration revokes it, so no path holds it."""
+    await _seed_interactions(session, [400, 5])
+    with pytest.raises(DBAPIError) as refused:
+        await session.execute(text("DELETE FROM audit_interactions"))
+    await session.rollback()
+    assert _refused(refused.value)
+    assert await _interaction_count(session) == 2
+
+
+async def test_the_prune_function_called_directly_is_refused(
+    factory: async_sessionmaker[AsyncSession], session: AsyncSession
+) -> None:
+    await _seed_interactions(session, [400, 5])
+    with pytest.raises(DBAPIError) as refused:
+        await session.execute(text("SELECT askwell_prune_interactions()"))
+    await session.rollback()
+    assert _refused(refused.value)
+    assert "prune recorded in this transaction" in str(refused.value)
+    assert await _interaction_count(session) == 2
+
+
+def _prune_record(rows: list[dict], through: int) -> dict[str, str]:
+    """A truthful `interactions_pruned` payload covering `rows[:through]`."""
+    cutoff = rows[through - 1]["occurred_at"] + timedelta(microseconds=1)
+    return {
+        "job_id": str(uuid.uuid4()),
+        "cutoff": cutoff.astimezone(UTC).isoformat(),
+        "pruned_count": str(through),
+        "range_start": rows[0]["occurred_at"].astimezone(UTC).isoformat(),
+        "range_end": rows[through - 1]["occurred_at"].astimezone(UTC).isoformat(),
+        "boundary_hash": rows[through - 1]["hash"],
+    }
+
+
+async def test_a_prune_record_from_an_earlier_transaction_does_not_authorise_it(
+    factory: async_sessionmaker[AsyncSession], session: AsyncSession
+) -> None:
+    """A committed prune record is history, not permission — otherwise one
+    prune would leave the door open for any later caller."""
+    rows = await _seed_interactions(session, [400, 200, 5])
+    await record(session, Store.DECISIONS, PRUNE_COMPLETED, _prune_record(rows, 1))
+    await session.commit()
+
+    with pytest.raises(DBAPIError) as refused:
+        await session.execute(text("SELECT askwell_prune_interactions()"))
+    await session.rollback()
+    assert _refused(refused.value)
+    assert await _interaction_count(session) == 3
+
+
+async def test_a_prune_record_followed_by_another_record_does_not_authorise_it(
+    factory: async_sessionmaker[AsyncSession], session: AsyncSession
+) -> None:
+    rows = await _seed_interactions(session, [400, 200, 5])
+    await record(session, Store.DECISIONS, PRUNE_COMPLETED, _prune_record(rows, 1))
+    await record(session, Store.DECISIONS, "source_added", {"name": "late"})
+    with pytest.raises(DBAPIError) as refused:
+        await session.execute(text("SELECT askwell_prune_interactions()"))
+    await session.rollback()
+    assert _refused(refused.value)
+    assert await _interaction_count(session) == 3
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("pruned_count", "1"), ("boundary_hash", "0" * 64)],
+)
+async def test_a_prune_record_that_misdescribes_the_gap_deletes_nothing(
+    factory: async_sessionmaker[AsyncSession], session: AsyncSession, field: str, value: str
+) -> None:
+    """The record `audit.verify` relies on to explain the gap must be the
+    gap: a count or boundary that does not match what the cutoff removes
+    rolls the whole transaction back, record and all."""
+    rows = await _seed_interactions(session, [400, 200, 5])
+    payload = _prune_record(rows, 2)
+    payload[field] = value
+    await record(session, Store.DECISIONS, PRUNE_COMPLETED, payload)
+    with pytest.raises(DBAPIError) as refused:
+        await session.execute(text("SELECT askwell_prune_interactions()"))
+    await session.rollback()
+    assert _refused(refused.value)
+    assert "does not describe" in str(refused.value)
+    assert await _interaction_count(session) == 3
+    decisions = (await session.execute(text("SELECT count(*) FROM audit_decisions"))).scalar_one()
+    assert decisions == 0
+
+
+async def test_the_prune_function_can_never_touch_decisions_or_other_tables(
+    database_url: str,
+) -> None:
+    """`askwell_readonly` runs model-generated SQL (C2) and must not reach
+    it; the definer role can delete interactions and nothing else."""
+    engine = create_async_engine(_async(database_url))
+    try:
+        async with engine.connect() as connection:
+
+            async def scalar(sql: str) -> object:
+                return (await connection.execute(text(sql))).scalar_one()
+
+            function = "'askwell_prune_interactions()'"
+            assert await scalar(
+                f"SELECT has_function_privilege('askwell_app', {function}, 'EXECUTE')"
+            )
+            assert not await scalar(
+                f"SELECT has_function_privilege('askwell_readonly', {function}, 'EXECUTE')"
+            )
+            assert not await scalar(
+                "SELECT bool_or(grantee = 'PUBLIC') FROM information_schema.routine_privileges "
+                "WHERE routine_name = 'askwell_prune_interactions'"
+            )
+            assert (
+                await scalar(
+                    "SELECT pg_get_userbyid(proowner) FROM pg_proc "
+                    "WHERE proname = 'askwell_prune_interactions'"
+                )
+                == "askwell_audit_prune"
+            )
+            tables = (
+                (
+                    await connection.execute(
+                        text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for table in tables:
+                for privilege in ("INSERT", "UPDATE", "DELETE", "TRUNCATE"):
+                    held = await scalar(
+                        f"SELECT has_table_privilege('askwell_audit_prune', "
+                        f"'public.{table}', '{privilege}')"
+                    )
+                    expected = table == "audit_interactions" and privilege == "DELETE"
+                    assert held == expected, f"askwell_audit_prune {privilege} on {table}"
+    finally:
+        await engine.dispose()
