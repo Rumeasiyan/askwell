@@ -344,7 +344,15 @@ case "$cmd" in
         # reads the proxy's counters, which only the API may read.
         [ "$#" -gt 0 ] || die "eval needs a suite, e.g. $SELF eval --suite smoke.v1"
         image_exists || build_image
-        "$CONTAINER" run --rm "${TTY_FLAGS[@]}" \
+        # Forwarded only when set, including when set to empty: the empty
+        # value is the point, since it is how a run measures generation
+        # without the thinking prefill (`M9-FIX-BE-215`, #769). Unset leaves
+        # the application default in charge, as every run before this did.
+        eval_env=()
+        if [ "${ASKWELL_GENERATION_THINKING_DIRECTIVE+set}" = set ]; then
+            eval_env+=(-e "ASKWELL_GENERATION_THINKING_DIRECTIVE=$ASKWELL_GENERATION_THINKING_DIRECTIVE")
+        fi
+        "$CONTAINER" run --rm "${TTY_FLAGS[@]}" "${eval_env[@]}" \
             --network "${ASKWELL_COMPOSE_NETWORK:-askwell_internal,askwell_sandbox}" \
             -e ASKWELL_DATABASE_URL="postgresql://$(_db_user):$(_db_password)@$(_db_host):5432/$(_db_name)" \
             -e ASKWELL_PROFILE="${ASKWELL_PROFILE:-balanced}" \
