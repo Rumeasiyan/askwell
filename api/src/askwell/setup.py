@@ -163,6 +163,19 @@ async def run_startup_discovery(
 
     if progress.resolved_tier is not None and progress.resolved_tier != tier:
         async with session_scope(factory) as db:
+            # Hashing took long enough for the person to act meanwhile — a
+            # manual verify that already adjusted the profile. Re-read it:
+            # if it no longer says what discovery checked against, discovery
+            # is stale and must not overwrite that adjustment or record a
+            # second one naming a tier nobody requested any more.
+            current = await get_setting(db, PROFILE_SETTING_KEY)
+            if current is not None and current != tier:
+                log.info(
+                    "model_startup_discovery_superseded",
+                    tier=tier,
+                    current_tier=current,
+                )
+                return
             await set_setting(db, PROFILE_SETTING_KEY, progress.resolved_tier)
             await record(
                 db,

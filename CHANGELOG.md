@@ -4,6 +4,19 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.55 - 2026-09-28
+
+`Fixed`: `M9-FIX-BE-207`. Explaining a column in a spreadsheet or CSV file now teaches Askwell
+about that column. Until now, answering a question such as what `st_cd` means was saved, but the
+note Askwell reads when you ask about that table stayed an unreviewed guess. Now your answer replaces
+the guess, and the next question about that table uses it. The same applies to a date column where
+you chose day-first or month-first. An answer applies only to the column it was asked about. It
+does not change a column with the same name on another sheet of the workbook, and it does not close
+a question about a same-named column in another file.
+
+`Fixed`: if you checked a model file by hand while Askwell was still checking it at startup, the
+startup check could undo your profile change. It now leaves your change in place.
+
 ## 0.7.54 - 2026-09-28
 
 `Fixed`: `M9-FIX-BE-206`. Questions Askwell answers in several steps, looking in both your documents

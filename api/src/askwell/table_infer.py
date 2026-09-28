@@ -601,6 +601,23 @@ def _column_evidence(values: list[str], row_count: int) -> dict[str, Any]:
     return column_distribution_evidence(sorted(counts.items()), row_count)
 
 
+def _column_position_evidence(
+    table_name: str, column: ColumnInference, row_count: int
+) -> dict[str, Any]:
+    """A named column's evidence, carrying the table it belongs to.
+
+    The subject is the bare column name, because that is what
+    `askwell.reapply.resolve_dependencies` matches against
+    `schema_notes.column_name` (#361). A compound `"{table}: {column}"`
+    subject matched no schema note, so an answer never reached the note the
+    query path reads. `table_name` is what stops the bare name reaching too
+    far: one `.xlsx` source holds one table per sheet, and two sheets can
+    share a column name. `resolve_dependencies` narrows to this table when
+    the key is present.
+    """
+    return {**_column_evidence(column.sample_values, row_count), "table_name": table_name}
+
+
 def build_candidates(
     table_name: str,
     header: HeaderDetection,
@@ -676,7 +693,7 @@ def build_candidates(
             candidates.append(
                 Candidate(
                     trigger="date_format",
-                    subject=f"{table_name}: {column.name}",
+                    subject=column.name,
                     question=(
                         f"*{column.name}* looks like a date in DD/MM/YYYY or MM/DD/YYYY — "
                         f"which is it? For example: {', '.join(column.sample_values[:3])}."
@@ -684,14 +701,14 @@ def build_candidates(
                     passes=True,
                     reason=column.ambiguity_reason or "date format could not be determined",
                     options=["DD/MM/YYYY (day first)", "MM/DD/YYYY (month first)"],
-                    evidence=_column_evidence(column.sample_values, len(rows)),
+                    evidence=_column_position_evidence(table_name, column, len(rows)),
                 )
             )
             continue
         candidates.append(
             Candidate(
                 trigger="table_column",
-                subject=f"{table_name}: {column.name}",
+                subject=column.name,
                 question=(
                     f"*{column.name}* {column.ambiguity_reason}. Same currency, same units?"
                     if "thousands" in (column.ambiguity_reason or "")
@@ -699,7 +716,7 @@ def build_candidates(
                 ),
                 passes=True,
                 reason=column.ambiguity_reason or "type could not be determined",
-                evidence=_column_evidence(column.sample_values, len(rows)),
+                evidence=_column_position_evidence(table_name, column, len(rows)),
             )
         )
 

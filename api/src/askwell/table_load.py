@@ -418,20 +418,33 @@ async def _date_format_overrides(
     row already is the fact, and re-deriving it here is what lets
     `reload_source` rebuild correctly no matter how many separate answers
     led to this point.
+
+    The subject is the bare column name and the table is in the evidence
+    (#361). A row raised before that change has neither `table_name` in its
+    evidence nor a bare subject, only `"{table}: {column}"`, and is still
+    read that way.
     """
     rows = await session.execute(
         text(
-            "SELECT subject, answer, options FROM clarifications "
+            "SELECT subject, answer, options, evidence->>'table_name' FROM clarifications "
             "WHERE source_id = :source_id AND status = 'answered' "
             "AND evidence->>'trigger' = 'date_format'"
         ),
         {"source_id": source_id},
     )
     overrides: dict[tuple[str, str], bool] = {}
-    for subject, answer, options in rows:
-        if not answer or ":" not in subject:
+    for subject, answer, options, evidence_table_name in rows:
+        if not answer:
             continue
-        table_name, column_name = (part.strip() for part in subject.split(":", 1))
+        if evidence_table_name:
+            table_name, column_name = evidence_table_name, subject
+        elif ": " in subject:
+            # The old format joined with `": "`. A sheet table's own colon
+            # (`data.xlsx:North`) has no space after it; Excel forbids `:` in
+            # a sheet name, so the first `": "` is always the join.
+            table_name, column_name = (part.strip() for part in subject.split(": ", 1))
+        else:
+            continue
         day_first_option = (options or [None])[0]
         overrides[(table_name, column_name)] = answer == day_first_option
     return overrides

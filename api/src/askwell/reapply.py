@@ -140,6 +140,15 @@ async def _affected_documents(
     return [row[0] for row in rows]
 
 
+def _evidence_table_name(evidence: dict[str, Any] | None) -> str | None:
+    """The table a column clarification was raised against, when its
+    evidence names one (`askwell.table_infer._column_position_evidence`)."""
+    if not evidence:
+        return None
+    table_name = evidence.get("table_name")
+    return table_name if isinstance(table_name, str) and table_name else None
+
+
 async def resolve_dependencies(
     session: AsyncSession,
     *,
@@ -182,14 +191,22 @@ async def resolve_dependencies(
     # match is deliberate (`docs/backlog/M3-it-learns-my-material.md`'s own
     # Assumption for the sibling ticket that defined this precedence,
     # `M3-STORE-BE-076`: exact match only, never fuzzy).
+    #
+    # A clarification raised against one column of one table
+    # (`askwell.table_infer`) also names that table in its evidence, and
+    # then only that table's column matches. Two sheets of one workbook can
+    # share a column name, and an answer about one says nothing about the
+    # other (#361).
+    table_name = _evidence_table_name(evidence)
     note_rows = await session.execute(
         text(
             "SELECT id, table_name, column_name FROM schema_notes "
             "WHERE source_id = :source_id AND origin = 'inferred' AND superseded_by IS NULL "
-            "AND (lower(table_name) = lower(:subject) "
-            "OR lower(column_name) = lower(:subject))"
+            "AND (CASE WHEN CAST(:table_name AS text) IS NULL "
+            "THEN lower(table_name) = lower(:subject) OR lower(column_name) = lower(:subject) "
+            "ELSE table_name = :table_name AND lower(column_name) = lower(:subject) END)"
         ),
-        {"source_id": source_id, "subject": subject},
+        {"source_id": source_id, "subject": subject, "table_name": table_name},
     )
     for note_id, table_name, column_name in note_rows:
         label = f"{table_name}.{column_name}" if column_name else table_name
@@ -200,14 +217,27 @@ async def resolve_dependencies(
     # only suppresses a subject *already* covered at raise time, so two
     # sources can each raise their own pending clarification for the same
     # abbreviation or contradiction before either is answered.
+    #
+    # A table-scoped question is only the same question when it asks about
+    # the same table of the same source. Two files with an ambiguous `date`
+    # column are two questions, and answering one must not dismiss the
+    # other (#361).
     conflict_rows = await session.execute(
         text(
             "SELECT id, source_id::text FROM clarifications "
             "WHERE status = 'pending' "
             "AND (CAST(:id AS uuid) IS NULL OR id != :id) "
-            "AND lower(subject) = lower(:subject)"
+            "AND lower(subject) = lower(:subject) "
+            "AND (CASE WHEN CAST(:table_name AS text) IS NULL "
+            "THEN evidence->>'table_name' IS NULL "
+            "ELSE source_id = :source_id AND evidence->>'table_name' = :table_name END)"
         ),
-        {"id": clarification_id, "subject": subject},
+        {
+            "id": clarification_id,
+            "subject": subject,
+            "source_id": source_id,
+            "table_name": table_name,
+        },
     )
     dependencies.extend(
         Dependency("conflict", other_id, f"source {other_source}")

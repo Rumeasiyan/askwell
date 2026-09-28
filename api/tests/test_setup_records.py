@@ -8,6 +8,7 @@ records (`docs/decisions.md`'s pattern every other decision-writing ticket
 already follows), so the chain is checked too, not just the settings row.
 """
 
+import asyncio
 import hashlib
 import json
 import time
@@ -21,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from askwell.audit import Store, verify
 from askwell.config import Settings
-from askwell.model_download import ModelDownloadManager
+from askwell.model_download import DownloadProgress, ModelDownloadManager
 from askwell.models_catalog import CATALOG, ModelSpec
 from askwell.probe import PROFILE_SETTING_KEY, apply_override
 from askwell.settings_store import get_setting, set_setting
@@ -376,6 +377,59 @@ async def test_startup_discovery_does_not_adjust_when_the_file_already_matches(
         # test actually guards is that *this* ticket's own adjustment path
         # never fires when nothing needs adjusting.
         assert await get_setting(db, PROFILE_SETTING_KEY) == "light"
+        count = (
+            await db.execute(
+                text("SELECT count(*) FROM audit_decisions WHERE kind = :kind"),
+                {"kind": PROFILE_ADJUSTED},
+            )
+        ).scalar_one()
+        assert count == 0
+
+
+async def test_startup_discovery_does_not_overwrite_an_adjustment_made_while_it_hashed(
+    factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Discovery hashes a multi-GB file in the background; a manual verify
+    can adjust the profile meanwhile. Discovery then holds a stale reading —
+    it must neither overwrite that adjustment nor record a second decision
+    naming a tier nobody requested any more."""
+    _catalog_pair(monkeypatch)
+
+    probe_path = tmp_path / "probe.json"
+    probe_path.write_text(json.dumps(_probe_payload(profile="light")), encoding="utf-8")
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    target = models_dir / "model.gguf"
+    target.write_bytes(b"y" * 8192)  # the accelerated spec's own bytes
+
+    probed_settings = settings.model_copy(
+        update={"probe_result_path": probe_path, "inference_model_path": target}
+    )
+    manager = ModelDownloadManager(target)
+
+    loop = asyncio.get_running_loop()
+    original = manager.verify_manual
+
+    async def adjust_meanwhile() -> None:
+        async with factory() as db:
+            await set_setting(db, PROFILE_SETTING_KEY, "workstation")
+            await db.commit()
+
+    def verify_while_the_person_adjusts(tier: str) -> DownloadProgress:
+        progress = original(tier)
+        asyncio.run_coroutine_threadsafe(adjust_meanwhile(), loop).result()
+        return progress
+
+    monkeypatch.setattr(manager, "verify_manual", verify_while_the_person_adjusts)
+
+    await run_startup_discovery(factory, manager, probed_settings)
+
+    async with factory() as db:
+        assert await get_setting(db, PROFILE_SETTING_KEY) == "workstation"
         count = (
             await db.execute(
                 text("SELECT count(*) FROM audit_decisions WHERE kind = :kind"),
