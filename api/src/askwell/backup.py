@@ -242,7 +242,9 @@ async def estimate(session: AsyncSession, settings: Settings) -> BackupEstimate:
     fine (this one is a preflight, not a promise).
     """
     chunk_count = (
-        await session.execute(text("SELECT count(*) FROM chunks WHERE content IS NOT NULL"))
+        await session.execute(
+            text("SELECT count(*) FROM chunks WHERE content IS NOT NULL AND superseded_at IS NULL")
+        )
     ).scalar_one()
     passphrase_protected = await passphrase.is_enabled(session)
 
@@ -549,7 +551,12 @@ async def run_job(
                 )
 
             chunk_count = (
-                await session.execute(text("SELECT count(*) FROM chunks WHERE content IS NOT NULL"))
+                await session.execute(
+                    text(
+                        "SELECT count(*) FROM chunks "
+                        "WHERE content IS NOT NULL AND superseded_at IS NULL"
+                    )
+                )
             ).scalar_one()
             passphrase_protected = await passphrase.is_enabled(session)
             # Computed once, at `enqueue` time, from the passphrase the caller

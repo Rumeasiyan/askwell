@@ -4,6 +4,16 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.51 - 2026-09-28
+
+`Fixed`: `M9-FIX-BE-203`. Re-indexing works for documents Askwell has already cited. Until now a
+re-index stopped at the chunk stage for any document an earlier answer had cited, which on a real
+library is most of the useful ones, and left them marked as needing attention with their old
+passages still in place. Now the new text replaces the old in search, and a passage an old answer
+cited is kept, unsearchable, so that answer still points at exactly the words it quoted and
+never at the new wording. Separately, a re-index no longer leaves a document showing "queued"
+forever when it had no entry in the indexing queue; it is queued for real.
+
 ## 0.7.50 - 2026-09-28
 
 `Fixed`: `M9-FIX-BE-202`. Answers read as written sentences. An answer with several cited

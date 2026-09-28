@@ -1412,6 +1412,51 @@ async def test_reindexing_a_source_requeues_every_live_document_regardless_of_st
     assert decisions[0]["documents"] == 2
 
 
+async def test_reindexing_a_document_with_no_job_row_gives_it_one(
+    session: AsyncSession,
+    tmp_path: Path,
+    unreachable_queue: Settings,
+) -> None:
+    """Issue #720: a live document whose `ingest_jobs` row is gone — emptied
+    by whatever emptied it on the dev database — was set `queued` by a
+    re-index with nothing that would ever pick it up. Every document the
+    re-index reports must have a queued job behind it."""
+    await nominate(session, str(tmp_path))
+    written(tmp_path, "contract.pdf", PDF)
+    written(tmp_path, "other.pdf", OTHER)
+    documents = await recorded(session, tmp_path, "contract.pdf", "other.pdf")
+    await session.execute(
+        text("DELETE FROM ingest_jobs WHERE document_id = :id"), {"id": documents[0]}
+    )
+    await session.execute(
+        text("UPDATE documents SET status = 'ready' WHERE id = ANY(:ids)"), {"ids": documents}
+    )
+    source_id = (
+        await session.execute(
+            text("SELECT source_id FROM documents WHERE id = :id"), {"id": documents[0]}
+        )
+    ).scalar_one()
+    await session.commit()
+
+    outcome = await ingest.reindex_source(session, source_id, unreachable_queue)
+    await session.commit()
+
+    assert outcome.documents == 2
+    rows = (
+        await session.execute(
+            text(
+                "SELECT d.id, d.status, j.state FROM documents d "
+                "LEFT JOIN ingest_jobs j ON j.document_id = d.id WHERE d.id = ANY(:ids)"
+            ),
+            {"ids": documents},
+        )
+    ).all()
+    assert len(rows) == 2
+    for _document_id, status, job_state in rows:
+        assert status == "queued"
+        assert job_state == "queued"
+
+
 async def test_reindexing_an_unknown_or_deleted_source_is_refused_by_name(
     session: AsyncSession, settings: Settings
 ) -> None:

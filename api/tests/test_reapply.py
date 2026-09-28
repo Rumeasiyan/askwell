@@ -458,6 +458,67 @@ async def test_run_job_re_embeds_a_chunk(
 
 
 @pytest.mark.asyncio
+async def test_run_job_does_not_re_embed_a_chunk_a_re_index_retired_after_it_was_queued(
+    factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`M9-FIX-BE-203`: a re-index keeps a cited passage's text but retires it.
+    A re-apply item queued before that must not give it an embedding back —
+    that would make replaced text searchable, and the check constraint
+    refuses it, which would fail the item."""
+
+    async def fake_embed(
+        self: InferenceClient, texts: list[str], **kwargs: object
+    ) -> list[list[float]]:
+        return [[0.5] * settings.embedding_dimensions for _ in texts]
+
+    monkeypatch.setattr(InferenceClient, "embed", fake_embed)
+
+    async with factory() as session:
+        source_id = await _source(session, "contracts")
+        document_id = await _document(session, source_id, "a.pdf")
+        chunk_id = await _chunk(session, document_id, content="RFQ means request for quotation")
+        clarification_id = await _clarification(session, source_id, subject="RFQ")
+        memory_id = await _memory_fact(session, subject="RFQ", fact="Request for quotation")
+        job_id = await reapply.enqueue(
+            session,
+            subject="RFQ",
+            source_id=source_id,
+            evidence=None,
+            options=None,
+            clarification_id=clarification_id,
+            memory_id=memory_id,
+        )
+        await session.execute(
+            text(
+                "UPDATE chunks SET superseded_at = now(), embedding = NULL, content_tsv = NULL "
+                "WHERE id = :id"
+            ),
+            {"id": chunk_id},
+        )
+        await session.commit()
+    assert job_id is not None
+
+    await reapply.run_job(factory, settings, job_id)
+
+    async with factory() as session:
+        job = (
+            await session.execute(
+                text("SELECT status, done_items, failed_items FROM reapply_jobs WHERE id = :id"),
+                {"id": job_id},
+            )
+        ).first()
+        assert job == ("done", 1, 0)
+        embedding = (
+            await session.execute(
+                text("SELECT embedding IS NULL FROM chunks WHERE id = :id"), {"id": chunk_id}
+            )
+        ).scalar_one()
+        assert embedding is True
+
+
+@pytest.mark.asyncio
 async def test_run_job_promotes_an_inferred_schema_note_to_the_users_answer(
     factory: async_sessionmaker[AsyncSession], settings: Settings
 ) -> None:
