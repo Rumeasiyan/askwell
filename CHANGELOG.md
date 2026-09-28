@@ -4,6 +4,18 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.50 - 2026-09-28
+
+`Fixed`: `M9-FIX-BE-202`. Answers read as written sentences. An answer with several cited
+sentences kept the space between them, and a blank line between two cited paragraphs, only in the
+stored text; on screen they ran together ("…on weekdays.Meridian Loom retail stores…"). They are
+now spaced as written. Separately, the local model sometimes copied the prompt's own templates
+into its answer — `Not covered: <the specific thing that was asked and not found>`, `Resolved by
+memory: <the fact that was in conflict>` — and they showed as answer content, including a claim
+that something you told Askwell had settled a conflict when nothing had. A copied template is now
+removed before the answer is shown or saved, and a line left naming nothing is not shown as a gap
+or a resolution. Citations are never removed with it.
+
 ## 0.7.49 - 2026-09-28
 
 `Fixed`: `M9-FIX-FE-201`. Once anything has been added, **Add a source** can still be reached by

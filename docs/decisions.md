@@ -4,6 +4,26 @@ Append-only. **Newest first.** Never edit an entry to change its meaning — if 
 
 **Bar for an entry:** something a competent person would later ask *"why is it like this?"* about. Architecture changes, dependency choices, resolved `docs/PRD.md` §11 questions, reversals. **Not** routine implementation choices — those are visible in the diff.
 
+## 2026-09-28 — `M9-FIX-BE-202`: copied prompt placeholders are stripped from the token stream, not from the rendered answer; the prompts are not changed yet
+
+**Decision.** A placeholder the model copies out of a prompt (`<the fact that was in conflict>`) is removed by `askwell.agent.placeholders.PlaceholderStripper`, chained after `ThinkStripper` at the one point `_run_generation` consumes tokens, and by `strip_placeholders` on the SQL and tool-loop answers. What counts is deliberately narrow: `<`, a determiner (`the`, `a`, `your`, …), at least one more word, `>`, never containing `[`, `]`, `=` or `"`. A `Not covered:` / `Resolved by memory:` line left naming nothing is not a gap and resolves nothing; a `Conflicting sources on :` line is still a conflict, with topic `""`. The browser mirrors the strip (`web/lib/answer-annotations.ts`) only for answers stored before this. The prompts keep their placeholders for now (#774).
+
+Separately, `AnswerProse` renders the whitespace in front of each claim (`proseParts`, `web/lib/claims.ts`) and uses `white-space: pre-line`, #726's option 1; `ClaimMatch` was not widened.
+
+**Why.** Stripping where tokens arrive, rather than when the browser renders, is what keeps C4 intact. Claim ordinals are computed server-side from the growing text and mirrored in the browser from the same text; if only the browser removed a placeholder, a sentence consisting of nothing else could stop being a claim on one side and not the other, and every citation after it would pair with the wrong sentence. Stripped at the source, the stored answer, `segment_claims`, the partial/conflict parsers, the audit record and the reader all see one text — the same argument that put `ThinkStripper` there (#220).
+
+The narrow shape was chosen over two alternatives. Matching only the three literal placeholders in today's prompts would break silently the day a prompt gains a fourth; `test_every_placeholder_in_the_prompts_is_recognised` reads the prompt files instead, so a new placeholder of an unknown shape fails a test. Matching any `<…>` would eat tags, comparisons (`x < 5 and y > 3`) and document text an answer legitimately quotes. Excluding brackets is what guarantees a strip can never take a `[n]` marker with it.
+
+Treating an emptied `Not covered:` as no gap, rather than as an unnamed gap, follows #663's recommendation: a model echoing a template is no evidence that anything was missing — in #663's case it echoed the line on an answer that was not partial at all — and "Not covered: (nothing)" tells the reader nothing. Keeping an emptied conflict line as a conflict is the opposite call for the opposite reason: the conflict is carried by the cited positions under the line, which are real, not by its topic.
+
+The prompt change (#663 option 2) was not made here. Any prompt change needs an eval run (`AGENTS.md` §4), #769 is changing the same prompts for C5, and the ticket's guarantee — no placeholder is ever shown — holds without it. The cost accepted: until #774, an echoed template produces an unnamed gap rather than a named one.
+
+**Consequences.** New answers never contain a `<the …>` placeholder in `messages.content`, the trace or the audit record. An answer whose text genuinely contains `<the something>` loses it — accepted; nothing in the corpus fixtures does. `lib/answer-annotations.test.ts` now runs in `pnpm test`; it existed since `M2-PARTIAL-FE-058` but was never listed. A concrete but invented "Resolved by memory" line still renders (#776).
+
+**Refs:** #726, #663, #774, #775, #776; `M9-FIX-BE-202`; `api/src/askwell/agent/placeholders.py`, `api/src/askwell/ask.py`, `web/lib/claims.ts`, `web/lib/answer-annotations.ts`.
+
+---
+
 ## 2026-09-25 — `M8-FIX-BE-178`: the approved disclosure is set as version `1`; the refusal it replaced stays, reachable only by setting `None`; the test pins the text by retyping it
 
 **Decision.** `askwell.online.DISCLOSURE` is the statement approved in the correction entry below, version `1`, verbatim. The code path for an undefined statement is kept (the `DISCLOSURE_UNDEFINED` refusal in `POST /ask`, `confirm_disclosure` and the interface), and its tests now set `DISCLOSURE = None` themselves rather than assert that it is `None`. The verbatim test types the statement out in `api/tests/test_online.py` rather than reading the constant back. The three suites that used a stand-in `Disclosure(version="1", text="What goes.")` to get past the gate now run against the real constant, and a new walkthrough test goes key → online → statement shown → `NOT_CONFIRMED` → confirm `1` → the request reaches the provider, through the real `_online_client`.

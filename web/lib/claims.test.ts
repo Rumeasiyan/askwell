@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { segmentClaims } from "./claims.ts";
+import { proseParts, segmentClaims } from "./claims.ts";
 
 test("a marked sentence is one claim, markers and punctuation stripped", () => {
   const claims = segmentClaims("The notice period is ninety days [1].");
@@ -65,4 +65,47 @@ test("an incomplete trailing sentence, still streaming, produces no claim yet", 
 
 test("empty text yields no claims", () => {
   assert.deepEqual(segmentClaims(""), []);
+});
+
+// `proseParts` — issue GH-726, `M9-FIX-BE-202`. What `AnswerProse` renders is
+// every text part plus each claim's `text` and `terminator`, so rendering
+// must round-trip the input with only the citation markers removed.
+function rendered(text: string): string {
+  return proseParts(text)
+    .map((part) => (part.kind === "text" ? part.text : part.claim.text + part.claim.terminator))
+    .join("");
+}
+
+test("three cited claims render with the space between them kept", () => {
+  assert.equal(
+    rendered("The store opens at 9 AM [1]. It closes at 9 PM on weekdays [2]. Sundays close at 6 PM [3]."),
+    "The store opens at 9 AM. It closes at 9 PM on weekdays. Sundays close at 6 PM.",
+  );
+});
+
+test("a blank line between two cited paragraphs survives", () => {
+  assert.equal(
+    rendered("Stores close at 9 PM on weekdays [1].\n\nRetail stores close at 8 PM on Sundays [2]."),
+    "Stores close at 9 PM on weekdays.\n\nRetail stores close at 8 PM on Sundays.",
+  );
+});
+
+test("a final claim with no punctuation is still separated from the one before", () => {
+  assert.equal(rendered("A is 1 [1]. B is 2 [2]"), "A is 1. B is 2 [2]");
+});
+
+test("uncited sentences between claims keep their own spacing", () => {
+  assert.equal(
+    rendered("Here is what I found. A is 1 [1]. That is all. B is 2 [2]."),
+    "Here is what I found. A is 1. That is all. B is 2.",
+  );
+});
+
+test("claim parts carry the same ordinals segmentClaims gives", () => {
+  const text = "Intro. A is 1 [1]. B is 2 [2].";
+  const ordinals = proseParts(text).flatMap((part) => (part.kind === "claim" ? [part.claim.ordinal] : []));
+  assert.deepEqual(
+    ordinals,
+    segmentClaims(text).map((claim) => claim.ordinal),
+  );
 });

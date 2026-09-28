@@ -10,7 +10,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { isConflict, isPartial, layoutConflict, parseAnswerAnnotations } from "./answer-annotations.ts";
+import {
+  isConflict,
+  isPartial,
+  layoutConflict,
+  parseAnswerAnnotations,
+  stripPlaceholders,
+} from "./answer-annotations.ts";
 import { segmentClaims } from "./claims.ts";
 
 test("a covered and an uncovered aspect split apart", () => {
@@ -274,4 +280,53 @@ test("a cited paragraph below the conflict line is never extended upwards", () =
       "- Memory says sixty days.",
   );
   assert.equal(result, null);
+});
+
+// Echoed prompt templates — issue GH-663, `M9-FIX-BE-202`. The fixture is the
+// answer stored on 2026-09-23 against the conflict corpus, reduced; the same
+// text `api/tests/test_placeholders.py` uses.
+const LIVE_ECHO =
+  "The return window is 30 days [1]. The 2026 policy says 45 days [2].\n\n" +
+  "Not covered: <the specific thing that was asked and not found>.\n" +
+  "Not covered: <the specific thing that was asked and not found>.\n" +
+  "Not covered: <the\n" +
+  "Resolved by memory: <the fact that was in conflict>.";
+
+test("an echoed template renders nowhere: not in the prose, not as a gap, not as a resolution", () => {
+  const result = parseAnswerAnnotations(LIVE_ECHO);
+  assert.deepEqual(result.uncovered, []);
+  assert.equal(isPartial(result), false);
+  assert.equal(result.resolvedByMemory, null);
+  assert.equal(result.cleanedText, "The return window is 30 days [1]. The 2026 policy says 45 days [2].");
+});
+
+test("a template inside a real sentence removes only the template, and keeps its citation", () => {
+  const result = parseAnswerAnnotations("The window is <the fact that was in conflict> 30 days [1].");
+  assert.equal(result.cleanedText, "The window is 30 days [1].");
+  assert.deepEqual(
+    segmentClaims(result.cleanedText).map((claim) => claim.text),
+    ["The window is 30 days"],
+  );
+});
+
+test("a real gap beside an echoed one is still named", () => {
+  const result = parseAnswerAnnotations(
+    "Hours are 9 to 5 [1].\nNot covered: <the fee>.\nNot covered: the 2026 express fee.",
+  );
+  assert.deepEqual(result.uncovered, ["the 2026 express fee"]);
+});
+
+test("an echoed conflict topic is still a conflict, with no topic to show", () => {
+  const result = parseAnswerAnnotations(
+    "Conflicting sources on <the specific fact being asked about>:\n\nOne says 30 days [1]. The other says 45 days [2].",
+  );
+  assert.equal(isConflict(result), true);
+  assert.equal(result.conflictTopic, "");
+  assert.equal(result.cleanedText, "One says 30 days [1]. The other says 45 days [2].");
+});
+
+test("tags and comparisons are not placeholders", () => {
+  for (const text of ["if x < 5 and y > 3 then", "a<b and c>d", "The <theory of change> section", '<a href="x">link</a>']) {
+    assert.equal(stripPlaceholders(text), text);
+  }
 });

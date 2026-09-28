@@ -66,6 +66,7 @@ from askwell.agent.compose import (
     delimit_schema_notes,
     flag_injection,
 )
+from askwell.agent.placeholders import has_content
 from askwell.memory import MemoryFact, SchemaNote
 from askwell.retrieve import Candidate
 
@@ -77,8 +78,11 @@ PROMPT_PATH = PROMPT_DIR / f"{PROMPT_VERSION}.md"
 # deliberately-not-fuzzy convention `askwell.agent.partial` uses for
 # "Not covered:" — a loose match would risk pulling ordinary prose into the
 # conflict signal.
-_CONFLICT_RE = re.compile(r"^Conflicting sources on\s*(.+?):\s*$")
-_MEMORY_RESOLVED_RE = re.compile(r"^Resolved by memory:\s*(.+?)\s*\.?\s*$")
+# The topic may be empty: a copied `<the specific fact being asked about>`
+# is stripped out (`askwell.agent.placeholders`), and the positions under the
+# line are still a conflict even though the model never named what about.
+_CONFLICT_RE = re.compile(r"^Conflicting sources on\s*(.*?):\s*$")
+_MEMORY_RESOLVED_RE = re.compile(r"^Resolved by memory:\s*(.*?)\s*\.?\s*$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,10 +165,13 @@ def split_conflict_answer(text: str) -> ConflictAnswer:
     for line in text.splitlines():
         stripped = line.strip()
         if topic is None and (match := _CONFLICT_RE.match(stripped)) is not None:
-            topic = match.group(1).strip()
+            topic = match.group(1).strip() if has_content(match.group(1)) else ""
+        # Emptied by a stripped placeholder, the line resolved nothing, and
+        # reporting it would claim a memory fact that does not exist (#663).
         if (
             resolved_by_memory is None
             and (match := _MEMORY_RESOLVED_RE.match(stripped)) is not None
+            and has_content(match.group(1))
         ):
             resolved_by_memory = match.group(1).strip()
     return ConflictAnswer(topic=topic, resolved_by_memory=resolved_by_memory)

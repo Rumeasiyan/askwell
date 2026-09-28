@@ -55,3 +55,32 @@ export function segmentClaims(text: string): ClaimMatch[] {
   }
   return claims;
 }
+
+/** One run of `AnswerProse`'s output: plain text between claims, or a claim. */
+export type ProsePart = { kind: "text"; text: string } | { kind: "claim"; claim: ClaimMatch };
+
+/**
+ * The prose `AnswerProse` renders, in order: the text between claims and the
+ * claims themselves. `M9-FIX-BE-202`, issue GH-726.
+ *
+ * A claim's match runs back to the previous sentence's terminator, so the
+ * space or blank line between two cited sentences sits at the front of the
+ * second match — and `text` is trimmed. Printing only `text` and the gaps
+ * between matches dropped it, and "A is 1 [1]. B is 2 [2]." rendered as
+ * "A is 1.B is 2.". The whitespace is emitted here as its own text part, in
+ * front of the claim, so ordinals and `start`/`end` stay exactly what the
+ * server computes (`askwell.agent.claims`).
+ */
+export function proseParts(text: string, claims: ClaimMatch[] = segmentClaims(text)): ProsePart[] {
+  const parts: ProsePart[] = [];
+  let cursor = 0;
+  for (const claim of claims) {
+    const leading = /^\s*/.exec(text.slice(claim.start, claim.end))![0];
+    const gap = text.slice(cursor, claim.start) + leading;
+    if (gap !== "") parts.push({ kind: "text", text: gap });
+    parts.push({ kind: "claim", claim });
+    cursor = claim.end;
+  }
+  if (cursor < text.length) parts.push({ kind: "text", text: text.slice(cursor) });
+  return parts;
+}

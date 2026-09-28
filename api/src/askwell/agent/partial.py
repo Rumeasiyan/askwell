@@ -27,6 +27,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from askwell.agent.compose import ComposedPrompt, delimit_candidates, flag_injection
+from askwell.agent.placeholders import has_content
 from askwell.retrieve import Candidate
 
 PROMPT_DIR = Path(__file__).parent / "prompts"
@@ -36,7 +37,7 @@ PROMPT_PATH = PROMPT_DIR / f"{PROMPT_VERSION}.md"
 # Sentence-initial, one per line, matching exactly what the prompt asks the
 # model to write — deliberately not a fuzzy match, since a loose pattern
 # would risk pulling ordinary prose into the uncovered list.
-_UNCOVERED_RE = re.compile(r"^Not covered:\s*(.+?)\s*\.?\s*$")
+_UNCOVERED_RE = re.compile(r"^Not covered:\s*(.*?)\s*\.?\s*$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,9 +81,12 @@ def split_partial_answer(text: str) -> PartialAnswer:
     this only extracts them so the turn can be marked partial and the gap
     named on the trace and audit record without re-parsing prose later.
     """
+    # A line whose placeholder was stripped (`askwell.agent.placeholders`)
+    # names nothing, so it is not a gap — counting it would mark the turn
+    # partial with an empty aspect (issue #663).
     uncovered = [
         match.group(1).strip()
         for line in text.splitlines()
-        if (match := _UNCOVERED_RE.match(line.strip())) is not None
+        if (match := _UNCOVERED_RE.match(line.strip())) is not None and has_content(match.group(1))
     ]
     return PartialAnswer(uncovered=tuple(uncovered))

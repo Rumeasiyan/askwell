@@ -89,6 +89,7 @@ from askwell.agent.compose import ComposedPrompt
 from askwell.agent.conflict import compose_conflict, split_conflict_answer
 from askwell.agent.loop import LoopContinuation, LoopResult, ToolCallEvent, run_tool_loop
 from askwell.agent.partial import split_partial_answer
+from askwell.agent.placeholders import PlaceholderStripper, strip_placeholders
 from askwell.agent.sql_generate import (
     GenerationReason,
     generate_candidate_query,
@@ -1548,8 +1549,8 @@ async def _run_generation(
             log.exception("ask_sql_turn_failed", message_id=str(turn.message_id))
 
     if sql_answer is not None:
-        turn.text = sql_answer.text
-        turn.emit("token", {"text": sql_answer.text})
+        turn.text = strip_placeholders(sql_answer.text)
+        turn.emit("token", {"text": turn.text})
         sql_result = sql_answer.sql_result
         status = sql_answer.status
         if sql_answer.schema_step is not None:
@@ -1777,8 +1778,8 @@ async def _run_generation(
                 "step",
                 {"label": "Stopped after 8 steps for this question.", "kind": "tool"},
             )
-        turn.text = loop_answer.text
-        turn.emit("token", {"text": loop_answer.text})
+        turn.text = strip_placeholders(loop_answer.text)
+        turn.emit("token", {"text": turn.text})
         status = "completed"
         trace_steps.extend(step.as_dict() for step in loop_answer.steps)
         injection_flagged = any(step.injection_flagged for step in loop_answer.steps)
@@ -2151,13 +2152,17 @@ async def _run_generation(
                 # the same text — issue #220, where a rehearsed line inside the
                 # reasoning was counted as a real claim.
                 stripper = ThinkStripper()
+                # Then any prompt-template placeholder the model copied into
+                # its answer (issue #663): same point, same reason — one text
+                # for the store, the parsers, `segment_claims` and the reader.
+                placeholders = PlaceholderStripper()
                 try:
                     async for chunk in stream:
                         if turn.stop_requested:
                             await stream.aclose()
                             status = "stopped"
                             break
-                        visible = stripper.feed(chunk.text) if chunk.text else ""
+                        visible = placeholders.feed(stripper.feed(chunk.text)) if chunk.text else ""
                         if visible:
                             turn.text += visible
                             turn.emit("token", {"text": visible})
@@ -2225,7 +2230,7 @@ async def _run_generation(
                     turn.model_identity = {"source": "online", "display_name": backend.model}
                 break
 
-            tail = stripper.flush()
+            tail = placeholders.feed(stripper.flush()) + placeholders.flush()
             if tail:
                 turn.text += tail
                 turn.emit("token", {"text": tail})

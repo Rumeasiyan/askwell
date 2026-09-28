@@ -15,16 +15,32 @@
 
 import { segmentClaims } from "./claims.ts";
 
-const NOT_COVERED_RE = /^Not covered:\s*(.+?)\s*\.?\s*$/;
-const CONFLICT_RE = /^Conflicting sources on\s*(.+?):\s*$/;
-const RESOLVED_BY_MEMORY_RE = /^Resolved by memory:\s*(.+?)\s*\.?\s*$/;
+const NOT_COVERED_RE = /^Not covered:\s*(.*?)\s*\.?\s*$/;
+const CONFLICT_RE = /^Conflicting sources on\s*(.*?):\s*$/;
+const RESOLVED_BY_MEMORY_RE = /^Resolved by memory:\s*(.*?)\s*\.?\s*$/;
+
+// Mirror of `askwell.agent.placeholders`. The server now strips a copied
+// prompt placeholder (`<the fact that was in conflict>`) before the answer is
+// streamed or stored, so a new answer never carries one; this is for answers
+// stored before it did (issue GH-663). Same narrow shape: `<`, a determiner,
+// at least one more word, `>` — never a tag, a comparison, or a `[n]` marker.
+const DETERMINER = "(?:the|a|an|one|your|some|each|any)";
+const PLACEHOLDER_BODY = '[^<>\\[\\]="\\n]{0,120}';
+const CLOSED_PLACEHOLDER_RE = new RegExp(`[ \\t]*<${DETERMINER}[ \\t]${PLACEHOLDER_BODY}>`, "gi");
+const UNCLOSED_PLACEHOLDER_RE = new RegExp(`[ \\t]*<${DETERMINER}(?:[ \\t]${PLACEHOLDER_BODY})?$`, "gim");
+const HAS_CONTENT_RE = /[\p{L}\p{N}]/u;
+
+export function stripPlaceholders(text: string): string {
+  return text.replace(CLOSED_PLACEHOLDER_RE, "").replace(UNCLOSED_PLACEHOLDER_RE, "");
+}
 
 export interface AnswerAnnotations {
   /** In the order the model wrote them; not de-duplicated — matches
    * `PartialAnswer.uncovered` exactly. */
   uncovered: string[];
   /** The fact named on the "Conflicting sources on ...:" line, or `null`
-   * when this answer presents no conflict. */
+   * when this answer presents no conflict. `""` when the line named nothing
+   * (a stripped placeholder): still a conflict, with no topic to show. */
   conflictTopic: string | null;
   /** The fact named on the "Resolved by memory:" line — always `null` in
    * M2, since nothing composes a `<memory-fact>` block yet
@@ -78,19 +94,22 @@ export function parseAnswerAnnotations(text: string): AnswerAnnotations {
   const kept: string[] = [];
   let conflictLine: number | null = null;
 
-  for (const line of text.split("\n")) {
+  for (const line of stripPlaceholders(text).split("\n")) {
     const stripped = line.trim();
 
+    // A label line left naming nothing once its placeholder is gone is still
+    // lifted out of the prose, but is not a gap and resolved nothing — the
+    // same rule `split_partial_answer`/`split_conflict_answer` apply.
     const notCovered = NOT_COVERED_RE.exec(stripped);
     if (notCovered !== null) {
-      uncovered.push(notCovered[1]!.trim());
+      if (HAS_CONTENT_RE.test(notCovered[1]!)) uncovered.push(notCovered[1]!.trim());
       continue;
     }
 
     if (conflictTopic === null) {
       const conflict = CONFLICT_RE.exec(stripped);
       if (conflict !== null) {
-        conflictTopic = conflict[1]!.trim();
+        conflictTopic = HAS_CONTENT_RE.test(conflict[1]!) ? conflict[1]!.trim() : "";
         conflictLine = kept.length;
         continue;
       }
@@ -99,7 +118,7 @@ export function parseAnswerAnnotations(text: string): AnswerAnnotations {
     if (resolvedByMemory === null) {
       const resolved = RESOLVED_BY_MEMORY_RE.exec(stripped);
       if (resolved !== null) {
-        resolvedByMemory = resolved[1]!.trim();
+        if (HAS_CONTENT_RE.test(resolved[1]!)) resolvedByMemory = resolved[1]!.trim();
         continue;
       }
     }
