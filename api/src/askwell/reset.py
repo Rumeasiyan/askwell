@@ -69,7 +69,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from askwell import online, passphrase, sandbox
+from askwell import online, passphrase, sandbox, worker_unlock
 from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
@@ -241,6 +241,8 @@ def register_reset(
             before = await perform(db, files=files)
         # Committed. Only now what cannot be rolled back (module docstring).
         passphrase.forget_unlocked_key()
+        # The worker forgets it too (`askwell.worker_unlock`, `M9-FIX-BE-205`).
+        await worker_unlock.sync(settings)
         # The conversations are gone, so are their online-AI authorisations
         # (`M8-ONLINE-SEC-169`). Nothing to record — the audit tables were
         # just emptied with them. Credentials are forgotten before Redis is

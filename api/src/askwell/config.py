@@ -102,6 +102,15 @@ class Settings(BaseSettings):
     # on a bind mount needs no route at all. See docs/decisions.md.
     inference_socket: Path = Path("/run/askwell/inference.sock")
 
+    # How the API hands its unlocked passphrase key to the worker
+    # (`askwell.worker_unlock`, `M9-FIX-BE-205`). The worker listens; the API
+    # connects. Same mount as the inference socket, for the same reason: no
+    # route is involved, and the key never touches Redis or a file. The
+    # interval is how soon a restarted worker is brought back in step with an
+    # API that is still unlocked.
+    worker_unlock_socket: Path = Path("/run/askwell/worker-unlock.sock")
+    worker_unlock_sync_seconds: float = Field(default=5.0, gt=0, le=300)
+
     # Three roles, three processes, three models. One llama.cpp process cannot
     # serve all three: reranking needs `--reranking` and a reranker model,
     # which is mutually exclusive with generation, and a generation model's
@@ -617,6 +626,7 @@ class Settings(BaseSettings):
         "inference_model_path",
         "models_dir",
         "inference_socket",
+        "worker_unlock_socket",
         "trace_dir",
         "export_dir",
         "backup_dir",

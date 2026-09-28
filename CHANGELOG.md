@@ -4,6 +4,16 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.53 - 2026-09-28
+
+`Fixed`: `M9-FIX-BE-205`. Setting a passphrase no longer stops new files being indexed. Until now,
+once a passphrase was set, every file added afterwards stopped part-way and was eventually marked
+as failed, even after Askwell was unlocked. Unlocking Askwell now unlocks the background indexer
+too, so added folders index normally. While Askwell is locked, new files wait and the queue says
+they are waiting for your passphrase. They are not marked failed, and they carry on by themselves
+once you unlock. Restarting Askwell still locks everything until the passphrase is entered again.
+A live database connection's background checks work again once unlocked, for the same reason.
+
 ## 0.7.52 - 2026-09-28
 
 `Fixed`: `M9-FIX-FE-204`. Telling Askwell which of two conflicting documents is current now saves

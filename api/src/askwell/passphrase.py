@@ -26,26 +26,21 @@ module ever comparing the passphrase text to anything on disk.
 Writing it to the run-directory bind mount the way the install secret itself
 lives there would defeat the feature outright — that mount is host-persisted,
 so a cached key surviving a container restart is exactly the "prompt before
-anything decrypts" requirement failing silently. The cost is real and is
-recorded rather than hidden: the API process and the worker process do not
-share one unlock — see the module-level docstring note below and the issue
-filed for it.
+anything decrypts" requirement failing silently. Each process holds its own
+unlock — see the next paragraph for how the worker gets one.
 
-**Known architectural gap, filed rather than silently worked around:** `api`
-and `worker` are separate OS processes (`compose.yaml`), each with its own
-copy of this module's in-memory state. The API process unlocks when the user
-enters the passphrase through `/settings/passphrase/unlock`. The worker
-process has no interactive surface at all, so it never unlocks — a live
-connection's background introspection and health check
-(`askwell.connections.run_introspection`, `check_connection_health`) fail
-`CredentialsLocked` for as long as a passphrase is set, regardless of what the
-API process's own state is. This is the correct failure (locked stays locked,
-nothing decrypts silently), but it means those two background jobs are
-permanently non-functional once a passphrase is set, which is a real product
-gap for M4's live-connection features. Filed as its own issue rather than
-patched here — cross-process key sharing needs a mechanism (a local socket, a
-signal through Redis) that is a change to C1's security boundary in its own
-right, not a two-line fix inside a 3-4 hour ticket.
+**The worker is unlocked by the API, never by anyone else.** `api` and
+`worker` are separate OS processes (`compose.yaml`), each with its own copy of
+this module's in-memory state, and only the API has a surface a person can
+type into. Until `M9-FIX-BE-205` the worker therefore never unlocked, and once
+a passphrase was set no new document finished indexing (#508, #504).
+`askwell.worker_unlock` now hands the API's derived key to the worker over a
+Unix socket on the run-directory mount, kernel to kernel, never through Redis
+and never onto disk; the worker checks it against the verifier before taking
+it (`adopt_key`), so a key that is not the right one is refused there too.
+The worker mirrors the API: API locked, worker locked; a fresh API process
+locks the worker at startup, so "restart prompts for the passphrase before
+anything decrypts" stays true for the whole install, not just one process.
 """
 
 from __future__ import annotations
@@ -230,8 +225,31 @@ async def is_enabled(session: AsyncSession) -> bool:
 
 
 async def status(session: AsyncSession) -> dict[str, bool]:
-    enabled = await is_enabled(session)
-    return {"enabled": enabled, "locked": enabled and _unlocked_key is None}
+    verifier_b64 = await get_setting(session, VERIFIER_KEY)
+    enabled = verifier_b64 is not None
+    return {"enabled": enabled, "locked": enabled and not _holds_current_key(verifier_b64)}
+
+
+def held_key() -> bytes | None:
+    """This process's cached key, for `askwell.worker_unlock` to hand to the
+    worker. Never logged, never returned over HTTP."""
+    return _unlocked_key
+
+
+def _holds_current_key(verifier_b64: str | None) -> bool:
+    """Whether the cached key opens the verifier on file *now*.
+
+    Checked rather than assumed, because the key can go stale under a process
+    that did not make the change: the API changes the passphrase, and the
+    worker still holds the old key until the API hands it the new one. A
+    stale key must read as locked — encrypting a new document's passages
+    under it would leave them unreadable by every other process.
+    """
+    return (
+        _unlocked_key is not None
+        and verifier_b64 is not None
+        and _verify(_unlocked_key, verifier_b64)
+    )
 
 
 def _verify(key: bytes, verifier_b64: str) -> bool:
@@ -252,10 +270,11 @@ async def current_key(session: AsyncSession, settings: Settings) -> bytes:
     not yet unlocked: `Locked` — the caller's job is to report that, not
     guess at a key that will not work.
     """
-    if not await is_enabled(session):
+    verifier_b64 = await get_setting(session, VERIFIER_KEY)
+    if verifier_b64 is None:
         install_secret = crypto.load_or_create_install_secret(settings.install_secret_path)
         return crypto.derive_key(install_secret)
-    if _unlocked_key is None:
+    if _unlocked_key is None or not _holds_current_key(verifier_b64):
         raise Locked("A passphrase is set. Unlock before anything decrypts.")
     return _unlocked_key
 
@@ -416,6 +435,25 @@ async def unlock(session: AsyncSession, settings: Settings, passphrase: str) -> 
     log.info("passphrase_unlocked")
 
 
+async def adopt_key(session: AsyncSession, key: bytes) -> bool:
+    """Take a key another Askwell process derived — the worker's half of
+    `askwell.worker_unlock`. `M9-FIX-BE-205`.
+
+    Verified against the verifier on file before it is cached, exactly as a
+    typed passphrase is: whatever is on the other end of the socket, a key
+    that does not open the verifier is refused and nothing changes. The
+    passphrase itself never reaches this process, only the key derived from
+    it, which is what this process would hold after `unlock` anyway.
+    """
+    global _unlocked_key
+    verifier_b64 = await get_setting(session, VERIFIER_KEY)
+    if verifier_b64 is None or not _verify(key, verifier_b64):
+        return False
+    _unlocked_key = key
+    log.info("passphrase_unlocked_by_api")
+    return True
+
+
 class StrengthRequest(BaseModel):
     passphrase: str
 
@@ -441,7 +479,16 @@ class UnlockRequest(BaseModel):
 def register_passphrase(
     app: FastAPI, settings: Settings, factory: async_sessionmaker[AsyncSession]
 ) -> None:
-    """`/settings/passphrase*` — `docs/ux/settings.md` §4 and §8."""
+    """`/settings/passphrase*` — `docs/ux/settings.md` §4 and §8.
+
+    Every route that changes what this process holds brings the worker into
+    step before answering (`askwell.worker_unlock`, `M9-FIX-BE-205`), so a
+    folder added straight after unlocking indexes rather than waits for the
+    next sync. A worker that is not running is not an error here: the sync
+    timer catches it up when it is.
+    """
+    # Deferred: `askwell.worker_unlock` imports this module.
+    from askwell import worker_unlock
 
     @app.get("/settings/passphrase")
     async def get_status() -> JSONResponse:
@@ -473,6 +520,7 @@ def register_passphrase(
                 return JSONResponse({"error": str(error)}, status_code=400)
             except content_encryption.MigrationInProgress as error:
                 return JSONResponse({"error": str(error)}, status_code=409)
+            await worker_unlock.sync(settings)
             return JSONResponse({"enabled": True})
 
     @app.post("/settings/passphrase/change")
@@ -488,6 +536,7 @@ def register_passphrase(
                 return JSONResponse({"error": str(error)}, status_code=400)
             except content_encryption.MigrationInProgress as error:
                 return JSONResponse({"error": str(error)}, status_code=409)
+            await worker_unlock.sync(settings)
             return JSONResponse({"enabled": True})
 
     @app.post("/settings/passphrase/remove")
@@ -501,6 +550,7 @@ def register_passphrase(
                 return JSONResponse({"error": str(error)}, status_code=401)
             except content_encryption.MigrationInProgress as error:
                 return JSONResponse({"error": str(error)}, status_code=409)
+            await worker_unlock.sync(settings)
             return JSONResponse(
                 {
                     "enabled": False,
@@ -522,4 +572,5 @@ def register_passphrase(
                 return JSONResponse({"error": str(error)}, status_code=400)
             except IncorrectPassphrase as error:
                 return JSONResponse({"error": str(error)}, status_code=401)
+            await worker_unlock.sync(settings)
             return JSONResponse({"locked": False})

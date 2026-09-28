@@ -14,7 +14,7 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from askwell import __version__, ask, redis_client
+from askwell import __version__, ask, redis_client, worker_unlock
 from askwell.ask import register_ask
 from askwell.assistant import read as read_assistant
 from askwell.backup import register_backup
@@ -143,9 +143,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         discovery_task.add_done_callback(report_task_failure(settings, "api"))
         app.state.model_discovery_task = discovery_task
 
+    # Keeps the worker's passphrase unlock in step with this process's
+    # (`askwell.worker_unlock`, `M9-FIX-BE-205`). Unconditional: it needs no
+    # database of its own, and its first pass locks a worker still holding a
+    # key from before this process started.
+    unlock_sync_task = asyncio.create_task(worker_unlock.keep_in_step(settings))
+    unlock_sync_task.add_done_callback(report_task_failure(settings, "api"))
+
     try:
         yield
     finally:
+        unlock_sync_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await unlock_sync_task
         pending_reapply: asyncio.Task[None] | None = getattr(app.state, "model_reapply_task", None)
         if pending_reapply is not None:
             pending_reapply.cancel()
