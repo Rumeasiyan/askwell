@@ -19,6 +19,7 @@ from askwell.ask import register_ask
 from askwell.assistant import read as read_assistant
 from askwell.backup import register_backup
 from askwell.config import ConfigurationError, Environment, Settings, load_settings
+from askwell.conflict_resolution import register_conflict_resolution
 from askwell.crash_report import (
     install_excepthook,
     install_loop_handler,
@@ -192,6 +193,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_documents(app, resolved, app.state.sessions)
     register_review(app, resolved, app.state.sessions)
     register_memory(app, resolved, app.state.sessions)
+    register_conflict_resolution(app, app.state.sessions)
     register_setup(app, resolved, app.state.sessions)
     register_probe(app, resolved, app.state.sessions)
     register_model_select(app, resolved, app.state.sessions)

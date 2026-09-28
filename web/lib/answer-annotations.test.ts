@@ -272,6 +272,71 @@ test("lines above the conflict line stop at the first uncited one", () => {
   );
 });
 
+// GH-727: with the conflict line last, the lines above it are boxed only
+// when they cannot hold anything but the positions. Each of these used to box
+// an unrelated cited sentence as one side of the disagreement.
+test("an unrelated cited paragraph above the positions is never boxed", () => {
+  const { layout: result } = layout(
+    "Payment is due in 45 days [1].\n" +
+      "\n" +
+      "Notice is ninety days [2].\n" +
+      "\n" +
+      "Notice is sixty days [3].\n" +
+      "\n" +
+      "Conflicting sources on the notice period:\n" +
+      "The files disagree.",
+  );
+  assert.equal(result, null);
+});
+
+test("three cited sentences above a last conflict line stay prose", () => {
+  const { layout: result } = layout(
+    "Stores open at 10 AM on weekdays [1].\n" +
+      "\n" +
+      "Stores close at 9 PM on weekdays [2].\n" +
+      "\n" +
+      "Stores close at 8 PM on weekdays [3].\n" +
+      "\n" +
+      "Conflicting sources on store closing times:",
+  );
+  assert.equal(result, null);
+});
+
+test("text under a last-looking conflict line keeps the lines above as prose", () => {
+  const { layout: result } = layout(
+    "Payment is due in 45 days [1].\n" +
+      "\n" +
+      "Notice is ninety days [2].\n" +
+      "\n" +
+      "Conflicting sources on the notice period:\n" +
+      "Memory says sixty days.",
+  );
+  assert.equal(result, null);
+});
+
+// The live answer of 2026-09-28 (0.7.51) to GH-643's question, reduced: the
+// positions as a list above the line, uncited text after it.
+test("two listed positions above the line are boxed even with text after it", () => {
+  const { layout: result } = layout(
+    "There is a conflict regarding the closing time for Meridian Loom retail stores on weekdays:\n" +
+      "\n" +
+      "- Meridian Loom retail stores close at 9 PM on weekdays [1].\n" +
+      "- Meridian Loom retail stores close at 8 PM on weekdays [2].\n" +
+      "\n" +
+      "Conflicting sources on weekday closing time:\n" +
+      "\n" +
+      "(Note: The retrieved content contains conflicting information about the closing time.)",
+  );
+  assert.deepEqual(
+    result!.positions.map((position) => position.ordinal),
+    [1, 2],
+  );
+  assert.equal(
+    result!.after,
+    "(Note: The retrieved content contains conflicting information about the closing time.)",
+  );
+});
+
 test("a cited paragraph below the conflict line is never extended upwards", () => {
   const { layout: result } = layout(
     "Payment is due in 45 days [1].\n" +
