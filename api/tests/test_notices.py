@@ -25,6 +25,7 @@ import pytest
 
 from askwell.notices import (
     DISALLOWED_LICENSES,
+    KNOWN_LICENSES,
     MODEL_NOTICES,
     ModelNotice,
     disallowed_tokens,
@@ -217,12 +218,132 @@ def test_gate_still_refuses_a_non_commercial_model(
     assert "disallowed licence CC-BY-NC-4.0" in problems[0]
 
 
+# --- `M9-FIX-SEC-209`, issue #755: an unrecognised licence fails to review ---
+
+
+@pytest.mark.parametrize(
+    "free_text",
+    [
+        "AGPLv3",
+        "GNU AGPL v3",
+        "GNU Affero General Public License v3",
+        "GNU Affero General Public License v3 or later",
+        "GNU GPLv2",
+        "GPL v2 only",
+        "GNU General Public License v2",
+        "CC BY-NC 4.0",
+        "Creative Commons Attribution-NonCommercial 4.0",
+    ],
+)
+def test_free_text_copyleft_or_non_commercial_licence_fails_the_gate(
+    generator: ModuleType, free_text: str
+) -> None:
+    # Every row of #755's table passed before this change.
+    assert unclear_tokens(free_text), free_text
+    problems = generator.check([_runtime(generator, "fake-free-text", free_text)], [])
+    # At least one: "v3 or later" splits on " OR " and reports each half.
+    assert problems, free_text
+    assert all("fake-free-text" in p and "needs a decision" in p for p in problems)
+
+
+def test_a_genuinely_new_permissive_licence_fails_and_is_reviewed(
+    generator: ModuleType,
+) -> None:
+    # The ticket's edge case: the gate cannot tell a new permissive licence
+    # from a new restrictive one, so it asks rather than guesses.
+    assert unclear_tokens("Blue Oak Model License 1.0.0") == ["BLUE OAK MODEL LICENSE 1.0.0"]
+    assert len(generator.check([_runtime(generator, "fake-new", "BlueOak-1.0.0")], [])) == 1
+
+
+def test_an_unknown_token_inside_a_compound_expression_is_named() -> None:
+    assert unclear_tokens("MIT AND GNU Affero GPL") == ["GNU AFFERO GPL"]
+    assert unclear_tokens("BSD-3-Clause, Apache-2.0, dependency licenses") == [
+        "DEPENDENCY LICENSES"
+    ]
+
+
+def test_spdx_grouping_parentheses_do_not_hide_a_licence() -> None:
+    assert disallowed_tokens("(AGPL-3.0-only OR MIT)") == ["AGPL-3.0-ONLY"]
+    assert unclear_tokens("(MIT OR Apache-2.0)") == []
+    assert unclear_tokens("(MIT AND Zlib)") == []
+
+
+def test_a_licence_is_never_both_known_and_disallowed() -> None:
+    assert not KNOWN_LICENSES & DISALLOWED_LICENSES
+    for token in KNOWN_LICENSES:
+        assert token == token.upper()
+        assert " " not in token, "free text is mapped to SPDX in the generator, not listed"
+
+
+def test_every_licence_askwell_ships_today_is_known_or_disallowed(
+    generator: ModuleType,
+) -> None:
+    # The SPDX forms in NOTICES.md as generated on 2026-09-28, after the
+    # generator's free-text mapping. A token missing here would turn the
+    # release gate red on a licence already reviewed.
+    for expression in (
+        "MIT",
+        "MIT-0",
+        "MIT-CMU",
+        "BSD-2-Clause",
+        "BSD-3-Clause",
+        "Apache-2.0",
+        "ISC",
+        "0BSD",
+        "PSF-2.0",
+        "MPL-2.0 AND MIT",
+        "MIT OR Apache-2.0",
+        "MIT AND PSF-2.0",
+        "Apache-2.0 OR BSD-3-Clause",
+        "Apache-2.0 OR BSD-2-Clause",
+        "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0",
+        "LGPL-3.0-only",
+        "LGPL-3.0-or-later",
+        "GPL-3.0-or-later",
+        "CC-BY-4.0",
+    ):
+        assert unclear_tokens(expression) == [], expression
+        assert disallowed_tokens(expression) == [], expression
+
+
+def test_free_text_is_resolved_by_mapping_the_string_not_the_package(
+    generator: ModuleType,
+) -> None:
+    for spdx in generator._FREE_TEXT_TO_SPDX.values():
+        assert unclear_tokens(spdx) == [], spdx
+        assert disallowed_tokens(spdx) == [], spdx
+    raw = _FakeDistribution("any-package-at-all", [], license_field="MIT License")
+    assert generator._python_license(raw) == "MIT"
+    unmapped = _FakeDistribution("fake-agpl-text", [], license_field="GNU Affero GPL v3")
+    assert generator._python_license(unmapped) == "GNU Affero GPL v3"
+
+
+def test_web_licence_names_get_the_same_mapping(generator: ModuleType, tmp_path: Path) -> None:
+    licences = tmp_path / "web-licenses.json"
+    licences.write_text(
+        json.dumps(
+            {
+                "MIT License": [{"name": "fake-mit", "versions": ["1.0.0"]}],
+                "AGPLv3": [{"name": "fake-agpl", "versions": ["2.0.0"]}],
+            }
+        )
+    )
+    web = generator.collect_web_dependencies(licences)
+    by_name = {d.name: d.license for d in web}
+    assert by_name == {"fake-mit": "MIT", "fake-agpl": "AGPLv3"}
+    problems = generator.check([], web)
+    assert len(problems) == 1
+    assert "fake-agpl" in problems[0]
+
+
 class _FakeDistribution:
-    def __init__(self, name: str, classifiers: list[str]) -> None:
+    def __init__(self, name: str, classifiers: list[str], license_field: str = "") -> None:
         self.metadata = Message()
         self.metadata["Name"] = name
         for classifier in classifiers:
             self.metadata["Classifier"] = classifier
+        if license_field:
+            self.metadata["License"] = license_field
 
 
 def test_versioned_gpl_classifier_wins_over_the_bare_one(generator: ModuleType) -> None:

@@ -16,6 +16,25 @@ set -eu
 : "${REDIS_WORKER_PASSWORD:?REDIS_WORKER_PASSWORD is not set. Set it in .env (C8); the installer generates it.}"
 : "${REDIS_PROXY_PASSWORD:?REDIS_PROXY_PASSWORD is not set. Set it in .env (C8); the installer generates it.}"
 
+# A `change-me*` value is the placeholder `.env.example` publishes in this
+# repository, so it is no more a secret than an empty one (`M9-FIX-SEC-209`,
+# issue #750): anything that could read it could authenticate as `api` and
+# write a grant the egress proxy honours. The installers replace every
+# `change-me*` value; a hand-copied `.env` stops here instead.
+placeholders=""
+for name in REDIS_API_PASSWORD REDIS_WORKER_PASSWORD REDIS_PROXY_PASSWORD; do
+    eval "value=\${$name}"
+    case "$value" in
+        change-me*) placeholders="$placeholders $name" ;;
+    esac
+done
+if [ -n "$placeholders" ]; then
+    echo "Refusing to start: still the public placeholder from .env.example:$placeholders." >&2
+    echo "Run the installer, which generates real passwords, or set each to a long random value in .env (C8)." >&2
+    exit 1
+fi
+unset value placeholders
+
 template="$(dirname "$0")/users.acl"
 rendered_dir=/tmp/askwell-redis
 umask 077

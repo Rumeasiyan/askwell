@@ -24,12 +24,17 @@ dependency is judged the same way. It does not include LGPL or CC-BY either —
 weak copyleft and attribution-only terms are GPLv3-compatible and flagging
 them would make the check cry wolf.
 
-`UNCLEAR_LICENSES` is the other half: a licence that might be either side of
-that line, such as a bare "GPL" (GPL-2.0-only is refused, GPL-2.0-or-later is
-not, and "GPL" says neither). It is not allowed by default — the gate fails
-and a person decides, as with a package whose licence could not be read at
-all. `scripts/generate_notices.py` is the one place both lists are applied to
-what is actually installed.
+`KNOWN_LICENSES` is the other half, and it is an allow-list, not a second
+deny-list (`M9-FIX-SEC-209`, issue #755). Any token on neither list is
+*unclear*: the gate fails and a person decides. That covers a licence that
+might be either side of the line, such as a bare "GPL" (GPL-2.0-only is
+refused, GPL-2.0-or-later is not, and "GPL" says neither), a package whose
+licence could not be read at all, and every free-text spelling — "AGPLv3",
+"GNU Affero General Public License", "CC BY-NC 4.0" — that a list of refused
+spellings would always be one behind. A person resolves an unknown string
+once, by mapping it to SPDX in `scripts/generate_notices.py`, never by naming
+a package. `scripts/generate_notices.py` is the one place both lists are
+applied to what is actually installed.
 """
 
 from __future__ import annotations
@@ -163,23 +168,47 @@ DISALLOWED_LICENSES: frozenset[str] = frozenset(
     }
 )
 
-# A GPL named without a version, or a version without "only"/"or later" where
-# that is exactly what decides compatibility. Not SPDX identifiers — the
-# spellings packages actually write in free-text licence fields — so they are
-# compared after the same upper-casing as `DISALLOWED_LICENSES`. "UNVERIFIED"
-# and "UNKNOWN" are what the generator and pnpm write when there is no
-# licence to read.
-UNCLEAR_LICENSES: frozenset[str] = frozenset(
+# SPDX identifiers that are GPLv3-compatible, permit redistribution and
+# commercial use, and actually occur in what Askwell ships or were named when
+# this list was made (#755). Upper-cased, like `DISALLOWED_LICENSES`. Adding
+# one is a licence decision: check it against C9 first, and never add a
+# free-text spelling here — map it to SPDX in `scripts/generate_notices.py`.
+# A licence missing from this list fails the gate as unclear, which is the
+# intended default for a genuinely new permissive one too.
+KNOWN_LICENSES: frozenset[str] = frozenset(
     {
-        "GPL",
-        "GNU GPL",
-        "GNU GENERAL PUBLIC LICENSE",
-        "GPL-2",
-        "GPL2",
-        "GPLV2",
-        "GPL V2",
-        "UNVERIFIED",
-        "UNKNOWN",
+        "0BSD",
+        "APACHE-2.0",
+        "BSD-2-CLAUSE",
+        "BSD-3-CLAUSE",
+        "CC-BY-4.0",
+        "CC0-1.0",
+        "ISC",
+        "MIT",
+        "MIT-0",
+        "MIT-CMU",
+        "MPL-2.0",
+        "PSF-2.0",
+        "PYTHON-2.0",
+        "UNLICENSE",
+        "ZLIB",
+        # Weak copyleft: LGPL-2.1 may be taken under GPLv2-or-later, and so
+        # under v3; LGPL-3.0 is GPLv3 with an extra permission.
+        "LGPL-2.1",
+        "LGPL-2.1-ONLY",
+        "LGPL-2.1-OR-LATER",
+        "LGPL-2.1+",
+        "LGPL-3.0",
+        "LGPL-3.0-ONLY",
+        "LGPL-3.0-OR-LATER",
+        "LGPL-3.0+",
+        # Every GPL that can be taken under v3 (docs/decisions.md, 2026-09-25).
+        "GPL-2.0-OR-LATER",
+        "GPL-2.0+",
+        "GPL-3.0",
+        "GPL-3.0-ONLY",
+        "GPL-3.0-OR-LATER",
+        "GPL-3.0+",
     }
 )
 
@@ -190,7 +219,10 @@ _SPLIT_RE = re.compile(r"\s*,\s*|\s*/\s*|\s+AND\s+|\s+OR\s+", re.IGNORECASE)
 
 
 def _tokens(license_expression: str) -> list[str]:
-    return [t.strip().upper() for t in _SPLIT_RE.split(license_expression) if t.strip()]
+    # SPDX grouping parentheses, as in "(MIT OR Apache-2.0)", are not part of
+    # any identifier; left on, they would hide "AGPL-3.0-only)" from both lists.
+    ungrouped = license_expression.replace("(", " ").replace(")", " ")
+    return [t.strip().upper() for t in _SPLIT_RE.split(ungrouped) if t.strip()]
 
 
 def disallowed_tokens(license_expression: str) -> list[str]:
@@ -205,13 +237,19 @@ def disallowed_tokens(license_expression: str) -> list[str]:
 def unclear_tokens(license_expression: str) -> list[str]:
     """Which tokens in a licence expression, if any, need a person to decide.
 
-    Empty input is unclear: a package that states no licence has not granted
-    one, and assuming it permissive is the error the gate exists to prevent.
-    The generator's "UNVERIFIED (raw metadata: ...)" form is matched on its
-    first word, since the raw text after it is not a licence identifier.
+    Every token that is neither known-compatible nor disallowed: an
+    unrecognised licence fails to review, never passes (#755). Empty input is
+    unclear too: a package that states no licence has not granted one, and
+    assuming it permissive is the error the gate exists to prevent. The
+    generator's "UNVERIFIED (raw metadata: ...)" form is matched on its first
+    word, since the raw text after it is not a licence identifier.
     """
     if not license_expression.strip():
         return ["UNVERIFIED"]
     if license_expression.strip().upper().startswith("UNVERIFIED"):
         return ["UNVERIFIED"]
-    return [t for t in _tokens(license_expression) if t in UNCLEAR_LICENSES]
+    return [
+        t
+        for t in _tokens(license_expression)
+        if t not in KNOWN_LICENSES and t not in DISALLOWED_LICENSES
+    ]

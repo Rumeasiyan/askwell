@@ -4,6 +4,20 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.57 - 2026-09-28
+
+`Security`: `M9-FIX-SEC-209`. Askwell no longer starts with the example passwords from
+`.env.example`. If you set Askwell up by copying that file by hand and left any Redis password as
+its `change-me…` placeholder, Redis now refuses to start and names each variable still holding
+one. Everything that needs Redis stops with it. Until now, those public values were accepted, so
+any part of Askwell could sign in as the part allowed to open a route to the internet. The
+installers already generate real passwords, so an installed Askwell is unaffected.
+
+`Security`: the licence check run before each release now fails on a licence it does not
+recognise. Before, a dependency that described its licence in its own words, such as "GNU Affero"
+or "CC BY-NC 4.0", passed the check even though Askwell cannot ship it. Now a person has to read
+the terms and record what they mean before the release can go ahead.
+
 ## 0.7.56 - 2026-09-28
 
 `Fixed`: `M9-FIX-SEC-208`. Pruning old interactions from the log now works. Until now, a prune

@@ -73,9 +73,24 @@ _CLASSIFIER_TO_SPDX = {
     "License :: OSI Approved :: GNU Affero General Public License v3": "AGPL-3.0-only",
     "License :: OSI Approved :: "
     "GNU Affero General Public License v3 or later (AGPLv3+)": "AGPL-3.0-or-later",
-    # No version at all: `askwell.notices.UNCLEAR_LICENSES` fails the gate on
+    # No version at all: `askwell.notices.unclear_tokens` fails the gate on
     # it, unless the same package also carries a versioned classifier.
     "License :: OSI Approved :: GNU General Public License (GPL)": "GPL",
+}
+
+# Free-text licence fields, exactly as a package writes them, mapped to the
+# SPDX expression they mean (`M9-FIX-SEC-209`, issue #755). The gate fails on
+# any licence token it does not know, so a new spelling stops the release
+# until a person reads the package's actual terms and adds a line here —
+# mapping the *string*, so every package using it is judged the same way,
+# never allow-listing a package by name. Each entry records its evidence.
+_FREE_TEXT_TO_SPDX = {
+    # primp: no licence file in the wheel; its repository's licence API
+    # (`GET /repos/deedy5/primp/license`) reports MIT, checked 2026-09-28.
+    "MIT License": "MIT",
+    # protobuf: the wheel's own LICENSE is the 3-clause BSD text, checked
+    # 2026-09-28.
+    "3-Clause BSD License": "BSD-3-Clause",
 }
 
 # Neither package publishes a machine-readable licence (PyPI's own JSON API
@@ -124,7 +139,7 @@ def _python_license(dist: metadata.Distribution) -> str:
         return (specific or mapped)[0]
     raw = (dist.metadata.get("License") or "").strip()
     if raw and "\n" not in raw and len(raw) < 60:
-        return raw
+        return _FREE_TEXT_TO_SPDX.get(raw, raw)
     return "UNVERIFIED" if not raw else f"UNVERIFIED (raw metadata: {raw[:40]!r})"
 
 
@@ -213,7 +228,7 @@ def collect_web_dependencies(web_licenses_path: Path) -> list[DependencyNotice]:
                     DependencyNotice(
                         name=pkg["name"],
                         version=version,
-                        license=license_name,
+                        license=_FREE_TEXT_TO_SPDX.get(license_name, license_name),
                         scope="runtime",
                     )
                 )
