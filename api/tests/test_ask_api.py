@@ -1168,6 +1168,51 @@ def test_a_compound_question_with_one_uncovered_aspect_is_marked_partial(
         assert source_count == 1
 
 
+def test_an_echoed_prompt_template_is_never_streamed_stored_or_counted(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """Issue #663, `M9-FIX-BE-202`: the model copies the prompt's own
+    `<the …>` placeholders, split across tokens the way they really arrive.
+    None of it reaches the reader, the stored answer or the trace, and the
+    real claim keeps its citation (C4)."""
+    _truncate(database_url)
+    vector = _vector(0.0)
+    _, chunk_id = _seed_chunk(database_url, "Payment terms are 45 days.", vector)
+    fake = _FakeInferenceClient(
+        settings,
+        tokens=[
+            "Payment terms are 45 days [1].\n",
+            "Not covered: <the specific",
+            " thing that was asked and not found>.\n",
+            "Resolved by memory: <the fact that was in conflict>.",
+        ],
+        vector=vector,
+    )
+    _patch_client(monkeypatch, fake)
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "What are the payment terms?"})
+        events = _events(response.text)
+        done = next(data for kind, data in events if kind == "done")
+        assert done["status"] == "completed"
+        message_id = uuid.UUID(done["message_id"])
+        streamed = "".join(data["text"] for kind, data in events if kind == "token")
+        assert "<" not in streamed
+        citation_events = [data for kind, data in events if kind == "citation"]
+        assert [c["chunk_id"] for c in citation_events] == [str(chunk_id)]
+
+    with psycopg.connect(database_url, autocommit=True) as db:
+        content, trace = db.execute(
+            "SELECT content, trace FROM messages WHERE id = %s", (message_id,)
+        ).fetchone()
+    assert content == streamed
+    assert "<" not in content
+    assert "Payment terms are 45 days [1]." in content
+    assert trace["partial_coverage"] is False
+    assert trace["uncovered_aspects"] == []
+
+
 def test_every_aspect_covered_is_an_ordinary_answer_not_marked_partial(
     settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
 ) -> None:

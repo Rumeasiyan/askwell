@@ -135,3 +135,9 @@ def test_c7_fails_if_delimiter_removed(tmp_path, monkeypatch) -> None:
         assert "<retrieved-content" not in text
     finally:
         partial_module._load_system_prompt.cache_clear()
+
+
+def test_a_not_covered_line_that_names_nothing_is_not_a_gap() -> None:
+    # What `Not covered: <the …>.` leaves once `askwell.agent.placeholders`
+    # has removed the placeholder (issue #663).
+    assert split_partial_answer("Hours are 9 to 5 [1].\n\nNot covered: .").uncovered == ()

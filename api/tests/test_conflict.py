@@ -335,3 +335,10 @@ def test_c7_fails_if_delimiter_removed(tmp_path, monkeypatch) -> None:
         assert "<retrieved-content" not in text
     finally:
         conflict_module._load_system_prompt.cache_clear()
+
+
+def test_a_resolution_line_that_names_nothing_resolves_nothing() -> None:
+    # What `Resolved by memory: <the fact …>.` leaves once the placeholder is
+    # removed: no memory fact was used, so none may be claimed (issue #663).
+    answer = split_conflict_answer("It is 45 days [2].\n\nResolved by memory: .")
+    assert answer.resolved_by_memory is None

@@ -57,7 +57,7 @@ import { MemoryChip } from "@/components/ask/memory-chip";
 import { type FactChip } from "@/lib/memory-chips";
 import { fetchSearch, type SearchHit } from "@/lib/search";
 import { fetchSuggestions, type Suggestion } from "@/lib/suggestions";
-import { segmentClaims } from "@/lib/claims";
+import { proseParts, segmentClaims } from "@/lib/claims";
 import { machineLine, SEND_REFUSED, sendAllowed } from "@/lib/online-conversation";
 import { useStatus } from "@/lib/use-status";
 import { VERSION } from "@/lib/version";
@@ -1766,7 +1766,8 @@ function ConflictBanner({ topic }: { topic: string }) {
 
   return (
     <p className="ask-micro" style={{ textTransform: "none", color: "var(--ink)" }}>
-      Conflicting sources on {topic}
+      {/* `""` when the model left the topic as a placeholder (GH-663). */}
+      {topic === "" ? "Conflicting sources" : `Conflicting sources on ${topic}`}
     </p>
   );
 }
@@ -1912,7 +1913,7 @@ function ResolveOffer({ topic, citations }: { topic: string; citations: Citation
   if (resolved !== null) {
     return (
       <p className="ask-micro" style={{ textTransform: "none" }}>
-        Noted {resolved.filename} as current for {topic}. This is not saved yet — Askwell
+        Noted {resolved.filename} as current{topic === "" ? "" : ` for ${topic}`}. This is not saved yet — Askwell
         will remember it once memory ships.
       </p>
     );
@@ -1975,13 +1976,16 @@ function AnswerProse({
   factChips: FactChip[];
   ordinalOffset?: number;
 }) {
-  const claims = useMemo(() => segmentClaims(text), [text]);
+  const parts = useMemo(() => proseParts(text), [text]);
 
   const nodes: ReactNode[] = [];
-  let cursor = 0;
-  for (const claim of claims) {
+  for (const part of parts) {
+    if (part.kind === "text") {
+      nodes.push(part.text);
+      continue;
+    }
+    const { claim } = part;
     const ordinal = ordinalOffset + claim.ordinal;
-    if (claim.start > cursor) nodes.push(text.slice(cursor, claim.start));
     const chipsForClaim = factChips.filter((chip) => chip.claimOrdinal === ordinal);
     nodes.push(
       <ClaimSpan key={`claim-${ordinal}`} turnId={turnId} ordinal={ordinal}>
@@ -1992,11 +1996,15 @@ function AnswerProse({
     for (const chip of chipsForClaim) {
       nodes.push(<MemoryChip key={`chip-${chip.claimOrdinal}-${chip.factId}`} chip={chip} />);
     }
-    cursor = claim.end;
   }
-  if (cursor < text.length) nodes.push(text.slice(cursor));
 
-  return <p className="ask-prose">{nodes}</p>;
+  // `pre-line`: the blank line between two cited paragraphs is kept in the
+  // text (`proseParts`), and would otherwise collapse to a space (GH-726).
+  return (
+    <p className="ask-prose" style={{ whiteSpace: "pre-line" }}>
+      {nodes}
+    </p>
+  );
 }
 
 /**
