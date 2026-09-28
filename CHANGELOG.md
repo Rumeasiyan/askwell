@@ -4,6 +4,10 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.60 - 2026-09-28
+
+`Fixed`: `M9-FIX-FE-212`. When you use online AI, **show what was sent** in **How did you get this?** now tells facts you taught Askwell apart from conclusions Askwell drew on its own, in the same words as the statement you confirmed before sending. Before, it called every memory fact one "you taught", including ones Askwell had inferred itself. A fact you confirmed before the question counts as taught. Notes Askwell keeps about your tables are now called "notes on your tables" rather than "notes on a database", because they can come from a spreadsheet too. An answer recorded before this version cannot tell the two kinds of fact apart, so its trace says "things Askwell knows about your material" instead of guessing.
+
 ## 0.7.59 - 2026-09-28
 
 `Fixed`: `M9-FIX-DEPLOY-211`. When you place a model file by hand during first run, Askwell now names the folder on your own machine, for example `~/.local/share/askwell/models/…`. Before, it showed a path that exists only inside Askwell's container (`/models/…` or `/root/…`). Checking the file now also finds it where you put it. Before, a correctly placed file was reported missing. If the models folder does not exist yet, Askwell tells you where to create it. The first-run download now reaches the helper on your machine through Askwell's run folder, because Askwell can read the models folder but can no longer write to it. Update the host inference helper together with this version.

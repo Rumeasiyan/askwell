@@ -4,6 +4,22 @@ Append-only. **Newest first.** Never edit an entry to change its meaning — if 
 
 **Bar for an entry:** something a competent person would later ask *"why is it like this?"* about. Architecture changes, dependency choices, resolved `docs/PRD.md` §11 questions, reversals. **Not** routine implementation choices — those are visible in the diff.
 
+## 2026-09-28 — `M9-FIX-FE-212`: the record of what was sent keeps inferred facts apart, as they stood at the send; an older record claims neither origin
+
+**Decision.** `askwell.ask._sent_contents` records `inferred_fact_ids`, the subset of `memory_fact_ids` whose `origin` was `inferred` when the provider request was built. `memory_fact_ids` keeps its meaning (every fact sent). The trace's **show what was sent** (`web/lib/trace.ts`, `transmissionLines`) counts the rest as "facts you taught Askwell" and the subset as "conclusions Askwell drew on its own", and calls schema notes "notes on your tables". A record without `inferred_fact_ids` says "things Askwell knows about your material". This is #760's option 1.
+
+**Why.** The approved disclosure (`askwell.online.DISCLOSURE`, version `1`, 2026-09-25) separates "facts you have taught it" from "conclusions it has drawn … on its own", and the trace is the only place the user can check a send against it. Option 2, one neutral count for everything, would have been true but less exact than the promise it evidences; it survives only for records that genuinely cannot be split.
+
+The origin is taken at send time, not looked up when the trace is opened, because the record describes what left the machine and must not change afterwards: it is also an append-only `online_ai_request` interaction record (C6). A fact confirmed *before* the send is `origin = 'correction'` by then (`memory.confirm_memory_fact`), so it counts as taught, which is the ticket's edge case. A fact confirmed *after* the send stays counted as a conclusion in that trace, because that is what it was when it was sent. The per-fact list in the same trace (`MemoryRetrieveStepDetail`) fetches each fact's current origin, so it shows the confirmation.
+
+`memory_fact_ids` was not narrowed to taught facts only. Doing so would silently change what every existing record means; adding a subset field leaves them readable, and the absence of the field is itself the signal that a record predates the split. Guessing "taught" for old records would repeat the error being fixed.
+
+"Notes on your tables", not "notes on a database": `table_infer.raise_table_inference` writes schema notes for CSV and spreadsheet sources too.
+
+**Consequences.** The wording is copy taken from the approved statement, not new copy; #760 asks for the owner's review, and a change to it should follow the statement rather than drift from it. Traces recorded before `0.7.60` show the neutral line.
+
+**Refs:** #760, `M9-FIX-FE-212`; `api/src/askwell/ask.py` (`_sent_contents`), `web/lib/trace.ts` (`memoryFactParts`, `transmissionLines`), `api/tests/test_ask_sent_contents.py`, `api/tests/test_ask_online.py`.
+
 ## 2026-09-28 — `M9-FIX-DEPLOY-211`: first run reads the generation model by name inside the read-only `/models` mount, names the host folder, and exchanges fetch signals through the run directory
 
 **Decision.** First run's `ModelDownloadManager` is built from `Settings.generation_model_file`, which is `models_dir / inference_model_path.name`. Compose now passes the host's `ASKWELL_INFERENCE_MODEL_PATH` into `api`, and only its name is used there. Every message and `GET /setup`'s `target_path` use `Settings.generation_model_file_shown` (`models_dir_shown` + the same name), never `/models/…`. `fetch-request.json`, `fetch-progress.json` and `fetch-cancel` move from the models directory to the run directory (`/run/askwell` ↔ `ASKWELL_RUN_DIR`) on both sides. The downloaded model itself still lands in the models directory. The API no longer creates the models directory: the disk check measures the nearest existing ancestor, and a missing folder is reported as "create it here". Issues #660 and #668, option 1 of each.

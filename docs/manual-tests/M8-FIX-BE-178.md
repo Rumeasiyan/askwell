@@ -368,12 +368,11 @@ The statement says "something you taught it elsewhere can be included". The Memo
     **You should see:** a line *Sent to fakeprovider:8443 · test-destination-model · <date and
     time> UTC*, then a line starting with a number of bytes. That line lists *Askwell's
     instructions (…)*, *your question*, a number of *passages from your files*, *1 fact you taught
-    Askwell* and at least one *note on a database*. Write the byte count and the number of passages
+    Askwell* and at least one *note on your tables*. Write the byte count and the number of passages
     down. Click **Close**.
 
-    The notes here come from `rota.csv`, which is a spreadsheet, not a database, and the trace
-    calls every memory fact one "you taught". Both labels are issue #760. They are not a defect of
-    this ticket.
+    A fact Askwell inferred on its own is counted separately, as a *conclusion Askwell drew on its
+    own* (#760, fixed in `M9-FIX-FE-212`).
 
 ## Part F — the statement is true of what was sent (Stand-in)
 
@@ -580,11 +579,11 @@ These are deliberate or already tracked. Do not report them as defects of this t
   network. A real provider, seen from outside in a packet capture, is release gate G13
   (`docs/online-release-test.md`, `M8-ONLINE-TEST-176`). It needs the maintainer's own key and is
   run for a release. It still reads `BLOCKED` in `docs/online-test-log.md` until someone runs it.
-- **The trace's wording of what was sent (#760).** **Show what was sent** calls every memory fact
-  "fact you taught Askwell", including ones Askwell inferred itself, and calls every schema note a
-  "note on a database", including notes on a spreadsheet. The statement itself is correct. The
-  after-the-fact summary is less exact than the statement, and fixing that is copy owned
-  elsewhere.
+- **The trace's wording of what was sent (#760, fixed in `M9-FIX-FE-212`).** **Show what was
+  sent** now counts facts you taught Askwell apart from conclusions Askwell drew on its own, in the
+  statement's own words, and calls schema notes "notes on your tables". A trace recorded before
+  that fix cannot tell the two kinds of fact apart and says "things Askwell knows about your
+  material" instead.
 - **Inferred memory facts are not walked through.** Clarification inference can store a memory
   fact of Askwell's own (`origin = 'inferred'`). Producing one needs a clarification to go
   unanswered below the cap, so this walkthrough covers "conclusions it has drawn on its own"
