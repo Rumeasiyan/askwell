@@ -8,7 +8,10 @@
  */
 
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import type { FailedDocument, FlaggedDocument, SourceCoverage } from "./ingest.ts";
 import {
@@ -158,4 +161,50 @@ test("the deleted sentence names the deletion date", () => {
   const rendered = deletedSentence("2026-08-28T12:00:00Z");
   assert.match(rendered, /^Deleted /);
   assert.match(rendered, /2026/);
+});
+
+// `M9-FIX-FE-201` (issue 712): once anything is added, a click still reaches Add a
+// source. There is no component renderer in this suite, so these read the
+// components' source — the same approach `online-ai.test.ts` takes.
+
+const WEB = join(dirname(fileURLToPath(import.meta.url)), "..");
+const read = (...path: string[]) => readFileSync(join(WEB, ...path), "utf8");
+const LIBRARY = read("components", "library", "library-screen.tsx");
+const RAIL = read("components", "shell", "rail.tsx");
+const DRAWER = read("components", "shell", "rail-drawer.tsx");
+const WELCOME = read("components", "welcome", "welcome-screen.tsx");
+
+function body(source: string, name: string): string {
+  const start = source.indexOf(`function ${name}(`);
+  assert.notEqual(start, -1, `${name} is defined`);
+  const next = source.indexOf("\nfunction ", start + 1);
+  const nextExport = source.indexOf("\nexport function ", start + 1);
+  const ends = [next, nextExport].filter((index) => index !== -1);
+  return source.slice(start, ends.length > 0 ? Math.min(...ends) : undefined);
+}
+
+test("the add-source link goes to the add flow, and that route exists", () => {
+  assert.match(body(LIBRARY, "AddSourceLink"), /href="\/sources\/add\/"[\s\S]*Add a source/);
+  assert.ok(existsSync(join(WEB, "app", "sources", "add", "page.tsx")));
+});
+
+test("a populated library carries Add a source in its header, not only the empty state", () => {
+  const screen = body(LIBRARY, "LibraryScreen");
+  assert.match(screen, /state\.sources\.length > 0 \? <AddSourceLink \/>/);
+  // Rendered outside the empty/list branch, so it cannot vanish with the list.
+  assert.ok(screen.indexOf("<AddSourceLink />") < screen.indexOf("<EmptyLibrary />"));
+});
+
+test("the first-run path is unchanged: an empty library still offers it", () => {
+  assert.match(body(LIBRARY, "EmptyLibrary"), /<AddSourceLink \/>/);
+});
+
+test("the library is one click from the rail, and the narrow-window drawer is the same rail", () => {
+  assert.match(RAIL, /href: "\/library\/", label: "Library"/);
+  assert.match(DRAWER, /<Rail onNavigate=\{close\} \/>/);
+});
+
+test("the welcome copy names where Add a source actually is", () => {
+  assert.doesNotMatch(WELCOME, /Add a source<\/code> any time from the rail/);
+  assert.match(WELCOME, /<code>Library<\/code> in the rail and choose <code>Add a source<\/code>/);
 });

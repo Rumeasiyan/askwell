@@ -68,11 +68,14 @@ export function LibraryScreen() {
 
   return (
     <section className="flex flex-col gap-4">
-      <div>
-        <h1 style={{ fontSize: "var(--t-display)", lineHeight: "var(--t-display-lh)" }}>
-          Library
-        </h1>
-        <p className="ask-micro mt-1">Every source you have added, and what state it is in.</p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 style={{ fontSize: "var(--t-display)", lineHeight: "var(--t-display-lh)" }}>
+            Library
+          </h1>
+          <p className="ask-micro mt-1">Every source you have added, and what state it is in.</p>
+        </div>
+        {state !== null && state.sources.length > 0 ? <AddSourceLink /> : null}
       </div>
 
       {failure !== null ? (
@@ -136,15 +139,27 @@ function EmptyLibrary() {
         ))}
       </ul>
       <div>
-        <Link
-          href="/sources/add/"
-          className="ask-navigates inline-block px-4 py-2"
-          style={{ border: "1px solid var(--rule-strong)", fontSize: "var(--t-ui)" }}
-        >
-          Add a source
-        </Link>
+        <AddSourceLink />
       </div>
     </div>
+  );
+}
+
+/**
+ * The library's entry to the add flow (`../ux/add-source.md` "Entry points").
+ * The empty state carries it in its invitation; a populated library carries it
+ * in the header, because once anything is added this is the only clickable
+ * route left — a live connection has no file to drag (issue 712).
+ */
+function AddSourceLink() {
+  return (
+    <Link
+      href="/sources/add/"
+      className="ask-navigates inline-block px-4 py-2"
+      style={{ border: "1px solid var(--rule-strong)", fontSize: "var(--t-ui)" }}
+    >
+      Add a source
+    </Link>
   );
 }
 

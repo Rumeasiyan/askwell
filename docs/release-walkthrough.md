@@ -120,10 +120,10 @@ Screens: `docs/ux/add-source.md`, `docs/ux/library.md`, `docs/ux/ask.md`,
 Screens: `docs/ux/clarifications.md`, `docs/ux/memory.md`, `docs/ux/add-source.md` §3–§4.
 
 W4.3, W5.1, W5.2 and W5.4 each add a source after the first one. Reach **Add a source** by a
-click a user would make: the rail, the library, or a visible link. Asking a question Askwell
-cannot answer on purpose, to get the offer under its abstention, does not count, and neither
-does typing the address. While there is no such click, those four steps are `FAIL` and name
-#712.
+click a user would make: **Library** in the rail, then **Add a source** in the library's header
+(since `0.7.49`, #712). Asking a question Askwell cannot answer on purpose, to get the offer under
+its abstention, does not count, and neither does typing the address. If that click is missing,
+those four steps are `FAIL`.
 
 | # | Do | Expect | Status | Notes |
 | - | -- | ------ | ------ | ----- |
