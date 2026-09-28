@@ -112,7 +112,7 @@ from askwell.inference.provider import OnlineClient, OnlineFailed, Transmission
 from askwell.ingest import coverage
 from askwell.inline_clarify import default_assumption, find_blocking
 from askwell.logging import get_logger
-from askwell.memory import MemoryFact, SchemaNote, retrieve_relevant_facts
+from askwell.memory import MemoryFact, RelevantMemory, SchemaNote, retrieve_relevant_facts
 from askwell.model_select import active_model_identity
 from askwell.retrieve import Candidate, candidate_score, retrieve
 from askwell.sql import execute as sql_execute_checked
@@ -465,6 +465,8 @@ def _cite_claim(
     facts: Sequence[MemoryFact],
     notes: Sequence[SchemaNote],
     fact_usage_rows: list[dict[str, Any]],
+    *,
+    facts_start: int | None = None,
 ) -> None:
     """Turn one completed claim into a citation row per index it named,
     sharing `claim.ordinal` — the ticket's own "two passages, one claim,
@@ -481,9 +483,16 @@ def _cite_claim(
     no `claim_ordinal` column (it is "was this fact used in this answer at
     all", not "which sentence"), so a fact cited by two claims in one answer
     still produces one row — the caller de-duplicates before the insert.
+
+    `facts_start` overrides where the memory range begins, for a turn whose
+    facts were not numbered straight on from `candidates`: `run_tool_loop`
+    numbers them from its own `LoopResult.memory_start` and passes no
+    candidates at all (`M9-FIX-BE-206`) — its tool results' own citations
+    are issue #407's, not resolved here.
     """
     doc_count = len(candidates)
-    facts_start = doc_count + 1
+    if facts_start is None:
+        facts_start = doc_count + 1
     notes_start = facts_start + len(facts)
     for index in claim.indices:
         if 1 <= index <= doc_count:
@@ -1712,13 +1721,11 @@ async def _run_generation(
 
     # `M5-LOOP-BE-115`: tried only for a corpus that is genuinely both
     # documents and a database — `_has_hybrid_sources` — never for the
-    # ordinary single-kind case, which keeps every path below (abstention,
-    # partial coverage, conflict detection, citations) exactly as tested
-    # for every turn that was already exercising it. Citations for a
-    # loop-answered turn are its own follow-up (issue #407); this turn's
-    # `[index]` markers reach `messages.content` as the model wrote them,
-    # uncited in `citations`, same as `_run_sql_turn`'s canned text already
-    # is for the SQL epic.
+    # ordinary single-kind case, which keeps every path below exactly as
+    # tested for every turn that was already exercising it. A loop-answered
+    # turn gets memory, partial coverage and conflict detection too
+    # (`M9-FIX-BE-206`); its tool results' own `[index]` markers still reach
+    # `messages.content` uncited in `citations` (issue #407).
     def _emit_tool_call_step(event: ToolCallEvent) -> None:
         # `M5-LOOP-BE-117a` shipped `"end"`-only, generic `Called {tool}.`
         # labels — issue #420's deliberate stopgap until the frontend could
@@ -1729,6 +1736,13 @@ async def _run_generation(
         turn.emit("step", _tool_call_step(event))
 
     loop_answer: LoopResult | None = None
+    # `M9-FIX-BE-206` (issue #409): the same `retrieve_relevant_facts` the
+    # single-step path below calls, fetched before the loop rather than
+    # after grounding because the loop composes its own answer — memory has
+    # to be in its prompt to be cited at all. Only recorded on the turn if
+    # the loop's answer is the one used; a loop that never grounds falls
+    # through to the single-step path, which retrieves again for itself.
+    loop_memory = RelevantMemory(facts=[], notes=[])
     if resume_state is not None:
         # `M5-LOOP-BE-116`: a `Continue` turn is already known to be a loop
         # turn — go straight there rather than re-running `_has_hybrid_
@@ -1737,6 +1751,9 @@ async def _run_generation(
         try:
             turn.emit("step", {"label": "Continuing where it left off.", "kind": "tool"})
             async with session_scope(factory) as db:
+                loop_memory = await retrieve_relevant_facts(
+                    db, question=question, source_id=source_id
+                )
                 loop_answer = await run_tool_loop(
                     db,
                     settings,
@@ -1746,6 +1763,8 @@ async def _run_generation(
                     resume=resume_state,
                     continuation_count=continuation_count,
                     on_tool_call=_emit_tool_call_step,
+                    memory_facts=loop_memory.facts,
+                    schema_notes=loop_memory.notes,
                 )
         except Exception:
             loop_answer = None
@@ -1757,6 +1776,9 @@ async def _run_generation(
             if hybrid:
                 turn.emit("step", {"label": "Working through this in steps.", "kind": "tool"})
                 async with session_scope(factory) as db:
+                    loop_memory = await retrieve_relevant_facts(
+                        db, question=question, source_id=source_id
+                    )
                     loop_answer = await run_tool_loop(
                         db,
                         settings,
@@ -1764,6 +1786,8 @@ async def _run_generation(
                         question=question,
                         source_id=source_id,
                         on_tool_call=_emit_tool_call_step,
+                        memory_facts=loop_memory.facts,
+                        schema_notes=loop_memory.notes,
                     )
         except Exception:
             loop_answer = None
@@ -1782,7 +1806,39 @@ async def _run_generation(
         turn.text = strip_placeholders(loop_answer.text)
         turn.emit("token", {"text": turn.text})
         status = "completed"
+        memory_fact_ids = [fact.id for fact in loop_memory.facts]
+        schema_note_ids = [note.id for note in loop_memory.notes]
+        if memory_fact_ids or schema_note_ids:
+            trace_steps.append(
+                {
+                    "kind": "memory_retrieve",
+                    "memory_fact_ids": [str(i) for i in memory_fact_ids],
+                    "schema_note_ids": [str(i) for i in schema_note_ids],
+                }
+            )
         trace_steps.extend(step.as_dict() for step in loop_answer.steps)
+        # `M9-FIX-BE-206` (issue #409): the same checks the single-step path
+        # runs after composing, on the loop's own text — a ceiling stop's
+        # included, since what it gathered is still an answer. Memory
+        # citations resolve against the range the loop numbered them in;
+        # `citation_rows` stays empty because resolving a tool result's
+        # `[N]` to a chunk is #407.
+        for claim in segment_claims(turn.text):
+            _cite_claim(
+                turn,
+                claim,
+                [],
+                citation_rows,
+                loop_memory.facts,
+                loop_memory.notes,
+                fact_usage_rows,
+                facts_start=loop_answer.memory_start,
+            )
+        uncovered_aspects = split_partial_answer(turn.text).uncovered
+        partial_coverage = bool(uncovered_aspects)
+        conflict = split_conflict_answer(turn.text)
+        conflict_detected = conflict.is_conflict
+        conflict_topic = conflict.topic
         injection_flagged = any(step.injection_flagged for step in loop_answer.steps)
         injection_patterns = tuple(
             sorted({p for step in loop_answer.steps for p in step.injection_patterns})
@@ -1798,13 +1854,13 @@ async def _run_generation(
             "injection_patterns": list(injection_patterns),
             "status": status,
             "reason": reason,
-            "partial_coverage": False,
-            "uncovered_aspects": [],
-            "conflict_detected": False,
-            "conflict_topic": None,
-            "memory_fact_ids": [],
-            "schema_note_ids": [],
-            "memory_used": 0,
+            "partial_coverage": partial_coverage,
+            "uncovered_aspects": list(uncovered_aspects),
+            "conflict_detected": conflict_detected,
+            "conflict_topic": conflict_topic,
+            "memory_fact_ids": [str(i) for i in memory_fact_ids],
+            "schema_note_ids": [str(i) for i in schema_note_ids],
+            "memory_used": len(memory_fact_ids) + len(schema_note_ids),
             "loop_iterations": loop_answer.iterations,
             "loop_stopped_reason": loop_answer.stopped_reason,
             # `M5-LOOP-BE-116`: what the turn was about to do when the
@@ -1857,6 +1913,22 @@ async def _run_generation(
                         "source_count": turn_summary.source_count,
                     },
                 )
+                # Same one-row-per-fact rule as the single-step path's
+                # `fact_usage` write below.
+                for fact_kind, fact_id in {(r["fact_kind"], r["fact_id"]) for r in fact_usage_rows}:
+                    await db.execute(
+                        text(
+                            "INSERT INTO fact_usage (id, message_id, fact_kind, fact_id) "
+                            "VALUES (:id, :message_id, :fact_kind, :fact_id) "
+                            "ON CONFLICT ON CONSTRAINT message_id_fact_kind_fact_id DO NOTHING"
+                        ),
+                        {
+                            "id": uuid.uuid4(),
+                            "message_id": turn.message_id,
+                            "fact_kind": fact_kind,
+                            "fact_id": fact_id,
+                        },
+                    )
                 await record(
                     db,
                     Store.INTERACTIONS,
@@ -1868,12 +1940,12 @@ async def _run_generation(
                         "answer": turn.text,
                         "status": status,
                         "abstained": False,
-                        "partial": False,
-                        "uncovered_aspects": [],
-                        "conflict_detected": False,
-                        "conflict_topic": None,
-                        "memory_fact_ids": [],
-                        "schema_note_ids": [],
+                        "partial": partial_coverage,
+                        "uncovered_aspects": list(uncovered_aspects),
+                        "conflict_detected": conflict_detected,
+                        "conflict_topic": conflict_topic,
+                        "memory_fact_ids": [str(i) for i in memory_fact_ids],
+                        "schema_note_ids": [str(i) for i in schema_note_ids],
                         "threshold": None,
                         "source_id": str(source_id) if source_id else None,
                         "citation_count": 0,

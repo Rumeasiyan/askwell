@@ -19,7 +19,7 @@ import json
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import psycopg
 import pytest
@@ -32,6 +32,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from askwell import ask as ask_module
 from askwell import session as sessions
+from askwell.agent import loop as loop_module
+from askwell.agent.tools import ToolResult, ToolStep
 from askwell.app import create_app
 from askwell.config import Settings
 from askwell.inference.client import (
@@ -2742,6 +2744,264 @@ async def test_skipping_an_inline_clarification_states_the_assumption_used(
     assert "Skipped" in turn.text
 
     _truncate(database_url)
+
+
+# --- the tool loop's answers get the same checks (`M9-FIX-BE-206`) -----------
+
+
+class _LoopClient(_FakeInferenceClient):
+    """Answers `run_tool_loop`'s own non-streaming calls from a queue, one
+    response per iteration, and records every prompt it was sent."""
+
+    def __init__(self, settings: Settings, *, responses: list[str], vector: list[float]) -> None:
+        super().__init__(settings, tokens=[], vector=vector)
+        self.responses = responses
+        self.prompts: list[str] = []
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 512,
+        temperature: float = 0.2,
+        timeout_seconds: float = 0.0,
+    ) -> Completion:
+        self.prompts.append(prompt)
+        response = self.responses.pop(0)
+        return Completion(text=response, tokens=len(response.split()))
+
+
+def _search_calls(*queries: str) -> str:
+    return json.dumps(
+        {
+            "type": "tool_calls",
+            "calls": [{"tool": "document_search", "arguments": {"query": q}} for q in queries],
+        }
+    )
+
+
+def _loop_answer(text_: str) -> str:
+    return json.dumps({"type": "answer", "text": text_})
+
+
+def _install_loop(monkeypatch: pytest.MonkeyPatch, fake: _LoopClient) -> None:
+    """A hybrid corpus without seeding a real sandbox database, and every
+    tool call answered with a passage — what is under test is what
+    `_run_generation` does with the loop's answer, not the tools."""
+
+    async def always_hybrid(_db: object, _settings: object) -> bool:
+        return True
+
+    async def fake_call_tool(
+        name: str, arguments: dict[str, Any], **_kwargs: Any
+    ) -> tuple[ToolResult, ToolStep]:
+        step = ToolStep(
+            kind="tool",
+            tool=name,
+            arguments=arguments,
+            duration_ms=1,
+            outcome="ok",
+            truncated=False,
+            detail={},
+            injection_flagged=False,
+            injection_patterns=(),
+        )
+        return ToolResult(content={"passages": [arguments]}, truncated=False, error=None), step
+
+    monkeypatch.setattr(ask_module, "_has_hybrid_sources", always_hybrid)
+    monkeypatch.setattr(loop_module, "call_tool", fake_call_tool)
+    _patch_client(monkeypatch, cast(_FakeInferenceClient, fake))
+
+
+def _ask_once(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    database_url: str,
+    question: str,
+) -> tuple[list[tuple[str, dict[str, Any]]], uuid.UUID]:
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": question})
+        events = _events(response.text)
+    done = next(data for kind, data in events if kind == "done")
+    assert done["status"] == "completed"
+    return events, uuid.UUID(done["message_id"])
+
+
+def _audit_payload(database_url: str, message_id: uuid.UUID) -> dict[str, Any]:
+    with psycopg.connect(database_url, autocommit=True) as db:
+        (payload,) = db.execute(
+            "SELECT payload FROM audit_interactions WHERE payload->>'message_id' = %s",
+            (str(message_id),),
+        ).fetchone()
+    return payload  # type: ignore[no-any-return]
+
+
+def test_a_loop_answer_over_conflicting_documents_reports_the_conflict(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """Issue #409: a question the loop grounds on used to be recorded with
+    `conflict_detected` hardcoded `False` whatever its answer said."""
+    _truncate(database_url)
+    fake = _LoopClient(
+        settings,
+        responses=[
+            _search_calls("notice period 2023", "notice period 2025"),
+            _loop_answer(
+                "Conflicting sources on the notice period:\n"
+                "- Notice must be given ninety days in advance [1].\n"
+                "- Notice must be given sixty days in advance [2]."
+            ),
+        ],
+        vector=_vector(0.0),
+    )
+    _install_loop(monkeypatch, fake)
+
+    _, message_id = _ask_once(
+        settings, monkeypatch, tmp_path, database_url, "Compare the notice period in both years."
+    )
+
+    trace = _trace(database_url, message_id)
+    assert trace["loop_iterations"] == 2  # the loop answered, not the single-step path
+    assert trace["conflict_detected"] is True
+    assert trace["conflict_topic"] == "the notice period"
+    audit = _audit_payload(database_url, message_id)
+    assert audit["conflict_detected"] is True
+    assert audit["conflict_topic"] == "the notice period"
+    # The prompt the loop answered from asks for the convention it wrote.
+    assert "Conflicting sources on" in fake.prompts[-1]
+
+
+def test_a_loop_answer_with_an_uncovered_part_names_it(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    _truncate(database_url)
+    fake = _LoopClient(
+        settings,
+        responses=[
+            _search_calls("payment terms", "termination clause"),
+            _loop_answer(
+                "Payment is due in thirty days [1].\nNot covered: the termination clause."
+            ),
+        ],
+        vector=_vector(0.0),
+    )
+    _install_loop(monkeypatch, fake)
+
+    _, message_id = _ask_once(
+        settings, monkeypatch, tmp_path, database_url, "What are the payment and termination terms?"
+    )
+
+    trace = _trace(database_url, message_id)
+    assert trace["partial_coverage"] is True
+    assert trace["uncovered_aspects"] == ["the termination clause"]
+    audit = _audit_payload(database_url, message_id)
+    assert audit["partial"] is True
+    assert audit["uncovered_aspects"] == ["the termination clause"]
+
+
+def test_a_loop_answer_cites_a_relevant_memory_fact(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """The fact reaches the loop's prompt at index 1, ahead of every tool
+    result, and a claim citing `[1]` resolves to it — a `fact_citation`
+    event and a `fact_usage` row, exactly as on the single-step path."""
+    _truncate(database_url)
+    fact_id = _seed_memory_fact(database_url, subject="RFQ", fact="Request for Quotation")
+    fake = _LoopClient(
+        settings,
+        responses=[
+            _search_calls("RFQ process"),
+            _loop_answer("RFQ means Request for Quotation [1]. The process starts on page 4 [2]."),
+        ],
+        vector=_vector(0.0),
+    )
+    _install_loop(monkeypatch, fake)
+
+    events, message_id = _ask_once(
+        settings, monkeypatch, tmp_path, database_url, "What does RFQ mean?"
+    )
+
+    assert "<memory-facts>\n" in fake.prompts[0]
+    assert "- [1] [user-confirmed] RFQ: Request for Quotation" in fake.prompts[0]
+    assert '<tool-result index="2"' in fake.prompts[-1]  # numbered after the fact
+    fact_citations = [data for kind, data in events if kind == "fact_citation"]
+    assert [(c["fact_id"], c["index"]) for c in fact_citations] == [(str(fact_id), 1)]
+
+    trace = _trace(database_url, message_id)
+    assert trace["memory_fact_ids"] == [str(fact_id)]
+    assert trace["memory_used"] == 1
+    assert _audit_payload(database_url, message_id)["memory_fact_ids"] == [str(fact_id)]
+    with psycopg.connect(database_url, autocommit=True) as db:
+        usage = db.execute(
+            "SELECT fact_kind, fact_id FROM fact_usage WHERE message_id = %s", (message_id,)
+        ).fetchall()
+    assert usage == [("memory", fact_id)]
+
+
+def test_a_loop_stopped_at_the_ceiling_still_runs_the_same_checks(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """The ticket's own edge case: eight calls, then the forced compose —
+    memory is in that last prompt too, and a `Not covered:` line ending the
+    model's text survives the stop note being appended after it."""
+    _truncate(database_url)
+    fact_id = _seed_memory_fact(database_url, subject="RFQ", fact="Request for Quotation")
+    fake = _LoopClient(
+        settings,
+        responses=[
+            _search_calls(*(f"RFQ part {i}" for i in range(1, 11))),
+            _loop_answer(
+                "RFQ means Request for Quotation [1]. Part one is on page 4 [2].\n"
+                "Not covered: the RFQ deadline."
+            ),
+        ],
+        vector=_vector(0.0),
+    )
+    _install_loop(monkeypatch, fake)
+
+    events, message_id = _ask_once(
+        settings, monkeypatch, tmp_path, database_url, "Walk me through every RFQ step."
+    )
+
+    done = next(data for kind, data in events if kind == "done")
+    assert done["tool_ceiling"] is True
+    assert "8 tool calls" in fake.prompts[-1]
+    assert "RFQ: Request for Quotation" in fake.prompts[-1]
+    trace = _trace(database_url, message_id)
+    assert trace["loop_stopped_reason"] == "tool_ceiling"
+    assert trace["partial_coverage"] is True
+    assert trace["uncovered_aspects"] == ["the RFQ deadline"]
+    assert trace["memory_fact_ids"] == [str(fact_id)]
+    assert [data["fact_id"] for kind, data in events if kind == "fact_citation"] == [str(fact_id)]
+
+
+def test_a_loop_answer_with_nothing_to_flag_records_none(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """No false positives: an ordinary loop answer, no relevant memory."""
+    _truncate(database_url)
+    _seed_memory_fact(database_url, subject="RFQ", fact="Request for Quotation")
+    fake = _LoopClient(
+        settings,
+        responses=[_search_calls("notice period"), _loop_answer("Notice is ninety days [1].")],
+        vector=_vector(0.0),
+    )
+    _install_loop(monkeypatch, fake)
+
+    events, message_id = _ask_once(
+        settings, monkeypatch, tmp_path, database_url, "How long is the notice period?"
+    )
+
+    assert "<memory-facts>\n" not in fake.prompts[0]
+    assert not [data for kind, data in events if kind == "fact_citation"]
+    trace = _trace(database_url, message_id)
+    assert trace["partial_coverage"] is False
+    assert trace["conflict_detected"] is False
+    assert trace["memory_fact_ids"] == []
+    assert trace["memory_used"] == 0
 
 
 def test_the_same_question_asked_twice_produces_two_completed_answers(

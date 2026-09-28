@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -19,8 +20,10 @@ import pytest
 
 from askwell.agent import loop as loop_module
 from askwell.agent.loop import LoopContinuation, LoopResult, run_tool_loop
+from askwell.agent.partial import split_partial_answer
 from askwell.agent.tools import ToolError, ToolErrorCode, ToolResult, ToolStep
 from askwell.inference.client import Completion
+from askwell.memory import MemoryFact, SchemaNote
 
 
 @dataclass
@@ -764,3 +767,149 @@ async def test_an_observer_that_raises_is_swallowed_and_the_turn_completes(
 
     assert result.stopped_reason == "answered"
     assert result.text == "Net 30 [1]."
+
+
+# --- memory and the answer conventions (`M9-FIX-BE-206`, issue #409) ---------
+
+
+def _fact(subject: str, fact: str) -> MemoryFact:
+    return MemoryFact(
+        id=uuid.uuid4(),
+        subject=subject,
+        fact=fact,
+        origin="clarification",
+        confidence=1.0,
+        source_id=None,
+        source_name=None,
+        source_deleted=False,
+        created_at=None,
+    )
+
+
+def _note(table: str, column: str, description: str) -> SchemaNote:
+    return SchemaNote(
+        id=uuid.uuid4(),
+        source_id=uuid.uuid4(),
+        table_name=table,
+        column_name=column,
+        description=description,
+        origin="clarification",
+        confidence=1.0,
+        created_at=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_memory_is_numbered_first_and_tool_results_after_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_tool = _FakeCallTool(_outcomes_for(["q1"]))
+    _install_call_tool(monkeypatch, fake_tool)
+    client = _FakeClient(
+        responses=[_batch_calls(["q1"]), json.dumps({"type": "answer", "text": "RFQ [1]."})]
+    )
+
+    result = await run_tool_loop(
+        cast(Any, None),
+        cast(Any, None),
+        cast(Any, client),
+        question="What does RFQ mean?",
+        memory_facts=[_fact("RFQ", "Request for Quotation")],
+        schema_notes=[_note("orders", "amt", "Order total in cents")],
+    )
+
+    assert result.memory_start == 1
+    for prompt in client.calls:
+        assert "- [1] [user-confirmed] RFQ: Request for Quotation" in prompt
+        assert "- [2] [user-confirmed] orders.amt: Order total in cents" in prompt
+    assert '<tool-result index="3"' in client.calls[1]
+    assert result.steps[0].result_index == 3
+
+
+@pytest.mark.asyncio
+async def test_with_no_memory_the_numbering_is_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_tool = _FakeCallTool(_outcomes_for(["q1"]))
+    _install_call_tool(monkeypatch, fake_tool)
+    client = _FakeClient(
+        responses=[_batch_calls(["q1"]), json.dumps({"type": "answer", "text": "Yes [1]."})]
+    )
+
+    result = await run_tool_loop(
+        cast(Any, None), cast(Any, None), cast(Any, client), question="Anything?"
+    )
+
+    assert result.memory_start == 1
+    assert result.steps[0].result_index == 1
+    assert "<memory-facts>\n" not in client.calls[0]
+    assert "<schema-notes>\n" not in client.calls[0]
+
+
+@pytest.mark.asyncio
+async def test_a_continued_turns_memory_is_numbered_after_the_seeded_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A seeded history already owns indices `1..next_result_index - 1` —
+    memory must not reuse one of them."""
+    resume = LoopContinuation(
+        history_blocks=('<tool-result index="1" tool="document_search">\nnet 30\n</tool-result>',),
+        next_result_index=2,
+    )
+    fake_tool = _FakeCallTool(_outcomes_for(["q1"]))
+    _install_call_tool(monkeypatch, fake_tool)
+    client = _FakeClient(
+        responses=[_batch_calls(["q1"]), json.dumps({"type": "answer", "text": "Done [3]."})]
+    )
+
+    result = await run_tool_loop(
+        cast(Any, None),
+        cast(Any, None),
+        cast(Any, client),
+        question="Everything?",
+        resume=resume,
+        memory_facts=[_fact("RFQ", "Request for Quotation")],
+    )
+
+    assert result.memory_start == 2
+    assert "- [2] [user-confirmed] RFQ: Request for Quotation" in client.calls[0]
+    assert result.steps[0].result_index == 3
+
+
+@pytest.mark.asyncio
+async def test_the_forced_compose_at_the_ceiling_still_sees_memory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queries = [f"q{i}" for i in range(1, 9)]
+    fake_tool = _FakeCallTool(_outcomes_for(queries))
+    _install_call_tool(monkeypatch, fake_tool)
+    client = _FakeClient(
+        responses=[
+            _batch_calls([f"q{i}" for i in range(1, 11)]),
+            json.dumps({"type": "answer", "text": "RFQ [1].\nNot covered: the deadline."}),
+        ]
+    )
+
+    result = await run_tool_loop(
+        cast(Any, None),
+        cast(Any, None),
+        cast(Any, client),
+        question="Everything about RFQs?",
+        memory_facts=[_fact("RFQ", "Request for Quotation")],
+    )
+
+    assert result.stopped_reason == "tool_ceiling"
+    assert result.memory_start == 1
+    assert "RFQ: Request for Quotation" in client.calls[-1]
+    assert "8 tool calls" in client.calls[-1]
+    # The stop note is its own paragraph, so the gap line still parses.
+    assert split_partial_answer(result.text).uncovered == ("the deadline",)
+
+
+def test_the_prompt_asks_for_the_same_conventions_the_single_step_path_parses() -> None:
+    prompt = loop_module._load_system_prompt()
+    assert loop_module.PROMPT_VERSION in loop_module.PROMPT_PATH.stem
+    assert "Conflicting sources on <the specific fact being asked about>:" in prompt
+    assert "Not covered: <the specific thing that was asked and not found>." in prompt
+    assert "<memory-facts>" in prompt
+    assert "<tool-result>" in prompt

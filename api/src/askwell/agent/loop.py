@@ -42,6 +42,19 @@ continuation`, present only on a turn's first ceiling stop, is what
 picks up the gathered `<tool-result>` history rather than re-fetching it; a
 second stop in the same chain narrows the answer's own text instead of
 offering a third continuation, so there is no infinite chain.
+
+**Memory reaches the loop the same way it reaches a single-step answer**
+(`M9-FIX-BE-206`, issue #409). `askwell.ask` retrieves the relevant memory
+facts and schema notes before the loop starts and passes them in; they are
+delimited into every prompt this loop sends — the forced compose at the
+ceiling included — with citation indices taken from the front of this
+turn's index space, so `[N]` resolves to a memory fact or a tool result
+without a second marker syntax. `LoopResult.memory_start` is where that
+range starts, which is what `askwell.ask` resolves fact citations against.
+The prompt (`tool_loop.v2.md`) also carries the same "Not covered:" and
+"Conflicting sources on ...:" conventions `conflicting_sources.v1.md` does,
+so `split_partial_answer`/`split_conflict_answer` read a loop answer exactly
+as they read a single-step one.
 """
 
 from __future__ import annotations
@@ -49,7 +62,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -58,16 +71,17 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from askwell.agent.compose import delimit_tool_result
+from askwell.agent.compose import delimit_memory_facts, delimit_schema_notes, delimit_tool_result
 from askwell.agent.tools import TOOLS, ToolError, ToolResult, ToolStep, call_tool
 from askwell.config import Settings
 from askwell.inference.client import InferenceClient
 from askwell.logging import get_logger
+from askwell.memory import MemoryFact, SchemaNote
 
 log = get_logger(__name__)
 
 PROMPT_DIR = Path(__file__).parent / "prompts"
-PROMPT_VERSION = "tool_loop.v1"
+PROMPT_VERSION = "tool_loop.v2"
 PROMPT_PATH = PROMPT_DIR / f"{PROMPT_VERSION}.md"
 
 # A crash guard, not the product's ceiling — see the module docstring.
@@ -89,9 +103,12 @@ _CEILING_NOTICE = (
 
 # Appended to whatever the model composed at the ceiling — never relied on
 # the model to say this itself, since a stopped-early answer must never omit
-# the note (this ticket's own Validation Rule).
+# the note (this ticket's own Validation Rule). Its own paragraph, not a
+# trailing sentence: an answer ending on a `Not covered: ...` line would
+# otherwise have the note glued onto it, and `split_partial_answer` would no
+# longer read that gap back out (`M9-FIX-BE-206`).
 _CEILING_NOTE = (
-    " Askwell stopped after reaching its 8-step limit for this question — "
+    "\n\nAskwell stopped after reaching its 8-step limit for this question — "
     "this is what it found before then, not a complete answer."
 )
 
@@ -267,7 +284,10 @@ class LoopResult:
     `pending_calls` is what the turn was about to do when the ceiling cut it
     off (`docs/ux/trace.md` §5) — empty on every other `stopped_reason`.
     `continuation` carries what a **Continue** click needs, and is `None`
-    unless this is a turn's first ceiling stop.
+    unless this is a turn's first ceiling stop. `memory_start` is the first
+    citation index given to the memory facts passed in, then the schema
+    notes (`M9-FIX-BE-206`) — the index a tool result would otherwise have
+    started from when none were.
     """
 
     text: str
@@ -278,6 +298,7 @@ class LoopResult:
     pending_calls: tuple[dict[str, Any], ...] = ()
     continuation: LoopContinuation | None = None
     continuation_count: int = 0
+    memory_start: int = 1
 
 
 @dataclass(slots=True)
@@ -333,6 +354,8 @@ async def _stop_at_ceiling(
     system_prompt: str,
     catalogue: str,
     question: str,
+    memory_block: str,
+    memory_start: int,
     resume_note: str,
     history_blocks: list[str],
     steps: list[LoopStep],
@@ -358,7 +381,7 @@ async def _stop_at_ceiling(
     if has_gathered:
         history = "\n\n".join(history_blocks)
         user_content = (
-            f"{catalogue}\n\nQuestion: {question}"
+            f"{catalogue}{memory_block}\n\nQuestion: {question}"
             + (f"\n\n{history}" if history else "")
             + resume_note
             + _CEILING_NOTICE
@@ -406,6 +429,7 @@ async def _stop_at_ceiling(
         pending_calls=pending_calls,
         continuation=continuation,
         continuation_count=continuation_count,
+        memory_start=memory_start,
     )
 
 
@@ -419,6 +443,8 @@ async def run_tool_loop(
     resume: LoopContinuation | None = None,
     continuation_count: int = 0,
     on_tool_call: ToolCallObserver | None = None,
+    memory_facts: Sequence[MemoryFact] = (),
+    schema_notes: Sequence[SchemaNote] = (),
 ) -> LoopResult:
     """Call tools, read results, decide whether more is needed, then answer.
 
@@ -444,6 +470,13 @@ async def run_tool_loop(
     of the batch's `"end"` events — observed per call, not reconstructed
     from the batch finishing. `None` (the default) changes nothing about
     the loop's own behaviour.
+
+    `memory_facts`/`schema_notes` (`M9-FIX-BE-206`) are delimited into every
+    prompt, numbered from this turn's first free index — `1` for a new
+    question, `resume.next_result_index` for a continued one, so they never
+    collide with a seeded history's own numbers — and tool results are
+    numbered after them. Both empty (the default) numbers everything exactly
+    as before.
     """
     loop_started = time.monotonic()
     system_prompt = _load_system_prompt()
@@ -454,6 +487,12 @@ async def run_tool_loop(
     steps: list[LoopStep] = []
     tool_names_called: list[str] = []
     next_result_index = resume.next_result_index if resume is not None else 1
+    memory_start = next_result_index
+    notes_start = memory_start + len(memory_facts)
+    memory_block = delimit_memory_facts(memory_facts, memory_start) + delimit_schema_notes(
+        schema_notes, notes_start
+    )
+    next_result_index = notes_start + len(schema_notes)
     total_calls_made = 0
     resume_note = (
         "\n\nThis continues an earlier turn on the same question that stopped after "
@@ -470,6 +509,8 @@ async def run_tool_loop(
                 system_prompt=system_prompt,
                 catalogue=catalogue,
                 question=question,
+                memory_block=memory_block,
+                memory_start=memory_start,
                 resume_note=resume_note,
                 history_blocks=history_blocks,
                 steps=steps,
@@ -482,7 +523,7 @@ async def run_tool_loop(
 
         history = "\n\n".join(history_blocks)
         user_content = (
-            f"{catalogue}\n\nQuestion: {question}"
+            f"{catalogue}{memory_block}\n\nQuestion: {question}"
             + (f"\n\n{history}" if history else "")
             + resume_note
         )
@@ -500,6 +541,7 @@ async def run_tool_loop(
                 stopped_reason="malformed_response",
                 tool_names_called=tuple(tool_names_called),
                 continuation_count=continuation_count,
+                memory_start=memory_start,
             )
 
         if parsed.get("type") == "answer":
@@ -512,6 +554,7 @@ async def run_tool_loop(
                     stopped_reason="malformed_response",
                     tool_names_called=tuple(tool_names_called),
                     continuation_count=continuation_count,
+                    memory_start=memory_start,
                 )
             return LoopResult(
                 text=answer_text,
@@ -520,6 +563,7 @@ async def run_tool_loop(
                 stopped_reason="answered",
                 tool_names_called=tuple(tool_names_called),
                 continuation_count=continuation_count,
+                memory_start=memory_start,
             )
 
         calls = _valid_calls(parsed) if parsed.get("type") == "tool_calls" else None
@@ -531,6 +575,7 @@ async def run_tool_loop(
                 stopped_reason="malformed_response",
                 tool_names_called=tuple(tool_names_called),
                 continuation_count=continuation_count,
+                memory_start=memory_start,
             )
 
         # Every call the model emitted this iteration, verbatim — a repeat
@@ -670,6 +715,8 @@ async def run_tool_loop(
                 system_prompt=system_prompt,
                 catalogue=catalogue,
                 question=question,
+                memory_block=memory_block,
+                memory_start=memory_start,
                 resume_note=resume_note,
                 history_blocks=history_blocks,
                 steps=steps,
@@ -695,4 +742,5 @@ async def run_tool_loop(
         stopped_reason="safety_limit",
         tool_names_called=tuple(tool_names_called),
         continuation_count=continuation_count,
+        memory_start=memory_start,
     )
