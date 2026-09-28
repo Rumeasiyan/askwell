@@ -620,7 +620,7 @@ function StepAsk({ modelReady }: { modelReady: boolean | undefined }) {
     return (
       <p className="ask-prose">
         Ready. Add something to ask about — the previous step&apos;s add box is still open above,
-        or open <code>Add a source</code> any time from the rail.
+        or open <code>Library</code> in the rail and choose <code>Add a source</code> any time.
       </p>
     );
   }

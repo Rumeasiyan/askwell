@@ -141,7 +141,6 @@ one is disposed of in the release entry under the gate named; none may be carrie
 | #699 | G12 | The update feed reads `main`'s `VERSION`, so it advertises versions that were never released. It carries `constraint:local-first`, so it cannot be `ACCEPTED` |
 | #689 | G9 | Private vulnerability reporting is off; the one security route `SECURITY.md` gives does not exist |
 | #710 | G3 | `eval/bench.py` exits 0 for a scored suite below its bar. Not a hold by itself: G3 is compared by hand until it lands |
-| #712 | G11 | No click reaches **Add a source** once anything is added: W4.3, W5.1, W5.2 and W5.4 are `FAIL` |
 | #615 | G11 | Settings → Storage → **Export and prune** is a disabled button reading "Not built yet", a dead control, so W9.1 is `FAIL`; and there is no backup control, so W9.4 runs from a terminal |
 | #737 | G13 | Every online send is refused until the disclosure wording is decided, so the online-mode gate's positive half cannot run: `BLOCKED`. #730 must land first, and a test enforces that order |
 

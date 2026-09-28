@@ -38,6 +38,7 @@ Status is a word plus a shape, never colour alone (`design-system.md` §8): *ind
 | Add a new version | Supersedes; history kept |
 | Fix | Jumps to the specific problem — the failed file, the connection settings, the clarification |
 | Filter | By kind, status, or has-open-clarifications |
+| Add a source | The add flow (`add-source.md`). In the header whenever anything is listed, and in the empty state's invitation. Once something is added this is the only clickable route to it — a live connection has no file to drag (#712) |
 
 ---
 

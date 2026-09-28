@@ -4,6 +4,15 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.49 - 2026-09-28
+
+`Fixed`: `M9-FIX-FE-201`. Once anything has been added, **Add a source** can still be reached by
+clicking: it now sits in the Library's header, not only in the empty library. Until now the only
+ways to add a second source were dragging files onto the window or asking a question Askwell
+could not answer, so a database connection, which has no file to drag, could not be reached on
+purpose. The welcome screen no longer says the control is in the rail; it says to open Library
+and choose Add a source.
+
 ## 0.7.48 - 2026-09-25
 
 `Added`: `M8-FIX-BE-178`. Online AI can now send. Before a conversation's first online question,
