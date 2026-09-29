@@ -2390,6 +2390,12 @@ Screens before schema is deliberate: drawing a screen surfaces the missing butto
 | Date | Suite | Version | Model / profile | Mean | Worst-of-3 | Bar | Result |
 | ---- | ----- | ------- | --------------- | ---- | ---------- | --- | ------ |
 | 2026-09-28 | `abstention.v1` | `0.7.48` | Qwen3.5-4B-Q4_K_M / balanced | **0.07** | 0.07 | 0.90 | **FAIL** |
+| 2026-09-28 | `abstention.v1` | `0.7.63` (`M9-FIX-BE-215`), prefill on | Qwen3.5-4B-Q4_K_M / balanced | **0.53** | 0.40 | 0.90 | **FAIL** |
+| 2026-09-29 | `abstention.v1` | `0.7.63`, prefill off | Qwen3.5-4B-Q4_K_M / balanced | 0.36 | 0.33 | 0.90 | FAIL |
+| 2026-09-29 | `grounded_qa.v1` | `0.7.63`, prefill on | Qwen3.5-4B-Q4_K_M / balanced | **0.74** | 0.66 | 0.85 | **FAIL** |
+| 2026-09-29 | `grounded_qa.v1`, its 8 zero-score tasks only | `0.7.62`, before `215` | Qwen3.5-4B-Q4_K_M / balanced | 0.00 | 0.00 | 0.85 | no regression from `215` |
+
+**Read these with care.** From 20:50 on 2026-09-28 to 07:00 the next morning, two evals shared one `llama-server`: a leftover sequence the `215` build agent had started, and the orchestrating session's own. The timeouts that followed skip reranking and depress scores. An independent run of the same change put abstention at 0.38 with the prefill and 0.56 without, the opposite order to the table above. **So the prefill's effect is within noise, and not settled.** Solid conclusions: `215` is a real improvement on abstention, it regressed no grounded task, and neither suite meets its bar. The grounded failures are two older defects, #817 and #818. Re-measure both suites uncontended before `1.0.0`.
 
 The first measurement of C5, run by the orchestrating session. 14 of 15 tasks score 0. Mostly this is not invention. Near-miss questions retrieve passages above threshold and skip the formal abstention path, and the model writes its refusal as prose (`Not covered: …`). The same answers leak raw prompt delimiters and spam unattached citation markers. Full analysis in #769. The fix is `M9-FIX-BE-215`, placed first in M9. **The threshold must not be lowered to move this number** (C5). Whether `0.7.21`'s thinking prefill (#629) contributed is not yet known; that ticket measures it both ways. Result file: `eval/results/abstention.v1-20260928T012322Z.json` (gitignored, on the build host).
 
