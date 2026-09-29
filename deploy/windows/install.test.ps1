@@ -258,8 +258,8 @@ $safe = Protect-AskwellReportText -Text $raw -UserProfile 'C:\Users\Nimal.Perera
 Test-Check 'profile, PC and account names are replaced, any case' $safe 'Copying to <profile>\AppData\Local\Temp on <pc> as <user>; Podman 5.8.3'
 Test-Check 'a two-letter name is left alone, not stripped everywhere' (Protect-AskwellReportText -Text 'al alpha' -UserName 'al') 'al alpha'
 Test-Check 'one name alone still works' (Protect-AskwellReportText -Text 'user nimal here' -UserName 'nimal') 'user <user> here'
-$report = Format-AskwellSetupReport -Code 22 -Facts ([ordered]@{ 'Askwell version' = '0.9.5'; 'Windows' = 'Windows 11 Home' }) -Log "line one`r`nline two"
-foreach ($want in @('send this file to whoever gave you Askwell', 'Result: code 22 - Docker Compose could not be installed', 'Askwell version: 0.9.5', 'Windows: Windows 11 Home', 'line two')) {
+$report = Format-AskwellSetupReport -Code 22 -Facts ([ordered]@{ 'Askwell version' = '1.2.3'; 'Windows' = 'Windows 11 Home' }) -Log "line one`r`nline two"
+foreach ($want in @('send this file to whoever gave you Askwell', 'Result: code 22 - Docker Compose could not be installed', 'Askwell version: 1.2.3', 'Windows: Windows 11 Home', 'line two')) {
     if ($report.Contains($want)) { Test-Ok "the report says: $want" } else { Test-Bad "the report says: $want" 'missing' $want }
 }
 if ($report -notmatch '[^\x00-\x7F]') { Test-Ok 'the report is plain ASCII, readable in any Notepad' } else { Test-Bad 'the report is plain ASCII' 'non-ASCII' 'ASCII' }
