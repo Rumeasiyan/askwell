@@ -235,7 +235,11 @@ function Write-AskwellInstallRecord {
 function New-AskwellRandomHex {
     param([int]$Bytes = 32)
     $buffer = New-Object byte[] $Bytes
-    [System.Security.Cryptography.RandomNumberGenerator]::Fill($buffer)
+    # Create().GetBytes, not the static Fill: Fill exists only in .NET Core,
+    # so under Windows PowerShell 5.1, which runs this on every real PC, it
+    # failed and no install could generate its passwords.
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($buffer) } finally { $rng.Dispose() }
     return ($buffer | ForEach-Object { $_.ToString('x2') }) -join ''
 }
 
