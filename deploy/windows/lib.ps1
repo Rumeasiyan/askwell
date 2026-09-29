@@ -113,6 +113,22 @@ function ConvertFrom-AskwellComposeVersion {
     return $null
 }
 
+# What Docker Compose reports about itself, asked directly: `docker-compose
+# version`, not `podman compose version`. The latter connects to Podman's
+# machine before it runs the provider, and on a new PC Setup has not created
+# the machine yet, so it failed there however well Compose had installed:
+# every new PC stopped with code 22. Found on the Windows test VM, 0.9.6.
+# `podman compose` runs this same docker-compose later. "" when there is none.
+function Get-AskwellComposeVersionText {
+    $cmd = Get-Command docker-compose -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $cmd) { return '' }
+    try {
+        return ((& $cmd version 2>&1 | ForEach-Object { "$_" }) -join "`n")
+    } catch {
+        return ''
+    }
+}
+
 function Test-AskwellComposeMeetsMinimum {
     param([string]$RawOutput)
     $parsed = ConvertFrom-AskwellComposeVersion $RawOutput
@@ -500,13 +516,19 @@ function Get-AskwellUninstallRegistryValues {
 # distribution is installed - and Setup installs WSL with none on purpose,
 # because Podman creates its own. So after every restart it asked for
 # another one. Only Windows saying "EnablePending" means a restart will help.
+#
+# -EnabledThisRun: Setup itself just enabled it. Then a restart is needed
+# whatever Windows reports: on the Windows test VM (0.9.6) `wsl --install`
+# said "Changes will not be effective until the system is rebooted" while
+# the feature already read Enabled, and `podman machine init` then failed
+# with HCS_E_SERVICE_NOT_AVAILABLE.
 #   'ready'   - enabled, nothing pending
 #   'restart' - enabled, waiting for Windows to restart
 #   'missing' - anything else: not enabled, or the state could not be read
 function Get-AskwellWslState {
-    param([string]$VmPlatformState)
+    param([string]$VmPlatformState, [switch]$EnabledThisRun)
     switch ($VmPlatformState) {
-        'Enabled' { return 'ready' }
+        'Enabled' { if ($EnabledThisRun) { return 'restart' } else { return 'ready' } }
         'EnablePending' { return 'restart' }
         default { return 'missing' }
     }
@@ -557,19 +579,24 @@ function Get-AskwellSetupCodeMeaning {
 }
 
 # The report goes to a person, maybe onward to a public issue, so the Windows
-# account name, the profile path and the PC's name are replaced. Longest
-# first, so the profile path is replaced whole rather than around the name
-# inside it. A name shorter than three characters is left alone: replacing
-# every "al" in a log would destroy it and hide very little.
+# profile path, the PC's name and the account name are replaced - in what
+# Setup collected (the log, the facts), never in the report's own wording.
+# The profile path goes first and whole, so the name inside it is not
+# replaced around. The path and PC name are distinctive and are replaced in
+# any case; the account name only as a whole word in its own case, because
+# it can be an ordinary word: on the test VM the account is "askwell", and
+# replacing it everywhere turned the report into "<user> Setup report". A
+# name shorter than three characters is left alone.
 function Protect-AskwellReportText {
     param([string]$Text, [string]$UserProfile, [string]$UserName, [string]$ComputerName)
-    $pairs = @(
-        [pscustomobject]@{ Find = $UserProfile; With = '<profile>' },
-        [pscustomobject]@{ Find = $ComputerName; With = '<pc>' },
-        [pscustomobject]@{ Find = $UserName; With = '<user>' }
-    ) | Where-Object { $_.Find -and $_.Find.Length -ge 3 } | Sort-Object { - $_.Find.Length }
-    foreach ($pair in $pairs) {
-        $Text = [regex]::Replace($Text, [regex]::Escape($pair.Find), $pair.With, 'IgnoreCase')
+    if ($UserProfile -and $UserProfile.Length -ge 3) {
+        $Text = [regex]::Replace($Text, [regex]::Escape($UserProfile), '<profile>', 'IgnoreCase')
+    }
+    if ($ComputerName -and $ComputerName.Length -ge 3) {
+        $Text = [regex]::Replace($Text, [regex]::Escape($ComputerName), '<pc>', 'IgnoreCase')
+    }
+    if ($UserName -and $UserName.Length -ge 3) {
+        $Text = [regex]::Replace($Text, '(?<![\w.-])' + [regex]::Escape($UserName) + '(?![\w.-])', '<user>')
     }
     return $Text
 }

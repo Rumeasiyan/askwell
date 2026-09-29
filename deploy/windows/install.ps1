@@ -140,8 +140,7 @@ function Test-AskwellRuntime {
 # copied. Not installed from here: winget does not refresh this session's
 # PATH, so a provider installed now would still not be found until the next.
 function Test-AskwellComposeProvider {
-    $reported = ''
-    try { $reported = (& podman compose version 2>$null) -join "`n" } catch { }
+    $reported = Get-AskwellComposeVersionText
     if (Test-AskwellComposeMeetsMinimum $reported) {
         Write-AskwellSay "Compose provider found: Docker Compose $(ConvertFrom-AskwellComposeVersion $reported)"
         return

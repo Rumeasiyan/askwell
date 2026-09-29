@@ -237,6 +237,8 @@ Remove-Item -Path $imgRoot -Recurse -Force -ErrorAction SilentlyContinue
 
 # --- setup: WSL state and the one restart ---------------------------------------
 Test-Check 'VirtualMachinePlatform enabled is ready' (Get-AskwellWslState 'Enabled') 'ready'
+Test-Check 'enabled by this run still needs the restart' (Get-AskwellWslState 'Enabled' -EnabledThisRun) 'restart'
+Test-Check 'enabled by this run but not enabled is missing' (Get-AskwellWslState 'Disabled' -EnabledThisRun) 'missing'
 Test-Check 'enable pending means restart' (Get-AskwellWslState 'EnablePending') 'restart'
 Test-Check 'disabled is missing, not restart' (Get-AskwellWslState 'Disabled') 'missing'
 Test-Check 'payload removed is missing' (Get-AskwellWslState 'DisabledWithPayloadRemoved') 'missing'
@@ -254,9 +256,10 @@ if ($resume -match 'System32\\WindowsPowerShell') { Test-Ok 'the RunOnce command
 Test-Check 'a known code is explained' (Get-AskwellSetupCodeMeaning 22) 'Docker Compose could not be installed'
 if ((Get-AskwellSetupCodeMeaning 7) -match 'install.ps1') { Test-Ok "install.ps1's own code points at the log" } else { Test-Bad "install.ps1's own code points at the log" (Get-AskwellSetupCodeMeaning 7) 'install.ps1' }
 $raw = 'Copying to C:\Users\Nimal.Perera\AppData\Local\Temp on NIMAL-LAPTOP as nimal.perera; Podman 5.8.3'
-$safe = Protect-AskwellReportText -Text $raw -UserProfile 'C:\Users\Nimal.Perera' -UserName 'Nimal.Perera' -ComputerName 'NIMAL-LAPTOP'
-Test-Check 'profile, PC and account names are replaced, any case' $safe 'Copying to <profile>\AppData\Local\Temp on <pc> as <user>; Podman 5.8.3'
+$safe = Protect-AskwellReportText -Text $raw -UserProfile 'C:\Users\Nimal.Perera' -UserName 'nimal.perera' -ComputerName 'NIMAL-LAPTOP'
+Test-Check 'profile and PC replaced in any case, account name as a word' $safe 'Copying to <profile>\AppData\Local\Temp on <pc> as <user>; Podman 5.8.3'
 Test-Check 'a two-letter name is left alone, not stripped everywhere' (Protect-AskwellReportText -Text 'al alpha' -UserName 'al') 'al alpha'
+Test-Check 'an account named like the product leaves the product name alone' (Protect-AskwellReportText -Text 'Askwell Setup ran as askwell; see github.com/Rumeasiyan/askwell-docs' -UserName 'askwell') 'Askwell Setup ran as <user>; see github.com/Rumeasiyan/askwell-docs'
 Test-Check 'one name alone still works' (Protect-AskwellReportText -Text 'user nimal here' -UserName 'nimal') 'user <user> here'
 $report = Format-AskwellSetupReport -Code 22 -Facts ([ordered]@{ 'Askwell version' = '1.2.3'; 'Windows' = 'Windows 11 Home' }) -Log "line one`r`nline two"
 foreach ($want in @('send this file to whoever gave you Askwell', 'Result: code 22 - Docker Compose could not be installed', 'Askwell version: 1.2.3', 'Windows: Windows 11 Home', 'line two')) {

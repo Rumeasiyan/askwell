@@ -100,12 +100,13 @@ function Save-SetupReport([int]$Code) {
                 '64-bit PowerShell'        = [Environment]::Is64BitProcess
                 'Virtual Machine Platform' = Get-Fact { Get-VmPlatformState }
                 'Podman'                   = Get-Fact { & podman --version }
-                'Compose'                  = Get-Fact { & podman compose version 2>&1 | Select-Object -Last 1 }
+                'Compose'                  = Get-Fact { Get-AskwellComposeVersionText }
                 'WSL'                      = Get-Fact { & wsl.exe --version }
                 'Time (UTC)'               = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm')
             }
-            $text = Format-AskwellSetupReport -Code $Code -Facts $facts -Log $log
-            $text = Protect-AskwellReportText -Text $text -UserProfile $env:USERPROFILE -UserName $env:USERNAME -ComputerName $env:COMPUTERNAME
+            $protect = { param($t) Protect-AskwellReportText -Text $t -UserProfile $env:USERPROFILE -UserName $env:USERNAME -ComputerName $env:COMPUTERNAME }
+            foreach ($key in @($facts.Keys)) { $facts[$key] = & $protect "$($facts[$key])" }
+            $text = Format-AskwellSetupReport -Code $Code -Facts $facts -Log (& $protect $log)
         } else {
             # lib.ps1 did not load (code 23): the raw log is still worth sending.
             $text = "Askwell Setup report (code $Code). Please send this file to whoever gave you Askwell.`r`n`r`n$log"
@@ -173,10 +174,11 @@ function Test-ComposeProvider {
     # output into a single line, which the installer's line-anchored version
     # match cannot read. Calling install.ps1's function means the two can
     # never disagree again.
-    if (-not (Test-Command 'podman')) { return $false }
-    $out = (& podman compose version 2>&1 | ForEach-Object { "$_" }) -join "`n"
-    if ($LASTEXITCODE -ne 0) { return $false }
-    return [bool](Test-AskwellComposeMeetsMinimum $out)
+    #
+    # 0.9.6 still stopped with 22 on every new PC: it asked `podman compose
+    # version`, which needs Podman's machine, and the machine is created only
+    # after this check. Get-AskwellComposeVersionText asks docker-compose.
+    return [bool](Test-AskwellComposeMeetsMinimum (Get-AskwellComposeVersionText))
 }
 
 function Get-VmPlatformState {
@@ -220,7 +222,9 @@ function Remove-AskwellStage {
 
 function Install-WithWinget([string]$Id, [string]$Label) {
     Say "Installing $Label. This can take a few minutes..."
-    & winget install -e --id $Id --silent --accept-source-agreements --accept-package-agreements 2>&1 |
+    # --disable-interactivity: no progress bars, which reached the log and the
+    # report as lines of garbled block characters.
+    & winget install -e --id $Id --silent --disable-interactivity --accept-source-agreements --accept-package-agreements 2>&1 |
         ForEach-Object { Say "  $_" }
     Update-AskwellPath
 }
@@ -264,7 +268,7 @@ if (-not (Test-ComposeProvider)) {
         Stop-Setup 22
     }
 }
-Say "Compose provider: $((& podman compose version 2>&1) -join ' ')"
+Say "Compose provider: $(Get-AskwellComposeVersionText)"
 
 # WSL is what Podman's machine runs in, and it comes last among the
 # prerequisites because it is the one that can need a restart: everything
@@ -272,8 +276,10 @@ Say "Compose provider: $((& podman compose version 2>&1) -join ' ')"
 $state = Get-AskwellWslState (Get-VmPlatformState)
 if ($state -eq 'missing') {
     Say "Enabling the Windows Subsystem for Linux, which Podman needs..."
-    & wsl.exe --install --no-distribution 2>&1 | ForEach-Object { Say "  $_" }
-    $state = Get-AskwellWslState (Get-VmPlatformState)
+    # The in-box wsl.exe writes UTF-16 and ignores WSL_UTF8, so its lines
+    # arrive with a NUL after every character; drop them.
+    & wsl.exe --install --no-distribution 2>&1 | ForEach-Object { Say ("  " + ("$_" -replace "`0", '')) }
+    $state = Get-AskwellWslState (Get-VmPlatformState) -EnabledThisRun
     if ($state -eq 'missing') {
         Say ("The Windows Subsystem for Linux could not be enabled. The messages above say why. " +
             "If they mention virtualisation, turn on Intel VT-x / AMD-V in this PC's firmware (BIOS/UEFI) setup, then run Askwell Setup again.")
@@ -298,7 +304,7 @@ if ($state -eq 'restart') {
 & wsl.exe --version *> $null
 if ($LASTEXITCODE -ne 0) {
     Say "Updating the Windows Subsystem for Linux..."
-    & wsl.exe --update 2>&1 | ForEach-Object { Say "  $_" }
+    & wsl.exe --update 2>&1 | ForEach-Object { Say ("  " + ("$_" -replace "`0", '')) }
 }
 
 # The Podman machine: create it on first use, start it if stopped.

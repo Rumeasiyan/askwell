@@ -26,10 +26,18 @@ $Desktop = [Environment]::GetFolderPath('Desktop')
 if (-not $Desktop -or -not (Test-Path $Desktop)) { $Desktop = $env:TEMP }
 
 function global:winget { $global:LASTEXITCODE = 0 }
+function global:docker-compose { $global:LASTEXITCODE = 0; 'Docker Compose version v5.5.1' }
 function global:podman {
     $a = $args -join ' '
     $global:LASTEXITCODE = 0
-    if ($a -eq 'compose version') { 'Docker Compose version v5.5.1' }
+    # What a new PC does, found on the Windows VM: `podman compose` connects
+    # to Podman's machine first, and before Setup has created one it fails.
+    if ($a -eq 'compose version' -and -not $global:MachineStarted) {
+        'Cannot connect to Podman. Please verify your connection to the Linux system'
+        $global:LASTEXITCODE = 125
+    }
+    elseif ($a -eq 'compose version') { 'Docker Compose version v5.5.1' }
+    elseif ($a -like 'machine start*' -or $a -like 'machine init*') { $global:MachineStarted = $true }
     elseif ($a -eq '--version') { 'podman version 5.8.3' }
     elseif ($a -like 'machine list*Name*') { 'podman-machine-default' }
     elseif ($a -like 'machine list*Running*') { 'true' }
@@ -61,6 +69,7 @@ function Invoke-Scenario {
     $global:WslCalls = @()
     $global:RunOnce = $null
     $global:Installed = $false
+    $global:MachineStarted = $false
     Remove-Item -Recurse -Force -Path $Stage -ErrorAction SilentlyContinue
     Get-ChildItem -Path $env:TEMP, $Desktop -Filter 'Askwell*' -ErrorAction SilentlyContinue | Remove-Item -Force
     $ErrorActionPreference = 'Continue'
@@ -87,6 +96,12 @@ Invoke-Scenario 'after the restart: WSL enabled, no distribution, installs with 
     $global:Installed -and -not $global:RunOnce -and -not ($global:WslCalls -contains '--status')
 }
 Invoke-Scenario 'WSL already enabled: straight through' 'Enabled' 'Enabled' 0 { $global:Installed -and -not $global:RunOnce }
+# The Windows VM, 0.9.6: after `wsl --install` Windows reported the feature
+# as Enabled, not EnablePending, while saying the change needs a reboot. Setup
+# went on and `podman machine init` failed with HCS_E_SERVICE_NOT_AVAILABLE.
+Invoke-Scenario 'enabled by this run but reported Enabled: still asks one restart' 'Disabled' 'Enabled' 30 {
+    ($global:RunOnce -match ' -Resume$') -and -not $global:Installed
+}
 Invoke-Scenario 'restart already pending: asks once' 'EnablePending' 'EnablePending' 30 { $global:RunOnce -match ' -Resume$' }
 Invoke-Scenario 'WSL cannot be enabled: an error, never a restart' 'Disabled' 'Disabled' 32 { -not $global:RunOnce -and -not $global:Installed }
 Invoke-Scenario 'feature state unreadable: an error, never a restart' 'THROW' 'THROW' 32 { -not $global:RunOnce }
