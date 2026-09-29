@@ -193,6 +193,16 @@ export function stepSummary(step: TraceStep): string {
     }
     case "schema":
       return "Looked up schema";
+    // `M10-FIX-BE-220`: which path a question took first, and each fallback.
+    case "route": {
+      if (step.fallback === "documents") return "The query did not run — searched your files instead";
+      if (step.fallback === "table") return "Nothing in your files — tried your tables";
+      const terms = Array.isArray(step.terms) ? step.terms.length : 0;
+      if (step.route === "sql") return `Asked your tables first — ${terms} matching words`;
+      return terms === 0
+        ? "Asked your files first — no table matched"
+        : `Asked your files first — ${terms} matching word${terms === 1 ? "" : "s"}, not enough for a table`;
+    }
     case "sql": {
       const outcome = typeof step.outcome === "string" ? step.outcome : null;
       const summarize = outcome ? SQL_OUTCOME_SUMMARIES[outcome] : undefined;

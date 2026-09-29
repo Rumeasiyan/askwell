@@ -2523,7 +2523,14 @@ def test_a_pending_row_exists_before_anything_has_generated(
     background task runs at all — the row `reconcile_interrupted` needs to
     find something to fail if the process dies before generation starts."""
     _truncate(database_url)
-    fake = _FakeInferenceClient(settings, tokens=["one ", "two "], vector=_vector(0.0), delay=1.0)
+    # A passage that clears the threshold, so the turn reaches the delayed
+    # stream: an empty corpus abstains before any delay, and the row is
+    # already written by the time the first step arrives (`M10-FIX-BE-220`
+    # stopped emitting a database step first on every turn).
+    _seed_chunk(database_url, "Notice is ninety days.", _vector(0.0))
+    fake = _FakeInferenceClient(
+        settings, tokens=["one ", "two "], vector=_vector(0.0), delay=1.0, rerank_score=2.0
+    )
     _patch_client(monkeypatch, fake)
     client = _app(settings, monkeypatch, tmp_path, database_url)
     with client:
@@ -2884,6 +2891,242 @@ async def test_skipping_an_inline_clarification_states_the_assumption_used(
     assert "Skipped" in turn.text
 
     _truncate(database_url)
+
+
+# --- routing between documents and tables (`M10-FIX-BE-220`) ----------------
+
+
+_REFUSAL = (
+    "Askwell could not safely run the query it generated for your database: "
+    "sqlglot could not parse this as postgresql SQL"
+)
+
+
+def _rejected() -> "ask_module._SqlAnswer":
+    return ask_module._SqlAnswer(
+        text=_REFUSAL,
+        status="completed",
+        sql_result=None,
+        trace_step={"kind": "sql", "outcome": "rejected", "reason": "parse", "query": "The"},
+        schema_step={"kind": "schema", "ms": 1.0, "source_id": str(uuid.uuid4())},
+    )
+
+
+def _executed() -> "ask_module._SqlAnswer":
+    query = "SELECT headcount FROM figures WHERE department = 'Logistics' LIMIT 100"
+    return ask_module._SqlAnswer(
+        text="Found 1 row.",
+        status="completed",
+        sql_result={
+            "engine": "postgresql",
+            "source_id": str(uuid.uuid4()),
+            "query": query,
+            "columns": ["headcount"],
+            "rows": [[19]],
+            "row_count": 1,
+            "truncated": False,
+            "duration_ms": 3,
+        },
+        trace_step={"kind": "sql", "outcome": "executed", "rows": 1, "query": query},
+        schema_step={"kind": "schema", "ms": 1.0, "source_id": str(uuid.uuid4())},
+    )
+
+
+def _route(
+    monkeypatch: pytest.MonkeyPatch,
+    strength: "ask_module.TableMatchStrength",
+    sql: "ask_module._SqlAnswer | None",
+) -> list[str]:
+    """Decide the table match, and answer every SQL attempt with `sql`.
+    Returns the questions SQL was attempted for, so a test can prove it
+    never was."""
+    attempts: list[str] = []
+    terms = {"strong": ("depart", "headcount"), "weak": ("headcount",), "none": ()}
+
+    async def fake_match(*_args: object, **_kwargs: object) -> "ask_module.TableMatch":
+        return ask_module.TableMatch(strength, terms[strength.value])
+
+    async def fake_sql(*_args: object, question: str, **_kwargs: object) -> object:
+        attempts.append(question)
+        return sql
+
+    monkeypatch.setattr(ask_module, "match_tables", fake_match)
+    monkeypatch.setattr(ask_module, "_run_sql_turn", fake_sql)
+    return attempts
+
+
+def _ask_routed(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    database_url: str,
+    *,
+    rerank_score: float,
+) -> tuple[list[tuple[str, dict[str, Any]]], dict[str, Any], dict[str, Any]]:
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "The Loomwear Sensor Mk3 runs for eleven hours.", vector)
+    fake = _FakeInferenceClient(
+        settings,
+        tokens=["It runs for ", "eleven hours [1]."],
+        vector=vector,
+        rerank_score=rerank_score,
+    )
+    _patch_client(monkeypatch, fake)
+    client = _app(settings, monkeypatch, tmp_path, database_url)
+    with client:
+        _with_session(client)
+        response = client.post("/ask", json={"question": "How long does the sensor run?"})
+        events = _events(response.text)
+    done = next(data for kind, data in events if kind == "done")
+    return events, done, _trace(database_url, uuid.UUID(done["message_id"]))
+
+
+def _text(events: list[tuple[str, dict[str, Any]]]) -> str:
+    return "".join(data["text"] for kind, data in events if kind == "token")
+
+
+def test_a_rejected_query_hands_the_question_to_the_documents_that_answer_it(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """Issue #817: the refusal used to be the answer. C2 still refused the
+    query; the documents answer instead, and the trace says both."""
+    _truncate(database_url)
+    attempts = _route(monkeypatch, ask_module.TableMatchStrength.STRONG, _rejected())
+
+    events, done, trace = _ask_routed(
+        settings, monkeypatch, tmp_path, database_url, rerank_score=2.0
+    )
+
+    assert len(attempts) == 1
+    assert _REFUSAL not in _text(events)
+    assert "eleven hours" in _text(events)
+    assert any(kind == "citation" for kind, _ in events)
+    assert done["sql_result"] is None
+    kinds = [step["kind"] for step in trace["steps"]]
+    assert kinds[:4] == ["route", "schema", "sql", "route"]
+    assert trace["steps"][0]["route"] == "sql"
+    assert trace["steps"][2]["outcome"] == "rejected"
+    assert trace["steps"][3] == {"kind": "route", "fallback": "documents", "after": "rejected"}
+    assert "retrieve" in kinds
+
+
+def test_a_rejected_query_is_still_said_when_no_document_answers_either(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """A question that strongly names the schema, whose query C2 refused,
+    and that no document covers: the refusal says more than the abstention
+    would, so it stands — with its query disclosed as before."""
+    _truncate(database_url)
+    _route(monkeypatch, ask_module.TableMatchStrength.STRONG, _rejected())
+
+    events, done, trace = _ask_routed(
+        settings, monkeypatch, tmp_path, database_url, rerank_score=-4.0
+    )
+
+    assert _text(events) == _REFUSAL
+    assert done["sql_query"] is not None
+    kinds = [step["kind"] for step in trace["steps"]]
+    assert "retrieve" in kinds
+    assert "abstain" not in kinds
+
+
+def test_a_weak_match_asks_the_documents_first_and_never_generates_sql(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    _truncate(database_url)
+    attempts = _route(monkeypatch, ask_module.TableMatchStrength.WEAK, _executed())
+
+    events, done, trace = _ask_routed(
+        settings, monkeypatch, tmp_path, database_url, rerank_score=2.0
+    )
+
+    assert attempts == []
+    assert "eleven hours" in _text(events)
+    assert done["sql_result"] is None
+    assert trace["steps"][0] == {
+        "kind": "route",
+        "route": "documents",
+        "table_match": "weak",
+        "terms": ["headcount"],
+    }
+    assert not any(step["kind"] == "sql" for step in trace["steps"])
+
+
+def test_documents_finding_nothing_try_a_weakly_matched_table(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """Issue #818's direction: the answer is in a table, and the documents
+    abstaining is what sends the question there."""
+    _truncate(database_url)
+    attempts = _route(monkeypatch, ask_module.TableMatchStrength.WEAK, _executed())
+
+    events, done, trace = _ask_routed(
+        settings, monkeypatch, tmp_path, database_url, rerank_score=-4.0
+    )
+
+    assert len(attempts) == 1
+    assert _text(events) == "Found 1 row."
+    assert done["sql_result"]["rows"] == [[19]]
+    kinds = [step["kind"] for step in trace["steps"]]
+    assert kinds == ["route", "retrieve", "route", "schema", "sql"]
+    assert trace["steps"][2] == {"kind": "route", "fallback": "table", "terms": ["headcount"]}
+    assert "abstain" not in kinds
+
+
+def test_a_weakly_matched_table_that_cannot_answer_keeps_the_abstention(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """One shared word is not enough to show a refusal in place of C5's own
+    answer: the abstention stands, the attempt is in the trace."""
+    _truncate(database_url)
+    attempts = _route(monkeypatch, ask_module.TableMatchStrength.WEAK, _rejected())
+
+    events, done, trace = _ask_routed(
+        settings, monkeypatch, tmp_path, database_url, rerank_score=-4.0
+    )
+
+    assert len(attempts) == 1
+    assert _REFUSAL not in _text(events)
+    assert done["sql_result"] is None
+    kinds = [step["kind"] for step in trace["steps"]]
+    assert kinds[-1] == "abstain"
+    assert "sql" in kinds
+    with psycopg.connect(database_url, autocommit=True) as db:
+        (content,) = db.execute(
+            "SELECT content FROM messages WHERE id = %s", (done["message_id"],)
+        ).fetchone()
+    assert content.startswith("Nothing in your files answers this.")
+
+
+def test_with_no_table_matched_sql_is_never_tried_even_when_documents_abstain(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """The ticket's own edge case: no database sources at all — `match_tables`
+    reports no match, and the SQL path is never reached in either direction."""
+    _truncate(database_url)
+    attempts = _route(monkeypatch, ask_module.TableMatchStrength.NONE, _executed())
+
+    _, done, trace = _ask_routed(settings, monkeypatch, tmp_path, database_url, rerank_score=-4.0)
+
+    assert attempts == []
+    assert done["sql_result"] is None
+    assert trace["steps"][0]["table_match"] == "none"
+    assert not any(step["kind"] == "sql" for step in trace["steps"])
+
+
+def test_a_strong_match_that_executes_is_answered_without_searching_documents(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    _truncate(database_url)
+    _route(monkeypatch, ask_module.TableMatchStrength.STRONG, _executed())
+
+    events, done, trace = _ask_routed(
+        settings, monkeypatch, tmp_path, database_url, rerank_score=2.0
+    )
+
+    assert _text(events) == "Found 1 row."
+    assert done["sql_result"]["rows"] == [[19]]
+    assert [step["kind"] for step in trace["steps"]] == ["route", "schema", "sql"]
 
 
 # --- the tool loop's answers get the same checks (`M9-FIX-BE-206`) -----------
