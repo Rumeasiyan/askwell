@@ -170,11 +170,15 @@
 
         function poll() {
           attempt += 1;
-          fetch(apiOrigin + "/health", { cache: "no-store" })
-            .then(function (response) {
-              if (!response.ok) throw new Error("not ready");
-              return response.json();
-            })
+          // "no-cors": this page only needs to know that the API answers,
+          // and it cannot read the answer anyway. It is served from its own
+          // origin (http://tauri.localhost on Windows), and the API refuses
+          // any request carrying another Origin (askwell/middleware.py) and
+          // sends no CORS headers. So a normal fetch never succeeded, and the
+          // window stayed on "Still starting" with the API up. Found on the
+          // Windows test VM, 0.9.6. A no-cors request resolves when anything
+          // answers and rejects only when nothing is listening yet.
+          fetch(apiOrigin + "/health", { cache: "no-store", mode: "no-cors" })
             .then(function () {
               // The health probe answering is what "up" means here; the
               // window now hands off to the real application entirely —
