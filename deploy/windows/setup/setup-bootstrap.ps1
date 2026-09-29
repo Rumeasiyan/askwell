@@ -57,9 +57,71 @@ $env:WSL_UTF8 = '1'
 # install.ps1's own helpers, so every check here is the one it will make.
 . (Join-Path $Root 'deploy\windows\lib.ps1')
 
-function Say([string]$Text) { Write-Output $Text }
+# Everything Setup prints also goes to this log, which a failed run turns
+# into the report on the Desktop. Appended, not replaced, so a report after
+# the restart also carries what the first run did.
+$SetupLog = Join-Path $env:TEMP 'AskwellSetup.log'
+
+function Say([string]$Text) {
+    Write-Output $Text
+    try { [System.IO.File]::AppendAllText($SetupLog, "$Text`r`n") } catch { }
+}
+
+function Get-Fact([scriptblock]$Read) {
+    # One line of the report. A fact that cannot be read says so; it never
+    # stops the report from being written.
+    try {
+        $value = (& $Read | Out-String).Trim() -replace '\s*\r?\n\s*', '; '
+        if ($value) { return $value }
+        return 'none'
+    } catch {
+        return 'unknown'
+    }
+}
+
+function Save-SetupReport([int]$Code) {
+    # Written on every failure, opened in Notepad, and never sent anywhere:
+    # the person sends the file themselves (docs/decisions.md, 2026-09-29).
+    try {
+        $log = ''
+        if (Test-Path $SetupLog) { $log = [System.IO.File]::ReadAllText($SetupLog) }
+        $name = 'Askwell-Setup-report-{0}.txt' -f (Get-Date -Format 'yyyyMMdd-HHmm')
+        $desktop = [Environment]::GetFolderPath('Desktop')
+        if (-not $desktop -or -not (Test-Path $desktop)) { $desktop = $env:TEMP }
+        $path = Join-Path $desktop $name
+        if (Get-Command Format-AskwellSetupReport -ErrorAction SilentlyContinue) {
+            $facts = [ordered]@{
+                'Askwell version'          = Get-Fact { Get-Content (Join-Path $Root 'VERSION') -Raw }
+                'Setup run'                = $(if ($Resume) { 'after the restart' } else { 'first run' })
+                'Windows'                  = Get-Fact { $os = Get-CimInstance Win32_OperatingSystem; "$($os.Caption) $($os.Version) build $($os.BuildNumber) $($os.OSArchitecture)" }
+                'Memory'                   = Get-Fact { '{0:N1} GB' -f ((Get-CimInstance Win32_OperatingSystem).TotalVisibleMemorySize / 1MB) }
+                'CPU'                      = Get-Fact { (Get-CimInstance Win32_Processor | Select-Object -First 1).Name }
+                'Virtualisation in firmware' = Get-Fact { (Get-CimInstance Win32_Processor | Select-Object -First 1).VirtualizationFirmwareEnabled }
+                '64-bit PowerShell'        = [Environment]::Is64BitProcess
+                'Virtual Machine Platform' = Get-Fact { Get-VmPlatformState }
+                'Podman'                   = Get-Fact { & podman --version }
+                'Compose'                  = Get-Fact { & podman compose version 2>&1 | Select-Object -Last 1 }
+                'WSL'                      = Get-Fact { & wsl.exe --version }
+                'Time (UTC)'               = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm')
+            }
+            $text = Format-AskwellSetupReport -Code $Code -Facts $facts -Log $log
+            $text = Protect-AskwellReportText -Text $text -UserProfile $env:USERPROFILE -UserName $env:USERNAME -ComputerName $env:COMPUTERNAME
+        } else {
+            # lib.ps1 did not load (code 23): the raw log is still worth sending.
+            $text = "Askwell Setup report (code $Code). Please send this file to whoever gave you Askwell.`r`n`r`n$log"
+        }
+        [System.IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding $false))
+        Write-Output ''
+        Write-Output "Setup saved a report on your Desktop: $name"
+        Write-Output 'Please send that file to whoever gave you Askwell. It tells them what went wrong.'
+        Start-Process -FilePath "$env:SystemRoot\System32\notepad.exe" -ArgumentList "`"$path`"" -ErrorAction SilentlyContinue
+    } catch {
+        Write-Output "Setup could not save its report: $($_.Exception.Message)"
+    }
+}
 
 function Stop-Setup([int]$Code) {
+    Save-SetupReport $Code
     # After the restart this script runs in its own window, which would close
     # the moment it exits, taking the reason with it.
     if ($Resume) {
@@ -68,6 +130,8 @@ function Stop-Setup([int]$Code) {
     }
     exit $Code
 }
+
+Say ("=== Askwell Setup started {0} UTC{1}" -f (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm'), $(if ($Resume) { ', after the restart' } else { '' }))
 
 # With ErrorActionPreference 'Continue', a lib.ps1 that fails to parse leaves
 # its functions undefined and every check below quietly answers "missing":
@@ -256,6 +320,11 @@ Say "Everything Askwell needs is in place. Installing Askwell..."
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'deploy\windows\install.ps1') -Yes 2>&1 |
     ForEach-Object { Say $_ }
 $code = $LASTEXITCODE
+if ($code -eq 0) {
+    Remove-Item -Path $SetupLog -Force -ErrorAction SilentlyContinue
+} else {
+    Save-SetupReport $code
+}
 if ($Resume) {
     # This window is the only place the resumed run can show anything.
     if ($code -eq 0) {
@@ -263,7 +332,7 @@ if ($Resume) {
         Say "Askwell is installed and opening. This window closes in 15 seconds."
         Start-Sleep -Seconds 15
     } else {
-        Say "Askwell did not finish installing (code $code). The reason is above. Run Askwell-Setup.exe again once it is fixed."
+        Say "Askwell did not finish installing (code $code). The reason is above, and in the report Setup saved on your Desktop."
         Read-Host 'Press Enter to close this window' | Out-Null
     }
 }

@@ -99,7 +99,7 @@ Section "Askwell"
     DetailPrint "One restart remains. Setup continues by itself after you sign in again."
     SetRebootFlag true
   ${Else}
-    MessageBox MB_OK|MB_ICONEXCLAMATION "Askwell could not finish installing (code $0).$\r$\n$\r$\nThe reason is in the details on the previous screen. Scroll up to the last messages, fix what they describe, and run Askwell Setup again."
+    MessageBox MB_OK|MB_ICONEXCLAMATION "Askwell could not finish installing (code $0).$\r$\n$\r$\nSetup saved a report on your Desktop, named Askwell-Setup-report followed by today's date, and opened it in Notepad. Please send that file to whoever gave you Askwell: it tells them what went wrong, and holds none of your files."
     Abort "Setup did not finish (code $0). See the details above."
   ${EndIf}
 

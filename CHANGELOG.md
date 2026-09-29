@@ -4,6 +4,10 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.5 - 2026-09-29
+
+`Added`: when Windows Setup cannot finish, it saves a report on the Desktop, `Askwell-Setup-report-<date>.txt`, and opens it. The report says what failed and why, what Windows and hardware the PC has, what Setup found installed, and every line Setup printed, with the Windows account and PC names replaced. Its first lines say what to do: send the file to whoever gave you Askwell. Setup sends nothing itself.
+
 ## 0.9.4 - 2026-09-29
 
 `Fixed`: Windows Setup asked for a restart after enabling WSL, and then again after every restart, forever. It decided whether WSL was ready with `wsl --status`, which fails whenever no Linux distribution is installed, and Setup installs WSL with none on purpose because Podman creates its own. It now asks Windows for the state of the Virtual Machine Platform feature, and asks for a restart only when Windows reports one pending.

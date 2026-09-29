@@ -509,3 +509,71 @@ function Get-AskwellResumeCommand {
     $script = "$($StageDir.TrimEnd('\'))\deploy\windows\setup\setup-bootstrap.ps1"
     return "`"$powershell`" -NoProfile -ExecutionPolicy Bypass -File `"$script`" -Resume"
 }
+
+# ---------------------------------------------------------------- setup: the failure report
+# When Setup fails, it saves a plain-text report on the Desktop for the person
+# to send to whoever gave them Askwell. Nothing is sent by Setup itself
+# (docs/decisions.md, 2026-09-29). The people testing Setup are not expected
+# to read a log or describe an error, so the report has to carry everything a
+# maintainer needs: what failed, on what Windows, and every line Setup printed.
+
+# A plain hashtable: [ordered] would read an integer key as a position.
+$script:AskwellSetupCodeMeanings = @{
+    20 = "winget (Windows' App Installer) is missing"
+    21 = 'Podman could not be installed'
+    22 = 'Docker Compose could not be installed'
+    23 = "Setup's own files did not load"
+    24 = 'Setup ran as 32-bit PowerShell'
+    31 = "Podman's machine could not be started"
+    32 = 'WSL could not be enabled'
+    33 = 'WSL still waited for a restart after Setup restarted'
+}
+
+function Get-AskwellSetupCodeMeaning {
+    param([int]$Code)
+    if ($script:AskwellSetupCodeMeanings.ContainsKey($Code)) { return $script:AskwellSetupCodeMeanings[$Code] }
+    return 'the Askwell installer (install.ps1) stopped; its reason is in the log below'
+}
+
+# The report goes to a person, maybe onward to a public issue, so the Windows
+# account name, the profile path and the PC's name are replaced. Longest
+# first, so the profile path is replaced whole rather than around the name
+# inside it. A name shorter than three characters is left alone: replacing
+# every "al" in a log would destroy it and hide very little.
+function Protect-AskwellReportText {
+    param([string]$Text, [string]$UserProfile, [string]$UserName, [string]$ComputerName)
+    $pairs = @(
+        [pscustomobject]@{ Find = $UserProfile; With = '<profile>' },
+        [pscustomobject]@{ Find = $ComputerName; With = '<pc>' },
+        [pscustomobject]@{ Find = $UserName; With = '<user>' }
+    ) | Where-Object { $_.Find -and $_.Find.Length -ge 3 } | Sort-Object { - $_.Find.Length }
+    foreach ($pair in $pairs) {
+        $Text = [regex]::Replace($Text, [regex]::Escape($pair.Find), $pair.With, 'IgnoreCase')
+    }
+    return $Text
+}
+
+function Format-AskwellSetupReport {
+    param([int]$Code, [System.Collections.IDictionary]$Facts, [string]$Log)
+    $lines = @(
+        'Askwell Setup report',
+        '====================',
+        '',
+        'Askwell could not finish installing on this PC.',
+        '',
+        'Please send this file to whoever gave you Askwell. That is all you need',
+        'to do; it tells them what went wrong. If you have a GitHub account, you',
+        'can instead attach it to a new issue at',
+        'https://github.com/Rumeasiyan/askwell/issues/new',
+        '',
+        "It holds Setup's own messages and basic facts about this PC (Windows",
+        'version, memory, what Setup found installed). It holds none of your',
+        'files. Your Windows account name and this PC''s name have been replaced',
+        'with <user> and <pc>.',
+        '',
+        "Result: code $Code - $(Get-AskwellSetupCodeMeaning $Code)"
+    )
+    foreach ($key in $Facts.Keys) { $lines += ('{0}: {1}' -f $key, $Facts[$key]) }
+    $lines += @('', '--- everything Setup printed ---', $Log)
+    return ($lines -join "`r`n")
+}
