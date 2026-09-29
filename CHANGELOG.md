@@ -4,6 +4,10 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.2 - 2026-09-29
+
+`Fixed`: the Windows installer stopped with **code 22** right after installing Docker Compose successfully, on every machine. Setup's own compose check rejected any output mentioning `podman-compose`, and Podman prints that name in the banner it shows before running any compose provider. It also joined the output into one line, which the version match cannot read. Setup now calls the installer's own check (`Test-AskwellComposeMeetsMinimum` in `deploy/windows/lib.ps1`) instead of a rewritten copy. Tested under PowerShell against the exact output from the failing machine: that output now passes, and old versions, `podman-compose` and no provider are still refused. Found by the first real Windows test of `0.9.1`.
+
 ## 0.9.1 - 2026-09-29
 
 `Added`: **a one-click Windows installer, `Askwell-Setup-0.9.1.exe`.** Until now, installing on Windows meant unpacking a zip and running a PowerShell command with `-ExecutionPolicy Bypass`. That is a developer's install, and it stopped halfway after installing Podman or Docker Compose, telling you to open a new terminal and run it again. Setup is a normal Windows installer: one administrator prompt, **Install**, and a progress screen. It installs whatever is missing, including Podman, the Windows Subsystem for Linux and Docker Compose. It then runs Askwell's own installer unattended, so the Start-menu entry, the *Add or remove programs* entry and the uninstaller are exactly as before. The two things it cannot do alone, a restart after first enabling WSL and turning on CPU virtualisation in firmware, it explains in plain words. Built with NSIS in the release pipeline, from the same files as the zip, and included in `SHA256SUMS`.
