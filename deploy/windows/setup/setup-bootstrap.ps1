@@ -202,7 +202,9 @@ function Register-AskwellResume {
         Copy-Item -Path (Join-Path $Root '*') -Destination $stage -Recurse -Force
     }
     $command = Get-AskwellResumeCommand $env:SystemRoot $stage
-    New-Item -Path $RunOnceKey -Force | Out-Null
+    # Never New-Item -Force on an existing key: for the registry it replaces
+    # the key, deleting every other program's pending RunOnce entry.
+    if (-not (Test-Path $RunOnceKey)) { New-Item -Path $RunOnceKey | Out-Null }
     Set-ItemProperty -Path $RunOnceKey -Name 'AskwellSetup' -Value $command
 }
 

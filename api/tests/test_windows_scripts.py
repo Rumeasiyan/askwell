@@ -46,3 +46,20 @@ def test_setup_starts_the_64_bit_powershell() -> None:
     )
     assert r"$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe" in code
     assert 'nsExec::ExecToLog \'"$1"' in code
+
+
+def test_setup_never_replaces_the_runonce_key() -> None:
+    # New-Item -Force on a registry key replaces it, deleting every other
+    # program's pending RunOnce entry on the tester's PC.
+    bootstrap = (WINDOWS / "setup" / "setup-bootstrap.ps1").read_text(encoding="utf-8")
+    for line in bootstrap.splitlines():
+        if "New-Item" in line and "RunOnce" in line:
+            assert "-Force" not in line, line.strip()
+
+
+def test_windows_workflow_runs_both_suites_under_windows_powershell() -> None:
+    workflow = (REPO_ROOT / ".github" / "workflows" / "windows.yml").read_text(encoding="utf-8")
+    assert "shell: powershell" in workflow  # 5.1, what testers have; pwsh would hide its bugs
+    assert "shell: pwsh" not in workflow
+    assert "deploy/windows/install.test.ps1" in workflow
+    assert "deploy/windows/setup/setup-bootstrap.test.ps1" in workflow
