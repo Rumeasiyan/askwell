@@ -32,7 +32,7 @@ n=0
 # Reparented to PID 1 as well: a runner whose parent is alive belongs to a queue
 # that is still working, and killing it would destroy the run this script is
 # about to join rather than an abandoned one.
-for pid in $(pgrep -f 'bash /tmp/tmp\..* M[0-9]-[A-Z]' 2>/dev/null); do
+for pid in $(pgrep -f 'bash /tmp/tmp\..* M[0-9]+-[A-Z]' 2>/dev/null); do
   parent=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
   [ "$parent" = "1" ] || continue
   for child in $(pgrep -P "$pid" 2>/dev/null); do kill "$child" 2>/dev/null; done

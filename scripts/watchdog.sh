@@ -47,7 +47,7 @@ QUEUE_LOG="/tmp/askwell-queue.log"
 # for a deliberate re-run.
 pick_milestone() {
   local m f total done_n
-  for m in M0 M1 M2 M3 M4 M5 M6 M6.5 M7 M8 M9; do
+  for m in M0 M1 M2 M3 M4 M5 M6 M6.5 M7 M8 M9 M10; do
     f=$(ls docs/backlog/${m}-*.md 2>/dev/null | head -1)
     [ -n "$f" ] || continue
     # `grep -c` exits 1 when it counts zero, so a `|| echo 0` fallback
@@ -221,7 +221,7 @@ disown
 
 sleep 20
 if pgrep -f 'build-queue\.sh' >/dev/null 2>&1; then
-  ticket=$(grep -oE '^== M[0-9]-[A-Z-]+[0-9]+[a-z]? ==' "$QUEUE_LOG" 2>/dev/null | tail -1 | tr -d '= ')
+  ticket=$(grep -oE '^== M[0-9]+-[A-Z-]+[0-9]+[a-z]? ==' "$QUEUE_LOG" 2>/dev/null | tail -1 | tr -d '= ')
   say "queue restarted on ${ticket:-$MILESTONE}"
 else
   say "queue failed to start — see $QUEUE_LOG"
