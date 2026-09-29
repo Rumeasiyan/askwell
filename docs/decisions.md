@@ -54,6 +54,18 @@ Purge removes volumes by name rather than with issue #700's `compose down -v`. T
 
 ---
 
+## 2026-09-29 — The first release is 0.9.0, a beta, because C5 is below its bar
+
+**Decision:** The first published release is **`0.9.0`**, a GitHub pre-release, not `1.0.0`. `1.0.0` ships when `abstention.v1` reaches its 0.90 bar and `grounded_qa.v1` its 0.85. Chosen by the product owner on 2026-09-29.
+
+**Why:** On 2026-09-28 the product owner authorised a release "once everything is done", and that entry defined done to include the eval being run and reported honestly, pass or fail. It was run and it fails. Abstention scored 0.53 against 0.90, up from 0.07. Grounded answers scored 0.74 against 0.85. `AGENTS.md` §7 names `1.0.0` as "the first pilot-ready build", and a build that fails its own core safety measure is not that. Three options were put to the owner. Ship `1.0.0` with the shortfall disclosed: rejected, because the version number would claim a readiness the measurements deny. Hold every release until C5 passes: rejected, because it leaves nothing to test on Windows and macOS for an unknown time, and platform testing is independent of the C5 work. Ship a beta now: chosen, because it keeps the version number honest and unblocks platform testing.
+
+**Consequences:** The release notes state both numbers and what they mean in plain words. Work toward `1.0.0` is #769, #814, #817 and #818, with the 9B model on the GPU profile as the first lever to try on #769. `0.9.0` jumps past the `MINOR` bumps M7 and M8 never took (`AGENTS.md` §7), rather than retroactively inventing `0.8.0`.
+
+**Refs:** #769, #814, #817, #818; `docs/BRAIN.md` Eval baseline; `docs/decisions.md` 2026-09-28 release decisions; product owner's decision, 2026-09-29.
+
+---
+
 ## 2026-09-28 — `M9-REL-DEPLOY-214`: releases are built by one workflow into a draft pre-release; each artefact carries its container images and the interface; only macOS bundles; the images are x86_64 for every platform
 
 **Decision.** `.github/workflows/release.yml` runs on a `v*` tag or by hand with a tag. A tag that is not `v<VERSION>` or `v<VERSION>-<suffix>` is refused before anything builds. Three jobs, one per platform, build the Tauri shell on GitHub-hosted `ubuntu-22.04`, `windows-latest` and `macos-latest` runners, with `tauri-cli` 2.11.5 (crates.io, Apache-2.0 OR MIT; its 2.11 line matches the locked `tauri` 2.11.6). A fourth job waits for all three with `always()`. If any of them did not succeed, it fails naming the platform and creates or replaces nothing. Otherwise it builds the API image and `web/out`, saves every image `compose.yaml` names with `docker save`, assembles one artefact per platform with the new `scripts/release-artefact.sh`, runs `scripts/release-checksums.sh`, requires exactly three lines, checks them with `sha256sum -c`, deletes any earlier draft for the tag (refusing if a published release has it), and creates a **draft pre-release**. Nothing publishes it. `tauri.conf.json`'s `bundle.active` is now `true`, but only the macOS job bundles (`--bundles app`). Linux and Windows build with `--no-bundle`. The macOS `.app` is ad-hoc signed (`signingIdentity: "-"`). The three installers now require `web/out/index.html`, copy `web/out` into the prefix, and `podman load` every `images/*.tar` before the stack is registered. A source checkout has no `images/` and is unaffected.

@@ -4,6 +4,17 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.0 - 2026-09-29
+
+**First beta release.** Every milestone's tickets are built: answers from files, spreadsheets and databases with citations; abstention; the clarification loop and memory; SQL safety and the dump sandbox; voice in and out; web search as an escalation; the trace panel; settings, backup, restore and reset; installers for Linux, Windows and macOS; online AI with your own key. Released as a **beta, not `1.0.0`**, because two quality measures are below their bars (`docs/decisions.md`, 2026-09-29):
+
+- **Abstention (C5): 0.53 against a 0.90 bar.** Askwell says it does not know far more reliably than before (0.07), but on questions where your files hold something *close* to the answer, it still sometimes answers from the related passage (#769, #814).
+- **Grounded answers: 0.74 against a 0.85 bar.** Some document questions are wrongly routed to database query generation and return a refusal instead of the answer (#817), and some spreadsheet questions are not routed to the spreadsheet (#818).
+
+`Fixed`: the licence gate's handling of `pypdfium2`'s free-text licence field, which is now mapped to SPDX after reading every licence it bundles. FreeType's is confirmed GPLv3-compatible by the FSF.
+
+Untested on real Windows and macOS hardware; unsigned by decision. Verify the published checksums before running anything.
+
 ## 0.7.63 - 2026-09-28
 
 `Fixed`: `M9-FIX-BE-215`. When your files have something close to your question but nothing that answers it, Askwell now shows **Nothing in your files answers this**. It says what it searched, which material came closest, and what that material does not cover. Below that are the offers to add a source, search the web or ask a larger model. Before, it showed the model's own refusal as an ordinary answer, and none of those offers appeared. An answer that states even one thing from your files, with its source, stays an answer, and the part it could not find is still named.

@@ -91,6 +91,19 @@ _FREE_TEXT_TO_SPDX = {
     # protobuf: the wheel's own LICENSE is the 3-clause BSD text, checked
     # 2026-09-28.
     "3-Clause BSD License": "BSD-3-Clause",
+    # pypdfium2 5.13.0: the binding's own code is BSD-3-Clause and Apache-2.0
+    # (PyPI metadata, checked 2026-09-29). "dependency licenses" means the
+    # PDFium engine it bundles; the wheel's BUILD_LICENSES were read one by
+    # one: abseil, llvm-libc (Apache-2.0, with LLVM exception), pdfium
+    # (BSD-3-Clause), pdfium-binaries, simdutf, fast_float, lcms (MIT), zlib,
+    # libopenjpeg (BSD-2-Clause), libpng, libtiff, libjpeg-turbo (IJG), ICU
+    # (Unicode-3.0), AGG 2.3 (permissive) and FreeType (FreeType Project
+    # License). Every one is permissive. The one that needed checking,
+    # FreeType's FTL, is "compatible with GPLv3" per the FSF licence list
+    # (gnu.org/licenses/license-list.en.html#freetype, read 2026-09-29) — it is
+    # GPLv2-incompatible, which does not apply to a GPLv3 work. Mapped to the
+    # binding's own terms; the bundled texts ship in the wheel's licences/.
+    "BSD-3-Clause, Apache-2.0, dependency licenses": "BSD-3-Clause AND Apache-2.0",
 }
 
 # Neither package publishes a machine-readable licence (PyPI's own JSON API
