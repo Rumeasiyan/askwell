@@ -669,5 +669,29 @@ printf 'POSTGRES_PASSWORD=current\n' > "$TMP/prefix/.env"; printf 'POSTGRES_PASS
 run_place_files "$root" >/dev/null && r=0 || r=1
 check "an upgrade never replaces the install's own credentials" "$(grep '^POSTGRES_PASSWORD=' "$TMP/prefix/.env")" "POSTGRES_PASSWORD=current"
 
+# M10-FIX-DEPLOY-222: a release's llama.cpp builds go beside askwell-inference,
+# where the supervisor looks; a source checkout has none and says so.
+fresh; root="$(fake_release_tree)"
+out="$(run_place_files "$root")" && r=0 || r=1
+check "a tree with no llama.cpp still places its files" "$r" 0
+case "$out" in *"No llama.cpp build is bundled here"*) ok "and says llama-server comes from PATH" ;;
+               *) bad "and says llama-server comes from PATH (got: $out)" ;; esac
+[ -e "$TMP/prefix/llama.cpp" ] && r=1 || r=0
+check "and places no llama.cpp directory" "$r" 0
+
+fresh; root="$(fake_release_tree)"
+for v in gpu cpu; do
+  mkdir -p "$root/deploy/inference/llama.cpp/$v"
+  printf '#!/bin/sh\n' > "$root/deploy/inference/llama.cpp/$v/llama-server"
+  chmod +x "$root/deploy/inference/llama.cpp/$v/llama-server"
+done
+mkdir -p "$TMP/prefix/llama.cpp/gpu"; : > "$TMP/prefix/llama.cpp/gpu/libggml-old.so"
+out="$(run_place_files "$root")" && r=0 || r=1
+check "a release tree's llama.cpp is placed" "$r" 0
+[ -x "$TMP/prefix/llama.cpp/gpu/llama-server" ] && [ -x "$TMP/prefix/llama.cpp/cpu/llama-server" ] && r=0 || r=1
+check "both builds sit beside askwell-inference, executable" "$r" 0
+[ -e "$TMP/prefix/llama.cpp/gpu/libggml-old.so" ] && r=1 || r=0
+check "an older build's files do not linger (replaced, not merged)" "$r" 0
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

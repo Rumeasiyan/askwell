@@ -4,6 +4,16 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.9 - 2026-09-30
+
+`Added`: `M10-FIX-DEPLOY-222`. Every download now carries llama.cpp, the program that runs Askwell's models, and the installer puts it on the computer. Before, nothing did, and an installed Askwell could not answer until someone installed llama.cpp by hand (#810, the llama.cpp half). Linux and Windows get two builds, one that can use a graphics card (Vulkan: NVIDIA, AMD and Intel) and one for the processor; Macs with Apple silicon get one build that uses the chip's graphics side (Metal). Each build is pinned and checked against its published checksum when the release is made. Nothing is downloaded on your computer.
+
+`Fixed`: on a computer with a graphics card llama.cpp can use, Askwell now runs the model on the card. It never asked llama.cpp to before, and reported that answers ran on the processor even when the card was in use. At each start it asks llama.cpp which graphics devices it can use, puts as much of the model on the card as fits, and runs the rest on the processor. If there is no usable card, or the driver is too old, it runs the processor build, exactly as before. If the card cannot load the model, it switches to the processor straight away and says why. The answering model now starts before the two search models, so it gets first claim on the card's memory (#841). On the build host's RTX 3050, answers come back about five times faster (numbers in `docs/decisions.md`).
+
+`Added`: Settings → Hardware profile says where answers actually run, the graphics card or the processor. When that is not the whole model on the card, it gives the reason: no graphics device llama.cpp can use, a card that could not load the model, or a card with room for only part of it. The same reason is in `/health` and `/assistant` as `acceleration_reason`.
+
+Not done here: the embedding and reranking models are still not placed by the installer (#810, still open for that half). Real Windows and macOS graphics cards are untested (#590, #592).
+
 ## 0.9.8 - 2026-09-29
 
 `Fixed`: upgrading Askwell with its window open could fail the database upgrade for no reason the person caused (#813). The installer upgrades the database while the window's own supervisor may start Askwell again, and the second start ran the same upgrade at the same time; one of the two failed on a table the other had just made. The upgrade now takes a lock in the database, so a second one waits for the first, finds nothing left to do, and succeeds.

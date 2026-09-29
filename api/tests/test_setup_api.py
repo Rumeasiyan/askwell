@@ -262,8 +262,12 @@ def test_verify_manual_accepts_a_wrong_profile_file_and_adjusts_the_profile(
         ).fetchone()
         assert profile is not None and profile[0] == "accelerated"
 
+        # The row this request wrote, not whichever is newest: another app
+        # instance in the same run can record its own adjustment in this
+        # window, and the newest row was once its `standard` (issue #831).
         decision = check.execute(
             "SELECT payload FROM audit_decisions WHERE kind = 'model_profile_adjusted' "
+            "AND payload->>'requested_tier' = 'light' "
             "ORDER BY occurred_at DESC LIMIT 1"
         ).fetchone()
         assert decision is not None

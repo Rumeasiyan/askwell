@@ -342,6 +342,23 @@ function Get-AskwellInferenceTaskArguments {
     return "`"$ScriptPath`""
 }
 
+# Stops the inference task and every llama-server started from $Dir
+# (M10-FIX-DEPLOY-222). Windows will not delete or replace a DLL a running
+# process has loaded, so the installer's upgrade and the uninstaller both
+# need llama.cpp stopped before they touch its folder. Stopping the task ends
+# the Python supervisor but not the llama-server processes it started, so
+# those are stopped by path, and only those: a llama-server the person runs
+# themselves from somewhere else is left alone.
+function Stop-AskwellLlamaCpp {
+    param([string]$Dir)
+    Stop-ScheduledTask -TaskName (Get-AskwellInferenceTaskName) -ErrorAction SilentlyContinue
+    Get-Process -Name 'llama-server' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -and $_.Path.StartsWith($Dir, [System.StringComparison]::OrdinalIgnoreCase) } |
+        Stop-Process -Force -ErrorAction SilentlyContinue
+    # Stop-Process returns before the handles are released.
+    Start-Sleep -Seconds 1
+}
+
 # ---------------------------------------------------------------- bundled images
 
 # The container images a release artefact carries (M9-REL-DEPLOY-214),

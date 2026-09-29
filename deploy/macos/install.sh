@@ -13,6 +13,8 @@
 #     compose.yaml, .env.example, deploy/postgres, deploy/sandbox, deploy/redis — the stack
 #     deploy/probe/askwell-probe                                    — the host probe (M7-PROBE-DEPLOY-137)
 #     deploy/inference/askwell-inference                             — native inference (M0-MODEL-DEPLOY-018)
+#     deploy/inference/llama.cpp/gpu/                                  — llama.cpp's Metal build
+#                                                                      (a release only; M10-FIX-DEPLOY-222)
 #     web/src-tauri/target/release/bundle/macos/Askwell.app           — the desktop shell,
 #                                                                       already bundled (M7-TAURI-DEPLOY-181)
 #     web/out/                                                         — the built interface compose.yaml mounts (#766)
@@ -258,6 +260,7 @@ place_files() {
   cp "$REPO_ROOT/deploy/probe/askwell-probe" "$INSTALL_PREFIX/askwell-probe"
   cp "$REPO_ROOT/deploy/inference/askwell-inference" "$INSTALL_PREFIX/askwell-inference"
   chmod +x "$INSTALL_PREFIX/askwell-probe" "$INSTALL_PREFIX/askwell-inference"
+  place_llama_cpp
 
   # Replaced, not merged: a file an older interface had and this one does
   # not must not keep being served.
@@ -278,6 +281,29 @@ place_files() {
   fi
 
   askwell_say "Application placed at $APP_DIR; stack files under $INSTALL_PREFIX"
+}
+
+# The llama.cpp build a release carries (M10-FIX-DEPLOY-222), placed next to
+# askwell-inference, which is where it looks. On Apple silicon that is one
+# build with Metal built in; the supervisor runs it on the processor
+# (`--device none`) if the graphics side ever fails to load the model.
+# Replaced, not merged, as on Linux. A source checkout carries none, and the
+# supervisor runs `llama-server` from PATH as before. XProtect may remove an
+# unfamiliar executable, so its absence afterwards is named the way the
+# shell's is.
+place_llama_cpp() {
+  local src="$REPO_ROOT/deploy/inference/llama.cpp"
+  if [ ! -f "$src/gpu/llama-server" ] && [ ! -f "$src/cpu/llama-server" ]; then
+    askwell_say "No llama.cpp build is bundled here; Askwell will run llama-server from PATH."
+    return 0
+  fi
+  rm -rf "$INSTALL_PREFIX/llama.cpp"
+  cp -Rp "$src" "$INSTALL_PREFIX/llama.cpp"
+  if [ -f "$src/gpu/llama-server" ] && [ ! -f "$INSTALL_PREFIX/llama.cpp/gpu/llama-server" ]; then
+    askwell_die "$(quarantine_message llama-server)"
+    exit 1
+  fi
+  askwell_say "llama.cpp placed under $INSTALL_PREFIX/llama.cpp. Answers run on the graphics side of this Mac's chip where llama.cpp can use it, and on the processor otherwise."
 }
 
 # ---------------------------------------------------------------- 6a. container images

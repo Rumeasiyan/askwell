@@ -13,6 +13,8 @@
 #     compose.yaml, .env.example, deploy/postgres, deploy/sandbox, deploy/redis — the stack
 #     deploy/probe/askwell-probe                                    — the host probe (M7-PROBE-DEPLOY-137)
 #     deploy/inference/askwell-inference                             — native inference (M0-MODEL-DEPLOY-018)
+#     deploy/inference/llama.cpp/{gpu,cpu}/                            — llama.cpp's Vulkan and CPU builds
+#                                                                      (a release only; M10-FIX-DEPLOY-222)
 #     web/src-tauri/target/release/askwell-shell                      — the desktop shell binary (M7-TAURI-DEPLOY-181)
 #     web/out/                                                         — the built interface compose.yaml mounts (#766)
 #     images/*.tar                                                     — the container images, saved (optional)
@@ -259,6 +261,7 @@ place_files() {
   cp "$REPO_ROOT/deploy/probe/askwell-probe" "$INSTALL_PREFIX/askwell-probe"
   cp "$REPO_ROOT/deploy/inference/askwell-inference" "$INSTALL_PREFIX/askwell-inference"
   chmod +x "$INSTALL_PREFIX/askwell-probe" "$INSTALL_PREFIX/askwell-inference"
+  place_llama_cpp
 
   # Replaced, not merged: a file an older interface had and this one does
   # not must not keep being served.
@@ -271,6 +274,24 @@ place_files() {
   ln -sf "$INSTALL_PREFIX/askwell" "$BIN_DIR/askwell"
 
   askwell_say "Application files placed under $INSTALL_PREFIX"
+}
+
+# The llama.cpp builds a release carries (M10-FIX-DEPLOY-222), placed next to
+# askwell-inference, which is where it looks. Both go: the supervisor asks
+# the Vulkan build at each start whether there is a graphics device it can
+# use and runs the CPU build when there is not, so a card or driver added
+# later is picked up without reinstalling. Replaced, not merged, so an
+# older build's files never linger beside a newer one's. A source checkout
+# carries none, and the supervisor runs `llama-server` from PATH as before.
+place_llama_cpp() {
+  local src="$REPO_ROOT/deploy/inference/llama.cpp"
+  if [ ! -f "$src/gpu/llama-server" ] && [ ! -f "$src/cpu/llama-server" ]; then
+    askwell_say "No llama.cpp build is bundled here; Askwell will run llama-server from PATH."
+    return 0
+  fi
+  rm -rf "$INSTALL_PREFIX/llama.cpp"
+  cp -Rp "$src" "$INSTALL_PREFIX/llama.cpp"
+  askwell_say "llama.cpp placed under $INSTALL_PREFIX/llama.cpp. Answers run on the graphics card where llama.cpp can use it, and on the processor otherwise."
 }
 
 # ---------------------------------------------------------------- 5a. container images

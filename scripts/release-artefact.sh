@@ -2,7 +2,7 @@
 # Assembles one platform's release artefact from what the release workflow
 # has already built. M9-REL-DEPLOY-214.
 #
-# Usage: scripts/release-artefact.sh <linux|windows|macos> <arch> <images-dir> <out-dir>
+# Usage: scripts/release-artefact.sh <linux|windows|macos> <arch> <images-dir> <out-dir> <llama-cpp-dir>
 #
 # Writes <out-dir>/askwell-<VERSION>-<platform>-<arch>.tar.gz (.zip for
 # Windows). Inside is one directory with the layout deploy/<platform>/'s
@@ -14,6 +14,11 @@
 #   images/*.tar        every container image compose.yaml names, saved, so
 #                       the installer loads them rather than building from
 #                       source or pulling from a registry
+#   deploy/inference/llama.cpp/
+#                       the platform's llama.cpp builds, as
+#                       scripts/fetch-llama-cpp.sh wrote them into
+#                       <llama-cpp-dir> — without one, nothing on a user's
+#                       machine can answer (M10-FIX-DEPLOY-222, #810)
 #
 # and the platform's shell at the path its installer looks for it.
 #
@@ -30,12 +35,13 @@ set -Eeuo pipefail
 
 die() { printf 'release-artefact: %s\n' "$1" >&2; exit 1; }
 
-[ $# -eq 4 ] || die "usage: release-artefact.sh <linux|windows|macos> <arch> <images-dir> <out-dir>"
+[ $# -eq 5 ] || die "usage: release-artefact.sh <linux|windows|macos> <arch> <images-dir> <out-dir> <llama-cpp-dir>"
 
 PLATFORM="$1"
 ARCH="$2"
 IMAGES="$3"
 OUT="$4"
+LLAMA_CPP="$5"
 ROOT="${ASKWELL_RELEASE_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 # GitHub refuses a release asset of 2 GiB or more. Failing here names the
@@ -43,9 +49,9 @@ ROOT="${ASKWELL_RELEASE_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 MAX_ASSET_BYTES="${ASKWELL_RELEASE_MAX_ASSET_BYTES:-2147483647}"
 
 case "$PLATFORM" in
-  linux)   SHELL_REL="web/src-tauri/target/release/askwell-shell";                EXT="tar.gz" ;;
-  windows) SHELL_REL="web/src-tauri/target/release/askwell-shell.exe";            EXT="zip" ;;
-  macos)   SHELL_REL="web/src-tauri/target/release/bundle/macos/Askwell.app";     EXT="tar.gz" ;;
+  linux)   SHELL_REL="web/src-tauri/target/release/askwell-shell";                EXT="tar.gz"; LLAMA_BUILDS="gpu/llama-server cpu/llama-server" ;;
+  windows) SHELL_REL="web/src-tauri/target/release/askwell-shell.exe";            EXT="zip";    LLAMA_BUILDS="gpu/llama-server.exe cpu/llama-server.exe" ;;
+  macos)   SHELL_REL="web/src-tauri/target/release/bundle/macos/Askwell.app";     EXT="tar.gz"; LLAMA_BUILDS="gpu/llama-server" ;;
   *) die "unknown platform '$PLATFORM' (use linux, windows or macos)" ;;
 esac
 
@@ -88,6 +94,14 @@ if [ "$images_found" -eq 0 ]; then
   missing=1
 fi
 
+for rel in $LLAMA_BUILDS; do
+  if [ ! -f "$LLAMA_CPP/$rel" ]; then
+    printf 'release-artefact: missing llama.cpp build %s (run scripts/fetch-llama-cpp.sh %s <arch> %s)\n' \
+      "$LLAMA_CPP/$rel" "$PLATFORM" "$LLAMA_CPP" >&2
+    missing=1
+  fi
+done
+
 [ "$missing" -eq 0 ] || die "$PLATFORM artefact not assembled: inputs missing (listed above)"
 
 mkdir -p "$OUT"
@@ -103,6 +117,8 @@ for rel in $REQUIRED; do
   mkdir -p "$T/$(dirname "$rel")"
   cp -Rp "$ROOT/$rel" "$T/$rel"
 done
+
+cp -Rp "$LLAMA_CPP" "$T/deploy/inference/llama.cpp"
 
 # The installers' own logic tests are not something a user runs.
 find "$T/deploy" \( -name '*.test.sh' -o -name '*.test.ps1' \) -exec rm -f {} +
@@ -138,4 +154,4 @@ if [ "$size" -gt "$MAX_ASSET_BYTES" ]; then
   die "$PLATFORM artefact is $size bytes, over the $MAX_ASSET_BYTES-byte release-asset limit"
 fi
 
-printf 'wrote %s (%s bytes, %d image archive(s))\n' "$DEST" "$size" "$images_found"
+printf 'wrote %s (%s bytes, %d image archive(s), llama.cpp: %s)\n' "$DEST" "$size" "$images_found" "$LLAMA_BUILDS"

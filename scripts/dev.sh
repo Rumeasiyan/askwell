@@ -424,6 +424,12 @@ case "$cmd" in
         # this machine runs 3.14 and the package pins 3.12. So the supervisor
         # is a standalone stdlib-only script. See docs/decisions.md.
         binary="$(_env_value ASKWELL_INFERENCE_BINARY llama-server)"
+        # The default name also means the builds scripts/fetch-llama-cpp.sh
+        # placed in deploy/inference/llama.cpp, which the supervisor prefers
+        # (M10-FIX-DEPLOY-222).
+        if [ "$binary" = llama-server ] && [ -x "$REPO_ROOT/deploy/inference/llama.cpp/gpu/llama-server" ]; then
+            binary="$REPO_ROOT/deploy/inference/llama.cpp/gpu/llama-server"
+        fi
         command -v "$binary" >/dev/null 2>&1 || die \
             "$binary is not on PATH. Askwell runs llama.cpp natively so that GPU acceleration works; it is not in the container images."
         command -v python3 >/dev/null 2>&1 || die "python3 is needed on the host to supervise inference"

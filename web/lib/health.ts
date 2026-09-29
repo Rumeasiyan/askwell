@@ -31,6 +31,7 @@ export interface Assistant {
   still_works: string[];
   model: string | null;
   acceleration: string | null;
+  acceleration_reason: string | null;
   restarts: number;
 }
 

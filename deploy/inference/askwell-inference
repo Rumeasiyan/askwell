@@ -34,6 +34,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import shutil
 import threading
 import signal
@@ -41,6 +42,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 # States the API reads back out of state.json. Kept in step with
@@ -65,6 +67,28 @@ HEARTBEAT_SECONDS = 10
 # reason is more useful to the user than another attempt would be.
 BACKOFF_SECONDS = (1, 2, 5, 15, 30)
 READY_TIMEOUT_SECONDS = 300
+
+# What llama.cpp prints once it has placed the model, at log verbosity 4 and
+# not at the default 3 — at 3 the only trace of offload is the graphics card's
+# memory filling (`M10-FIX-DEPLOY-222`, measured on build b10645).
+OFFLOADED = re.compile(r"offloaded (\d+)/(\d+) layers to GPU", re.IGNORECASE)
+
+NO_GPU_DEVICE = (
+    "llama.cpp found no graphics device it can use: this build of it has no GPU "
+    "backend, or the graphics driver is too old for the one it has. Answers run "
+    "on the processor."
+)
+
+# The llama.cpp builds a release carries beside this script
+# (`scripts/fetch-llama-cpp.sh`, `M10-FIX-DEPLOY-222`): `gpu/` is the Vulkan
+# build on Linux and Windows and the Metal one on Apple silicon, `cpu/` the
+# processor-only build, which macOS does not need. In a release tree that is
+# `deploy/inference/llama.cpp`; installed, it sits under the install prefix
+# next to this file. A source checkout has neither, and runs `llama-server`
+# from PATH as it always did.
+BUNDLED = Path(__file__).resolve().parent / "llama.cpp"
+EXECUTABLE = "llama-server.exe" if os.name == "nt" else "llama-server"
+DEFAULT_BINARY = "llama-server"
 
 # Three supervisors write one state file. Without this they read-modify-write
 # over each other and a role's entry vanishes — which the API would read as
@@ -94,6 +118,34 @@ ROLES = (
 )
 
 
+def _sentence(text: str) -> str:
+    """First letter up, the rest as written — `str.capitalize` would turn
+    "NVIDIA GeForce" into "Nvidia geforce"."""
+    return text[:1].upper() + text[1:]
+
+
+def _binaries(configured: str) -> tuple[str, str | None, str | None]:
+    """Which `llama-server` to start first, and the bundled pair if any.
+
+    A configured path wins: that is someone pointing at their own build. The
+    default name does not, because every installed `.env` carries it from
+    `.env.example` and the shell passes `.env` through — if it won, a bundled
+    build would never be used. With a bundled pair, the GPU build goes first,
+    because only it can say whether this machine has a device it can use
+    (`Supervisor.start_once`); the CPU build is what runs when it cannot.
+    """
+    if configured != DEFAULT_BINARY:
+        return configured, None, None
+    gpu = BUNDLED / "gpu" / EXECUTABLE
+    cpu = BUNDLED / "cpu" / EXECUTABLE
+    gpu_binary = str(gpu) if gpu.is_file() else None
+    cpu_binary = str(cpu) if cpu.is_file() else None
+    first = gpu_binary or cpu_binary
+    if first is None:
+        return configured, None, None
+    return first, gpu_binary, cpu_binary
+
+
 class Supervisor:
     def __init__(
         self,
@@ -105,7 +157,9 @@ class Supervisor:
     ) -> None:
         self.role = role
         self.extra_flags = extra_flags
-        self.binary = env("ASKWELL_INFERENCE_BINARY", "llama-server")
+        self.binary, self.gpu_binary, self.cpu_binary = _binaries(
+            env("ASKWELL_INFERENCE_BINARY", DEFAULT_BINARY)
+        )
         self.model = Path(env(model_var, "")).expanduser()
         self.upstream_port = int(env(port_var, default_port))
         self.context_size = int(env("ASKWELL_INFERENCE_CONTEXT_SIZE", "8192"))
@@ -134,9 +188,28 @@ class Supervisor:
         self.restarts = 0
         self.consecutive = 0
         self.acceleration = "cpu"
+        # Why answers run where they do, when that is not simply "on the
+        # graphics card, all of it" — published beside `acceleration` so a
+        # machine with a card that answers on the processor says why.
+        self.acceleration_reason: str | None = None
+        # The graphics devices llama.cpp itself can see, asked once per
+        # supervisor (`--list-devices`); `None` until asked. A CPU-only build
+        # lists none, and then the command is exactly what it always was.
+        self.devices: list[str] | None = None
+        # Set when a start that offloaded to the graphics card failed to load.
+        # From then on this role runs on the processor, and says why, rather
+        # than failing the same way five more times (`M10-FIX-DEPLOY-222`).
+        self._gpu_failed: str | None = None
+        self._last_failure: str | None = None
         # The last measured resident memory, refreshed off the event loop
         # (`_measure_memory`) so `_write` never blocks on `ps` (issue #671).
         self._memory: int | None = None
+        # Set once this role's first start has settled — ready, given up, or
+        # backing off. `main` holds embedding and reranking behind
+        # generation's, because llama.cpp sizes a partial offload against the
+        # card's free memory at its own start, and generation is the role
+        # whose speed a person feels (#841).
+        self.settled = asyncio.Event()
         self._write(STOPPED)
 
     # --- what the API reads -------------------------------------------------
@@ -163,6 +236,7 @@ class Supervisor:
             "state": state,
             "model": self.model.name if self.model.name else None,
             "acceleration": self.acceleration if state == READY else None,
+            "acceleration_reason": self.acceleration_reason if state == READY else None,
             "memory_bytes": self._memory if state == READY else None,
             "reason": reason,
             "restarts": self.restarts,
@@ -250,8 +324,65 @@ class Supervisor:
             "--port", str(self.upstream_port),
             "--ctx-size", str(self.context_size),
             "--no-webui",
+            *self._placement_flags(),
             *self.extra_flags,
         ]
+
+    def _offloading(self) -> bool:
+        return bool(self.devices) and self._gpu_failed is None
+
+    def _placement_flags(self) -> list[str]:
+        """Where the model goes. `M10-FIX-DEPLOY-222`.
+
+        Nothing at all without a graphics device, so the CPU path is the
+        command it always was. With one, `--n-gpu-layers auto`: llama.cpp's
+        own fit (`--fit`, on by default) puts as many layers on the card as
+        its free memory holds and the rest on the processor, which is the
+        partial offload a small card needs rather than a failure. Verbosity 4
+        is only so the log says how many layers it placed. After the card
+        failed to load the model, the bundled CPU build runs with nothing
+        added; without one, `--device none` keeps this role off the card.
+        """
+        if self._offloading():
+            return ["--n-gpu-layers", "auto", "--log-verbosity", "4"]
+        if self.devices and self._gpu_failed is not None and self.binary != self.cpu_binary:
+            return ["--device", "none"]
+        return []
+
+    def _list_devices(self) -> list[str]:
+        """The graphics devices this `llama-server` can offload to.
+
+        Asked of the binary rather than of the probe: the probe knows the
+        machine has a card, and only llama.cpp knows whether its build has a
+        backend for it and whether the driver is new enough to use it. Each
+        entry is llama.cpp's own line, e.g. `Vulkan0: NVIDIA GeForce RTX 3050
+        (8192 MiB, 7483 MiB free)`. A CPU-only build prints `(none)`.
+        """
+        try:
+            listed = subprocess.run(
+                [self.binary, "--list-devices"],
+                capture_output=True, text=True, timeout=60, check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return []
+        devices: list[str] = []
+        for stream in (listed.stdout, listed.stderr):
+            listing = False
+            for line in stream.splitlines():
+                if line.strip() == "Available devices:":
+                    listing = True
+                    continue
+                # The list is the indented lines under its heading, and ends
+                # at the first line that is not — backend log lines carry
+                # colons too, and are not devices.
+                if not listing or not line[:1].isspace():
+                    listing = False
+                    continue
+                entry = line.strip()
+                name, colon, _ = entry.partition(":")
+                if colon and name and not name.upper().startswith("CPU"):
+                    devices.append(entry)
+        return devices
 
     async def start_once(self) -> bool:
         if not self.model.is_file():
@@ -272,6 +403,14 @@ class Supervisor:
                 f"in the container images.",
             )
             return False
+
+        if self.devices is None:
+            self.devices = await asyncio.to_thread(self._list_devices)
+            if not self.devices and self.cpu_binary is not None:
+                # No device, or a GPU build that could not even list them —
+                # a driver that crashes its backend fails here, not mid-answer.
+                # The CPU build is the command this machine always had.
+                self.binary = self.cpu_binary
 
         self._write(STARTING)
         self.process = await asyncio.create_subprocess_exec(
@@ -304,11 +443,11 @@ class Supervisor:
             async with asyncio.timeout(READY_TIMEOUT_SECONDS):
                 while True:
                     if process.returncode is not None:
-                        self._write(
-                            LOAD_FAILED,
+                        self._last_failure = (
                             self._explain(recent)
-                            or f"Exited with {process.returncode} while loading.",
+                            or f"Exited with {process.returncode} while loading."
                         )
+                        self._write(LOAD_FAILED, self._last_failure)
                         return False
                     if await self._answers():
                         self._detect_acceleration(recent)
@@ -317,11 +456,16 @@ class Supervisor:
                         return True
                     await asyncio.sleep(0.5)
         except TimeoutError:
-            self._write(
-                LOAD_FAILED,
+            self._last_failure = (
                 self._explain(recent)
-                or f"The model did not answer within {READY_TIMEOUT_SECONDS}s.",
+                or f"The model did not answer within {READY_TIMEOUT_SECONDS}s."
             )
+            self._write(LOAD_FAILED, self._last_failure)
+            # Still loading, or hung. Left running, nothing drains its output
+            # and `supervise` waits on its exit forever; since readiness waits
+            # for the model rather than the port, this path is reachable.
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
             return False
         finally:
             reader.cancel()
@@ -329,16 +473,32 @@ class Supervisor:
                 await reader
 
     async def _answers(self) -> bool:
-        """One TCP connection: cheaper than an HTTP request, and at this stage
-        it asks the same question — is it serving yet."""
+        """`GET /health` answers 200 — the model is loaded.
+
+        This used to be one TCP connection, on the reasoning that accepting
+        one meant serving. It does not: `llama-server` binds its port first
+        and answers 503 "Loading model" until the model is in, so `ready`
+        was published seconds early, and read the load log before the part
+        that says where the model went (`M10-FIX-DEPLOY-222`, measured on
+        build b10645: port open at 0.1s, model loaded at 4s).
+        """
         try:
-            _, writer = await asyncio.open_connection("127.0.0.1", self.upstream_port)
+            reader, writer = await asyncio.open_connection("127.0.0.1", self.upstream_port)
         except OSError:
             return False
-        writer.close()
-        with contextlib.suppress(OSError):
-            await writer.wait_closed()
-        return True
+        try:
+            writer.write(b"GET /health HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
+            await writer.drain()
+            async with asyncio.timeout(5):
+                status = await reader.readline()
+        except (OSError, TimeoutError):
+            return False
+        finally:
+            writer.close()
+            with contextlib.suppress(OSError):
+                await writer.wait_closed()
+        parts = status.split()
+        return len(parts) >= 2 and parts[1] == b"200"
 
     async def _read_output(self, recent: list[str]) -> None:
         """Keep the last lines, for explaining a failure."""
@@ -350,7 +510,9 @@ class Supervisor:
             if not raw:
                 return
             recent.append(raw.decode("utf-8", "replace").rstrip())
-            del recent[:-200]
+            # Verbosity 4 prints about 250 lines while loading, and the
+            # offload count sits in the middle of them.
+            del recent[:-1000]
 
     @staticmethod
     def _explain(recent: list[str]) -> str | None:
@@ -367,12 +529,57 @@ class Supervisor:
         return None
 
     def _detect_acceleration(self, recent: list[str]) -> None:
+        """Where the model actually went, from what llama.cpp said it did.
+
+        Measured, not inferred from the flags: a card with too little free
+        memory takes some layers or none, and only the load log says which.
+        """
+        self.acceleration_reason = None
+        for line in recent:
+            placed = OFFLOADED.search(line)
+            if placed is None:
+                continue
+            on_card, total = int(placed.group(1)), int(placed.group(2))
+            if on_card == 0:
+                self.acceleration = "cpu"
+                self.acceleration_reason = (
+                    f"llama.cpp put none of the model on {self._device_name()}: its free "
+                    f"memory does not hold any of it. Answers run on the processor."
+                )
+            else:
+                self.acceleration = "gpu"
+                if on_card < total:
+                    self.acceleration_reason = (
+                        f"{on_card} of {total} layers are on {self._device_name()} and the "
+                        f"rest on the processor: its free memory does not hold all of the "
+                        f"model."
+                    )
+            return
         for line in recent:
             lowered = line.lower()
             if ("offloading" in lowered and "layers to gpu" in lowered) or "cuda0" in lowered:
                 self.acceleration = "gpu"
                 return
         self.acceleration = "cpu"
+        if self._gpu_failed is not None:
+            self.acceleration_reason = (
+                f"{_sentence(self._device_name())} could not load the model, so answers "
+                f"run on the processor. {self._gpu_failed}"
+            )
+        elif self.devices == []:
+            self.acceleration_reason = NO_GPU_DEVICE
+        elif self.devices:
+            self.acceleration_reason = (
+                f"llama.cpp has not reported putting any of the model on {self._device_name()}."
+            )
+
+    def _device_name(self) -> str:
+        """`Vulkan0: NVIDIA GeForce RTX 3050 (8192 MiB, …)` → the card's name."""
+        if not self.devices:
+            return "the graphics card"
+        _, _, rest = self.devices[0].partition(":")
+        name = rest.split("(")[0].strip()
+        return name or "the graphics card"
 
     async def drain(self) -> None:
         """Keep reading while it runs.
@@ -383,8 +590,17 @@ class Supervisor:
         process = self.process
         if process is None or process.stdout is None:
             return
-        while await process.stdout.readline():
-            pass
+        while True:
+            raw = await process.stdout.readline()
+            if not raw:
+                return
+            # A pipe is block-buffered, so the line saying where the model
+            # went can arrive after `ready`. When it does, it is the truth,
+            # and is published at once rather than at the next heartbeat.
+            line = raw.decode("utf-8", "replace")
+            if OFFLOADED.search(line):
+                self._detect_acceleration([line])
+                self._write(READY)
 
     async def supervise(self) -> None:
         self._supervising = True
@@ -407,6 +623,7 @@ class Supervisor:
 
                 if ready:
                     self.consecutive = 0
+                    self.settled.set()
                     heartbeat = asyncio.create_task(self._heartbeat())
                     try:
                         await self.drain()
@@ -416,6 +633,21 @@ class Supervisor:
                             await heartbeat
 
                 code = await self.process.wait() if self.process else None
+
+                if not ready and self._offloading() and not self._swap_requested:
+                    # The card could not load it — a driver too old for the
+                    # backend, usually. The processor is the next thing to
+                    # try, at once and not counted as a crash: the model may
+                    # well load there (`M10-FIX-DEPLOY-222`).
+                    self._gpu_failed = self._last_failure or f"It exited with {code}."
+                    if self.cpu_binary is not None:
+                        self.binary = self.cpu_binary
+                    print(
+                        f"askwell-inference[{self.role}]: the graphics card could not load "
+                        f"the model; retrying on the processor — {self._gpu_failed}",
+                        flush=True,
+                    )
+                    continue
 
                 if self._swap_requested:
                     self._swap_requested = False
@@ -470,6 +702,7 @@ class Supervisor:
                     )
                     return
 
+                self.settled.set()
                 delay = BACKOFF_SECONDS[self.consecutive]
                 self.consecutive += 1
                 self.restarts += 1
@@ -477,6 +710,7 @@ class Supervisor:
                 await asyncio.sleep(delay)
         finally:
             self._supervising = False
+            self.settled.set()
 
     async def swap_model(self, new_model: Path) -> tuple[bool, str | None]:
         """Point this role at a different model file, live. `M7-SET-BE-145a`.
@@ -754,6 +988,13 @@ async def watch_for_swap_requests(
             await asyncio.wait_for(stopping.wait(), timeout=SWAP_POLL_SECONDS)
 
 
+async def after(event: asyncio.Event, work: Callable[[], Awaitable[None]]) -> None:
+    """Start `work` once `event` is set — not before, and not at all if
+    cancelled first (so no coroutine is left un-awaited)."""
+    await event.wait()
+    await work()
+
+
 async def main() -> int:
     supervisors = [Supervisor(*role) for role in ROLES]
 
@@ -770,11 +1011,19 @@ async def main() -> int:
     # Every role supervised independently. One model missing must not stop the
     # others: a user with no reranker can still ask questions, and telling them
     # the assistant is down because retrieval cannot rank would be false.
-    running = [asyncio.create_task(s.supervise()) for s in supervisors]
+    # Generation starts first and the others once it has settled, so it sizes
+    # its share of the graphics card against the whole card, not against
+    # whatever embedding and reranking took first (#841).
+    generation = next(s for s in supervisors if s.role == "generation")
+    running = [
+        asyncio.create_task(
+            s.supervise() if s is generation else after(generation.settled, s.supervise)
+        )
+        for s in supervisors
+    ]
     models_dir = Path(
         env("ASKWELL_MODELS_DIR", os.path.expanduser("~/.local/share/askwell/models"))
     ).expanduser()
-    generation = next(s for s in supervisors if s.role == "generation")
     run_dir = generation.socket_path.parent
     running.append(
         asyncio.create_task(watch_for_fetch_requests(models_dir, run_dir, stopping))

@@ -520,5 +520,32 @@ PATH="$fp:$PATH" bash "$HERE/uninstall.sh" --purge-data --yes >/dev/null 2>&1 &&
 [ -e "$data/askwell.env" ] && r=1 || r=0
 check "a purge keeps no credentials for a database it removed" "$r" 0
 
+# M10-FIX-DEPLOY-222: the release's Metal build goes beside askwell-inference.
+run_place_llama_cpp() {
+  bash -c '
+    set -Eeuo pipefail
+    . "'"$HERE"'/install.sh"
+    REPO_ROOT="'"$1"'"; INSTALL_PREFIX="'"$TMP"'/prefix"
+    mkdir -p "$INSTALL_PREFIX"
+    place_llama_cpp
+  ' 2>&1
+}
+fresh
+mkdir -p "$TMP/release/deploy/inference"
+out="$(run_place_llama_cpp "$TMP/release")" && r=0 || r=1
+check "a source checkout with no llama.cpp carries on" "$r" 0
+case "$out" in *"No llama.cpp build is bundled here"*) ok "and says llama-server comes from PATH" ;;
+               *) bad "and says llama-server comes from PATH (got: $out)" ;; esac
+mkdir -p "$TMP/release/deploy/inference/llama.cpp/gpu" "$TMP/prefix/llama.cpp/gpu"
+printf '#!/bin/sh\n' > "$TMP/release/deploy/inference/llama.cpp/gpu/llama-server"
+chmod +x "$TMP/release/deploy/inference/llama.cpp/gpu/llama-server"
+: > "$TMP/prefix/llama.cpp/gpu/libggml-old.dylib"
+run_place_llama_cpp "$TMP/release" >/dev/null && r=0 || r=1
+check "a release tree's Metal build is placed" "$r" 0
+[ -x "$TMP/prefix/llama.cpp/gpu/llama-server" ] && r=0 || r=1
+check "beside askwell-inference, executable" "$r" 0
+[ -e "$TMP/prefix/llama.cpp/gpu/libggml-old.dylib" ] && r=1 || r=0
+check "an older build's files do not linger" "$r" 0
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

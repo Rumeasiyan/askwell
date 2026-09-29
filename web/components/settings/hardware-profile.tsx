@@ -18,6 +18,7 @@ import { useEffect, useState } from "react";
 
 import {
   PROFILES,
+  accelerationLine,
   fetchProbe,
   overrideConsequence,
   overrideProfile,
@@ -26,6 +27,7 @@ import {
   type ProbeState,
 } from "@/lib/probe";
 import { PROFILE_EXPECTATIONS } from "@/lib/model";
+import { useStatus } from "@/lib/use-status";
 
 const PROFILE_LABELS: Record<Profile, string> = {
   light: "Light",
@@ -40,6 +42,17 @@ export function HardwareProfile() {
   const [busy, setBusy] = useState<"rerun" | "override" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<string | null>(null);
+  // The profile is what the probe expects; this is what the running model
+  // reports (`M10-FIX-DEPLOY-222`) — the two disagreed for a whole build.
+  const status = useStatus(15000);
+  const running =
+    status.kind === "reporting"
+      ? accelerationLine(
+          status.assistant.available,
+          status.assistant.acceleration,
+          status.assistant.acceleration_reason,
+        )
+      : null;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -112,6 +125,11 @@ export function HardwareProfile() {
       <p className="ask-micro" style={{ textTransform: "none" }}>
         {state.reason}
       </p>
+      {running !== null ? (
+        <p className="ask-micro" style={{ textTransform: "none" }}>
+          {running}
+        </p>
+      ) : null}
       {state.detection_failed ? (
         <p className="ask-micro" style={{ textTransform: "none", color: "var(--inferred)" }}>
           The probe could not measure this machine, so Askwell is running on the standard
