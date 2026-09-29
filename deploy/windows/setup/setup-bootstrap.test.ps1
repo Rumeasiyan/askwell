@@ -19,18 +19,24 @@ $Scratch = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid()
 $env:TEMP = Join-Path $Scratch 'temp'
 $env:ProgramData = Join-Path $Scratch 'programdata'
 $env:USERNAME = 'nimal.perera'
+$env:USERPROFILE = $Scratch
 $env:COMPUTERNAME = 'NIMAL-LAPTOP'
 New-Item -ItemType Directory -Force -Path $env:TEMP, $env:ProgramData | Out-Null
 $Stage = Join-Path $env:ProgramData 'AskwellSetup'
 $Desktop = [Environment]::GetFolderPath('Desktop')
 if (-not $Desktop -or -not (Test-Path $Desktop)) { $Desktop = $env:TEMP }
 
-function global:winget {
-    $global:LASTEXITCODE = 0
-    if (($args -join ' ') -match 'Microsoft\.WSL') {
-        'Installing for NIMAL-LAPTOP\nimal.perera'
-        $global:WslInstalled = $global:WingetInstallsWsl
-    }
+function global:winget { $global:LASTEXITCODE = 0 }
+# The WSL installer: a download, its checksum, and msiexec.
+function global:Invoke-WebRequest {
+    param($Uri, $OutFile, [switch]$UseBasicParsing, $ErrorAction)
+    $global:Downloads += , $Uri
+    Set-Content -Path $OutFile -Value 'msi'
+}
+function global:Get-FileHash {
+    param($Algorithm, $Path)
+    $hash = if ($global:DownloadMatches) { 'A3505A50F4CC585551D11D9DE824BA4375448D7A68F2E71D3FB315FA986FC754' } else { 'BAD' }
+    [pscustomobject]@{ Hash = $hash }
 }
 function global:docker-compose { $global:LASTEXITCODE = 0; 'Docker Compose version v5.5.1' }
 function global:podman {
@@ -68,7 +74,14 @@ function global:Get-WindowsOptionalFeature {
 }
 function global:powershell.exe { $global:Installed = $true; $global:LASTEXITCODE = $global:InstallCode }
 function global:Set-ItemProperty { param($Path, $Name, $Value) $global:RunOnce = $Value }
-function global:Start-Process { }
+function global:Start-Process {
+    param($FilePath, $ArgumentList, [switch]$Wait, [switch]$PassThru, $Verb, $WindowStyle, $ErrorAction)
+    if ("$FilePath" -match 'msiexec') {
+        $global:MsiRuns++
+        $global:WslInstalled = $global:MsiInstallsWsl
+        return [pscustomobject]@{ ExitCode = $(if ($global:MsiInstallsWsl) { 3010 } else { 1603 }) }
+    }
+}
 function global:Start-Sleep { }
 function global:Read-Host { }
 
@@ -77,7 +90,7 @@ $script:Fail = 0
 
 function Invoke-Scenario {
     param([string]$Name, [string]$Initial, [string]$AfterInstall, [int]$Want, [scriptblock]$Check, [int]$InstallCode = 0,
-          [bool]$WslInstalled = $true, [bool]$WingetInstallsWsl = $true)
+          [bool]$WslInstalled = $true, [bool]$MsiInstallsWsl = $true, [bool]$DownloadMatches = $true)
     $global:VmState = $Initial
     $global:AfterInstall = $AfterInstall
     $global:InstallCode = $InstallCode
@@ -86,7 +99,10 @@ function Invoke-Scenario {
     $global:Installed = $false
     $global:MachineStarted = $false
     $global:WslInstalled = $WslInstalled
-    $global:WingetInstallsWsl = $WingetInstallsWsl
+    $global:MsiInstallsWsl = $MsiInstallsWsl
+    $global:DownloadMatches = $DownloadMatches
+    $global:Downloads = @()
+    $global:MsiRuns = 0
     Remove-Item -Recurse -Force -Path $Stage -ErrorAction SilentlyContinue
     Get-ChildItem -Path $env:TEMP, $Desktop -Filter 'Askwell*' -ErrorAction SilentlyContinue | Remove-Item -Force
     $ErrorActionPreference = 'Continue'
@@ -112,9 +128,15 @@ Invoke-Scenario 'fresh PC: enables WSL, keeps its files, registers one resume, a
 Invoke-Scenario 'platform on but WSL itself missing: installs it, then one restart' 'Enabled' 'Enabled' 30 {
     $global:WslInstalled -and ($global:RunOnce -match ' -Resume$')
 } -WslInstalled $false
-Invoke-Scenario 'WSL does not install: an error, never a restart' 'Enabled' 'Enabled' 32 {
-    -not $global:RunOnce -and [bool](Get-Report)
-} -WslInstalled $false -WingetInstallsWsl $false
+Invoke-Scenario 'WSL installer fails: an error, never a restart' 'Enabled' 'Enabled' 32 {
+    -not $global:RunOnce -and [bool](Get-Report) -and $global:MsiRuns -eq 1
+} -WslInstalled $false -MsiInstallsWsl $false
+Invoke-Scenario 'a download that fails its checksum is never run' 'Enabled' 'Enabled' 32 {
+    $global:MsiRuns -eq 0 -and $global:Downloads.Count -eq 1 -and -not $global:RunOnce
+} -WslInstalled $false -DownloadMatches $false
+Invoke-Scenario 'the WSL installer comes from Microsoft, pinned' 'Enabled' 'Enabled' 30 {
+    $global:Downloads -contains 'https://github.com/microsoft/WSL/releases/download/2.7.13/wsl.2.7.13.0.x64.msi'
+} -WslInstalled $false
 Invoke-Scenario 'after the restart: WSL enabled, no distribution, installs with no second restart' 'Enabled' 'Enabled' 0 {
     $global:Installed -and -not $global:RunOnce -and -not ($global:WslCalls -contains '--status')
 }
@@ -133,8 +155,8 @@ Invoke-Scenario 'a failure saves a report with the log, names replaced' 'Disable
     if (-not $report) { return $false }
     $text = [System.IO.File]::ReadAllText($report.FullName)
     ($text -match 'send this file') -and ($text -match 'Result: code 32') -and
-    ($text -match 'Installing for <pc>.<user>') -and ($text -notmatch 'nimal')
-} -WslInstalled $false
+    ($text -match '<profile>') -and ($text -notmatch 'nimal') -and ($text -notmatch [regex]::Escape($Scratch))
+} -WslInstalled $false -MsiInstallsWsl $false
 Invoke-Scenario "install.ps1 failing also saves a report" 'Enabled' 'Enabled' 9 { [bool](Get-Report) } -InstallCode 9
 Invoke-Scenario 'success leaves no report and no log' 'Enabled' 'Enabled' 0 {
     -not (Get-Report) -and -not (Test-Path (Join-Path $env:TEMP 'AskwellSetup.log'))

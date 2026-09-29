@@ -534,6 +534,22 @@ function Get-AskwellWslState {
     }
 }
 
+# The WSL installer Setup downloads when WSL is missing: Microsoft's own MSI
+# from its GitHub release (MIT), pinned by version and SHA-256 (GitHub's
+# published digest). Not `wsl.exe --install`, which refuses without a
+# console, and not winget, which on the Windows VM downloaded this same file
+# for 7 minutes and then cancelled without running it. 2.7.13 is the version
+# proven on the VM with `podman machine init`; WSL updates itself later.
+$script:AskwellWslMsiVersion = '2.7.13'
+$script:AskwellWslMsiUrl = 'https://github.com/microsoft/WSL/releases/download/2.7.13/wsl.2.7.13.0.x64.msi'
+$script:AskwellWslMsiSha256 = 'A3505A50F4CC585551D11D9DE824BA4375448D7A68F2E71D3FB315FA986FC754'
+
+# msiexec's success codes: 0, and 3010 "succeeded, restart required".
+function Test-AskwellMsiSucceeded {
+    param([int]$ExitCode)
+    return ($ExitCode -eq 0 -or $ExitCode -eq 3010)
+}
+
 # Where Setup keeps its files across the restart. The exe unpacks to %TEMP%,
 # which it deletes when it closes, so the continuation needs its own copy.
 function Get-AskwellSetupStageDir {

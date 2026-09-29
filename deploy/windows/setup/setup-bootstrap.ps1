@@ -228,6 +228,42 @@ function Test-WslAnswers {
     return ($LASTEXITCODE -eq 0)
 }
 
+function Install-Wsl {
+    # See $AskwellWslMsiUrl in lib.ps1 for why it is this and not winget.
+    $msi = Join-Path $env:TEMP ("wsl.$AskwellWslMsiVersion.x64.msi")
+    $have = (Test-Path $msi) -and ((Get-FileHash -Algorithm SHA256 -Path $msi).Hash -eq $AskwellWslMsiSha256)
+    if (-not $have) {
+        Say "Downloading the Windows Subsystem for Linux $AskwellWslMsiVersion from Microsoft (about 250 MB)..."
+        try {
+            # Windows PowerShell 5.1 needs TLS 1.2 asked for, and draws a
+            # progress bar so slowly that it makes a large download crawl.
+            [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+            $ProgressPreference = 'SilentlyContinue'
+            Invoke-WebRequest -UseBasicParsing -Uri $AskwellWslMsiUrl -OutFile $msi -ErrorAction Stop
+        } catch {
+            Say "  The download failed: $($_.Exception.Message)"
+            return
+        }
+        $hash = (Get-FileHash -Algorithm SHA256 -Path $msi).Hash
+        if ($hash -ne $AskwellWslMsiSha256) {
+            Say "  The download does not match Microsoft's published checksum (got $hash), so it was not run."
+            Remove-Item -Path $msi -Force -ErrorAction SilentlyContinue
+            return
+        }
+        Say "  Downloaded and checked."
+    }
+    Say "Installing the Windows Subsystem for Linux..."
+    $msiLog = Join-Path $env:TEMP 'AskwellSetup-wsl-msi.log'
+    $process = Start-Process -FilePath "$env:SystemRoot\System32\msiexec.exe" -Wait -PassThru `
+        -ArgumentList "/i `"$msi`" /quiet /norestart /log `"$msiLog`""
+    $code = if ($process) { $process.ExitCode } else { -1 }
+    if (Test-AskwellMsiSucceeded $code) {
+        Say "  Installed (Windows Installer code $code)."
+    } else {
+        Say "  Windows Installer stopped with code $code. Its log: $msiLog"
+    }
+}
+
 function Install-WithWinget([string]$Id, [string]$Label) {
     Say "Installing $Label. This can take a few minutes..."
     # --disable-interactivity: no progress bars, which reached the log and the
@@ -304,9 +340,7 @@ if ((Get-AskwellWslState (Get-VmPlatformState)) -eq 'missing') {
     $enabledThisRun = $true
 }
 if (-not (Test-WslAnswers)) {
-    Install-WithWinget 'Microsoft.WSL' 'the Windows Subsystem for Linux'
-    # Not winget's exit code: on the VM it reported "Cancelling operation"
-    # and 0x80004004 after installing WSL successfully.
+    Install-Wsl
     if (-not (Test-WslAnswers)) {
         Say "The Windows Subsystem for Linux did not install. The messages above say why. Run Askwell Setup again once that is fixed."
         Stop-Setup 32
