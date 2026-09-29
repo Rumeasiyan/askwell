@@ -235,6 +235,21 @@ Test-Check 'lists only *.tar' $images.Count 2
 Test-Check 'sorted by name' (Split-Path -Leaf $images[0]) 'api.tar'
 Remove-Item -Path $imgRoot -Recurse -Force -ErrorAction SilentlyContinue
 
+# --- setup: WSL state and the one restart ---------------------------------------
+Test-Check 'VirtualMachinePlatform enabled is ready' (Get-AskwellWslState 'Enabled') 'ready'
+Test-Check 'enable pending means restart' (Get-AskwellWslState 'EnablePending') 'restart'
+Test-Check 'disabled is missing, not restart' (Get-AskwellWslState 'Disabled') 'missing'
+Test-Check 'payload removed is missing' (Get-AskwellWslState 'DisabledWithPayloadRemoved') 'missing'
+Test-Check 'an unreadable state is missing, never restart' (Get-AskwellWslState '') 'missing'
+Test-Check 'disable pending is missing, not restart' (Get-AskwellWslState 'DisablePending') 'missing'
+$stage = Get-AskwellSetupStageDir 'C:\ProgramData'
+Test-Check 'the stage lives in ProgramData' $stage 'C:\ProgramData\AskwellSetup'
+$resume = Get-AskwellResumeCommand 'C:\Windows' $stage
+if ($resume.Length -le 260) { Test-Ok "the RunOnce command fits in 260 characters ($($resume.Length))" } else { Test-Bad 'the RunOnce command fits in 260 characters' $resume.Length 260 }
+Test-Check 'the RunOnce command, exactly' $resume '"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "C:\ProgramData\AskwellSetup\deploy\windows\setup\setup-bootstrap.ps1" -Resume'
+if ($resume -match '-Resume$') { Test-Ok 'the RunOnce command resumes' } else { Test-Bad 'the RunOnce command resumes' $resume '...-Resume' }
+if ($resume -match 'System32\\WindowsPowerShell') { Test-Ok 'the RunOnce command names the 64-bit PowerShell' } else { Test-Bad 'the RunOnce command names the 64-bit PowerShell' $resume 'System32' }
+
 Write-Host ''
 Write-Host "$script:Pass passed, $script:Fail failed"
 if ($script:Fail -gt 0) { exit 1 }

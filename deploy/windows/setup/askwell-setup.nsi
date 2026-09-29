@@ -51,13 +51,21 @@ BrandingText "Askwell ${VERSION}"
 !endif
 !define MUI_ABORTWARNING
 !define MUI_WELCOMEPAGE_TITLE "Install Askwell ${VERSION}"
-!define MUI_WELCOMEPAGE_TEXT "Askwell is a personal AI over your own files and databases. It runs entirely on this PC, and nothing you add leaves it.$\r$\n$\r$\nSetup will install what Askwell needs to run (Podman and Docker Compose, if they are missing) and then Askwell itself. This takes several minutes and needs an internet connection for those two components only.$\r$\n$\r$\nThis is a beta, and it is not code-signed. Windows may have warned you before this screen; that is expected."
+!define MUI_WELCOMEPAGE_TEXT "Askwell is a personal AI over your own files and databases. It runs entirely on this PC, and nothing you add leaves it.$\r$\n$\r$\nSetup will install what Askwell needs to run (Podman, Docker Compose and the Windows Subsystem for Linux, if they are missing) and then Askwell itself. This takes several minutes and needs an internet connection for those components only.$\r$\n$\r$\nIf this PC has never used the Windows Subsystem for Linux, Windows needs to restart once. Setup then finishes by itself after you sign in.$\r$\n$\r$\nThis is a beta, and it is not code-signed. Windows may have warned you before this screen; that is expected."
 !insertmacro MUI_PAGE_WELCOME
 !ifdef LICENSEFILE
   !insertmacro MUI_PAGE_LICENSE "${LICENSEFILE}"
 !endif
 !insertmacro MUI_PAGE_INSTFILES
-!define MUI_FINISHPAGE_TITLE "Askwell is installed"
+; A variable, set in the section: the finish page either says Askwell is
+; installed or that one restart remains (code 30).
+Var FinishTitle
+!define MUI_FINISHPAGE_TITLE "$FinishTitle"
+; Shown instead of MUI_FINISHPAGE_TEXT when the section sets the reboot flag,
+; with MUI's own "Restart now" / "I will restart later" choice under it.
+!define MUI_FINISHPAGE_TEXT_REBOOT "Everything else is installed. Windows needs to restart once to finish enabling the Windows Subsystem for Linux, which Askwell runs in.$\r$\n$\r$\nYou do not need to run Setup again. After the restart, sign in and a window opens by itself, finishes the install, and opens Askwell. It takes a few minutes."
+!define MUI_FINISHPAGE_TEXT_REBOOTNOW "Restart now"
+!define MUI_FINISHPAGE_TEXT_REBOOTLATER "I will restart later"
 !define MUI_FINISHPAGE_TEXT "Askwell is in your Start menu. The first time it opens, it will offer to download its AI model (about 3 GB). After that, it works without an internet connection."
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_LANGUAGE "English"
@@ -80,11 +88,16 @@ Section "Askwell"
   Pop $0
 
   ${If} $0 == "0"
+    StrCpy $FinishTitle "Askwell is installed"
     DetailPrint "Askwell is installed."
   ${ElseIf} $0 == "30"
-    MessageBox MB_OK|MB_ICONINFORMATION "Windows needs to restart to finish enabling the Windows Subsystem for Linux, which Askwell needs.$\r$\n$\r$\nRestart your PC, then run Askwell Setup again. It will continue from here."
-    RMDir /r "$INSTDIR"
-    Abort "Restart Windows, then run Askwell Setup again."
+    ; Not a failure: everything but WSL is in place, and the bootstrap has
+    ; copied itself to %ProgramData%\AskwellSetup and registered a RunOnce
+    ; entry that finishes the install after the restart. So no Abort, which
+    ; would say "Installation Aborted": the finish page offers the restart.
+    StrCpy $FinishTitle "One restart to finish"
+    DetailPrint "One restart remains. Setup continues by itself after you sign in again."
+    SetRebootFlag true
   ${Else}
     MessageBox MB_OK|MB_ICONEXCLAMATION "Askwell could not finish installing (code $0).$\r$\n$\r$\nThe reason is in the details on the previous screen. Scroll up to the last messages, fix what they describe, and run Askwell Setup again."
     Abort "Setup did not finish (code $0). See the details above."

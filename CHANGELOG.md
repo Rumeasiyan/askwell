@@ -4,6 +4,12 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.4 - 2026-09-29
+
+`Fixed`: Windows Setup asked for a restart after enabling WSL, and then again after every restart, forever. It decided whether WSL was ready with `wsl --status`, which fails whenever no Linux distribution is installed, and Setup installs WSL with none on purpose because Podman creates its own. It now asks Windows for the state of the Virtual Machine Platform feature, and asks for a restart only when Windows reports one pending.
+
+`Changed`: Setup now needs at most **one restart, and nothing run by hand after it**. It installs everything it can first (Podman, Docker Compose), enables WSL last, copies itself to `%ProgramData%\AskwellSetup` and asks Windows to run it once at the next sign-in. The finish screen offers **Restart now**. After you sign in, a window finishes the install and opens Askwell. If that run cannot finish, its window stays open with the reason. Found by the first real Windows test of `0.9.3`.
+
 ## 0.9.3 - 2026-09-29
 
 `Fixed`: the Windows installer failed again with **code 22** in `0.9.2`, for three reasons that only show on real Windows, where the scripts run under Windows PowerShell 5.1 rather than the PowerShell 7 they were tested with:
