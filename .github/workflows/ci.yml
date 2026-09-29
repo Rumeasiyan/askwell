@@ -8,6 +8,10 @@
 # The whole suite runs regardless of what changed. Selective running hides
 # breakage, and there is one maintainer to be misled.
 #
+# The desktop shell is compiled by `shell.yml`, only on pushes that touch it —
+# a separate workflow so this one keeps running everything, every time
+# (docs/decisions.md, 2026-09-29).
+#
 # No secret is used or required. Nothing here can leak one because there is
 # none to leak — the database password below is generated per run and exists
 # for the length of a job.
