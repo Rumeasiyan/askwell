@@ -72,7 +72,11 @@ pick_milestone() {
 }
 
 MILESTONE="${ASKWELL_MILESTONE:-$(pick_milestone)}"
-SPEND_CEILING="${SPEND_CEILING:-900}"
+# Raised from 900 by the product owner on 2026-09-29, at 879h spent with M10 and
+# the C5 work still to build: at 900 the queue would have stopped partway,
+# silently. It is the runner's own estimated-hours guard against a runaway,
+# not a measure of money.
+SPEND_CEILING="${SPEND_CEILING:-1100}"
 
 say() { printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M')" "$*" >> "$LOG"; }
 
