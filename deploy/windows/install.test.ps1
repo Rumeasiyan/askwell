@@ -250,6 +250,20 @@ Test-Check 'the RunOnce command, exactly' $resume '"C:\Windows\System32\WindowsP
 if ($resume -match '-Resume$') { Test-Ok 'the RunOnce command resumes' } else { Test-Bad 'the RunOnce command resumes' $resume '...-Resume' }
 if ($resume -match 'System32\\WindowsPowerShell') { Test-Ok 'the RunOnce command names the 64-bit PowerShell' } else { Test-Bad 'the RunOnce command names the 64-bit PowerShell' $resume 'System32' }
 
+# --- setup: the failure report ------------------------------------------------
+Test-Check 'a known code is explained' (Get-AskwellSetupCodeMeaning 22) 'Docker Compose could not be installed'
+if ((Get-AskwellSetupCodeMeaning 7) -match 'install.ps1') { Test-Ok "install.ps1's own code points at the log" } else { Test-Bad "install.ps1's own code points at the log" (Get-AskwellSetupCodeMeaning 7) 'install.ps1' }
+$raw = 'Copying to C:\Users\Nimal.Perera\AppData\Local\Temp on NIMAL-LAPTOP as nimal.perera; Podman 5.8.3'
+$safe = Protect-AskwellReportText -Text $raw -UserProfile 'C:\Users\Nimal.Perera' -UserName 'Nimal.Perera' -ComputerName 'NIMAL-LAPTOP'
+Test-Check 'profile, PC and account names are replaced, any case' $safe 'Copying to <profile>\AppData\Local\Temp on <pc> as <user>; Podman 5.8.3'
+Test-Check 'a two-letter name is left alone, not stripped everywhere' (Protect-AskwellReportText -Text 'al alpha' -UserName 'al') 'al alpha'
+Test-Check 'one name alone still works' (Protect-AskwellReportText -Text 'user nimal here' -UserName 'nimal') 'user <user> here'
+$report = Format-AskwellSetupReport -Code 22 -Facts ([ordered]@{ 'Askwell version' = '1.2.3'; 'Windows' = 'Windows 11 Home' }) -Log "line one`r`nline two"
+foreach ($want in @('send this file to whoever gave you Askwell', 'Result: code 22 - Docker Compose could not be installed', 'Askwell version: 1.2.3', 'Windows: Windows 11 Home', 'line two')) {
+    if ($report.Contains($want)) { Test-Ok "the report says: $want" } else { Test-Bad "the report says: $want" 'missing' $want }
+}
+if ($report -notmatch '[^\x00-\x7F]') { Test-Ok 'the report is plain ASCII, readable in any Notepad' } else { Test-Bad 'the report is plain ASCII' 'non-ASCII' 'ASCII' }
+
 Write-Host ''
 Write-Host "$script:Pass passed, $script:Fail failed"
 if ($script:Fail -gt 0) { exit 1 }

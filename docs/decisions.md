@@ -4,6 +4,24 @@ Append-only. **Newest first.** Never edit an entry to change its meaning — if 
 
 **Bar for an entry:** something a competent person would later ask *"why is it like this?"* about. Architecture changes, dependency choices, resolved `docs/PRD.md` §11 questions, reversals. **Not** routine implementation choices — those are visible in the diff.
 
+## 2026-09-29 — A failed Windows Setup saves a report on the Desktop for the person to send; nothing is sent automatically; releases are tested on a local Windows VM
+
+**Decision.** When `Askwell-Setup.exe` fails, `setup-bootstrap.ps1` writes `Askwell-Setup-report-<date>.txt` to the Desktop and opens it in Notepad. The report holds the failure code and what it means, a fixed set of facts about the PC (Askwell version, Windows edition and build, memory, CPU, whether virtualisation is on in firmware, the Virtual Machine Platform state, and the Podman, Compose and WSL versions), and every line Setup printed in this and any earlier run. The Windows profile path, account name and PC name are replaced with `<profile>`, `<user>` and `<pc>`. The report's first lines tell the person to send the file to whoever gave them Askwell, or to attach it to a GitHub issue if they have an account. Setup sends nothing. The owner chose this on 2026-09-29, over a one-click send.
+
+Separately, the owner approved running a Windows 11 virtual machine on the build machine, so the full Setup flow, including the restart, is tested before a release rather than on testers' PCs.
+
+**Why.** Setup failed on the first real Windows machine four releases in a row (0.9.1 to 0.9.4). Each time, the only record was a screenshot, and the people testing are not expected to read a log. A report that carries everything a maintainer needs, and that the person only has to forward, is what makes their testing usable.
+
+*Rejected: posting straight to GitHub issues from Setup.* It needs a GitHub token inside the exe, and the repository and its releases are public, so anyone could extract the token and write to the repository. *Rejected for now: a one-click send through a relay service* that holds the token and files into a private repository. It is the easiest path for a tester. But it adds a service to run and to protect from spam, and it reverses `M7-OPS-DOC-165`'s rule that a report leaves the machine only when a person attaches it. The owner can choose it later; the report format would not change. *Rejected: a prefilled GitHub issue link as the main path.* It needs a GitHub account, and it posts publicly a log that names the tester's machine unless they redact it first.
+
+*Why redact names at all, when the file goes to a person the tester knows.* It may be forwarded to a public issue. A log with no names in it is safe to post, and the names are never what a maintainer needs.
+
+*Why the report is built in `lib.ps1`.* The formatting and redaction are pure functions, tested in `install.test.ps1`. The same pattern was used for the WSL state and the resume command in `0.9.4`. Only the collection of facts stays in the bootstrap, and each fact that cannot be read says `unknown` rather than stopping the report.
+
+**Consequences.** This is not C1 egress: Setup already reaches winget's sources during installation, and the report adds no network call at all. The installed product's crash reports (`M7-OPS-DOC-165`) are unchanged. A Setup that fails before `setup-bootstrap.ps1` starts, such as when unpacking fails, writes no report; the exe's own message is all there is. The VM is set up under #836.
+
+**Refs.** #590, #834, #836; `deploy/windows/setup/setup-bootstrap.ps1` (`Save-SetupReport`), `deploy/windows/lib.ps1` (`Format-AskwellSetupReport`, `Protect-AskwellReportText`).
+
 ## 2026-09-29 — `M10-TEST-DEPLOY-221`: the desktop shell is checked by its own path-filtered workflow, and `build.rs` enforces its own command list
 
 **Decision.** `.github/workflows/shell.yml` runs `cargo check --locked` in `web/src-tauri` on `ubuntu-22.04`, triggered by a push touching `web/src-tauri/**`, `VERSION` or the workflow file. It is a separate workflow, not a job in `ci.yml` as the ticket's scope line says. The check that `build.rs`'s command list equals `generate_handler!` in `src/main.rs` lives in `build.rs` itself and runs before `tauri_build::try_build`. It is not a separate test.
