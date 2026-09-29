@@ -1,0 +1,69 @@
+# The desktop shell compiles, on every push that touches it. M10-TEST-DEPLOY-221.
+#
+# Nothing compiled `web/src-tauri` before the v0.9.0 release build, which
+# failed on all three platforms, one 30–60 minute build at a time (#821). A
+# `cargo check` here takes a minute or two from cold (70 seconds, measured
+# locally in a Debian container).
+#
+# `cargo check` runs the build script, and the build script is where the two
+# consistency checks live: `build.rs` refuses to build unless its command list
+# equals `generate_handler!` in `src/main.rs`, and tauri-build refuses a
+# capability that grants a permission no command produces. So this one step
+# also catches the mismatch that broke v0.9.0, and so does every local build.
+#
+# A separate workflow, not a job in `ci.yml`, deliberately. `ci.yml` runs its
+# whole suite on every push. A path-filtered job there would report
+# `skipping` on every push that does not touch the shell, and
+# `scripts/watchdog.sh` merges only when every check is `pass`. It would stop
+# merging almost everything. A workflow-level `paths` filter produces no
+# check at all when nothing matches (docs/decisions.md, 2026-09-29).
+#
+# Linux only. The code checked is the same on every platform except the
+# `cfg(unix)` libc dependency, and `release.yml` builds all three before
+# anything ships.
+#
+# No secret (C8). The network is used to fetch crates and system packages,
+# as it is by `scripts/dev.sh lock` and `web-install`; nothing checked here
+# reaches it.
+
+name: Desktop shell
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "web/src-tauri/**"
+      - "VERSION"
+      - ".github/workflows/shell.yml"
+
+concurrency:
+  group: shell-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Desktop shell — cargo check
+    # The image release.yml builds the Linux shell on, so the two agree on
+    # which WebKitGTK and GTK they compile against.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the WebView and GTK build dependencies
+        # The same list as release.yml's Linux job. If one changes, change both.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
+            libayatana-appindicator3-dev libxdo-dev libssl-dev build-essential
+
+      - name: cargo check
+        # `--locked` so a Cargo.toml change that was never relocked fails here,
+        # not at release. No cache: a cold check fits well inside the timeout,
+        # and a restored `target/` would be one more thing that could hide a
+        # failure.
+        working-directory: web/src-tauri
+        run: cargo check --locked

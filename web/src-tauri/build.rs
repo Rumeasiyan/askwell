@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
@@ -35,21 +36,69 @@ fn main() {
     // granted but never listed here: the shell had never been compiled in CI
     // until the first release build (v0.9.0), and all three platforms failed
     // on `allow-open-supervision-window not found`. Keep this list and
-    // `generate_handler!` in `main.rs` identical.
+    // `generate_handler!` in `main.rs` identical — `check_commands_match_main`
+    // below fails the build if they differ (M10-TEST-DEPLOY-221).
+    const COMMANDS: &[&str] = &[
+        "pick_folder",
+        "pick_files",
+        "pick_file",
+        "list_dir",
+        "read_head",
+        "open_supervision_window",
+        "supervision_status",
+        "supervision_control",
+        "supervision_log_location",
+    ];
+    check_commands_match_main(COMMANDS);
+
     tauri_build::try_build(
-        tauri_build::Attributes::new().app_manifest(
-            tauri_build::AppManifest::new().commands(&[
-                "pick_folder",
-                "pick_files",
-                "pick_file",
-                "list_dir",
-                "read_head",
-                "open_supervision_window",
-                "supervision_status",
-                "supervision_control",
-                "supervision_log_location",
-            ]),
-        ),
+        tauri_build::Attributes::new()
+            .app_manifest(tauri_build::AppManifest::new().commands(COMMANDS)),
     )
     .expect("failed to run tauri-build");
+}
+
+/// Fails the build unless `commands` names exactly the handlers in
+/// `generate_handler!` in `src/main.rs`.
+///
+/// tauri-build catches only one direction of drift, and only by accident: a
+/// command missing here fails if a capability happens to grant it, and
+/// otherwise compiles into a command no permission can ever allow. A name here
+/// that `main.rs` no longer registers fails nowhere. Running before
+/// `try_build` means the message names the actual mismatch rather than a
+/// missing `allow-*` permission, which is what v0.9.0's release build said
+/// (issue #821).
+fn check_commands_match_main(commands: &[&str]) {
+    let main_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+    println!("cargo:rerun-if-changed={}", main_path.display());
+    let main_source = fs::read_to_string(&main_path)
+        .unwrap_or_else(|error| panic!("could not read {}: {error}", main_path.display()));
+
+    const MARKER: &str = "generate_handler![";
+    let start = main_source
+        .find(MARKER)
+        .unwrap_or_else(|| panic!("no `{MARKER}` in {}", main_path.display()))
+        + MARKER.len();
+    let end = start
+        + main_source[start..]
+            .find(']')
+            .unwrap_or_else(|| panic!("unclosed `{MARKER}` in {}", main_path.display()));
+    let registered: BTreeSet<&str> = main_source[start..end]
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .collect();
+    let declared: BTreeSet<&str> = commands.iter().copied().collect();
+
+    let unlisted: Vec<_> = registered.difference(&declared).collect();
+    let unregistered: Vec<_> = declared.difference(&registered).collect();
+    if !unlisted.is_empty() || !unregistered.is_empty() {
+        panic!(
+            "build.rs's command list and `generate_handler!` in src/main.rs differ.\n  \
+             registered in main.rs but not listed in build.rs: {unlisted:?}\n  \
+             listed in build.rs but not registered in main.rs: {unregistered:?}\n\
+             Keep the two identical: a command missing from build.rs has no permission a \
+             capability can grant."
+        );
+    }
 }
