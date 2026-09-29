@@ -4,6 +4,12 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.6 - 2026-09-29
+
+`Fixed`: Windows Setup, on a PC that needs the WSL restart, would have deleted any other program's pending "run once after restart" entries when it registered its own: `New-Item -Force` replaces a registry key rather than keeping it. It now adds its entry to the existing key. Found by the new end-to-end Setup test before any tester hit it.
+
+The Windows installer's scripts are now tested under Windows PowerShell 5.1 on a real Windows machine on every change (`.github/workflows/windows.yml`), including the whole Setup flow with its tools faked.
+
 ## 0.9.5 - 2026-09-29
 
 `Added`: when Windows Setup cannot finish, it saves a report on the Desktop, `Askwell-Setup-report-<date>.txt`, and opens it. The report says what failed and why, what Windows and hardware the PC has, what Setup found installed, and every line Setup printed, with the Windows account and PC names replaced. Its first lines say what to do: send the file to whoever gave you Askwell. Setup sends nothing itself.

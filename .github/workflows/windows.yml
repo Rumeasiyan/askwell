@@ -1,0 +1,72 @@
+# The Windows installer's scripts, under Windows PowerShell 5.1, on every push
+# that touches them. #834.
+#
+# Setup 0.9.1 to 0.9.3 each failed on the first real Windows PC they met, and
+# three of those four bugs were differences between PowerShell 7, which the
+# scripts were tested with, and Windows PowerShell 5.1, which every Windows PC
+# runs them with: a UTF-8 em dash read as a closing quote, a 32-bit
+# PowerShell that cannot see wsl.exe, and a BOM written into .env. So every
+# step here runs under `shell: powershell` (5.1), never `pwsh`.
+#
+# What it runs:
+#   - every .ps1 parsed by 5.1's own parser, reading the file as 5.1 does;
+#   - install.test.ps1, lib.ps1's pure functions;
+#   - setup-bootstrap.test.ps1, the whole bootstrap with winget, podman, WSL,
+#     the feature query and the registry write faked.
+# What it cannot run is WSL or a restart: hosted runners have no nested
+# virtualisation. That is the Windows VM's job (#836).
+#
+# A separate, path-filtered workflow for the reason shell.yml gives: a skipped
+# job in ci.yml would report `skipping` and stop scripts/watchdog.sh merging.
+#
+# No secret (C8), and nothing here reaches the network after checkout.
+
+name: Windows installer
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "deploy/windows/**"
+      - "VERSION"
+      - ".github/workflows/windows.yml"
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Windows installer — PowerShell 5.1
+    runs-on: windows-2022
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Confirm this is Windows PowerShell 5.1
+        run: |
+          $PSVersionTable.PSVersion
+          if ($PSVersionTable.PSVersion.Major -ne 5) { throw "expected Windows PowerShell 5.1, got $($PSVersionTable.PSVersion)" }
+
+      - name: Parse every script as Windows PowerShell 5.1 reads it
+        run: |
+          $bad = 0
+          Get-ChildItem -Path deploy/windows -Recurse -Filter *.ps1 | ForEach-Object {
+            $tokens = $null; $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors)
+            "{0}: {1} error(s)" -f $_.FullName, $errors.Count
+            foreach ($e in $errors) { "  line $($e.Extent.StartLineNumber): $($e.Message)"; $bad++ }
+          }
+          if ($bad -gt 0) { exit 1 }
+
+      - name: lib.ps1 (install.test.ps1)
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File deploy/windows/install.test.ps1
+
+      - name: Setup end to end, tools faked (setup-bootstrap.test.ps1)
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File deploy/windows/setup/setup-bootstrap.test.ps1
