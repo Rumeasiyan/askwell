@@ -33,9 +33,15 @@ OutFile "${OUTFILE}"
 ; administrator (install.ps1 says the same). One UAC prompt up front is the
 ; one-click equivalent of "run this from an administrator PowerShell".
 RequestExecutionLevel admin
-; The payload is already-compressed image archives; zlib is fast and a
-; slower compressor would buy almost nothing on top of it.
-SetCompressor /SOLID zlib
+; Per-file zlib, never /SOLID. The Windows payload is 2.1 GB uncompressed,
+; one file of it (the API image) 1.7 GB, and a solid block that large fails
+; in makensis with "Internal compiler error #12345: error mmapping file
+; (573277500, 33554432) is out of range" — which is exactly how the first
+; v0.9.1 release build failed. Measured on the real 0.9.0 Windows tree:
+; /SOLID zlib fails; per-file zlib builds a 704 MB exe in 4.5 minutes;
+; per-file lzma a 475 MB exe in 20 minutes. zlib keeps the release build
+; fast and the download the same size as the zip.
+SetCompressor zlib
 InstallDir "$TEMP\AskwellSetup-${VERSION}"
 ShowInstDetails show
 BrandingText "Askwell ${VERSION}"
