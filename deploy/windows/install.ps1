@@ -353,7 +353,10 @@ function New-AskwellDataDirs {
     New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $DataDir 'models') | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $DataDir 'logs') | Out-Null
+    $models = Get-AskwellModelsDir $env:USERPROFILE
+    New-Item -ItemType Directory -Force -Path $models | Out-Null
     Write-AskwellSay "Data directory: $DataDir"
+    Write-AskwellSay "Models directory: $models"
 }
 
 # ---------------------------------------------------------------- 6a. stop the old version
@@ -500,7 +503,7 @@ function Register-AskwellInferenceTask {
     }
     $taskName = Get-AskwellInferenceTaskName
     $taskArgs = Get-AskwellInferenceTaskArguments -ScriptPath (Join-Path $InstallPrefix 'askwell-inference')
-    $action = New-ScheduledTaskAction -Execute $python -Argument $taskArgs -WorkingDirectory $InstallPrefix
+    $action = New-ScheduledTaskAction -Execute (Get-AskwellWindowlessPython $python) -Argument $taskArgs -WorkingDirectory $InstallPrefix
     $trigger = New-ScheduledTaskTrigger -AtLogOn
     $settings = New-ScheduledTaskSettingsSet -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1) `
         -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero)

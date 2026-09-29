@@ -580,6 +580,33 @@ function Get-AskwellPython {
     return ''
 }
 
+# Where the AI models live: the default both readers already share.
+# compose.yaml mounts ${ASKWELL_MODELS_DIR:-~/.local/share/askwell/models}
+# into the API and voice containers, and the inference supervisor reads the
+# same default (askwell-inference, os.path.expanduser). On Windows "~" is the
+# profile. Nothing created it, so on the Windows test VM (0.9.6) every
+# container that mounts it failed to be created ("statfs ... models: no such
+# file or directory") and Askwell sat at "Still starting".
+function Get-AskwellModelsDir {
+    param([string]$UserProfile)
+    return "$($UserProfile.TrimEnd('\'))\.local\share\askwell\models"
+}
+
+# The windowless pythonw.exe beside a python.exe, or the python.exe itself
+# when there is none. The inference supervisor runs for the whole session;
+# under python.exe it sat in a black console window on the Windows test VM
+# (0.9.6), and closing that window would stop Askwell's AI.
+function Get-AskwellWindowlessPython {
+    param([string]$Python)
+    if (-not $Python) { return '' }
+    $leaf = Split-Path -Leaf $Python
+    if ($leaf -ieq 'python.exe') {
+        $pythonw = Join-Path (Split-Path -Parent $Python) 'pythonw.exe'
+        if (Test-Path $pythonw) { return $pythonw }
+    }
+    return $Python
+}
+
 # msiexec's success codes: 0, and 3010 "succeeded, restart required".
 function Test-AskwellMsiSucceeded {
     param([int]$ExitCode)

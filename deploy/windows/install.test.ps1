@@ -252,6 +252,15 @@ Test-Check 'the RunOnce command, exactly' $resume '"C:\Windows\System32\WindowsP
 if ($resume -match '-Resume$') { Test-Ok 'the RunOnce command resumes' } else { Test-Bad 'the RunOnce command resumes' $resume '...-Resume' }
 if ($resume -match 'System32\\WindowsPowerShell') { Test-Ok 'the RunOnce command names the 64-bit PowerShell' } else { Test-Bad 'the RunOnce command names the 64-bit PowerShell' $resume 'System32' }
 
+Test-Check 'models live where compose.yaml and the supervisor both look' (Get-AskwellModelsDir 'C:\Users\nimal') 'C:\Users\nimal\.local\share\askwell\models'
+
+$pyDir = New-AskwellTempDir
+Set-Content -Path (Join-Path $pyDir 'python.exe') -Value ''
+Test-Check 'no pythonw.exe: the python.exe itself' (Get-AskwellWindowlessPython (Join-Path $pyDir 'python.exe')) (Join-Path $pyDir 'python.exe')
+Set-Content -Path (Join-Path $pyDir 'pythonw.exe') -Value ''
+Test-Check 'the supervisor runs windowless, as pythonw.exe' (Get-AskwellWindowlessPython (Join-Path $pyDir 'python.exe')) (Join-Path $pyDir 'pythonw.exe')
+Remove-Item -Path $pyDir -Recurse -Force -ErrorAction SilentlyContinue
+
 # --- setup: Python ------------------------------------------------------------
 if (Test-AskwellStorePythonStub 'C:\Users\nimal\AppData\Local\Microsoft\WindowsApps\python.exe') { Test-Ok "the Store's placeholder python.exe is recognised" } else { Test-Bad "the Store's placeholder python.exe is recognised" $false $true }
 if (-not (Test-AskwellStorePythonStub 'C:\Program Files\Python313\python.exe')) { Test-Ok 'a real Python is not taken for the placeholder' } else { Test-Bad 'a real Python is not taken for the placeholder' $true $false }
