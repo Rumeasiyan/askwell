@@ -4,6 +4,16 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.3 - 2026-09-29
+
+`Fixed`: the Windows installer failed again with **code 22** in `0.9.2`, for three reasons that only show on real Windows, where the scripts run under Windows PowerShell 5.1 rather than the PowerShell 7 they were tested with:
+
+- **The installer's scripts did not parse.** 5.1 reads a script without a byte-order mark as Windows-1252, and one byte of a UTF-8 em dash reads there as a closing quote, so a string inside `lib.ps1` ended early and the file failed to load. Every check that depends on it then answered "missing". All Windows scripts are now plain ASCII, and a test fails if any stops being.
+- **WSL looked absent on every PC.** The setup exe is a 32-bit program, and the PowerShell it started was the 32-bit one, which Windows redirects away from `wsl.exe`. It now starts the 64-bit PowerShell.
+- **`.env` and the install record would have been written with a byte-order mark,** which 5.1 adds and 7 does not. They are now written as plain UTF-8 either way.
+
+Setup now also stops with its own clear message (codes 23 and 24) if its files fail to load or it is running as 32-bit, instead of reporting a prerequisite as missing.
+
 ## 0.9.2 - 2026-09-29
 
 `Fixed`: the Windows installer stopped with **code 22** right after installing Docker Compose successfully, on every machine. Setup's own compose check rejected any output mentioning `podman-compose`, and Podman prints that name in the banner it shows before running any compose provider. It also joined the output into one line, which the version match cannot read. Setup now calls the installer's own check (`Test-AskwellComposeMeetsMinimum` in `deploy/windows/lib.ps1`) instead of a rewritten copy. Tested under PowerShell against the exact output from the failing machine: that output now passes, and old versions, `podman-compose` and no provider are still refused. Found by the first real Windows test of `0.9.1`.

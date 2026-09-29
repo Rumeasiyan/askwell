@@ -6,24 +6,24 @@
     Checks virtualisation and Podman, places the stack, the native inference
     supervisor, the probe and the desktop shell, creates the data
     directories, registers Askwell to start with the session, and opens the
-    Askwell window — never a browser tab. Mirrors deploy/linux/install.sh's
+    Askwell window - never a browser tab. Mirrors deploy/linux/install.sh's
     shape; see that file's header for the artefact layout both installers
     share and issue #559 for the one artefact neither builds itself.
 
     What this script needs beside itself, and where it expects to find it:
 
       REPO_ROOT (two directories above this script)\
-        compose.yaml, .env.example, deploy\postgres, deploy\sandbox, deploy\redis — the stack
-        deploy\probe\askwell-probe                                    — the host probe
-        deploy\inference\askwell-inference                             — native inference (a
+        compose.yaml, .env.example, deploy\postgres, deploy\sandbox, deploy\redis - the stack
+        deploy\probe\askwell-probe                                    - the host probe
+        deploy\inference\askwell-inference                             - native inference (a
                                                                           standard-library-only
                                                                           Python script; needs a
                                                                           Python on this host's
                                                                           PATH, same as Linux)
-        web\src-tauri\target\release\askwell-shell.exe                  — the desktop shell
-        web\out\                                                        — the built interface
+        web\src-tauri\target\release\askwell-shell.exe                  - the desktop shell
+        web\out\                                                        - the built interface
                                                                           compose.yaml mounts (#766)
-        images\*.tar                                                    — the container images,
+        images\*.tar                                                    - the container images,
                                                                           saved (optional)
 
     A release zip ships this layout, assembled by scripts/release-artefact.sh
@@ -31,16 +31,16 @@
     a release adds that a source checkout lacks, so nothing is built from
     source or pulled here.
 
-    Podman on Windows only runs containers inside a WSL2 virtual machine —
-    there is no native Windows container runtime — so this checks
+    Podman on Windows only runs containers inside a WSL2 virtual machine -
+    there is no native Windows container runtime - so this checks
     virtualisation before Podman, and names the firmware setting to enable
     when it is off, since that is a BIOS/UEFI change no installer running
     inside Windows can make for the user.
 
     Never fetches a model. `winget`/Podman's own install may need the network
-    to install or to pull container images — the same class of install-time
+    to install or to pull container images - the same class of install-time
     exception `scripts/dev.sh lock`/`web-install` already name (AGENTS.md
-    §5) — but nothing here ever reaches out for model weights.
+    section 5) - but nothing here ever reaches out for model weights.
 #>
 
 [CmdletBinding()]
@@ -87,8 +87,8 @@ function Test-AskwellRuntime {
             "WSL2 virtual machine, which needs CPU virtualisation (Intel VT-x / AMD-V) turned " +
             "on in this PC's firmware. Restart, enter BIOS/UEFI setup (often Del, F2 or F10 at " +
             "boot), find the setting named 'Virtualization Technology', 'Intel VT-x', 'AMD-V' " +
-            "or 'SVM Mode', enable it, save and reboot. Askwell cannot enable this itself — it " +
-            "is a firmware setting, not a Windows one — then run this installer again.")
+            "or 'SVM Mode', enable it, save and reboot. Askwell cannot enable this itself - it " +
+            "is a firmware setting, not a Windows one - then run this installer again.")
         exit 1
     }
     Write-AskwellSay 'Virtualisation is enabled.'
@@ -163,7 +163,7 @@ function Test-AskwellDiskSpace {
         return
     }
     if ($have -lt $needed) {
-        Write-AskwellDie "Not enough disk space at $InstallPrefix`: need $(Format-AskwellBytes $needed), have $(Format-AskwellBytes $have). Free up space and run this installer again — nothing has been copied."
+        Write-AskwellDie "Not enough disk space at $InstallPrefix`: need $(Format-AskwellBytes $needed), have $(Format-AskwellBytes $have). Free up space and run this installer again - nothing has been copied."
         exit 1
     }
     Write-AskwellSay "Disk space OK: $(Format-AskwellBytes $have) available, $(Format-AskwellBytes $needed) needed."
@@ -214,7 +214,7 @@ function Test-AskwellArtefacts {
     }
 
     # Windows' legacy MAX_PATH (260) fails a plain file open unless the
-    # caller opts into \\?\ — checked against the destination path this
+    # caller opts into \\?\ - checked against the destination path this
     # installer is about to create, not the source tree, since the
     # destination is the one this installer controls the length of.
     $destShell = Join-Path $InstallPrefix 'askwell-shell.exe'
@@ -421,7 +421,7 @@ function Register-AskwellShortcuts {
 #
 # `-ExecutionTimeLimit ([TimeSpan]::Zero)` matters more here than it looks:
 # Task Scheduler's own default execution time limit is 72 hours, after which
-# it stops a still-running task outright — exactly wrong for something meant
+# it stops a still-running task outright - exactly wrong for something meant
 # to run for the entire session. Zero is documented to mean "no time limit".
 #
 # `-MultipleInstances IgnoreNew` is the "starting Askwell twice attaches
@@ -433,9 +433,9 @@ function Register-AskwellShortcuts {
 # re-confirmed in docs/decisions.md this date): this build host has no pwsh
 # (PowerShell 7) and no passwordless sudo to install one, so
 # `Register-ScheduledTask`/`RestartCount`/`RestartInterval`'s exact restart
-# semantics — in particular whether a non-zero *action process* exit counts
+# semantics - in particular whether a non-zero *action process* exit counts
 # as the "task failure" that triggers a restart, versus only a failure Task
-# Scheduler itself judges at the task level — were verified against
+# Scheduler itself judges at the task level - were verified against
 # documentation, not a live Windows session. If that assumption is wrong,
 # the backoff-and-restart acceptance criterion is unmet on Windows
 # specifically, silently. Issue #606 stays open, re-owned rather than

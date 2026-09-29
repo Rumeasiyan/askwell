@@ -2,9 +2,9 @@
 .SYNOPSIS
     Uninstalls Askwell (M7-PACK-DEPLOY-140). Mirrors deploy/linux/uninstall.sh:
     removes application files, the Start-menu entry and the Startup-folder
-    session-start shortcut. Leaves the data directory — and therefore every
+    session-start shortcut. Leaves the data directory - and therefore every
     document Askwell indexed, in place on the user's own disk untouched by
-    Askwell — alone unless -PurgeData is given, which still asks for
+    Askwell - alone unless -PurgeData is given, which still asks for
     confirmation before deleting anything.
 
     -PurgeData removes both places Askwell keeps data (issue #700): the data
@@ -37,7 +37,7 @@ function Confirm-Askwell {
 
 function Main {
     # M7-PACK-DEPLOY-142: unregister the stack and inference scheduled tasks
-    # before the `podman compose down` fallback below — that fallback exists
+    # before the `podman compose down` fallback below - that fallback exists
     # for the case where the tasks were never registered at all (e.g.
     # Podman/Python were missing at install time), not as the primary stop
     # path.

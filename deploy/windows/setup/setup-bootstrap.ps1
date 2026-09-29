@@ -27,6 +27,8 @@
       20  winget (App Installer) is missing
       21  Podman could not be installed
       22  Docker Compose could not be installed
+      23  Setup's own files did not load (lib.ps1 failed to parse)
+      24  running as 32-bit PowerShell, which cannot see wsl.exe
       30  WSL was just enabled; Windows must restart, then run Setup again
       31  the Podman machine could not be started
       anything else: install.ps1's own exit code, its reason already printed
@@ -41,6 +43,24 @@ $ErrorActionPreference = 'Continue'
 . (Join-Path $Root 'deploy\windows\lib.ps1')
 
 function Say([string]$Text) { Write-Output $Text }
+
+# With ErrorActionPreference 'Continue', a lib.ps1 that fails to parse leaves
+# its functions undefined and every check below quietly answers "missing":
+# 0.9.2 reported "Docker Compose did not install" right after it had. Stop
+# here instead, with the real reason.
+if (-not (Get-Command Test-AskwellComposeMeetsMinimum -ErrorAction SilentlyContinue)) {
+    Say "Askwell Setup's own files did not load (deploy\windows\lib.ps1). This is a fault in Setup, not in your PC. Please report it: https://github.com/Rumeasiyan/askwell/issues"
+    exit 23
+}
+
+# A 32-bit PowerShell on 64-bit Windows is redirected from System32 to
+# SysWOW64, where wsl.exe does not exist, so WSL would look absent on every
+# PC. The setup exe launches the 64-bit one; this catches anything that
+# does not.
+if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
+    Say "Askwell Setup is running as 32-bit PowerShell, which cannot see the Windows Subsystem for Linux. This is a fault in Setup, not in your PC. Please report it: https://github.com/Rumeasiyan/askwell/issues"
+    exit 24
+}
 
 function Update-AskwellPath {
     # What a freshly opened session would see: machine PATH, then user PATH.
