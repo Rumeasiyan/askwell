@@ -18,7 +18,7 @@ Signing certificates cost money every year — an Apple Developer enrolment and 
 
 ## Verify what you downloaded — do this first
 
-Every release publishes a `SHA256SUMS` file alongside the downloads — one for each of Linux (`askwell-<version>-linux-x86_64.tar.gz`), Windows (`askwell-<version>-windows-x86_64.zip`) and macOS (`askwell-<version>-macos-arm64.tar.gz`). Compare before you unpack anything.
+Every release publishes a `SHA256SUMS` file alongside the downloads: Linux (`askwell-<version>-linux-x86_64.tar.gz`), Windows (`Askwell-Setup-<version>.exe`, or the same files as `askwell-<version>-windows-x86_64.zip`) and macOS (`askwell-<version>-macos-arm64.tar.gz`). Compare before you unpack anything.
 
 **Linux and macOS**
 
@@ -29,7 +29,7 @@ shasum -a 256 askwell-<version>-<platform>-<arch>.tar.gz
 **Windows (PowerShell)**
 
 ```
-Get-FileHash askwell-<version>-windows-x86_64.zip -Algorithm SHA256
+Get-FileHash Askwell-Setup-<version>.exe -Algorithm SHA256
 ```
 
 The value must match the line for your file in `SHA256SUMS` on the release page. **If it does not match, stop.** Do not run it, and open an issue — a mismatch means the file was altered between our build and your disk, and that is worth knowing about.
@@ -81,13 +81,24 @@ Only run that after the checksum matches. It is the same decision as clicking Op
 
 ## Windows
 
-Unpack the zip (right-click → **Extract All**), then open PowerShell in the unpacked folder and run its installer:
+**Download `Askwell-Setup-<version>.exe` and double-click it.** Verify its checksum first, as above.
+
+1. Windows asks for administrator permission. Setup needs it once, to install Podman, which runs Askwell's local services.
+2. Click **Install**. Setup checks this PC and installs anything Askwell needs that is missing: Podman, the Windows Subsystem for Linux and Docker Compose. It then installs Askwell itself, and every step is shown as it happens. This takes several minutes. Only those components come from the internet; nothing of yours is sent anywhere.
+3. When it finishes, Askwell is in your Start menu and in *Add or remove programs*.
+
+Two things Setup cannot do by itself, and tells you when they happen:
+
+- **Windows needs a restart** the first time it enables the Windows Subsystem for Linux. Restart, then run Setup again, and it carries on from there.
+- **CPU virtualisation is off** in the PC's firmware. Setup names the setting to turn on. It is in the BIOS/UEFI, not in Windows, so it has to be done by hand.
+
+**Without Setup.** The zip holds the same files. Unpack it (right-click → **Extract All**), open PowerShell in the unpacked folder, and run:
 
 ```
 powershell -ExecutionPolicy Bypass -File deploy\windows\install.ps1
 ```
 
-`-ExecutionPolicy Bypass` applies to this one command only; Windows otherwise refuses to run a script that came from the internet. The installer checks virtualisation and installs Podman if it is missing. If Docker Compose is missing, it stops and names the command that installs it (`winget install -e --id Docker.DockerCompose`); run that, open a new PowerShell, and run the installer again. It then loads Askwell's containers, sets up Askwell's database and opens the Askwell window.
+`-ExecutionPolicy Bypass` applies to this one command only. Windows otherwise refuses to run a script that came from the internet. Run this way, the installer stops after installing Podman or Docker Compose and asks you to open a new PowerShell and run it again, because a running session cannot see a program installed during it. Setup avoids that.
 
 SmartScreen will show **"Windows protected your PC"** with **Don't run** as the default button.
 

@@ -4,6 +4,12 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.1 - 2026-09-29
+
+`Added`: **a one-click Windows installer, `Askwell-Setup-0.9.1.exe`.** Until now, installing on Windows meant unpacking a zip and running a PowerShell command with `-ExecutionPolicy Bypass`. That is a developer's install, and it stopped halfway after installing Podman or Docker Compose, telling you to open a new terminal and run it again. Setup is a normal Windows installer: one administrator prompt, **Install**, and a progress screen. It installs whatever is missing, including Podman, the Windows Subsystem for Linux and Docker Compose. It then runs Askwell's own installer unattended, so the Start-menu entry, the *Add or remove programs* entry and the uninstaller are exactly as before. The two things it cannot do alone, a restart after first enabling WSL and turning on CPU virtualisation in firmware, it explains in plain words. Built with NSIS in the release pipeline, from the same files as the zip, and included in `SHA256SUMS`.
+
+Not yet run on a real Windows machine: the product owner is testing it. The zip and the PowerShell route remain.
+
 ## 0.9.0 - 2026-09-29
 
 **First beta release.** Every milestone's tickets are built: answers from files, spreadsheets and databases with citations; abstention; the clarification loop and memory; SQL safety and the dump sandbox; voice in and out; web search as an escalation; the trace panel; settings, backup, restore and reset; installers for Linux, Windows and macOS; online AI with your own key. Released as a **beta, not `1.0.0`**, because two quality measures are below their bars (`docs/decisions.md`, 2026-09-29):
