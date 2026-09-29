@@ -81,3 +81,21 @@ export function overrideConsequence(tier: Profile): string {
     `decisions log.`
   );
 }
+
+/** Where answers actually run, as the running model reports it — not what
+ * the profile expects. `M10-FIX-DEPLOY-222`: this machine's profile said
+ * `accelerated` for a whole build while every answer ran on the processor,
+ * and nothing on screen could show it. `null` when the assistant is not
+ * running, since then nothing runs anywhere. */
+export function accelerationLine(
+  available: boolean,
+  acceleration: string | null,
+  reason: string | null,
+): string | null {
+  if (!available || acceleration === null) return null;
+  const where =
+    acceleration === "gpu"
+      ? "Answers run on the graphics card."
+      : "Answers run on the processor.";
+  return reason ? `${where} ${reason}` : where;
+}

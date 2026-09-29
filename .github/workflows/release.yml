@@ -20,8 +20,10 @@
 #
 # No secret beyond GitHub's own token (C8). Model weights are not bundled;
 # the installed app fetches or finds them as it already does
-# (M7-OFFLINE-DEPLOY-144). The network is used here to build, as it is by
-# `scripts/dev.sh lock` and `web-install`; nothing built here reaches it.
+# (M7-OFFLINE-DEPLOY-144). llama.cpp is: each artefact carries its platform's
+# pinned builds (deploy/inference/llama-cpp.lock, M10-FIX-DEPLOY-222). The
+# network is used here to build, as it is by `scripts/dev.sh lock` and
+# `web-install`; nothing built here reaches it.
 
 name: Release
 
@@ -269,6 +271,19 @@ jobs:
           pattern: shell-*
           path: dist/shells
 
+      - name: Fetch llama.cpp
+        # The GPU and CPU builds each platform's installer places beside
+        # askwell-inference, checked against deploy/inference/llama-cpp.lock.
+        # Without them an installed machine has nothing to answer with (#810).
+        env:
+          ARCH_LINUX: ${{ needs.linux.outputs.arch }}
+          ARCH_WINDOWS: ${{ needs.windows.outputs.arch }}
+          ARCH_MACOS: ${{ needs.macos.outputs.arch }}
+        run: |
+          scripts/fetch-llama-cpp.sh linux "$ARCH_LINUX" dist/llama.cpp/linux
+          scripts/fetch-llama-cpp.sh windows "$ARCH_WINDOWS" dist/llama.cpp/windows
+          scripts/fetch-llama-cpp.sh macos "$ARCH_MACOS" dist/llama.cpp/macos
+
       - name: Assemble the artefacts
         env:
           ARCH_LINUX: ${{ needs.linux.outputs.arch }}
@@ -280,9 +295,9 @@ jobs:
             tar -xzf "dist/shells/shell-$platform/shell.tar.gz" -C web/src-tauri/target/release
           done
           out="dist/askwell-$VERSION"
-          scripts/release-artefact.sh linux "$ARCH_LINUX" dist/images "$out"
-          scripts/release-artefact.sh windows "$ARCH_WINDOWS" dist/images "$out"
-          scripts/release-artefact.sh macos "$ARCH_MACOS" dist/images "$out"
+          scripts/release-artefact.sh linux "$ARCH_LINUX" dist/images "$out" dist/llama.cpp/linux
+          scripts/release-artefact.sh windows "$ARCH_WINDOWS" dist/images "$out" dist/llama.cpp/windows
+          scripts/release-artefact.sh macos "$ARCH_MACOS" dist/images "$out" dist/llama.cpp/macos
 
       - name: Build the one-click Windows installer
         # Askwell-Setup-<version>.exe wraps the Windows release tree so a

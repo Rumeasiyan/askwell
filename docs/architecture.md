@@ -185,6 +185,8 @@ Selected at install by a hardware probe **run on the host**, not inside a contai
 
 Because inference is a native process (§2.1), GPU acceleration is available on all three platforms.
 
+A release carries `llama.cpp` itself, pinned in `deploy/inference/llama-cpp.lock`: on Linux and Windows a Vulkan build and a CPU build, on Apple silicon one Metal build. The installer places them next to the host supervisor, which asks the Vulkan build which devices it can use (`--list-devices`) at each start. With one, it runs that build with `--n-gpu-layers auto`, and llama.cpp's fit places what the card's free memory holds. With none, it runs the CPU build unchanged. It reports where the model actually went, with a reason when that is not all of it on the card. Generation starts before embedding and reranking so it sizes against the whole card (`docs/decisions.md`, 2026-09-30, `M10-FIX-DEPLOY-222`).
+
 | Profile | Hardware | LLM | Expected |
 | ------- | -------- | --- | -------- |
 | `light` | 8GB RAM, CPU only | Qwen3.5 4B Q4_K_M | Slow but usable; text only, voice degraded |

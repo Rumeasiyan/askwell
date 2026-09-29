@@ -128,3 +128,43 @@ def test_the_assembler_ships_each_shell_where_its_installer_looks() -> None:
     for platform, (installer, path) in expected.items():
         assert path in (REPO_ROOT / installer).read_text(encoding="utf-8"), platform
         assert path.replace("\\", "/") in script, platform
+
+
+def test_each_artefact_carries_its_platforms_pinned_llama_cpp() -> None:
+    """`M10-FIX-DEPLOY-222`: nothing on a user's machine can answer without a
+    `llama-server`, so each platform's builds are fetched against the pin
+    file and handed to the assembler, which refuses without them."""
+    release = _jobs()["release"]
+    fetch = release.index("Fetch llama.cpp")
+    assemble = release.index("Assemble the artefacts")
+    assert fetch < assemble
+    for platform in PLATFORMS:
+        assert (
+            f"scripts/fetch-llama-cpp.sh {platform} " in release
+            and f"dist/llama.cpp/{platform}\n" in release
+        ), platform
+        assert re.search(
+            rf"scripts/release-artefact\.sh {platform} .* dist/llama\.cpp/{platform}$",
+            release,
+            re.MULTILINE,
+        ), platform
+    script = ASSEMBLER.read_text(encoding="utf-8")
+    assert '"$T/deploy/inference/llama.cpp"' in script
+
+
+def test_the_llama_cpp_pins_are_sha256_and_name_a_gpu_build_per_platform() -> None:
+    lock = REPO_ROOT / "deploy" / "inference" / "llama-cpp.lock"
+    rows = [
+        line.split()
+        for line in lock.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    ]
+    tag = next(r[1] for r in rows if r[0] == "tag")
+    builds = [r for r in rows if r[0] in PLATFORMS]
+    for platform in PLATFORMS:
+        variants = {r[2] for r in builds if r[0] == platform}
+        assert "gpu" in variants, platform
+    for _platform, _arch, _variant, asset, digest in builds:
+        assert asset.startswith(f"llama-{tag}-bin-"), asset
+        assert re.fullmatch(r"[0-9a-f]{64}", digest), asset
+    assert re.fullmatch(r"[0-9a-f]{64}", next(r[2] for r in rows if r[0] == "license"))

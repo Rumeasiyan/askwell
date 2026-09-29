@@ -63,3 +63,7 @@ api/.venv-host/
 # scripts/dev.sh notices' handoff file between the web and API containers —
 # regenerated every run, not the record; NOTICES.md itself is committed.
 .notices/
+
+# The llama.cpp builds scripts/fetch-llama-cpp.sh places for a release or a
+# local try-out. Pinned in deploy/inference/llama-cpp.lock; never committed.
+deploy/inference/llama.cpp/

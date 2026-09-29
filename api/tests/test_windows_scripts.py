@@ -63,3 +63,31 @@ def test_windows_workflow_runs_both_suites_under_windows_powershell() -> None:
     assert "shell: pwsh" not in workflow
     assert "deploy/windows/install.test.ps1" in workflow
     assert "deploy/windows/setup/setup-bootstrap.test.ps1" in workflow
+
+
+def _code(path: Path) -> str:
+    return "\n".join(
+        line
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    )
+
+
+def test_llama_cpp_is_stopped_before_its_folder_is_replaced_or_removed() -> None:
+    """`M10-FIX-DEPLOY-222`. Windows refuses to delete a DLL a running process
+    has loaded, so an upgrade or an uninstall over a running `llama-server`
+    fails part-way unless it is stopped first."""
+    install = _code(WINDOWS / "install.ps1")
+    placing = install.split("function Copy-AskwellLlamaCpp {", 1)[1].split("\n}\n", 1)[0]
+    assert placing.index("Stop-AskwellLlamaCpp") < placing.index("Remove-Item $dest")
+    assert "Copy-AskwellLlamaCpp" in install.split("function Copy-AskwellFiles {", 1)[1]
+
+    uninstall = _code(WINDOWS / "uninstall.ps1")
+    assert uninstall.index("Stop-AskwellLlamaCpp") < uninstall.index(
+        "Remove-Item -Path $InstallPrefix"
+    )
+
+    lib = _code(WINDOWS / "lib.ps1")
+    stop = lib.split("function Stop-AskwellLlamaCpp {", 1)[1].split("\n}\n", 1)[0]
+    # Only the llama-server processes started from Askwell's own folder.
+    assert "StartsWith($Dir" in stop

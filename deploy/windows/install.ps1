@@ -20,6 +20,9 @@
                                                                           Python script; needs a
                                                                           Python on this host's
                                                                           PATH, same as Linux)
+        deploy\inference\llama.cpp\{gpu,cpu}\                          - llama.cpp's Vulkan and
+                                                                          CPU builds (a release
+                                                                          only; M10-FIX-DEPLOY-222)
         web\src-tauri\target\release\askwell-shell.exe                  - the desktop shell
         web\out\                                                        - the built interface
                                                                           compose.yaml mounts (#766)
@@ -272,6 +275,7 @@ function Copy-AskwellFiles {
         Write-AskwellDie (Get-AskwellQuarantineMessage 'askwell-inference')
         exit 1
     }
+    Copy-AskwellLlamaCpp
 
     # Replaced, not merged: a file an older interface had and this one does
     # not must not keep being served.
@@ -288,6 +292,35 @@ function Copy-AskwellFiles {
     }
 
     Write-AskwellSay "Application files placed under $InstallPrefix"
+}
+
+# The llama.cpp builds a release carries (M10-FIX-DEPLOY-222), placed next to
+# askwell-inference, which is where it looks. Both go: the supervisor asks
+# the Vulkan build at each start whether there is a graphics device it can
+# use and runs the CPU build when there is not. Replaced, not merged, as on
+# Linux. Windows will not replace a DLL a running process has loaded, so an
+# upgrade stops the inference task and any llama-server started from this
+# folder first; Register-AskwellInferenceTask starts it again. A source
+# checkout carries none, and the supervisor runs llama-server from PATH.
+function Copy-AskwellLlamaCpp {
+    $src = Join-Path $RepoRoot 'deploy\inference\llama.cpp'
+    if (-not (Test-Path (Join-Path $src 'gpu\llama-server.exe')) -and
+        -not (Test-Path (Join-Path $src 'cpu\llama-server.exe'))) {
+        Write-AskwellSay 'No llama.cpp build is bundled here; Askwell will run llama-server from PATH.'
+        return
+    }
+    $dest = Join-Path $InstallPrefix 'llama.cpp'
+    if (Test-Path $dest) {
+        Stop-AskwellLlamaCpp -Dir $dest
+        Remove-Item $dest -Recurse -Force
+    }
+    Copy-Item $src $dest -Recurse -Force
+    if ((Test-Path (Join-Path $src 'gpu\llama-server.exe')) -and
+        -not (Test-Path (Join-Path $dest 'gpu\llama-server.exe'))) {
+        Write-AskwellDie (Get-AskwellQuarantineMessage 'llama-server.exe')
+        exit 1
+    }
+    Write-AskwellSay "llama.cpp placed under $dest. Answers run on the graphics card where llama.cpp can use it, and on the processor otherwise."
 }
 
 # ---------------------------------------------------------------- 5a. container images

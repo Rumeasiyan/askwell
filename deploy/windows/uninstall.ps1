@@ -41,6 +41,9 @@ function Main {
     # for the case where the tasks were never registered at all (e.g.
     # Podman/Python were missing at install time), not as the primary stop
     # path.
+    # Stopped first: a running llama-server holds its DLLs open, and the
+    # folder below cannot be removed while it does (M10-FIX-DEPLOY-222).
+    Stop-AskwellLlamaCpp -Dir (Join-Path $InstallPrefix 'llama.cpp')
     Unregister-ScheduledTask -TaskName (Get-AskwellInferenceTaskName) -Confirm:$false -ErrorAction SilentlyContinue
     Unregister-ScheduledTask -TaskName (Get-AskwellStackTaskName) -Confirm:$false -ErrorAction SilentlyContinue
     Remove-Item -Path (Join-Path $StartMenuDir 'Askwell.lnk') -Force -ErrorAction SilentlyContinue

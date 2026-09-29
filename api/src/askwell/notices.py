@@ -135,6 +135,24 @@ MODEL_NOTICES: tuple[ModelNotice, ...] = (
         verified="2026-09-23",
         note="v1 hedge, not advertised as supported (AGENTS.md §1, docs/decisions.md).",
     ),
+    # Not a weight but a bundled binary, like Tesseract above. Pinned in
+    # `deploy/inference/llama-cpp.lock`; SPDX `MIT` on the registry and in the
+    # `LICENSE` at the pinned tag, re-verified 2026-09-30 (`M10-FIX-DEPLOY-222`).
+    ModelNotice(
+        role="Inference engine",
+        name="llama.cpp b10645 (Vulkan and CPU builds; Metal on macOS)",
+        source="ggml-org/llama.cpp (release b10645)",
+        license="MIT",
+        verified="2026-09-30",
+    ),
+    ModelNotice(
+        role="OpenMP runtime (Windows llama.cpp builds)",
+        name="libomp (LLVM OpenMP)",
+        source="llvm/llvm-project, as shipped in llama.cpp's Windows release archives",
+        license="Apache-2.0 WITH LLVM-exception",
+        verified="2026-09-30",
+        note="Licence text ships beside it as LICENSE-LLVM-OpenMP.",
+    ),
 )
 
 # Exact SPDX-style identifiers. Matched as whole tokens after splitting a
@@ -192,6 +210,11 @@ KNOWN_LICENSES: frozenset[str] = frozenset(
         "PYTHON-2.0",
         "UNLICENSE",
         "ZLIB",
+        # A licence exception, split off by `WITH`: LLVM's adds permissions to
+        # Apache-2.0 and takes none away, so it is as GPLv3-compatible as
+        # Apache-2.0 itself (libomp, `M10-FIX-DEPLOY-222`). Any other
+        # exception stays unclear until a person has read it.
+        "LLVM-EXCEPTION",
         # Weak copyleft: LGPL-2.1 may be taken under GPLv2-or-later, and so
         # under v3; LGPL-3.0 is GPLv3 with an extra permission.
         "LGPL-2.1",
@@ -212,10 +235,12 @@ KNOWN_LICENSES: frozenset[str] = frozenset(
     }
 )
 
+# `WITH` splits too, so an SPDX exception is judged as its own token rather
+# than hiding its licence inside one unknown string.
 # Whitespace is required around "AND"/"OR" so a hyphenated SPDX identifier
 # like "GPL-3.0-or-later" is never split mid-token — only a real compound
 # expression such as "MIT OR Apache-2.0" is.
-_SPLIT_RE = re.compile(r"\s*,\s*|\s*/\s*|\s+AND\s+|\s+OR\s+", re.IGNORECASE)
+_SPLIT_RE = re.compile(r"\s*,\s*|\s*/\s*|\s+AND\s+|\s+OR\s+|\s+WITH\s+", re.IGNORECASE)
 
 
 def _tokens(license_expression: str) -> list[str]:

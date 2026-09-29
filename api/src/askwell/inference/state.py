@@ -66,6 +66,10 @@ class InferenceState:
     state: ProcessState
     model: str | None = None
     acceleration: str | None = None
+    acceleration_reason: str | None = None
+    """Why answers run where they do when that is not the whole model on the
+    graphics card: no device llama.cpp can use, the card failed to load it,
+    or only part of it fits (`M10-FIX-DEPLOY-222`). `None` otherwise."""
     reason: str | None = None
     restarts: int = 0
     consecutive_failures: int = 0
@@ -90,6 +94,7 @@ class InferenceState:
             "state": str(self.state),
             "model": self.model,
             "acceleration": self.acceleration,
+            "acceleration_reason": self.acceleration_reason,
             "reason": self.reason,
             "restarts": self.restarts,
             "consecutive_failures": self.consecutive_failures,
@@ -165,6 +170,7 @@ def read(state_path: Path) -> InferenceState:
         state=state,
         model=payload.get("model"),
         acceleration=payload.get("acceleration"),
+        acceleration_reason=payload.get("acceleration_reason"),
         reason=payload.get("reason"),
         restarts=int(payload.get("restarts", 0)),
         consecutive_failures=int(payload.get("consecutive_failures", 0)),
@@ -191,6 +197,7 @@ def _one(entry: dict[str, Any]) -> InferenceState:
         state=state,
         model=entry.get("model"),
         acceleration=entry.get("acceleration"),
+        acceleration_reason=entry.get("acceleration_reason"),
         reason=entry.get("reason"),
         restarts=int(entry.get("restarts", 0)),
         consecutive_failures=int(entry.get("consecutive_failures", 0)),

@@ -19,6 +19,8 @@ Verified against the model's own registry entry before being written here (`AGEN
 | OCR traineddata (English) | tesseract-ocr-eng | tesseract-ocr/tessdata (Debian bookworm package) | Apache-2.0 | 2026-09-23 |  |
 | OCR traineddata (orientation/script detection) | tesseract-ocr-osd | tesseract-ocr/tessdata (Debian bookworm package) | Apache-2.0 | 2026-09-23 |  |
 | OCR traineddata (Tamil) | tesseract-ocr-tam | tesseract-ocr/tessdata (Debian bookworm package) | Apache-2.0 | 2026-09-23 | v1 hedge, not advertised as supported (AGENTS.md §1, docs/decisions.md). |
+| Inference engine | llama.cpp b10645 (Vulkan and CPU builds; Metal on macOS) | ggml-org/llama.cpp (release b10645) | MIT | 2026-09-30 |  |
+| OpenMP runtime (Windows llama.cpp builds) | libomp (LLVM OpenMP) | llvm/llvm-project, as shipped in llama.cpp's Windows release archives | Apache-2.0 WITH LLVM-exception | 2026-09-30 | Licence text ships beside it as LICENSE-LLVM-OpenMP. |
 
 ## Python dependencies (API, `api/pyproject.toml`)
 

@@ -375,3 +375,23 @@ def test_askwell_states_gplv3_everywhere_it_declares_a_licence() -> None:
     assert pyproject["project"]["license"] == "GPL-3.0-or-later"
     package = json.loads((REPO_ROOT / "web" / "package.json").read_text())
     assert package["license"] == "GPL-3.0-or-later"
+
+
+def test_the_bundled_llama_cpp_and_its_openmp_runtime_are_noticed_and_allowed() -> None:
+    """`M10-FIX-DEPLOY-222`: a release now carries llama.cpp, and its Windows
+    builds carry LLVM's OpenMP runtime."""
+    by_role = {n.role: n for n in MODEL_NOTICES}
+    engine = by_role["Inference engine"]
+    assert engine.license == "MIT"
+    omp = by_role["OpenMP runtime (Windows llama.cpp builds)"]
+    assert unclear_tokens(omp.license) == []
+    assert disallowed_tokens(omp.license) == []
+
+
+def test_an_spdx_exception_is_judged_on_its_own() -> None:
+    assert unclear_tokens("Apache-2.0 WITH LLVM-exception") == []
+    # An exception nobody has read is for a person to decide, not a pass.
+    assert unclear_tokens("GPL-2.0-only WITH Classpath-exception-2.0") == [
+        "CLASSPATH-EXCEPTION-2.0"
+    ]
+    assert disallowed_tokens("GPL-2.0-only WITH Classpath-exception-2.0") == ["GPL-2.0-ONLY"]

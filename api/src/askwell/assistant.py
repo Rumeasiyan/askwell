@@ -53,6 +53,7 @@ class Assistant:
     still_works: tuple[str, ...] = ()
     model: str | None = None
     acceleration: str | None = None
+    acceleration_reason: str | None = None
     restarts: int = 0
 
     def as_dict(self) -> dict[str, object]:
@@ -64,6 +65,7 @@ class Assistant:
             "still_works": list(self.still_works),
             "model": self.model,
             "acceleration": self.acceleration,
+            "acceleration_reason": self.acceleration_reason,
             "restarts": self.restarts,
         }
 
@@ -115,6 +117,7 @@ def _explain(state: InferenceState) -> Assistant:
             headline="The assistant is ready.",
             model=state.model,
             acceleration=state.acceleration,
+            acceleration_reason=state.acceleration_reason,
             restarts=state.restarts,
         )
 
