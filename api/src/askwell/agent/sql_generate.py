@@ -12,8 +12,10 @@ same boundary from the other side: it runs a query string it is handed, and
 does not know how that string was produced.
 
 **Since `M4-SQL-BE-108a`, this is reachable from `POST /ask`.** `askwell.ask
-._run_sql_turn` calls `generate_candidate_query` as the first step of every
-turn, ahead of document retrieval, then runs its result through
+._run_sql_turn` calls `generate_candidate_query` — ahead of document
+retrieval only when `match_tables` finds the question strongly names the
+schema, after it when the documents found nothing (`M10-FIX-BE-220`) — then
+runs its result through
 `askwell.sql.validate` → `askwell.sql.limit` → `askwell.sql.dry_run` →
 `askwell.sql.execute` in that order — the same chain this module's own
 functions were already built to feed, now actually fed. `NO_DATABASES` and
@@ -75,6 +77,7 @@ from askwell.config import Settings
 from askwell.inference.client import InferenceClient
 from askwell.logging import get_logger
 from askwell.memory import MemoryFact, RelevantMemory, SchemaNote, retrieve_relevant_facts
+from askwell.retrieve import TEXT_SEARCH_CONFIG
 
 log = get_logger(__name__)
 
@@ -288,6 +291,102 @@ async def list_database_sources(session: AsyncSession, settings: Settings) -> li
             engine = "postgresql"
         sources.append(DatabaseSource(id=source_id, name=name, kind=kind, engine=engine))
     return sources
+
+
+class TableMatchStrength(StrEnum):
+    NONE = "none"
+    WEAK = "weak"
+    STRONG = "strong"
+
+
+@dataclass(frozen=True, slots=True)
+class TableMatch:
+    """How plausibly a question concerns a connected table, and on what
+    evidence — `terms` are the question's own stemmed words that named a
+    table, a column, or something a person wrote about one. Empty on a
+    scoped question, which is strong because the person chose the source."""
+
+    strength: TableMatchStrength
+    terms: tuple[str, ...] = ()
+
+
+# `M10-FIX-BE-220`. Two distinct words naming the schema before SQL goes
+# first. One is weak evidence: in `grounded_qa.v1` a single word was always
+# how a document question reached SQL generation — "customer database" hits
+# `customers`, "units" hits `unit_price_cents`, "production" stems to
+# `products` — while a real table question names a table and a column, or a
+# column and a written note. A weak match is still tried, after documents
+# have found nothing, so the threshold decides order, not reachability.
+STRONG_MATCH_TERMS = 2
+
+# Shorter stems are identifier noise (`id`, `cd`, `p` from `'P' = placed`)
+# that a question's own short words would otherwise hit.
+_MIN_TERM_LENGTH = 3
+
+
+async def match_tables(
+    session: AsyncSession,
+    settings: Settings,
+    *,
+    question: str,
+    source_id: uuid.UUID | None = None,
+) -> TableMatch | None:
+    """Whether `question` plausibly concerns a `ready` table, decided before
+    any model call. `None` when there is no table to route to at all — no
+    `ready` database source, or a question scoped to a source that is not
+    one — so a documents-only corpus never records a routing decision it
+    never had to make. Issue #817: the old gate was `retrieve_relevant_facts`
+    over schema-note *descriptions*, an OR over every word, and an inferred
+    column note reads "orders.placed_at — date, not null" — so "dates",
+    "single" and "not" routed document questions into SQL generation.
+
+    Matched here instead: table and column names, split on `_`, `.` and `:`
+    (a sheet is stored as `data.xlsx:North`), and the description of a note
+    a person wrote (`origin != 'inferred'`), which is where a column like
+    `stat_cd` gets the words a question will actually use. An inferred
+    description only restates the names and the type, so it adds noise and
+    no evidence. Stemmed with the same configuration retrieval uses, so
+    "customers" and "customer" meet.
+    """
+    sources = await list_database_sources(session, settings)
+    if source_id is not None:
+        scoped = any(source.id == source_id for source in sources)
+        return TableMatch(TableMatchStrength.STRONG) if scoped else None
+    if not sources:
+        return None
+
+    question_terms = (
+        await session.execute(
+            text("SELECT tsvector_to_array(to_tsvector(:cfg, :question))"),
+            {"cfg": TEXT_SEARCH_CONFIG, "question": question},
+        )
+    ).scalar_one()
+    schema_terms = set(
+        (
+            await session.execute(
+                text(
+                    "SELECT DISTINCT unnest(tsvector_to_array(to_tsvector(:cfg, "
+                    "translate(table_name || ' ' || coalesce(column_name, ''), '_.:', '   ') "
+                    "|| CASE WHEN origin != 'inferred' THEN ' ' || description ELSE '' END"
+                    "))) FROM schema_notes "
+                    "WHERE superseded_by IS NULL AND NOT stale AND source_id = ANY(:ids)"
+                ),
+                {"cfg": TEXT_SEARCH_CONFIG, "ids": [source.id for source in sources]},
+            )
+        ).scalars()
+    )
+    terms = tuple(
+        sorted(
+            term
+            for term in set(question_terms)
+            if len(term) >= _MIN_TERM_LENGTH and term in schema_terms
+        )
+    )
+    if len(terms) >= STRONG_MATCH_TERMS:
+        return TableMatch(TableMatchStrength.STRONG, terms)
+    if terms:
+        return TableMatch(TableMatchStrength.WEAK, terms)
+    return TableMatch(TableMatchStrength.NONE)
 
 
 async def _get_database_source(

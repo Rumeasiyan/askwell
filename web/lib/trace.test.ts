@@ -126,6 +126,29 @@ test("a step with nothing but kind and outcome has no expander — the ticket's 
   assert.equal(hasExpandableDetail({ kind: "sql", outcome: "no_connections" }), false);
 });
 
+test("a route step names which path went first and why (M10-FIX-BE-220)", () => {
+  assert.equal(
+    stepSummary({ kind: "route", route: "sql", table_match: "strong", terms: ["custom", "region"] }),
+    "Asked your tables first — 2 matching words",
+  );
+  assert.equal(
+    stepSummary({ kind: "route", route: "documents", table_match: "weak", terms: ["unit"] }),
+    "Asked your files first — 1 matching word, not enough for a table",
+  );
+  assert.equal(
+    stepSummary({ kind: "route", route: "documents", table_match: "none", terms: [] }),
+    "Asked your files first — no table matched",
+  );
+});
+
+test("a route fallback says which way it fell", () => {
+  assert.equal(
+    stepSummary({ kind: "route", fallback: "documents", after: "rejected" }),
+    "The query did not run — searched your files instead",
+  );
+  assert.equal(stepSummary({ kind: "route", fallback: "table", terms: ["headcount"] }), "Nothing in your files — tried your tables");
+});
+
 // --- traceRows -------------------------------------------------------------
 
 test("traceRows numbers steps from 1 in the order they were given", () => {

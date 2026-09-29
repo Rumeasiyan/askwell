@@ -4,6 +4,12 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.7 - 2026-09-29
+
+`Fixed`: `M10-FIX-BE-220`. With a database or spreadsheet table added, a question about your documents is answered from your documents again. Before, a question that shared a single word with any table ("customer", "units", "dates") was sent to database query generation. The model wrote prose instead of a query, Askwell's safety check refused it, and the refusal was shown as the answer (#817). Now a question goes to your tables first only when it clearly names them: at least two words matching a table, a column or a note you wrote about one. If the query cannot run, Askwell searches your files instead of showing the refusal. If your files have nothing and a table matches even loosely, Askwell tries the table before saying it does not know. The trace shows which way each question went, and why.
+
+Not fixed: questions about an Excel workbook's numbers phrased differently from its column headings, such as "how many people work in Logistics" for a **Headcount** column, can still come back as not found (#818, #827). A workbook is read as a document, not as a table, so there is no table to try.
+
 ## 0.9.6 - 2026-09-29
 
 `Fixed`: every Windows install would have failed once Setup reached Askwell itself: generating the database passwords used a .NET method that exists under PowerShell 7 but not under Windows PowerShell 5.1, which is what runs it on every Windows PC. Found by the new Windows test run below, before any tester reached that step.

@@ -10,7 +10,7 @@ full-text search — so those run against a real Postgres, the same split
 import json
 import uuid
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
@@ -24,10 +24,12 @@ from askwell.agent.sql_generate import (
     PROMPT_VERSION,
     GenerationReason,
     SelectionReason,
+    TableMatchStrength,
     _extract_query,
     compose_sql_generation,
     generate_candidate_query,
     list_database_sources,
+    match_tables,
     select_database_source,
 )
 from askwell.config import Settings
@@ -522,3 +524,149 @@ async def test_an_explicit_source_scope_is_honoured_over_automatic_selection(
     assert result.reason == GenerationReason.GENERATED
     assert result.query is not None
     assert result.query.source_id == correct
+
+
+# --- match_tables — the routing decision (`M10-FIX-BE-220`) ---------------
+
+
+async def _eval_shaped_schema(session: AsyncSession) -> uuid.UUID:
+    """The schema `grounded_qa.v1` ran against when #817 was found: the
+    `text_to_sql` fixture's tables, inferred notes worded the way
+    `schema_introspect` words them, and one note a person wrote."""
+    source_id = await _dump_source(session)
+    columns = {
+        "customers": ["id", "name", "email", "region", "tier", "created_at"],
+        "orders": ["id", "customer_id", "stat_cd", "placed_at"],
+        "order_items": ["id", "order_id", "product_id", "qty", "unit_price_cents"],
+        "products": ["id", "sku", "name", "category", "price_cents"],
+    }
+    for table, names in columns.items():
+        await _write_note(
+            session,
+            _note(
+                source_id=source_id,
+                table_name=table,
+                description=f"Table {table}. Columns: {', '.join(names)}. Primary key: id.",
+            ),
+        )
+        for column in names:
+            await _write_note(
+                session,
+                _note(
+                    source_id=source_id,
+                    table_name=table,
+                    column_name=column,
+                    description=f"{table}.{column} — date, not null, single value.",
+                ),
+            )
+    written = _note(
+        source_id=source_id,
+        table_name="orders",
+        column_name="stat_cd",
+        description="orders.stat_cd is a single-letter order status code.",
+    )
+    await _write_note(session, replace(written, origin="user"))
+    return source_id
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        # The five document questions #817 names, verbatim from the suite.
+        "How many hours does the Loomwear Sensor Mk3 run on a single charge?",
+        "Which data center may host Meridian Loom's customer database?",
+        "What dates does the Meridian Loom staff retreat run?",
+        "How many units come in a pack of Loomwear Sensor Mk3?",
+        "How often does Meridian Loom rotate production database credentials?",
+    ],
+)
+async def test_a_document_question_sharing_one_word_with_a_schema_never_goes_to_sql_first(
+    session: AsyncSession, settings: Settings, question: str
+) -> None:
+    await _eval_shaped_schema(session)
+    match = await match_tables(session, settings, question=question)
+    assert match.strength is not TableMatchStrength.STRONG
+    assert len(match.terms) <= 1
+
+
+async def test_an_inferred_descriptions_type_words_are_not_evidence(
+    session: AsyncSession, settings: Settings
+) -> None:
+    """ "dates", "single" and "not" are in every inferred column note."""
+    await _eval_shaped_schema(session)
+    match = await match_tables(session, settings, question="What dates does the retreat run?")
+    assert match.strength is TableMatchStrength.NONE
+
+
+async def test_a_question_naming_a_table_and_a_column_goes_to_sql_first(
+    session: AsyncSession, settings: Settings
+) -> None:
+    await _eval_shaped_schema(session)
+    match = await match_tables(
+        session, settings, question="Which customers in each region are on the gold tier?"
+    )
+    assert match.strength is TableMatchStrength.STRONG
+    assert set(match.terms) == {"custom", "region", "tier"}
+
+
+async def test_a_note_a_person_wrote_counts_as_evidence(
+    session: AsyncSession, settings: Settings
+) -> None:
+    await _eval_shaped_schema(session)
+    match = await match_tables(session, settings, question="How many orders have each status?")
+    assert match.strength is TableMatchStrength.STRONG
+    assert set(match.terms) == {"order", "status"}
+
+
+async def test_one_word_naming_a_column_is_a_weak_match(
+    session: AsyncSession, settings: Settings
+) -> None:
+    await _eval_shaped_schema(session)
+    match = await match_tables(session, settings, question="What is the headline region?")
+    assert match.strength is TableMatchStrength.WEAK
+    assert match.terms == ("region",)
+
+
+async def test_no_database_sources_means_no_match(
+    session: AsyncSession, settings: Settings
+) -> None:
+    assert await match_tables(session, settings, question="How many orders per customer?") is None
+
+
+async def test_a_source_that_is_not_ready_is_not_matched(
+    session: AsyncSession, settings: Settings
+) -> None:
+    source_id = await _dump_source(session, status="indexing")
+    await _write_note(
+        session, _note(source_id=source_id, table_name="orders", description="Table orders.")
+    )
+    assert await match_tables(session, settings, question="How many orders per customer?") is None
+
+
+async def test_a_stale_note_is_not_evidence(session: AsyncSession, settings: Settings) -> None:
+    source_id = await _dump_source(session)
+    note = _note(source_id=source_id, table_name="customer_orders", description="Table.")
+    await _write_note(session, note)
+    await session.execute(
+        text("UPDATE schema_notes SET stale = true WHERE id = :id"), {"id": note.id}
+    )
+    match = await match_tables(session, settings, question="How many customer orders?")
+    assert match.strength is TableMatchStrength.NONE
+
+
+async def test_scoping_to_a_database_source_is_strong_whatever_the_words(
+    session: AsyncSession, settings: Settings
+) -> None:
+    source_id = await _dump_source(session)
+    match = await match_tables(session, settings, question="anything at all", source_id=source_id)
+    assert match.strength is TableMatchStrength.STRONG
+
+
+async def test_scoping_to_a_non_database_source_is_no_match(
+    session: AsyncSession, settings: Settings
+) -> None:
+    await _eval_shaped_schema(session)
+    match = await match_tables(
+        session, settings, question="How many orders per customer?", source_id=uuid.uuid4()
+    )
+    assert match is None

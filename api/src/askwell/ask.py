@@ -93,8 +93,11 @@ from askwell.agent.placeholders import PlaceholderStripper, strip_placeholders
 from askwell.agent.scrub import AnswerScrubber, scrub_answer
 from askwell.agent.sql_generate import (
     GenerationReason,
+    TableMatch,
+    TableMatchStrength,
     generate_candidate_query,
     list_database_sources,
+    match_tables,
 )
 from askwell.agent.summarize import fallback_summary, summarize_turn
 from askwell.agent.think import ThinkStripper
@@ -1463,6 +1466,205 @@ def _local_backend(local_model: str, *, requested_online: bool) -> dict[str, Any
     return record
 
 
+async def _attempt_sql_turn(
+    settings: Settings,
+    factory: async_sessionmaker[AsyncSession],
+    client: InferenceClient,
+    turn: _Turn,
+    *,
+    question: str,
+    source_id: uuid.UUID | None,
+) -> _SqlAnswer | None:
+    """`_run_sql_turn` with its step label, and a crash treated as "not
+    answered from a table" so the documents still get their turn."""
+    turn.emit("step", {"label": "Checking your connected databases.", "kind": "sql"})
+    try:
+        async with session_scope(factory) as db:
+            return await _run_sql_turn(settings, db, client, question=question, source_id=source_id)
+    except Exception:
+        log.exception("ask_sql_turn_failed", message_id=str(turn.message_id))
+        return None
+
+
+def _sql_steps(sql_answer: _SqlAnswer) -> list[dict[str, Any]]:
+    steps = [sql_answer.schema_step] if sql_answer.schema_step is not None else []
+    return [*steps, sql_answer.trace_step]
+
+
+async def _finish_sql_turn(
+    settings: Settings,
+    factory: async_sessionmaker[AsyncSession],
+    turn: _Turn,
+    *,
+    question: str,
+    source_id: uuid.UUID | None,
+    sql_answer: _SqlAnswer,
+    model_name: str,
+    turn_started: float,
+) -> None:
+    """Stream, store and audit a turn answered by `_run_sql_turn` — an
+    executed query, or (`M10-FIX-BE-220`) an unexecuted outcome once the
+    documents have been searched and found nothing either. The caller has
+    already put the SQL steps on `turn.trace_steps`, since a fallback turn
+    records them where they happened, ahead of the document search.
+    """
+    turn.text = strip_placeholders(sql_answer.text)
+    turn.emit("token", {"text": turn.text})
+    sql_result = sql_answer.sql_result
+    status: Status = sql_answer.status
+    reason: str | None = None
+    trace_steps = turn.trace_steps
+    turn.emit("step", {"label": "Answered from your database.", "kind": "sql"})
+    duration_ms = int((time.monotonic() - turn_started) * 1000)
+    bounded_steps, steps_truncated = _bound_trace_steps(trace_steps)
+    trace = {
+        "steps": bounded_steps,
+        "steps_truncated": steps_truncated,
+        "backend": _local_backend(model_name, requested_online=turn.requested_online),
+        "stopped_early": status != "completed",
+        "injection_flagged": False,
+        "injection_patterns": [],
+        "status": status,
+        "reason": reason,
+        "partial_coverage": False,
+        "uncovered_aspects": [],
+        "conflict_detected": False,
+        "conflict_topic": None,
+        "memory_fact_ids": [],
+        "schema_note_ids": [],
+        "memory_used": 0,
+    }
+    try:
+        turn_summary = summarize_turn(
+            question=question,
+            answer_text=turn.text,
+            status=status,
+            reason=reason,
+            partial=False,
+            citation_rows=[],
+            candidates=[],
+        )
+    except Exception:
+        log.error("ask_summary_failed", message_id=str(turn.message_id))
+        turn_summary = fallback_summary(question)
+    rotated = (
+        TraceRing(settings.trace_dir, settings.trace_max_bytes)
+        .write(turn.message_id, trace)
+        .dropped
+    )
+    try:
+        async with session_scope(factory) as db:
+            await _trim_rotated_traces(db, rotated)
+            await db.execute(
+                text(
+                    "INSERT INTO messages "
+                    "(id, conversation_id, role, content, trace, summary, source_count, "
+                    "sql_result) "
+                    "VALUES (:id, :conversation_id, 'assistant', :content, "
+                    "CAST(:trace AS jsonb), :summary, :source_count, "
+                    "CAST(:sql_result AS jsonb)) "
+                    "ON CONFLICT (id) DO UPDATE SET "
+                    "content = :content, trace = CAST(:trace AS jsonb), "
+                    "summary = :summary, source_count = :source_count, "
+                    "sql_result = CAST(:sql_result AS jsonb)"
+                ),
+                {
+                    "id": turn.message_id,
+                    "conversation_id": turn.conversation_id,
+                    "content": turn.text,
+                    "trace": json.dumps(trace),
+                    "summary": turn_summary.summary,
+                    "source_count": turn_summary.source_count,
+                    "sql_result": json.dumps(sql_result) if sql_result is not None else None,
+                },
+            )
+            await record(
+                db,
+                Store.INTERACTIONS,
+                ASK_ASKED,
+                {
+                    "conversation_id": str(turn.conversation_id),
+                    "message_id": str(turn.message_id),
+                    "question": question,
+                    "answer": turn.text,
+                    "status": status,
+                    "abstained": False,
+                    "partial": False,
+                    "uncovered_aspects": [],
+                    "conflict_detected": False,
+                    "conflict_topic": None,
+                    "memory_fact_ids": [],
+                    "schema_note_ids": [],
+                    "threshold": None,
+                    "source_id": str(source_id) if source_id else None,
+                    "citation_count": 0,
+                    "duration_ms": duration_ms,
+                    "backend": "local",
+                    "model": model_name,
+                    "retrieved_chunks": [],
+                },
+            )
+    except (AuditError, SQLAlchemyError) as error:
+        # Same failure shape `_run_generation`'s document-turn path
+        # handles below: the whole transaction above rolled back, so
+        # `sql_result` — real rows, already computed — must not be
+        # shipped on the live `done` event either (issue #390's own
+        # bug in miniature, avoided here by never letting a rolled-back
+        # value survive past this point).
+        status = "failed"
+        reason = f"Askwell could not save this answer: {error}"
+        sql_result = None
+        log.error("ask_sql_audit_write_failed", message_id=str(turn.message_id), error=str(error))
+        failure_trace = {**trace, "status": status, "reason": reason}
+        try:
+            async with session_scope(factory) as db:
+                await db.execute(
+                    text(
+                        "UPDATE messages SET content = :content, "
+                        "trace = CAST(:trace AS jsonb), summary = :summary, "
+                        "source_count = :source_count, sql_result = NULL WHERE id = :id"
+                    ),
+                    {
+                        "id": turn.message_id,
+                        "content": "",
+                        "trace": json.dumps(failure_trace),
+                        "summary": turn_summary.summary,
+                        "source_count": turn_summary.source_count,
+                    },
+                )
+        except Exception:
+            log.exception("ask_sql_failure_write_failed", message_id=str(turn.message_id))
+
+    turn.emit(
+        "done",
+        {
+            "status": status,
+            "reason": reason,
+            "summary": turn_summary.summary,
+            "source_count": turn_summary.source_count,
+            "sql_result": sql_result,
+            # `M4-RESULT-FE-110`: disclosure on the branches `sql_result`
+            # deliberately never carries — mutually exclusive with it,
+            # never both, since an executed query already discloses
+            # itself through `sql_result.query`.
+            "sql_query": (
+                None if sql_result is not None else _sql_query_disclosure(sql_answer.trace_step)
+            ),
+            # `M4-RESULT-FE-111`: always `None` here — the routing
+            # override this field exists for only ever fires from the
+            # document turn's own abstention branch below, never from a
+            # turn `_run_sql_turn` itself answered.
+            "db_state": None,
+            # `M7-SET-FE-146a`: the persistent per-answer marker's own
+            # data, present on every `done` event regardless of branch —
+            # same "never absent" contract as `sql_result`/`db_state`.
+            "model_identity": turn.model_identity,
+        },
+    )
+    turn.status = status
+    _retire(turn.message_id)
+
+
 async def _run_generation(
     settings: Settings,
     factory: async_sessionmaker[AsyncSession],
@@ -1494,7 +1696,6 @@ async def _run_generation(
     conflict_topic: str | None = None
     memory_fact_ids: list[uuid.UUID] = []
     schema_note_ids: list[uuid.UUID] = []
-    sql_result: dict[str, Any] | None = None
     # Aliased, not copied: every `trace_steps.append`/`.extend` below is
     # also an append to `turn.trace_steps`, which is what makes a running
     # turn's steps readable (`M5-TRACE-BE-125`) before this function ever
@@ -1547,185 +1748,69 @@ async def _run_generation(
             # trace field below), not a raw stop tally to increment again.
             continuation_count = loaded.continuation_count
 
+    # `M10-FIX-BE-220` (issues #817, #818): one routing decision, with a
+    # fallback each way. SQL goes first only when the question names the
+    # schema strongly (`match_tables`); a query that does not execute hands
+    # the question to the documents rather than becoming the answer. A weak
+    # match goes to the documents first and reaches the table only if they
+    # find nothing. Skipped entirely once a turn is known to be continuing a
+    # stopped loop — it is already answering with `run_tool_loop`, which can
+    # reach a database itself.
     sql_answer: _SqlAnswer | None = None
+    # A SQL-first attempt that did not execute, kept in case the documents
+    # find nothing too — then it says more about a database question than
+    # the abstention would.
+    unexecuted_sql: _SqlAnswer | None = None
+    # `None`: no table to route to, so no routing step either.
+    table_match: TableMatch | None = None
     if resume_state is None:
         try:
-            # `M4-SQL-BE-108a`: tried first, on every ordinary turn —
-            # `_run_sql_turn` itself decides whether this is a database
-            # question at all (`GenerationReason.NOT_A_DATABASE_QUESTION`/
-            # `NO_DATABASES` both come back as `None`) and falls through to
-            # the document path below exactly as if this ticket had never
-            # wired anything in. Skipped entirely once a turn is known to be
-            # continuing a stopped loop — it is already answering with
-            # `run_tool_loop`, which can reach a database itself.
-            turn.emit("step", {"label": "Checking your connected databases.", "kind": "sql"})
             async with session_scope(factory) as db:
-                sql_answer = await _run_sql_turn(
-                    settings, db, client, question=question, source_id=source_id
+                table_match = await match_tables(
+                    db, settings, question=question, source_id=source_id
                 )
         except Exception:
-            sql_answer = None
-            log.exception("ask_sql_turn_failed", message_id=str(turn.message_id))
+            log.exception("ask_table_match_failed", message_id=str(turn.message_id))
+    if table_match is not None:
+        sql_first = table_match.strength is TableMatchStrength.STRONG
+        trace_steps.append(
+            {
+                "kind": "route",
+                "route": "sql" if sql_first else "documents",
+                "table_match": table_match.strength.value,
+                "terms": list(table_match.terms),
+            }
+        )
+        if sql_first:
+            sql_answer = await _attempt_sql_turn(
+                settings, factory, client, turn, question=question, source_id=source_id
+            )
+            if sql_answer is not None and sql_answer.sql_result is None:
+                unexecuted_sql, sql_answer = sql_answer, None
+                trace_steps.extend(_sql_steps(unexecuted_sql))
+                trace_steps.append(
+                    {
+                        "kind": "route",
+                        "fallback": "documents",
+                        "after": unexecuted_sql.trace_step.get("outcome"),
+                    }
+                )
+                turn.emit(
+                    "step", {"label": "No usable query. Searching your files.", "kind": "sql"}
+                )
 
     if sql_answer is not None:
-        turn.text = strip_placeholders(sql_answer.text)
-        turn.emit("token", {"text": turn.text})
-        sql_result = sql_answer.sql_result
-        status = sql_answer.status
-        if sql_answer.schema_step is not None:
-            trace_steps.append(sql_answer.schema_step)
-        trace_steps.append(sql_answer.trace_step)
-        turn.emit("step", {"label": "Answered from your database.", "kind": "sql"})
-        duration_ms = int((time.monotonic() - turn_started) * 1000)
-        bounded_steps, steps_truncated = _bound_trace_steps(trace_steps)
-        trace = {
-            "steps": bounded_steps,
-            "steps_truncated": steps_truncated,
-            "backend": _local_backend(model_name, requested_online=turn.requested_online),
-            "stopped_early": status != "completed",
-            "injection_flagged": False,
-            "injection_patterns": [],
-            "status": status,
-            "reason": reason,
-            "partial_coverage": False,
-            "uncovered_aspects": [],
-            "conflict_detected": False,
-            "conflict_topic": None,
-            "memory_fact_ids": [],
-            "schema_note_ids": [],
-            "memory_used": 0,
-        }
-        try:
-            turn_summary = summarize_turn(
-                question=question,
-                answer_text=turn.text,
-                status=status,
-                reason=reason,
-                partial=False,
-                citation_rows=[],
-                candidates=[],
-            )
-        except Exception:
-            log.error("ask_summary_failed", message_id=str(turn.message_id))
-            turn_summary = fallback_summary(question)
-        rotated = (
-            TraceRing(settings.trace_dir, settings.trace_max_bytes)
-            .write(turn.message_id, trace)
-            .dropped
+        trace_steps.extend(_sql_steps(sql_answer))
+        await _finish_sql_turn(
+            settings,
+            factory,
+            turn,
+            question=question,
+            source_id=source_id,
+            sql_answer=sql_answer,
+            model_name=model_name,
+            turn_started=turn_started,
         )
-        try:
-            async with session_scope(factory) as db:
-                await _trim_rotated_traces(db, rotated)
-                await db.execute(
-                    text(
-                        "INSERT INTO messages "
-                        "(id, conversation_id, role, content, trace, summary, source_count, "
-                        "sql_result) "
-                        "VALUES (:id, :conversation_id, 'assistant', :content, "
-                        "CAST(:trace AS jsonb), :summary, :source_count, "
-                        "CAST(:sql_result AS jsonb)) "
-                        "ON CONFLICT (id) DO UPDATE SET "
-                        "content = :content, trace = CAST(:trace AS jsonb), "
-                        "summary = :summary, source_count = :source_count, "
-                        "sql_result = CAST(:sql_result AS jsonb)"
-                    ),
-                    {
-                        "id": turn.message_id,
-                        "conversation_id": turn.conversation_id,
-                        "content": turn.text,
-                        "trace": json.dumps(trace),
-                        "summary": turn_summary.summary,
-                        "source_count": turn_summary.source_count,
-                        "sql_result": json.dumps(sql_result) if sql_result is not None else None,
-                    },
-                )
-                await record(
-                    db,
-                    Store.INTERACTIONS,
-                    ASK_ASKED,
-                    {
-                        "conversation_id": str(turn.conversation_id),
-                        "message_id": str(turn.message_id),
-                        "question": question,
-                        "answer": turn.text,
-                        "status": status,
-                        "abstained": False,
-                        "partial": False,
-                        "uncovered_aspects": [],
-                        "conflict_detected": False,
-                        "conflict_topic": None,
-                        "memory_fact_ids": [],
-                        "schema_note_ids": [],
-                        "threshold": None,
-                        "source_id": str(source_id) if source_id else None,
-                        "citation_count": 0,
-                        "duration_ms": duration_ms,
-                        "backend": "local",
-                        "model": model_name,
-                        "retrieved_chunks": [],
-                    },
-                )
-        except (AuditError, SQLAlchemyError) as error:
-            # Same failure shape `_run_generation`'s document-turn path
-            # handles below: the whole transaction above rolled back, so
-            # `sql_result` — real rows, already computed — must not be
-            # shipped on the live `done` event either (issue #390's own
-            # bug in miniature, avoided here by never letting a rolled-back
-            # value survive past this point).
-            status = "failed"
-            reason = f"Askwell could not save this answer: {error}"
-            sql_result = None
-            log.error(
-                "ask_sql_audit_write_failed", message_id=str(turn.message_id), error=str(error)
-            )
-            failure_trace = {**trace, "status": status, "reason": reason}
-            try:
-                async with session_scope(factory) as db:
-                    await db.execute(
-                        text(
-                            "UPDATE messages SET content = :content, "
-                            "trace = CAST(:trace AS jsonb), summary = :summary, "
-                            "source_count = :source_count, sql_result = NULL WHERE id = :id"
-                        ),
-                        {
-                            "id": turn.message_id,
-                            "content": "",
-                            "trace": json.dumps(failure_trace),
-                            "summary": turn_summary.summary,
-                            "source_count": turn_summary.source_count,
-                        },
-                    )
-            except Exception:
-                log.exception("ask_sql_failure_write_failed", message_id=str(turn.message_id))
-
-        turn.emit(
-            "done",
-            {
-                "status": status,
-                "reason": reason,
-                "summary": turn_summary.summary,
-                "source_count": turn_summary.source_count,
-                "sql_result": sql_result,
-                # `M4-RESULT-FE-110`: disclosure on the branches `sql_result`
-                # deliberately never carries — mutually exclusive with it,
-                # never both, since an executed query already discloses
-                # itself through `sql_result.query`.
-                "sql_query": (
-                    None if sql_result is not None else _sql_query_disclosure(sql_answer.trace_step)
-                ),
-                # `M4-RESULT-FE-111`: always `None` here — the routing
-                # override this field exists for only ever fires from the
-                # document turn's own abstention branch below, never from a
-                # turn `_run_sql_turn` itself answered.
-                "db_state": None,
-                # `M7-SET-FE-146a`: the persistent per-answer marker's own
-                # data, present on every `done` event regardless of branch —
-                # same "never absent" contract as `sql_result`/`db_state`.
-                "model_identity": turn.model_identity,
-            },
-        )
-        turn.status = status
-        _retire(turn.message_id)
         return
 
     # `M5-LOOP-BE-115`: tried only for a corpus that is genuinely both
@@ -2049,6 +2134,39 @@ async def _run_generation(
         abstained = best_score is None or best_score < result.threshold
 
         if abstained:
+            # `M10-FIX-BE-220`: the documents found nothing, so a table gets
+            # its turn — the one SQL already tried first, whose outcome now
+            # stands as the answer, or a weakly matched one tried only now.
+            # A weak match whose query does not execute keeps the abstention:
+            # one shared word is not enough to show a refusal instead.
+            table_answer = unexecuted_sql
+            if (
+                table_answer is None
+                and table_match is not None
+                and table_match.strength is TableMatchStrength.WEAK
+            ):
+                trace_steps.append(
+                    {"kind": "route", "fallback": "table", "terms": list(table_match.terms)}
+                )
+                attempted = await _attempt_sql_turn(
+                    settings, factory, client, turn, question=question, source_id=source_id
+                )
+                if attempted is not None:
+                    trace_steps.extend(_sql_steps(attempted))
+                    if attempted.sql_result is not None:
+                        table_answer = attempted
+            if table_answer is not None:
+                await _finish_sql_turn(
+                    settings,
+                    factory,
+                    turn,
+                    question=question,
+                    source_id=source_id,
+                    sql_answer=table_answer,
+                    model_name=model_name,
+                    turn_started=turn_started,
+                )
+                return
             # C5's abstention branch, taken before composition: nothing
             # retrieved clears the threshold in force, so there is no path
             # from a below-threshold retrieval to a document-grounded
