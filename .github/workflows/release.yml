@@ -284,12 +284,38 @@ jobs:
           scripts/release-artefact.sh windows "$ARCH_WINDOWS" dist/images "$out"
           scripts/release-artefact.sh macos "$ARCH_MACOS" dist/images "$out"
 
+      - name: Build the one-click Windows installer
+        # Askwell-Setup-<version>.exe wraps the Windows release tree so a
+        # user double-clicks instead of running install.ps1 from PowerShell.
+        # makensis builds Windows installers on Linux; the tree is unpacked
+        # from the zip just assembled, so the exe carries exactly what the zip
+        # does. deploy/windows/setup/askwell-setup.nsi explains the rest.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nsis unzip >/dev/null
+          out="dist/askwell-$VERSION"
+          zip_file="$(ls "$out"/askwell-"$VERSION"-windows-*.zip)"
+          stage="$(mktemp -d)"
+          unzip -q "$zip_file" -d "$stage"
+          src="$(find "$stage" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+          [ -f "$src/deploy/windows/setup/setup-bootstrap.ps1" ] || { echo "::error::the Windows tree has no setup-bootstrap.ps1"; exit 1; }
+          makensis -V2 \
+            -DVERSION="$VERSION" \
+            -DSRCDIR="$src" \
+            -DOUTFILE="$PWD/$out/Askwell-Setup-$VERSION.exe" \
+            -DICON="$PWD/web/src-tauri/icons/icon.ico" \
+            -DLICENSEFILE="$PWD/LICENSE" \
+            deploy/windows/setup/askwell-setup.nsi
+          rm -rf "$stage"
+          ls -la "$out"
+
       - name: Checksums
         run: |
           out="dist/askwell-$VERSION"
           scripts/release-checksums.sh "$out"
           count="$(wc -l < "$out/SHA256SUMS")"
-          [ "$count" -eq 3 ] || { echo "::error::SHA256SUMS covers $count files, not one per platform"; exit 1; }
+          # One archive per platform, plus the Windows setup exe.
+          [ "$count" -eq 4 ] || { echo "::error::SHA256SUMS covers $count files, not three archives and the Windows setup"; exit 1; }
           (cd "$out" && sha256sum -c SHA256SUMS)
 
       - name: Replace any earlier draft for this tag
