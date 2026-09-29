@@ -25,7 +25,13 @@ $Stage = Join-Path $env:ProgramData 'AskwellSetup'
 $Desktop = [Environment]::GetFolderPath('Desktop')
 if (-not $Desktop -or -not (Test-Path $Desktop)) { $Desktop = $env:TEMP }
 
-function global:winget { $global:LASTEXITCODE = 0 }
+function global:winget {
+    $global:LASTEXITCODE = 0
+    if (($args -join ' ') -match 'Microsoft\.WSL') {
+        'Installing for NIMAL-LAPTOP\nimal.perera'
+        $global:WslInstalled = $global:WingetInstallsWsl
+    }
+}
 function global:docker-compose { $global:LASTEXITCODE = 0; 'Docker Compose version v5.5.1' }
 function global:podman {
     $a = $args -join ' '
@@ -45,8 +51,16 @@ function global:podman {
 function global:wsl.exe {
     $global:WslCalls += , ($args -join ' ')
     $global:LASTEXITCODE = 0
-    if ($args[0] -eq '--install') { $global:VmState = $global:AfterInstall; 'Installing for NIMAL-LAPTOP\nimal.perera' }
+    # The in-box stub, as the Windows VM showed: no --install without a
+    # console, and --version answers only once WSL itself is installed.
+    if ($args[0] -eq '--install') { 'The Windows Subsystem for Linux is not installed.'; $global:LASTEXITCODE = 1 }
+    if ($args[0] -eq '--version' -and -not $global:WslInstalled) { $global:LASTEXITCODE = 1 }
     if ($args[0] -eq '--status') { $global:LASTEXITCODE = -1 }
+}
+function global:Enable-WindowsOptionalFeature {
+    if ($global:VmState -eq 'THROW') { throw 'unreadable' }
+    $global:VmState = $global:AfterInstall
+    [pscustomobject]@{ RestartNeeded = $true }
 }
 function global:Get-WindowsOptionalFeature {
     if ($global:VmState -eq 'THROW') { throw 'unreadable' }
@@ -62,7 +76,8 @@ $script:Pass = 0
 $script:Fail = 0
 
 function Invoke-Scenario {
-    param([string]$Name, [string]$Initial, [string]$AfterInstall, [int]$Want, [scriptblock]$Check, [int]$InstallCode = 0)
+    param([string]$Name, [string]$Initial, [string]$AfterInstall, [int]$Want, [scriptblock]$Check, [int]$InstallCode = 0,
+          [bool]$WslInstalled = $true, [bool]$WingetInstallsWsl = $true)
     $global:VmState = $Initial
     $global:AfterInstall = $AfterInstall
     $global:InstallCode = $InstallCode
@@ -70,6 +85,8 @@ function Invoke-Scenario {
     $global:RunOnce = $null
     $global:Installed = $false
     $global:MachineStarted = $false
+    $global:WslInstalled = $WslInstalled
+    $global:WingetInstallsWsl = $WingetInstallsWsl
     Remove-Item -Recurse -Force -Path $Stage -ErrorAction SilentlyContinue
     Get-ChildItem -Path $env:TEMP, $Desktop -Filter 'Askwell*' -ErrorAction SilentlyContinue | Remove-Item -Force
     $ErrorActionPreference = 'Continue'
@@ -90,8 +107,14 @@ Write-Host 'windows setup'
 Invoke-Scenario 'fresh PC: enables WSL, keeps its files, registers one resume, asks one restart' 'Disabled' 'EnablePending' 30 {
     ($global:RunOnce -match ' -Resume$') -and
     (Test-Path (Join-Path $Stage 'deploy\windows\setup\setup-bootstrap.ps1')) -and
-    -not $global:Installed -and -not (Get-Report)
-}
+    -not $global:Installed -and -not (Get-Report) -and -not ($global:WslCalls -match '^--install')
+} -WslInstalled $false
+Invoke-Scenario 'platform on but WSL itself missing: installs it, then one restart' 'Enabled' 'Enabled' 30 {
+    $global:WslInstalled -and ($global:RunOnce -match ' -Resume$')
+} -WslInstalled $false
+Invoke-Scenario 'WSL does not install: an error, never a restart' 'Enabled' 'Enabled' 32 {
+    -not $global:RunOnce -and [bool](Get-Report)
+} -WslInstalled $false -WingetInstallsWsl $false
 Invoke-Scenario 'after the restart: WSL enabled, no distribution, installs with no second restart' 'Enabled' 'Enabled' 0 {
     $global:Installed -and -not $global:RunOnce -and -not ($global:WslCalls -contains '--status')
 }
@@ -101,7 +124,7 @@ Invoke-Scenario 'WSL already enabled: straight through' 'Enabled' 'Enabled' 0 { 
 # went on and `podman machine init` failed with HCS_E_SERVICE_NOT_AVAILABLE.
 Invoke-Scenario 'enabled by this run but reported Enabled: still asks one restart' 'Disabled' 'Enabled' 30 {
     ($global:RunOnce -match ' -Resume$') -and -not $global:Installed
-}
+} -WslInstalled $false
 Invoke-Scenario 'restart already pending: asks once' 'EnablePending' 'EnablePending' 30 { $global:RunOnce -match ' -Resume$' }
 Invoke-Scenario 'WSL cannot be enabled: an error, never a restart' 'Disabled' 'Disabled' 32 { -not $global:RunOnce -and -not $global:Installed }
 Invoke-Scenario 'feature state unreadable: an error, never a restart' 'THROW' 'THROW' 32 { -not $global:RunOnce }
@@ -111,7 +134,7 @@ Invoke-Scenario 'a failure saves a report with the log, names replaced' 'Disable
     $text = [System.IO.File]::ReadAllText($report.FullName)
     ($text -match 'send this file') -and ($text -match 'Result: code 32') -and
     ($text -match 'Installing for <pc>.<user>') -and ($text -notmatch 'nimal')
-}
+} -WslInstalled $false
 Invoke-Scenario "install.ps1 failing also saves a report" 'Enabled' 'Enabled' 9 { [bool](Get-Report) } -InstallCode 9
 Invoke-Scenario 'success leaves no report and no log' 'Enabled' 'Enabled' 0 {
     -not (Get-Report) -and -not (Test-Path (Join-Path $env:TEMP 'AskwellSetup.log'))

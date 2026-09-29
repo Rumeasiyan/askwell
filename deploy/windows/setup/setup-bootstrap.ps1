@@ -220,6 +220,14 @@ function Remove-AskwellStage {
     }
 }
 
+function Test-WslAnswers {
+    # `wsl --version` exists only in the WSL that winget and the Store
+    # install; the in-box stub answers it with an error. So it is the test
+    # that WSL is actually installed, not just its launcher.
+    & wsl.exe --version *> $null
+    return ($LASTEXITCODE -eq 0)
+}
+
 function Install-WithWinget([string]$Id, [string]$Label) {
     Say "Installing $Label. This can take a few minutes..."
     # --disable-interactivity: no progress bars, which reached the log and the
@@ -273,18 +281,43 @@ Say "Compose provider: $(Get-AskwellComposeVersionText)"
 # WSL is what Podman's machine runs in, and it comes last among the
 # prerequisites because it is the one that can need a restart: everything
 # that can be installed before it has been.
-$state = Get-AskwellWslState (Get-VmPlatformState)
-if ($state -eq 'missing') {
-    Say "Enabling the Windows Subsystem for Linux, which Podman needs..."
-    # The in-box wsl.exe writes UTF-16 and ignores WSL_UTF8, so its lines
-    # arrive with a NUL after every character; drop them.
-    & wsl.exe --install --no-distribution 2>&1 | ForEach-Object { Say ("  " + ("$_" -replace "`0", '')) }
-    $state = Get-AskwellWslState (Get-VmPlatformState) -EnabledThisRun
-    if ($state -eq 'missing') {
-        Say ("The Windows Subsystem for Linux could not be enabled. The messages above say why. " +
-            "If they mention virtualisation, turn on Intel VT-x / AMD-V in this PC's firmware (BIOS/UEFI) setup, then run Askwell Setup again.")
+#
+# Two parts, both done without `wsl.exe --install`: Windows' in-box wsl.exe
+# refuses to install anything when it has no console ("The Windows Subsystem
+# for Linux is not installed. You can install by running 'wsl.exe
+# --install'", exit 1), and the setup exe always runs this script without
+# one. Found on the Windows test VM, 0.9.6. Instead:
+#   - the Virtual Machine Platform, a Windows feature, is turned on with
+#     Enable-WindowsOptionalFeature, which needs no console;
+#   - WSL itself is installed from winget (Microsoft.WSL, MIT), like Podman.
+# Proven on the VM: after these and one restart, `podman machine init` and
+# `start` succeed.
+$enabledThisRun = $false
+if ((Get-AskwellWslState (Get-VmPlatformState)) -eq 'missing') {
+    Say "Enabling the Virtual Machine Platform, which the Windows Subsystem for Linux needs..."
+    try {
+        $result = Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -All -NoRestart -ErrorAction Stop
+        Say "  Enabled. Windows restart needed: $($result.RestartNeeded)"
+    } catch {
+        Say "  $($_.Exception.Message)"
+    }
+    $enabledThisRun = $true
+}
+if (-not (Test-WslAnswers)) {
+    Install-WithWinget 'Microsoft.WSL' 'the Windows Subsystem for Linux'
+    # Not winget's exit code: on the VM it reported "Cancelling operation"
+    # and 0x80004004 after installing WSL successfully.
+    if (-not (Test-WslAnswers)) {
+        Say "The Windows Subsystem for Linux did not install. The messages above say why. Run Askwell Setup again once that is fixed."
         Stop-Setup 32
     }
+    $enabledThisRun = $true
+}
+$state = Get-AskwellWslState (Get-VmPlatformState) -EnabledThisRun:$enabledThisRun
+if ($state -eq 'missing') {
+    Say ("The Virtual Machine Platform could not be enabled. The messages above say why. " +
+        "If they mention virtualisation, turn on Intel VT-x / AMD-V in this PC's firmware (BIOS/UEFI) setup, then run Askwell Setup again.")
+    Stop-Setup 32
 }
 if ($state -eq 'restart') {
     if ($Resume) {
@@ -297,14 +330,6 @@ if ($state -eq 'restart') {
     Register-AskwellResume
     Say "Windows needs to restart once to finish enabling WSL. Setup will continue by itself after you sign in again."
     exit 30
-}
-
-# Store WSL carries its own kernel; the older in-box WSL needs this once.
-# `wsl --version` exists only in the Store WSL, so it is the test.
-& wsl.exe --version *> $null
-if ($LASTEXITCODE -ne 0) {
-    Say "Updating the Windows Subsystem for Linux..."
-    & wsl.exe --update 2>&1 | ForEach-Object { Say ("  " + ("$_" -replace "`0", '')) }
 }
 
 # The Podman machine: create it on first use, start it if stopped.
