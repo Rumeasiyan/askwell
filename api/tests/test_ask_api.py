@@ -3106,9 +3106,7 @@ def test_with_no_table_matched_sql_is_never_tried_even_when_documents_abstain(
     _truncate(database_url)
     attempts = _route(monkeypatch, ask_module.TableMatchStrength.NONE, _executed())
 
-    _, done, trace = _ask_routed(
-        settings, monkeypatch, tmp_path, database_url, rerank_score=-4.0
-    )
+    _, done, trace = _ask_routed(settings, monkeypatch, tmp_path, database_url, rerank_score=-4.0)
 
     assert attempts == []
     assert done["sql_result"] is None
