@@ -415,14 +415,13 @@ function Invoke-AskwellDatabaseMigration {
 
 function Invoke-AskwellProbe {
     Write-AskwellSay 'Probing this machine''s hardware...'
-    $python = Get-Command python -ErrorAction SilentlyContinue
-    if (-not $python) { $python = Get-Command py -ErrorAction SilentlyContinue }
+    $python = Get-AskwellPython
     if (-not $python) {
         Write-AskwellSay 'No Python found on PATH; Askwell will fall back to the standard profile on first launch.'
         return
     }
     $env:ASKWELL_PROBE_RESULT_PATH = Join-Path $DataDir 'probe.json'
-    & $python.Source (Join-Path $InstallPrefix 'askwell-probe')
+    & $python (Join-Path $InstallPrefix 'askwell-probe')
     if ($LASTEXITCODE -ne 0) {
         Write-AskwellSay 'Probe did not complete; Askwell will fall back to the standard profile on first launch.'
     }
@@ -494,15 +493,14 @@ function Register-AskwellStackTask {
 }
 
 function Register-AskwellInferenceTask {
-    $python = Get-Command python -ErrorAction SilentlyContinue
-    if (-not $python) { $python = Get-Command py -ErrorAction SilentlyContinue }
+    $python = Get-AskwellPython
     if (-not $python) {
         Write-AskwellSay 'No Python found on PATH; cannot register the inference scheduled task.'
         return
     }
     $taskName = Get-AskwellInferenceTaskName
     $taskArgs = Get-AskwellInferenceTaskArguments -ScriptPath (Join-Path $InstallPrefix 'askwell-inference')
-    $action = New-ScheduledTaskAction -Execute $python.Source -Argument $taskArgs -WorkingDirectory $InstallPrefix
+    $action = New-ScheduledTaskAction -Execute $python -Argument $taskArgs -WorkingDirectory $InstallPrefix
     $trigger = New-ScheduledTaskTrigger -AtLogOn
     $settings = New-ScheduledTaskSettingsSet -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1) `
         -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero)

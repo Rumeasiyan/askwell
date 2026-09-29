@@ -35,7 +35,9 @@ function global:Invoke-WebRequest {
 }
 function global:Get-FileHash {
     param($Algorithm, $Path)
-    $hash = if ($global:DownloadMatches) { 'A3505A50F4CC585551D11D9DE824BA4375448D7A68F2E71D3FB315FA986FC754' } else { 'BAD' }
+    $hash = if (-not $global:DownloadMatches) { 'BAD' }
+        elseif ("$Path" -match 'python') { 'EDEC09C4853AEAE9AC36EFB8C9F95B6B8E2FEE65EEE56D9767A8B7C69C574403' }
+        else { 'A3505A50F4CC585551D11D9DE824BA4375448D7A68F2E71D3FB315FA986FC754' }
     [pscustomobject]@{ Hash = $hash }
 }
 function global:docker-compose { $global:LASTEXITCODE = 0; 'Docker Compose version v5.5.1' }
@@ -74,8 +76,18 @@ function global:Get-WindowsOptionalFeature {
 }
 function global:powershell.exe { $global:Installed = $true; $global:LASTEXITCODE = $global:InstallCode }
 function global:Set-ItemProperty { param($Path, $Name, $Value) $global:RunOnce = $Value }
+function global:python {
+    # A Python only once one is "installed"; before that, a broken one, like
+    # the Store's placeholder on a new PC.
+    $global:LASTEXITCODE = $(if ($global:PythonInstalled) { 0 } else { 1 })
+}
 function global:Start-Process {
     param($FilePath, $ArgumentList, [switch]$Wait, [switch]$PassThru, $Verb, $WindowStyle, $ErrorAction)
+    if ("$FilePath" -match 'python-.*\.exe$') {
+        $global:PythonRuns++
+        $global:PythonInstalled = $global:PythonInstallerWorks
+        return [pscustomobject]@{ ExitCode = $(if ($global:PythonInstallerWorks) { 0 } else { 1603 }) }
+    }
     if ("$FilePath" -match 'msiexec') {
         $global:MsiRuns++
         $global:WslInstalled = $global:MsiInstallsWsl
@@ -90,7 +102,8 @@ $script:Fail = 0
 
 function Invoke-Scenario {
     param([string]$Name, [string]$Initial, [string]$AfterInstall, [int]$Want, [scriptblock]$Check, [int]$InstallCode = 0,
-          [bool]$WslInstalled = $true, [bool]$MsiInstallsWsl = $true, [bool]$DownloadMatches = $true)
+          [bool]$WslInstalled = $true, [bool]$MsiInstallsWsl = $true, [bool]$DownloadMatches = $true,
+          [bool]$PythonInstalled = $true, [bool]$PythonInstallerWorks = $true)
     $global:VmState = $Initial
     $global:AfterInstall = $AfterInstall
     $global:InstallCode = $InstallCode
@@ -103,6 +116,9 @@ function Invoke-Scenario {
     $global:DownloadMatches = $DownloadMatches
     $global:Downloads = @()
     $global:MsiRuns = 0
+    $global:PythonInstalled = $PythonInstalled
+    $global:PythonInstallerWorks = $PythonInstallerWorks
+    $global:PythonRuns = 0
     Remove-Item -Recurse -Force -Path $Stage -ErrorAction SilentlyContinue
     Get-ChildItem -Path $env:TEMP, $Desktop -Filter 'Askwell*' -ErrorAction SilentlyContinue | Remove-Item -Force
     $ErrorActionPreference = 'Continue'
@@ -147,6 +163,14 @@ Invoke-Scenario 'WSL already enabled: straight through' 'Enabled' 'Enabled' 0 { 
 Invoke-Scenario 'enabled by this run but reported Enabled: still asks one restart' 'Disabled' 'Enabled' 30 {
     ($global:RunOnce -match ' -Resume$') -and -not $global:Installed
 } -WslInstalled $false
+# The Windows VM, 0.9.6: a new PC has no Python, only the Store placeholder.
+Invoke-Scenario 'no Python: installs python.org 3.13, pinned, then carries on' 'Enabled' 'Enabled' 0 {
+    $global:PythonRuns -eq 1 -and $global:Installed -and
+    ($global:Downloads -contains 'https://www.python.org/ftp/python/3.13.15/python-3.13.15-amd64.exe')
+} -PythonInstalled $false
+Invoke-Scenario 'Python does not install: code 25, with a report' 'Enabled' 'Enabled' 25 {
+    [bool](Get-Report) -and -not $global:Installed
+} -PythonInstalled $false -PythonInstallerWorks $false
 Invoke-Scenario 'restart already pending: asks once' 'EnablePending' 'EnablePending' 30 { $global:RunOnce -match ' -Resume$' }
 Invoke-Scenario 'WSL cannot be enabled: an error, never a restart' 'Disabled' 'Disabled' 32 { -not $global:RunOnce -and -not $global:Installed }
 Invoke-Scenario 'feature state unreadable: an error, never a restart' 'THROW' 'THROW' 32 { -not $global:RunOnce }

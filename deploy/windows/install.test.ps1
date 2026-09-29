@@ -252,6 +252,12 @@ Test-Check 'the RunOnce command, exactly' $resume '"C:\Windows\System32\WindowsP
 if ($resume -match '-Resume$') { Test-Ok 'the RunOnce command resumes' } else { Test-Bad 'the RunOnce command resumes' $resume '...-Resume' }
 if ($resume -match 'System32\\WindowsPowerShell') { Test-Ok 'the RunOnce command names the 64-bit PowerShell' } else { Test-Bad 'the RunOnce command names the 64-bit PowerShell' $resume 'System32' }
 
+# --- setup: Python ------------------------------------------------------------
+if (Test-AskwellStorePythonStub 'C:\Users\nimal\AppData\Local\Microsoft\WindowsApps\python.exe') { Test-Ok "the Store's placeholder python.exe is recognised" } else { Test-Bad "the Store's placeholder python.exe is recognised" $false $true }
+if (-not (Test-AskwellStorePythonStub 'C:\Program Files\Python313\python.exe')) { Test-Ok 'a real Python is not taken for the placeholder' } else { Test-Bad 'a real Python is not taken for the placeholder' $true $false }
+Test-Check 'Python comes from python.org, pinned' $script:AskwellPythonUrl 'https://www.python.org/ftp/python/3.13.15/python-3.13.15-amd64.exe'
+Test-Check 'a missing Python is explained' (Get-AskwellSetupCodeMeaning 25) 'Python could not be installed'
+
 # --- setup: the failure report ------------------------------------------------
 Test-Check 'a known code is explained' (Get-AskwellSetupCodeMeaning 22) 'Docker Compose could not be installed'
 if ((Get-AskwellSetupCodeMeaning 7) -match 'install.ps1') { Test-Ok "install.ps1's own code points at the log" } else { Test-Bad "install.ps1's own code points at the log" (Get-AskwellSetupCodeMeaning 7) 'install.ps1' }

@@ -33,6 +33,7 @@
       22  Docker Compose could not be installed
       23  Setup's own files did not load (lib.ps1 failed to parse)
       24  running as 32-bit PowerShell, which cannot see wsl.exe
+      25  Python could not be installed
       30  WSL was just enabled; Windows must restart, and Setup continues
           by itself after the next sign-in
       31  the Podman machine could not be started
@@ -64,6 +65,15 @@ $SetupLog = Join-Path $env:TEMP 'AskwellSetup.log'
 
 function Say([string]$Text) {
     Write-Output $Text
+    try { [System.IO.File]::AppendAllText($SetupLog, "$Text`r`n") } catch { }
+}
+
+# Say for a function that returns a value: Write-Output would become part of
+# what it returns. Get-VerifiedDownload returned its progress lines along
+# with the path, and msiexec would have been handed all three as one file
+# name. Caught by setup-bootstrap.test.ps1.
+function Tell([string]$Text) {
+    Write-Host $Text
     try { [System.IO.File]::AppendAllText($SetupLog, "$Text`r`n") } catch { }
 }
 
@@ -228,30 +238,37 @@ function Test-WslAnswers {
     return ($LASTEXITCODE -eq 0)
 }
 
+function Get-VerifiedDownload([string]$Url, [string]$Sha256, [string]$Label, [string]$Size) {
+    # Download to %TEMP% and check against the pinned SHA-256; the path, or
+    # '' after saying why. A copy already there and matching is reused, so a
+    # second run of Setup does not download it again.
+    $file = Join-Path $env:TEMP (Split-Path -Leaf $Url)
+    if ((Test-Path $file) -and ((Get-FileHash -Algorithm SHA256 -Path $file).Hash -eq $Sha256)) { return $file }
+    Tell "Downloading $Label ($Size)..."
+    try {
+        # Windows PowerShell 5.1 needs TLS 1.2 asked for, and draws a
+        # progress bar so slowly that it makes a large download crawl.
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $file -ErrorAction Stop
+    } catch {
+        Tell "  The download failed: $($_.Exception.Message)"
+        return ''
+    }
+    $hash = (Get-FileHash -Algorithm SHA256 -Path $file).Hash
+    if ($hash -ne $Sha256) {
+        Tell "  The download does not match its published checksum (got $hash), so it was not run."
+        Remove-Item -Path $file -Force -ErrorAction SilentlyContinue
+        return ''
+    }
+    Tell "  Downloaded and checked."
+    return $file
+}
+
 function Install-Wsl {
     # See $AskwellWslMsiUrl in lib.ps1 for why it is this and not winget.
-    $msi = Join-Path $env:TEMP ("wsl.$AskwellWslMsiVersion.x64.msi")
-    $have = (Test-Path $msi) -and ((Get-FileHash -Algorithm SHA256 -Path $msi).Hash -eq $AskwellWslMsiSha256)
-    if (-not $have) {
-        Say "Downloading the Windows Subsystem for Linux $AskwellWslMsiVersion from Microsoft (about 250 MB)..."
-        try {
-            # Windows PowerShell 5.1 needs TLS 1.2 asked for, and draws a
-            # progress bar so slowly that it makes a large download crawl.
-            [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-            $ProgressPreference = 'SilentlyContinue'
-            Invoke-WebRequest -UseBasicParsing -Uri $AskwellWslMsiUrl -OutFile $msi -ErrorAction Stop
-        } catch {
-            Say "  The download failed: $($_.Exception.Message)"
-            return
-        }
-        $hash = (Get-FileHash -Algorithm SHA256 -Path $msi).Hash
-        if ($hash -ne $AskwellWslMsiSha256) {
-            Say "  The download does not match Microsoft's published checksum (got $hash), so it was not run."
-            Remove-Item -Path $msi -Force -ErrorAction SilentlyContinue
-            return
-        }
-        Say "  Downloaded and checked."
-    }
+    $msi = Get-VerifiedDownload $AskwellWslMsiUrl $AskwellWslMsiSha256 "the Windows Subsystem for Linux $AskwellWslMsiVersion from Microsoft" 'about 250 MB'
+    if (-not $msi) { return }
     Say "Installing the Windows Subsystem for Linux..."
     $msiLog = Join-Path $env:TEMP 'AskwellSetup-wsl-msi.log'
     $process = Start-Process -FilePath "$env:SystemRoot\System32\msiexec.exe" -Wait -PassThru `
@@ -262,6 +279,18 @@ function Install-Wsl {
     } else {
         Say "  Windows Installer stopped with code $code. Its log: $msiLog"
     }
+}
+
+function Install-Python {
+    # See $AskwellPythonUrl in lib.ps1. For all users, on PATH, no tests.
+    $exe = Get-VerifiedDownload $AskwellPythonUrl $AskwellPythonSha256 "Python $AskwellPythonVersion from python.org" 'about 28 MB'
+    if (-not $exe) { return }
+    Say "Installing Python $AskwellPythonVersion (runs Askwell's hardware probe and AI supervisor)..."
+    $process = Start-Process -FilePath $exe -Wait -PassThru `
+        -ArgumentList '/quiet InstallAllUsers=1 PrependPath=1 Include_test=0 Include_launcher=1 Shortcuts=0'
+    $code = if ($process) { $process.ExitCode } else { -1 }
+    Say "  Python installer finished with code $code."
+    Update-AskwellPath
 }
 
 function Install-WithWinget([string]$Id, [string]$Label) {
@@ -313,6 +342,15 @@ if (-not (Test-ComposeProvider)) {
     }
 }
 Say "Compose provider: $(Get-AskwellComposeVersionText)"
+
+if (-not (Get-AskwellPython)) {
+    Install-Python
+    if (-not (Get-AskwellPython)) {
+        Say "Python did not install. The messages above say why. Run Askwell Setup again once that is fixed."
+        Stop-Setup 25
+    }
+}
+Say "Python: $(Get-AskwellPython)"
 
 # WSL is what Podman's machine runs in, and it comes last among the
 # prerequisites because it is the one that can need a restart: everything

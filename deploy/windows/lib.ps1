@@ -544,6 +544,42 @@ $script:AskwellWslMsiVersion = '2.7.13'
 $script:AskwellWslMsiUrl = 'https://github.com/microsoft/WSL/releases/download/2.7.13/wsl.2.7.13.0.x64.msi'
 $script:AskwellWslMsiSha256 = 'A3505A50F4CC585551D11D9DE824BA4375448D7A68F2E71D3FB315FA986FC754'
 
+# The Python Setup installs when the PC has none. Askwell's hardware probe
+# and its inference supervisor are standard-library Python scripts that run
+# on Windows itself (docs/decisions.md), so without a Python Askwell cannot
+# answer anything. A new Windows PC has none: the python.exe on its PATH is
+# the Microsoft Store's placeholder under WindowsApps, which fails with "The
+# file cannot be accessed by the system" (found on the Windows test VM,
+# 0.9.6). python.org's installer, pinned by version and python.org's
+# published SHA-256; not winget, which on the VM twice did not install.
+$script:AskwellPythonVersion = '3.13.15'
+$script:AskwellPythonUrl = 'https://www.python.org/ftp/python/3.13.15/python-3.13.15-amd64.exe'
+$script:AskwellPythonSha256 = 'EDEC09C4853AEAE9AC36EFB8C9F95B6B8E2FEE65EEE56D9767A8B7C69C574403'
+
+# The Store's placeholder python.exe, which is not a Python.
+function Test-AskwellStorePythonStub {
+    param([string]$Path)
+    return [bool]($Path -match '\\WindowsApps\\')
+}
+
+# A real Python 3.9 or newer, as a path, or '' when there is none. Asks each
+# python.exe on PATH, in order, skipping the Store's placeholder.
+function Get-AskwellPython {
+    $candidates = @(Get-Command python -All -ErrorAction SilentlyContinue) +
+        @(Get-Command py -All -ErrorAction SilentlyContinue)
+    foreach ($candidate in $candidates) {
+        if (Test-AskwellStorePythonStub $candidate.Source) { continue }
+        try {
+            & $candidate -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                if ($candidate.Source) { return $candidate.Source }
+                return $candidate.Name
+            }
+        } catch { }
+    }
+    return ''
+}
+
 # msiexec's success codes: 0, and 3010 "succeeded, restart required".
 function Test-AskwellMsiSucceeded {
     param([int]$ExitCode)
@@ -583,6 +619,7 @@ $script:AskwellSetupCodeMeanings = @{
     22 = 'Docker Compose could not be installed'
     23 = "Setup's own files did not load"
     24 = 'Setup ran as 32-bit PowerShell'
+    25 = 'Python could not be installed'
     31 = "Podman's machine could not be started"
     32 = 'WSL could not be enabled'
     33 = 'WSL still waited for a restart after Setup restarted'
