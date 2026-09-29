@@ -4,6 +4,12 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.7.63 - 2026-09-28
+
+`Fixed`: `M9-FIX-BE-215`. When your files have something close to your question but nothing that answers it, Askwell now shows **Nothing in your files answers this**. It says what it searched, which material came closest, and what that material does not cover. Below that are the offers to add a source, search the web or ask a larger model. Before, it showed the model's own refusal as an ordinary answer, and none of those offers appeared. An answer that states even one thing from your files, with its source, stays an answer, and the part it could not find is still named.
+
+`Fixed`: answers no longer show pieces of Askwell's instructions to the model. That includes blocks such as `<retrieved-content …>` with a passage inside them, and source numbers like `[1]` with no sentence attached. Repeated "Not covered" lines now appear once. This also applies to web search answers and to answers worked out in steps.
+
 ## 0.7.62 - 2026-09-28
 
 `Fixed`: `M9-FIX-DEPLOY-200`. A fresh install now has a database to work with, and an upgrade

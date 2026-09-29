@@ -88,8 +88,9 @@ from askwell.agent.claims import Claim, locate_quoted_span, segment_claims
 from askwell.agent.compose import ComposedPrompt
 from askwell.agent.conflict import compose_conflict, split_conflict_answer
 from askwell.agent.loop import LoopContinuation, LoopResult, ToolCallEvent, run_tool_loop
-from askwell.agent.partial import split_partial_answer
+from askwell.agent.partial import covers_nothing, split_partial_answer
 from askwell.agent.placeholders import PlaceholderStripper, strip_placeholders
+from askwell.agent.scrub import AnswerScrubber, scrub_answer
 from askwell.agent.sql_generate import (
     GenerationReason,
     generate_candidate_query,
@@ -1811,7 +1812,9 @@ async def _run_generation(
                 "step",
                 {"label": "Stopped after 8 steps for this question.", "kind": "tool"},
             )
-        turn.text = strip_placeholders(loop_answer.text)
+        # `M9-FIX-BE-215`: the loop's prompt replays `<tool-result>` blocks
+        # the model can copy out, the same leak the single-step path scrubs.
+        turn.text = scrub_answer(strip_placeholders(loop_answer.text))
         turn.emit("token", {"text": turn.text})
         status = "completed"
         memory_fact_ids = [fact.id for fact in loop_memory.facts]
@@ -2236,13 +2239,21 @@ async def _run_generation(
                 # its answer (issue #663): same point, same reason — one text
                 # for the store, the parsers, `segment_claims` and the reader.
                 placeholders = PlaceholderStripper()
+                # Then what leaks from the prompt itself (`M9-FIX-BE-215`,
+                # #769): delimiter blocks (C7), repeated `Not covered` lines,
+                # and citation markers no claim carries.
+                scrubber = AnswerScrubber()
                 try:
                     async for chunk in stream:
                         if turn.stop_requested:
                             await stream.aclose()
                             status = "stopped"
                             break
-                        visible = placeholders.feed(stripper.feed(chunk.text)) if chunk.text else ""
+                        visible = (
+                            scrubber.feed(placeholders.feed(stripper.feed(chunk.text)))
+                            if chunk.text
+                            else ""
+                        )
                         if visible:
                             turn.text += visible
                             turn.emit("token", {"text": visible})
@@ -2310,7 +2321,8 @@ async def _run_generation(
                     turn.model_identity = {"source": "online", "display_name": backend.model}
                 break
 
-            tail = placeholders.feed(stripper.flush()) + placeholders.flush()
+            tail = scrubber.feed(placeholders.feed(stripper.flush()) + placeholders.flush())
+            tail += scrubber.flush()
             if tail:
                 turn.text += tail
                 turn.emit("token", {"text": tail})
@@ -2352,8 +2364,52 @@ async def _run_generation(
             # model to write for the rest, rather than inventing or smoothing
             # over them. A fully-covered answer parses to nothing here and
             # `partial_coverage` stays `False`, same as before `M2-PARTIAL-BE-057`.
-            uncovered_aspects = split_partial_answer(turn.text).uncovered
+            partial = split_partial_answer(turn.text)
+            uncovered_aspects = partial.uncovered
             partial_coverage = bool(uncovered_aspects)
+
+            # `M9-FIX-BE-215` (#769): an answer whose only content is what it
+            # could not find is an abstention, not an answer — shown as one,
+            # with the search proved and the escalation offers below it.
+            # Only a turn that ran to the end: a stopped one is the user's
+            # own choice and keeps what it had.
+            if status == "running" and covers_nothing(
+                partial, grounded=bool(citation_rows or fact_usage_rows)
+            ):
+                abstain_context = await _abstain_reason(factory, settings, source_id)
+                nearest = max(scored_candidates, key=lambda pair: pair[1], default=None)
+                reason = compose_abstention(
+                    reason_code=abstain_context.reason_code,
+                    passage_count=abstain_context.passage_count,
+                    document_count=abstain_context.document_count,
+                    database_count=abstain_context.database_count,
+                    nearest_heading=(nearest[0].heading or nearest[0].filename)
+                    if nearest
+                    else None,
+                    uncovered=uncovered_aspects,
+                )
+                # The streamed refusal is withdrawn, the same way an online
+                # answer's half is (`answer_reset`), so the reader shows the
+                # abstention state rather than prose beside it.
+                turn.emit("answer_reset", {"reason": "Nothing in your files answers this."})
+                turn.emit("step", {"label": "Nothing in your files answers this.", "kind": "read"})
+                turn.text = reason
+                abstained = True
+                truncated = False
+                partial_coverage = False
+                citation_rows.clear()
+                fact_usage_rows.clear()
+                trace_steps.append(
+                    {
+                        "kind": "abstain",
+                        "reason_code": abstain_context.reason_code,
+                        # Distinguishes this from the threshold abstention in
+                        # the trace: retrieval cleared the bar, the answer
+                        # found nothing in what it retrieved.
+                        "after_compose": True,
+                        "uncovered_aspects": list(uncovered_aspects),
+                    }
+                )
 
             # `M2-PARTIAL-BE-059`: the "Conflicting sources on ...:" line is
             # the same kind of explicit, parseable convention — read back

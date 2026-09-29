@@ -141,3 +141,31 @@ def test_a_not_covered_line_that_names_nothing_is_not_a_gap() -> None:
     # What `Not covered: <the …>.` leaves once `askwell.agent.placeholders`
     # has removed the placeholder (issue #663).
     assert split_partial_answer("Hours are 9 to 5 [1].\n\nNot covered: .").uncovered == ()
+
+
+def test_nothing_but_not_covered_lines_and_no_citation_covers_nothing() -> None:
+    """`M9-FIX-BE-215`, #769: the near-miss refusal the model writes as prose."""
+    from askwell.agent.partial import covers_nothing
+
+    answer = split_partial_answer(
+        "Not covered: The notice period for terminating an employee.\n\n"
+        "The retrieved content specifies the notice period for resignation (63 days)."
+    )
+    assert covers_nothing(answer, grounded=False)
+
+
+def test_one_cited_claim_and_a_not_covered_line_stays_a_partial_answer() -> None:
+    """The ticket's own edge case: a real claim keeps the answer an answer."""
+    from askwell.agent.partial import covers_nothing
+
+    answer = split_partial_answer(
+        "Payment terms are 45 days [1].\nNot covered: the termination notice period."
+    )
+    assert answer.is_partial
+    assert not covers_nothing(answer, grounded=True)
+
+
+def test_an_answer_with_nothing_uncovered_is_never_an_abstention() -> None:
+    from askwell.agent.partial import covers_nothing
+
+    assert not covers_nothing(split_partial_answer("Notice is ninety days."), grounded=False)

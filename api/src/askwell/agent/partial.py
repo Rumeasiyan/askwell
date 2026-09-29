@@ -90,3 +90,23 @@ def split_partial_answer(text: str) -> PartialAnswer:
         if (match := _UNCOVERED_RE.match(line.strip())) is not None and has_content(match.group(1))
     ]
     return PartialAnswer(uncovered=tuple(uncovered))
+
+
+def covers_nothing(answer: PartialAnswer, *, grounded: bool) -> bool:
+    """Whether a composed answer is really an abstention. `M9-FIX-BE-215`.
+
+    A near-miss question retrieves something above threshold — the
+    resignation notice when the termination notice was asked — so the turn
+    composes, and the model, correctly, says it cannot answer: `Not covered:
+    the notice period for terminating an employee.` Shown as an answer, that
+    is a refusal in the wrong shape, without the abstention surface (what was
+    searched, what to add, the escalation offers) `docs/ux/ask.md` §6
+    requires (#769).
+
+    `grounded` is whether any claim in the answer resolved to a citation —
+    a passage or a memory fact. With one, the answer said something from
+    the user's material and stays a partial answer, its gap named. Without
+    one, nothing it said is grounded (C4: an unmarked sentence is not a
+    claim), and the `Not covered` lines are the whole of what it found.
+    """
+    return answer.is_partial and not grounded

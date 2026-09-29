@@ -127,3 +127,39 @@ def test_never_apologises_or_hedges() -> None:
         database_count=0,
         nearest_heading="supplier onboarding",
     ), "always offers the add-a-source next action"
+
+
+def test_the_aspects_the_model_named_replace_this() -> None:
+    """`M9-FIX-BE-215`: a near-miss that cleared the threshold and found
+    nothing — `docs/ux/ask.md` §6's own copy, "which does not cover payment
+    terms", with the aspect the model named rather than "this"."""
+    message = compose_abstention(
+        reason_code="below_threshold",
+        passage_count=15,
+        document_count=9,
+        database_count=0,
+        nearest_heading="Resignation",
+        uncovered=("The notice period for terminating an employee",),
+    )
+    assert message.startswith("Nothing in your files answers this.\n")
+    assert "I searched 15 passages across 9 documents." in message
+    assert (
+        "The closest material was about Resignation, which does not cover the notice "
+        "period for terminating an employee." in message
+    )
+    assert message.endswith("Add the source you'd expect this in, and ask again.")
+
+
+def test_several_aspects_are_joined_once_each_and_names_keep_their_capital() -> None:
+    message = compose_abstention(
+        reason_code="below_threshold",
+        passage_count=15,
+        document_count=9,
+        database_count=0,
+        nearest_heading="Benefits",
+        uncovered=("Meridian Loom's sick leave policy.", "jury duty", "jury duty", "A dental plan"),
+    )
+    assert (
+        "which does not cover Meridian Loom's sick leave policy, jury duty or a dental plan."
+        in (message)
+    )
