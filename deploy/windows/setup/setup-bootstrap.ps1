@@ -37,6 +37,9 @@ param(
 
 $ErrorActionPreference = 'Continue'
 
+# install.ps1's own helpers, so every check here is the one it will make.
+. (Join-Path $Root 'deploy\windows\lib.ps1')
+
 function Say([string]$Text) { Write-Output $Text }
 
 function Update-AskwellPath {
@@ -51,17 +54,20 @@ function Test-Command([string]$Name) {
 }
 
 function Test-ComposeProvider {
-    # install.ps1 requires Docker Compose v2.20 or newer behind `podman compose`
-    # (#767). Checked the same way, so this never passes something it refuses.
+    # The installer's own check, not a copy of it. 0.9.1 carried a rewritten
+    # version that also rejected any output mentioning "podman-compose", and
+    # podman prints that name in the banner it shows before every provider
+    # ("Executing external compose provider ... Please see podman-compose(1)
+    # for how to disable this message"). So it refused every working Docker
+    # Compose, and Setup stopped with code 22 right after installing it
+    # successfully. The first real Windows test found it. It also joined the
+    # output into a single line, which the installer's line-anchored version
+    # match cannot read. Calling install.ps1's function means the two can
+    # never disagree again.
     if (-not (Test-Command 'podman')) { return $false }
-    $out = (& podman compose version 2>&1) -join ' '
+    $out = (& podman compose version 2>&1 | ForEach-Object { "$_" }) -join "`n"
     if ($LASTEXITCODE -ne 0) { return $false }
-    if ($out -match 'podman-compose') { return $false }
-    if ($out -match 'Docker Compose version v?(\d+)\.(\d+)') {
-        $major = [int]$Matches[1]; $minor = [int]$Matches[2]
-        return ($major -gt 2) -or ($major -eq 2 -and $minor -ge 20)
-    }
-    return $false
+    return [bool](Test-AskwellComposeMeetsMinimum $out)
 }
 
 function Install-WithWinget([string]$Id, [string]$Label) {
