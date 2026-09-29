@@ -1,7 +1,7 @@
 # Tests for the Windows installer's logic (M7-PACK-DEPLOY-140). See
 # deploy/linux/install.test.sh for the pattern this follows.
 #
-# Tests lib.ps1's pure functions only — never a real winget, a real Podman
+# Tests lib.ps1's pure functions only - never a real winget, a real Podman
 # install, or real WSL2. A machine that could exercise the whole installer
 # (a clean Windows VM with virtualisation initially off) is exactly the
 # manual walkthrough this ticket's docs/manual-tests file requires, and is
@@ -161,7 +161,7 @@ if ($msg -match 'quarantine') { Test-Ok 'quarantine message names the likely cau
 
 # --- M7-PACK-DEPLOY-142: stack + inference scheduled task helpers ------------------
 # NOTE: this build host has no pwsh (PowerShell 7) to actually run this file
-# (see docs/decisions.md, this date, and issue #606) — these assertions are
+# (see docs/decisions.md, this date, and issue #606) - these assertions are
 # written and reviewed, not executed here, the same disclosed gap as the rest
 # of this suite's newest additions.
 Test-Check 'stack task has a stable name' (Get-AskwellStackTaskName) 'AskwellStack'

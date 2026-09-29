@@ -68,7 +68,15 @@ Section "Askwell"
   File /r "${SRCDIR}/*"
 
   DetailPrint "Checking this PC and installing. This can take several minutes; the details appear below."
-  nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\deploy\windows\setup\setup-bootstrap.ps1" -Root "$INSTDIR"'
+  ; The setup exe is a 32-bit program, and a 32-bit process that runs
+  ; "powershell.exe" gets the 32-bit one, which Windows redirects from
+  ; System32 to SysWOW64: wsl.exe is not there, so WSL looked missing on
+  ; every PC (0.9.2). Sysnative is the alias a 32-bit process uses to reach
+  ; the real System32, so this starts the 64-bit PowerShell.
+  StrCpy $1 "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
+  IfFileExists "$1" +2 0
+    StrCpy $1 "powershell.exe"
+  nsExec::ExecToLog '"$1" -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\deploy\windows\setup\setup-bootstrap.ps1" -Root "$INSTDIR"'
   Pop $0
 
   ${If} $0 == "0"

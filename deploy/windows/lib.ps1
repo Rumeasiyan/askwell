@@ -1,5 +1,5 @@
 # Pure(ish) logic for the Windows installer (M7-PACK-DEPLOY-140). Dot-sourced
-# by install.ps1 and uninstall.ps1, and by install.Tests.ps1 in isolation —
+# by install.ps1 and uninstall.ps1, and by install.Tests.ps1 in isolation -
 # same split as deploy/linux/lib.sh: every function here returns a value or a
 # boolean with no side effect beyond what its name says, so it is testable
 # without a real machine to install onto. Set-AskwellEnvPasswords is the one
@@ -8,7 +8,7 @@
 # change-me placeholder" has no other observable shape.
 #
 # Podman on Windows only runs containers inside a WSL2 (or Hyper-V) virtual
-# machine — there is no native Windows container runtime — so "is the runtime
+# machine - there is no native Windows container runtime - so "is the runtime
 # installed" here also has to answer "can a runtime exist on this machine at
 # all", which Linux never has to ask.
 
@@ -30,7 +30,7 @@ function Write-AskwellDie {
 # ---------------------------------------------------------------- virtualisation
 
 # WSL2 needs the CPU virtualisation extension exposed to Windows itself
-# (Intel VT-x / AMD-V) *and* enabled in firmware — the second of which
+# (Intel VT-x / AMD-V) *and* enabled in firmware - the second of which
 # Windows can detect but never fix, because it is a BIOS/UEFI setting no
 # installer running inside the OS can reach. Parsed from `systeminfo`'s own
 # "Hyper-V Requirements" block rather than a CIM/WMI property, because that
@@ -143,7 +143,7 @@ function Format-AskwellBytes {
 
 # Windows' legacy MAX_PATH. A path at or past this fails to open unless the
 # caller opts into the \\?\ long-path prefix or the machine's long-paths
-# policy is on — neither of which Askwell's own install paths may assume, so
+# policy is on - neither of which Askwell's own install paths may assume, so
 # every generated path is checked against it rather than hoped under it.
 $script:AskwellMaxPath = 260
 
@@ -204,8 +204,18 @@ function Get-AskwellPreviousInstallVersion {
     param([string]$DataDir)
     $recordPath = Get-AskwellInstallRecordPath $DataDir
     if (-not (Test-Path $recordPath)) { return $null }
-    $record = Get-Content $recordPath -Raw | ConvertFrom-Json
+    $record = Get-Content $recordPath -Raw -Encoding UTF8 | ConvertFrom-Json
     return $record.version
+}
+
+# UTF-8 without a byte-order mark, under Windows PowerShell 5.1 as under 7.
+# 5.1's `Set-Content -Encoding utf8` writes a BOM, which becomes part of the
+# first key in .env and makes the install record invalid JSON to a strict
+# parser; 7's does not. Every file this installer writes goes through here.
+function Write-AskwellUtf8File {
+    param([string]$Path, [string[]]$Lines)
+    $full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+    [System.IO.File]::WriteAllLines($full, $Lines, (New-Object System.Text.UTF8Encoding $false))
 }
 
 function Write-AskwellInstallRecord {
@@ -217,7 +227,7 @@ function Write-AskwellInstallRecord {
         installed_at = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
         data_dir     = $DataDir
     }
-    $record | ConvertTo-Json | Set-Content -Path (Get-AskwellInstallRecordPath $DataDir) -Encoding utf8
+    Write-AskwellUtf8File -Path (Get-AskwellInstallRecordPath $DataDir) -Lines @($record | ConvertTo-Json)
 }
 
 # ---------------------------------------------------------------- secrets
@@ -230,7 +240,7 @@ function New-AskwellRandomHex {
 }
 
 # Replaces every literal `change-me*` placeholder in a freshly-copied .env
-# with a generated random value — the same fix as lib.sh's
+# with a generated random value - the same fix as lib.sh's
 # generate_env_passwords (issue #584), and the same pairing rule:
 # SANDBOX_OWNER_PASSWORD/ASKWELL_SANDBOX_OWNER_PASSWORD and
 # SANDBOX_READONLY_PASSWORD/ASKWELL_SANDBOX_READONLY_PASSWORD name the same
@@ -244,7 +254,7 @@ function Set-AskwellEnvPasswords {
     $sandboxOwnerPassword = New-AskwellRandomHex
     $sandboxReadonlyPassword = New-AskwellRandomHex
 
-    $lines = Get-Content $EnvFile
+    $lines = Get-Content $EnvFile -Encoding UTF8
     $lines = $lines | ForEach-Object {
         switch -Regex ($_) {
             '^POSTGRES_PASSWORD=' { "POSTGRES_PASSWORD=$postgresPassword"; continue }
@@ -258,17 +268,17 @@ function Set-AskwellEnvPasswords {
             default { $_ }
         }
     }
-    Set-Content -Path $EnvFile -Value $lines -Encoding utf8
+    Write-AskwellUtf8File -Path $EnvFile -Lines $lines
 }
 
-# The three Redis passwords (`M8-FIX-SEC-177`, issue #730) — lib.sh's
+# The three Redis passwords (`M8-FIX-SEC-177`, issue #730) - lib.sh's
 # ensure_redis_passwords, same rule: every install, upgrades included; a
 # missing, empty or `change-me*` value is generated, a real one is left alone.
-# Safe to replace because Redis keeps no users between starts —
+# Safe to replace because Redis keeps no users between starts -
 # deploy/redis/start.sh renders them from .env every time.
 function Set-AskwellRedisPasswords {
     param([string]$EnvFile)
-    $lines = @(Get-Content $EnvFile)
+    $lines = @(Get-Content $EnvFile -Encoding UTF8)
     $commented = $false
     foreach ($name in @('REDIS_API_PASSWORD', 'REDIS_WORKER_PASSWORD', 'REDIS_PROXY_PASSWORD')) {
         $pattern = "^$name="
@@ -280,13 +290,13 @@ function Set-AskwellRedisPasswords {
             $lines = @($lines | ForEach-Object { if ($_ -match $pattern) { $generated } else { $_ } })
         } else {
             if (-not $commented) {
-                $lines += @('', '', '# Redis, one user per service — generated by the installer (M8-FIX-SEC-177).')
+                $lines += @('', '', '# Redis, one user per service - generated by the installer (M8-FIX-SEC-177).')
                 $commented = $true
             }
             $lines += $generated
         }
     }
-    Set-Content -Path $EnvFile -Value $lines -Encoding utf8
+    Write-AskwellUtf8File -Path $EnvFile -Lines $lines
 }
 
 # ---------------------------------------------------------------- supervision (M7-PACK-DEPLOY-142)
@@ -303,7 +313,7 @@ function Get-AskwellInferenceTaskName {
 }
 
 # The argument string `New-ScheduledTaskAction -Argument` passes to the
-# resolved `podman.exe`. Built as its own pure function — same reasoning as
+# resolved `podman.exe`. Built as its own pure function - same reasoning as
 # `Get-AskwellStackTaskArguments`'s Linux/macOS counterparts
 # (`systemd_stack_unit_contents`, `launch_agent_stack_plist_contents`):
 # `podman compose up -d` returns immediately, leaving nothing for the
@@ -319,7 +329,7 @@ function Get-AskwellStackTaskArguments {
 
 # The argument string passed to the resolved Python interpreter to run
 # `deploy/inference/askwell-inference` (a standard-library-only script, same
-# as Linux/macOS — see that file's own header). This task restarts the outer
+# as Linux/macOS - see that file's own header). This task restarts the outer
 # Python process if it is killed or crashes outright; the script's own
 # five-step backoff for a failed llama.cpp spawn happens inside that process
 # and is unaffected by whether this task ever fires.
@@ -402,8 +412,8 @@ function Stop-AskwellStackContainers {
 }
 
 # Removes every volume in $script:AskwellVolumes by name (issue #700), so it
-# works after compose.yaml has gone. Returns the names it could not remove —
-# empty means every one is gone — so the caller reports only what happened.
+# works after compose.yaml has gone. Returns the names it could not remove -
+# empty means every one is gone - so the caller reports only what happened.
 # 'Continue' locally: `volume exists` answers "no" through its exit code, and
 # must not become a terminating error under the callers' 'Stop'.
 function Remove-AskwellVolumes {
@@ -423,7 +433,7 @@ function Remove-AskwellVolumes {
 # ---------------------------------------------------------------- quarantine
 
 # Whether a file that should exist after a plain copy is missing is, on its
-# own, ambiguous — a bad release tree looks identical to Defender having
+# own, ambiguous - a bad release tree looks identical to Defender having
 # lifted the file a moment after Copy-Item returned. This names the two real
 # causes rather than a generic "file not found", because the fix for each is
 # different (rebuild vs. restore-from-quarantine) and a lawyer on a firm
@@ -433,7 +443,7 @@ function Get-AskwellQuarantineMessage {
     return "$FileName is missing after being placed. If antivirus software " +
     "removed it, check its quarantine or threat history for $FileName and " +
     "restore it, then add an exclusion for the Askwell install folder so " +
-    "this does not repeat — Askwell's native inference binary and its " +
+    "this does not repeat - Askwell's native inference binary and its " +
     "unsigned desktop shell are both unfamiliar executables an antivirus " +
     "product has never seen before, which is exactly what quarantine " +
     "heuristics flag. If it is not in quarantine, the release tree itself " +
