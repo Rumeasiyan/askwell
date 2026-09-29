@@ -607,6 +607,16 @@ function Get-AskwellWindowlessPython {
     return $Python
 }
 
+# Whether a running process is this install's own - the one an upgrade has
+# to close before it can replace askwell-shell.exe. By path, not name: a
+# second copy of Askwell elsewhere is left alone.
+function Test-AskwellProcessInPrefix {
+    param([string]$ProcessPath, [string]$InstallPrefix)
+    if (-not $ProcessPath -or -not $InstallPrefix) { return $false }
+    $prefix = $InstallPrefix.TrimEnd('\') + '\'
+    return $ProcessPath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
 # msiexec's success codes: 0, and 3010 "succeeded, restart required".
 function Test-AskwellMsiSucceeded {
     param([int]$ExitCode)

@@ -382,6 +382,19 @@ function Stop-AskwellPreviousStack {
     Write-AskwellSay 'Stopped the running Askwell so its database can be upgraded; the new version starts once the upgrade is done.'
 }
 
+# An upgrade with Askwell open failed on the Windows test VM (0.9.6):
+# "The process cannot access the file ...\askwell-shell.exe because it is
+# being used by another process". Windows will not replace a running exe, so
+# the app is closed first; the installer opens the new one at the end.
+function Stop-AskwellRunningApp {
+    $running = @(Get-Process -Name 'askwell-shell' -ErrorAction SilentlyContinue |
+        Where-Object { Test-AskwellProcessInPrefix $_.Path $InstallPrefix })
+    if ($running.Count -eq 0) { return }
+    Write-AskwellSay 'Closing the running Askwell so it can be updated...'
+    $running | Stop-Process -Force -ErrorAction SilentlyContinue
+    $running | Wait-Process -Timeout 20 -ErrorAction SilentlyContinue
+}
+
 # ---------------------------------------------------------------- 6b. database schema
 
 # Issue #698: nothing used to run a migration, so a fresh install had no
@@ -545,6 +558,7 @@ function Main {
     Test-AskwellDiskSpace
     Test-AskwellPrevious
     Test-AskwellArtefacts
+    Stop-AskwellRunningApp
     Copy-AskwellFiles
     Import-AskwellImages
     New-AskwellDataDirs

@@ -261,6 +261,10 @@ Set-Content -Path (Join-Path $pyDir 'pythonw.exe') -Value ''
 Test-Check 'the supervisor runs windowless, as pythonw.exe' (Get-AskwellWindowlessPython (Join-Path $pyDir 'python.exe')) (Join-Path $pyDir 'pythonw.exe')
 Remove-Item -Path $pyDir -Recurse -Force -ErrorAction SilentlyContinue
 
+if (Test-AskwellProcessInPrefix 'C:\Users\n\AppData\Local\Askwell\app\askwell-shell.exe' 'C:\Users\n\AppData\Local\Askwell\app') { Test-Ok 'the running app of this install is found' } else { Test-Bad 'the running app of this install is found' $false $true }
+if (-not (Test-AskwellProcessInPrefix 'D:\Other\Askwell\app\askwell-shell.exe' 'C:\Users\n\AppData\Local\Askwell\app')) { Test-Ok 'another copy of Askwell is left alone' } else { Test-Bad 'another copy of Askwell is left alone' $true $false }
+if (-not (Test-AskwellProcessInPrefix 'C:\Users\n\AppData\Local\Askwell\app-old\askwell-shell.exe' 'C:\Users\n\AppData\Local\Askwell\app')) { Test-Ok 'a sibling folder with the same prefix is not this install' } else { Test-Bad 'a sibling folder with the same prefix is not this install' $true $false }
+
 # --- setup: Python ------------------------------------------------------------
 if (Test-AskwellStorePythonStub 'C:\Users\nimal\AppData\Local\Microsoft\WindowsApps\python.exe') { Test-Ok "the Store's placeholder python.exe is recognised" } else { Test-Bad "the Store's placeholder python.exe is recognised" $false $true }
 if (-not (Test-AskwellStorePythonStub 'C:\Program Files\Python313\python.exe')) { Test-Ok 'a real Python is not taken for the placeholder' } else { Test-Bad 'a real Python is not taken for the placeholder' $true $false }
