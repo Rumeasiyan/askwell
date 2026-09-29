@@ -81,7 +81,7 @@ Verified against the model's own registry entry before being written here (`AGEN
 | pydantic_core | 2.46.5 | MIT |
 | PyJWT | 2.14.0 | MIT |
 | PyMySQL | 1.2.3 | MIT |
-| pypdfium2 | 5.13.0 | BSD-3-Clause, Apache-2.0, dependency licenses |
+| pypdfium2 | 5.13.0 | BSD-3-Clause AND Apache-2.0 |
 | pytesseract | 0.3.13 | Apache-2.0 |
 | python-docx | 1.2.0 | MIT |
 | python-dotenv | 1.2.3 | BSD-3-Clause |
