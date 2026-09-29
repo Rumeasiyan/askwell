@@ -21,8 +21,12 @@ database behind. That broke the next install's login to its own database. What c
 - The installers check for Docker Compose 2.20 or newer, the one compose provider this stack is
   verified with, before copying anything. On Fedora and macOS they offer to install it. On Linux
   they also turn on Podman's API socket, which Docker Compose needs (#767).
+- Only one migration runs at a time (`0.9.8`, #813). If the Askwell window is open during an
+  upgrade, its supervisor can start the stack while the installer is migrating. The second
+  migration now waits for the first, finds nothing left to do, and succeeds, instead of failing
+  on a table the first had just made.
 
-**Version under test:** `0.7.62`. Run `cat VERSION` and update this line if the version has moved
+**Version under test:** `0.9.8`. Run `cat VERSION` and update this line if the version has moved
 on.
 
 **Time:** about 45 minutes for Part 1, most of it waiting for container images and the first
@@ -32,8 +36,8 @@ index. Parts 2 and 3 take about 20 minutes.
 a command. Parts 2 and 3 need a developer. Steps that check something the user would never
 look at are marked **Stand-in**.
 
-**Part 1 cannot be completed today** (see Known gaps: #559, #771). It is written out in
-full anyway. It is the acceptance walkthrough for this ticket, and it is the path a real user
+**Part 1 cannot be completed today** (see Known gaps: #771). It is written out in full
+anyway. It is the acceptance walkthrough for this ticket, and it is the path a real user
 takes. The steps after the blocked one also show what a working install should look like. Part 2
 is the evidence that stands in for it until then.
 
@@ -50,7 +54,9 @@ is the evidence that stands in for it until then.
 **What you need**
 
 - A Linux user account that has never had Askwell on it. You can check this in step 1.
-- An unpacked Askwell release folder for this version. It contains `deploy/linux/install.sh`.
+- The Linux download for this version, `askwell-0.9.8-linux-x86_64.tar.gz`, and the
+  `SHA256SUMS` file beside it, from the repository's **Releases** page on GitHub. `0.9.6` is the
+  newest one published on 2026-09-29; `0.9.8` appears there once it is released.
 - A folder of your own with one or two documents in it, for example `~/Documents/askwell-test`
   with `handbook_a.pdf` from the fixture corpus (`eval/fixtures/corpus/handbook_a.pdf`). Page 2
   of that file reads "The standard notice period for resignation at Meridian Loom is sixty-three
@@ -71,10 +77,24 @@ is the evidence that stands in for it until then.
    ☐ **You should see:** `No such file or directory` for the first part and nothing from the
    second. If either prints something, this account has had Askwell before. Use another one.
 
+1a. Open the repository's **Releases** page in your browser. Click **Askwell 0.9.8 (beta)**,
+    then click `askwell-0.9.8-linux-x86_64.tar.gz` and `SHA256SUMS` to download both into
+    `~/Downloads`. In the terminal, paste:
+
+    ```
+    cd ~/Downloads
+    sha256sum -c --ignore-missing SHA256SUMS
+    tar -xzf askwell-0.9.8-linux-x86_64.tar.gz
+    ```
+
+    ☐ **You should see:** `askwell-0.9.8-linux-x86_64.tar.gz: OK`, and a new folder
+    `askwell-0.9.8-linux-x86_64` in Downloads. `FAILED` means the download is damaged; download
+    it again.
+
 2. In the terminal, go into the release folder and start the installer:
 
    ```
-   cd ~/Downloads/askwell-0.7.62
+   cd ~/Downloads/askwell-0.9.8-linux-x86_64
    ./deploy/linux/install.sh
    ```
 
@@ -82,7 +102,7 @@ is the evidence that stands in for it until then.
    password when asked.
 
    ☐ **You should see**, in this order among the other lines:
-   - `Installing Askwell 0.7.62`
+   - `Installing Askwell 0.9.8`
    - `Podman found: podman version …` (or `Podman installed: …`)
    - On a new account: `Podman's API socket enabled for this account (podman.socket), …`
    - `Compose provider found: Docker Compose version v…`. If it is missing, the installer asks
@@ -155,17 +175,21 @@ is the evidence that stands in for it until then.
 
 ### Upgrade with nothing pending
 
-8. Close the Askwell window. Back in the terminal, run the same installer again:
+8. Leave the Askwell window open. This is on purpose: the window may start Askwell again while
+   the installer is upgrading the database, and since `0.9.8` that must not break anything
+   (#813). Back in the terminal, run the same installer again:
 
    ```
    ./deploy/linux/install.sh
    ```
 
    ☐ **You should see:**
-   - `Existing Askwell installation found (version 0.7.62) at /home/<you>/.local/share/askwell. Its data is left untouched; upgrading application files in place.`
+   - `Existing Askwell installation found (version 0.9.8) at /home/<you>/.local/share/askwell. Its data is left untouched; upgrading application files in place.`
    - `Stopped the running Askwell so its database can be upgraded; the new version starts once the upgrade is done.`
    - `Database schema already up to date; no migrations to apply.`
    - `Done. …` at the end, with no error.
+   - **No** `The database migration … failed`, `DuplicateTable` or `already exists`. Any of
+     those means two migrations collided, which is the #813 failure.
    - **No** `Generated database credentials` line. The existing credentials are kept.
 
 9. The window opens again (or open it from the applications menu).
@@ -251,6 +275,21 @@ is not complete`, and no `Done.` line. The full output is in
 
 ## Part 2 — the real stack, isolated from the dev data
 
+### Rerun on `0.9.8` (2026-09-29): two migrations at once (#813)
+
+Scratch prefix `/tmp/m9lock` with this branch's `compose.yaml`, `deploy/` and an `.env` from
+`generate_env_passwords`, `COMPOSE_PROJECT_NAME=m9lock`, `ASKWELL_PORT=8011`, the API image
+rebuilt with the advisory lock (`scripts/dev.sh build-api`).
+
+| # | Step | Seen |
+| - | ---- | ---- |
+| L1 | `up -d --wait postgres`, then two `podman compose --env-file .env run --rm migrate` started together on empty volumes | One log has 30 `Running upgrade` lines, the other none. Both rc 0. `alembic current` prints `f4b8d2c6a915 (head)` |
+| L2 | `test-db tests/test_migrations_env.py` with `env.py`'s lock removed (stashed) | 2 failed: the concurrent upgrade fails, and an upgrade runs straight through a held lock |
+| L3 | The same, with the lock | 4 passed |
+| L4 | Dev stack, `podman compose run --rm migrate` | No `Running upgrade` line, head `f4b8d2c6a915` |
+
+The scratch project was removed with `down -v` (0 `m9lock_` volumes left).
+
 ### Rerun on `0.7.62` (2026-09-28)
 
 The first build of this ticket (`0.7.49`, PR #772) never merged: it conflicted with `main` and
@@ -324,8 +363,9 @@ covered by Part 3 against the fake `podman`, and by B12 for the removal it perfo
 
 | Command | Result on 2026-09-28 |
 | --- | --- |
-| `bash deploy/linux/install.test.sh` | `151 passed, 0 failed` |
-| `bash deploy/macos/install.test.sh` (runs under Linux bash) | `112 passed, 0 failed` |
+| `bash deploy/linux/install.test.sh` | `151 passed, 0 failed` (again on 2026-09-29, `0.9.8`) |
+| `bash deploy/macos/install.test.sh` (runs under Linux bash) | `112 passed, 0 failed` (again on 2026-09-29, `0.9.8`) |
+| `scripts/dev.sh test-db tests/test_migrations_env.py` (2026-09-29, `0.9.8`) | `4 passed`. Two real `alembic upgrade head` processes on one empty database both succeed; an upgrade waits while the lock is held |
 | `deploy/windows/install.test.ps1`, in `mcr.microsoft.com/powershell` with `--network=none` | `62 passed, 0 failed`. The three `.ps1` files also parse with no errors. PowerShell on Linux, not Windows |
 | `scripts/dev.sh check` | `all checks passed` (1337 passed) |
 
@@ -338,8 +378,8 @@ the machine that runs it.
 These are not built yet, or not verified. Do not report them as defects of this ticket.
 
 - **Part 1 has not been run, and it cannot be run end to end yet.**
-  - No release tree for this version exists on this host: there is no shell binary or image
-    bundle here (#559).
+  - Releases are published now (#559 is closed, `0.9.6` is the newest), but `0.9.8` is not
+    released yet, and the walkthrough needs this version's download.
   - A fresh install leaves `ASKWELL_ROOTS_MOUNT` empty, so step 5 cannot read the folder
     without editing `.env` by hand (#771). How wide the default read-only view should be is a
     product decision, and it is escalated on that issue.
@@ -354,5 +394,10 @@ These are not built yet, or not verified. Do not report them as defects of this 
   the upstream instructions rather than installing Docker Compose itself, because the package
   name and version there differ by release. On Windows it names the winget command and stops,
   because winget does not refresh the running session's `PATH`.
-- **The desktop shell during an upgrade.** If the Askwell window is open, its own supervisor may
-  start the stack again while the installer is migrating. Step 8 closes the window first.
+- **The desktop shell during an upgrade stays open.** The installer does not close the Askwell
+  window before it upgrades (#813 option 2, not taken). The window may show Askwell as not
+  answering for a moment while the stack restarts; that is expected. The race itself is fixed by
+  the database lock (row L1), and #813 closes with this ticket.
+- **An upgrade from an older release with pending migrations** is covered only by Part 2 (V4,
+  B5). `0.9.6` and `0.9.8` have the same schema head (`f4b8d2c6a915`), so installing `0.9.8`
+  over `0.9.6` applies nothing.
