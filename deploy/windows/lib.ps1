@@ -469,3 +469,43 @@ function Get-AskwellUninstallRegistryValues {
         NoRepair        = 1
     }
 }
+
+# ---------------------------------------------------------------- setup: WSL and the one restart
+# Used by setup\setup-bootstrap.ps1, kept here so install.test.ps1 can test it.
+
+# Whether WSL can run Podman's machine yet, from the state Windows itself
+# reports for the VirtualMachinePlatform feature (Get-WindowsOptionalFeature).
+# 0.9.3 asked `wsl --status` instead, which fails whenever no Linux
+# distribution is installed - and Setup installs WSL with none on purpose,
+# because Podman creates its own. So after every restart it asked for
+# another one. Only Windows saying "EnablePending" means a restart will help.
+#   'ready'   - enabled, nothing pending
+#   'restart' - enabled, waiting for Windows to restart
+#   'missing' - anything else: not enabled, or the state could not be read
+function Get-AskwellWslState {
+    param([string]$VmPlatformState)
+    switch ($VmPlatformState) {
+        'Enabled' { return 'ready' }
+        'EnablePending' { return 'restart' }
+        default { return 'missing' }
+    }
+}
+
+# Where Setup keeps its files across the restart. The exe unpacks to %TEMP%,
+# which it deletes when it closes, so the continuation needs its own copy.
+function Get-AskwellSetupStageDir {
+    param([string]$ProgramData)
+    return "$($ProgramData.TrimEnd('\'))\AskwellSetup"
+}
+
+# The command Windows runs once, at the next sign-in, to finish the install.
+# RunOnce values are limited to 260 characters, which is why -Root is not
+# passed: the bootstrap finds its root from its own location.
+function Get-AskwellResumeCommand {
+    param([string]$SystemRoot, [string]$StageDir)
+    # Plain strings, not Join-Path: these are paths for Windows to run later,
+    # and Join-Path resolves the drive, which install.test.ps1 cannot offer.
+    $powershell = "$($SystemRoot.TrimEnd('\'))\System32\WindowsPowerShell\v1.0\powershell.exe"
+    $script = "$($StageDir.TrimEnd('\'))\deploy\windows\setup\setup-bootstrap.ps1"
+    return "`"$powershell`" -NoProfile -ExecutionPolicy Bypass -File `"$script`" -Resume"
+}
