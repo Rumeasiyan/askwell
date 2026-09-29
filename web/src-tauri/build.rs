@@ -26,11 +26,16 @@ fn main() {
         .unwrap_or_else(|error| panic!("could not resolve {}: {error}", repo_root.display()));
     println!("cargo:rustc-env=ASKWELL_REPO_ROOT={}", repo_root.display());
 
-    // `M7-TAURI-FE-182`'s five commands (native dialogs plus the two scoped
-    // filesystem reads they unlock) need to be named here so tauri-build can
-    // autogenerate the `allow-*`/`deny-*` permissions `capabilities/default.json`
-    // grants — a command not listed here has no permission to grant at all,
-    // regardless of what the capabilities file says.
+    // Every command `main.rs` registers has to be named here so tauri-build
+    // can autogenerate the `allow-*`/`deny-*` permissions the capabilities
+    // grant — a command not listed here has no permission to grant at all,
+    // regardless of what the capabilities file says. `M7-TAURI-FE-182`'s five
+    // (native dialogs plus the two scoped filesystem reads they unlock), then
+    // `M7-PACK-FE-143`'s four supervision commands, which were registered and
+    // granted but never listed here: the shell had never been compiled in CI
+    // until the first release build (v0.9.0), and all three platforms failed
+    // on `allow-open-supervision-window not found`. Keep this list and
+    // `generate_handler!` in `main.rs` identical.
     tauri_build::try_build(
         tauri_build::Attributes::new().app_manifest(
             tauri_build::AppManifest::new().commands(&[
@@ -39,6 +44,10 @@ fn main() {
                 "pick_file",
                 "list_dir",
                 "read_head",
+                "open_supervision_window",
+                "supervision_status",
+                "supervision_control",
+                "supervision_log_location",
             ]),
         ),
     )
