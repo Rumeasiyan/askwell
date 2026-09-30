@@ -4,6 +4,16 @@ Append-only. **Newest first.** Never edit an entry to change its meaning — if 
 
 **Bar for an entry:** something a competent person would later ask *"why is it like this?"* about. Architecture changes, dependency choices, resolved `docs/PRD.md` §11 questions, reversals. **Not** routine implementation choices — those are visible in the diff.
 
+## 2026-09-30 — Askwell may read the user's whole home folder, read-only
+
+**Decision.** By default, Askwell's containers can read the user's own home folder, and nothing else: `C:\Users\<name>`, `/Users/<name>` or `$HOME`. The mount is read-only. The owner chose this on 2026-09-30, over access limited to the folders the user adds. `M11-FIX-BE-227` builds it.
+
+**Why.** No installer set `ASKWELL_ROOTS_MOUNT`, so on every platform a fresh install could index nothing until a configuration file was edited by hand. The people Askwell is for will not do that. The narrower alternative, mounting each folder the user picks, needs the stack restarted the first time a folder in a new place is added. That is about a minute's wait, with one more thing that can fail, at the moment the user is trying Askwell for the first time. The owner judged that worse than the wider read access.
+
+**What it widens, and what it does not.** The containers could already read what the user added; now they can read anything in the home folder. They still cannot write it (read-only mount), they still have no route off the machine (C1), and other users' folders and system folders stay out of reach. The index still contains only what the user adds: readable is not indexed.
+
+**Refs.** `M11-FIX-BE-227`; the Windows VM run of 2026-09-30.
+
 ## 2026-09-30 — `M11-FIX-DEPLOY-223`: on Windows, WSL runs in mirrored networking mode, and the containers' Unix sockets live on a named volume
 
 **Decision.** On Windows, Setup (`deploy/windows/setup/setup-bootstrap.ps1`) makes sure `%USERPROFILE%\.wslconfig` has `networkingMode=mirrored` under `[wsl2]`, before Podman's machine is created or started. It edits the file in place (`Merge-AskwellWslConfig`, `Set-AskwellWslConfigMirrored` in `deploy/windows/lib.ps1`), keeps every other line and the file's encoding, and logs what it did. When it changed the file and the machine was already running, it runs `wsl --shutdown` and starts the machine again. Setup refuses Windows builds older than 22621 (Windows 11 22H2) with exit code 26, before installing anything. A `.wslconfig` it cannot write stops it with code 27. `inference-bridge` is unchanged: `UPSTREAM_HOST` is still `127.0.0.1`, and C1's reading of the bridge is unchanged. Separately, the two Unix sockets (`inference.sock`, `worker-unlock.sock`) move to a named volume, `askwell-sockets`, mounted at `/run/askwell-sockets` in `inference-bridge`, `api` and `worker`. One compose variable, `ASKWELL_SOCKET_DIR`, chooses the directory. It is empty by default, meaning `/run/askwell`, the existing bind mount. The Windows installer writes `/run/askwell-sockets` into `.env` on every install and upgrade. The host supervisor's own files (`state.json`, the model download and swap signals) stay on the bind mount. The containers find them through a new setting, `ASKWELL_SUPERVISOR_DIR` (`Settings.supervisor_directory`), which falls back to the inference socket's directory, so Linux and macOS behave as before.

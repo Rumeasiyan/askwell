@@ -107,3 +107,156 @@ Two changes remain.
 - **Estimate:** 5 hours · **Priority:** High
 - **Labels / Component:** `phase:7`, `constraint:grounding`, `constraint:sandbox`, backend
 - **Granularity:** One loader reused for one more file type.
+
+---
+
+> **Added 2026-09-30, after the first end-to-end run of the real `0.9.11` release on the Windows test VM.** Setup installed Askwell from a clean Windows 11 through the restart, and every service came up. With the models in place, the AI came up only after three manual steps and one clock correction. A question then reached `/ask` and completed. Adding a folder failed outright. The three tickets below are what that run found. Evidence is in the tickets; the run itself used `scripts/winvm.sh`.
+
+### M11-FIX-DEPLOY-225 — On Windows, the AI supervisor starts with Askwell's settings and a runtime it can use
+
+**Type:** Task
+
+**User Story**
+- **Actor:** anyone who installs Askwell on a Windows PC.
+- **User Need:** the assistant starts once the model is in place, with nothing to set up by hand.
+- **Business Value:** today the assistant never starts on a new Windows PC, for two separate reasons, and neither is visible to the user.
+
+**Context / Background**
+**Detailed Description:** Two defects, both found on the Windows VM with `0.9.11`.
+1. **No Visual C++ runtime.** Every bundled `llama-server.exe` (the GPU and the CPU build) exits with `3221225781` (`0xC0000135`, a DLL not found). A new Windows has no `vcruntime140.dll`, `msvcp140.dll` or `vcruntime140_1.dll`. The VM test: installing Microsoft's `https://aka.ms/vs/17/release/vc_redist.x64.exe` with `/install /quiet /norestart` gives exit 0, after which `llama-server.exe --version` runs. The file is Authenticode-signed by `CN=Microsoft Corporation` (status `Valid`). It is a moving permalink, so there is no fixed SHA-256 to pin; verify the signature instead (`Get-AuthenticodeSignature`: status `Valid`, signer subject begins `CN=Microsoft Corporation,`). Setup installs it when those three DLLs are missing, before Askwell itself, and the success codes are 0, 3010 and 1638 (a newer version is already installed). It is downloaded at install time, not bundled, like Python and WSL, so C9 is not engaged.
+2. **The inference task has no settings.** The `AskwellInference` scheduled task runs `pythonw.exe askwell-inference` with no environment, so the supervisor saw no `ASKWELL_INFERENCE_MODEL_PATH` ("No model file at .") and took `ASKWELL_INFERENCE_SOCKET`'s default, `/run/askwell/inference.sock`. On Windows that is `C:\run\askwell`, so it wrote its `state.json` there. The API reads `<app>\.run\state.json`. On Linux the systemd unit loads `.env`; on Windows nothing does. Give `askwell-inference` an `--env-file PATH` option: it loads the file without overriding variables already set. Make `Get-AskwellInferenceTaskArguments` pass the app's `.env` and point the run directory at `<app>\.run`. Verified by hand on the VM: with the `.env` loaded and the socket under `<app>\.run`, all three roles reported `ready` and `/health` showed inference reachable.
+
+**Scope**
+- The VC++ runtime step in `setup-bootstrap.ps1`: a signature check, a new exit code, and a `Get-AskwellSetupCodeMeaning` entry.
+- `--env-file` in `deploy/inference/askwell-inference`, tested.
+- The Windows task arguments.
+
+**Out of Scope**
+- The desktop app starting its own supervisor (`M11-FIX-SHELL-226`).
+- Linux and macOS: unchanged, and their tests must show it.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:**
+  - `install.test.ps1` covers the task arguments and the signature-check helper.
+  - `setup-bootstrap.test.ps1` gains three scenarios: runtime missing, which installs it; a signature that is not Microsoft's, which is refused and never run; and runtime present, which skips the step.
+  - The supervisor's `--env-file` has unit tests. The file must not override variables already set.
+  - Windows CI and `scripts/dev.sh check` pass.
+  - The VM walkthrough is the orchestrating session's; leave `docs/manual-tests/M11-FIX-DEPLOY-225.md` with an empty result.
+- **Edge Cases:** VC++ already present in a newer version (1638). `.env` lines with `=` inside values. A `~` in a path, expanded as the supervisor already does.
+- **Permissions / Roles:** Single user — no roles.
+- **UI States:** unchanged.
+- **Validation Rules:** C1: the runtime download is install-time and user-initiated, like winget's. C8: `.env` is read, never logged.
+- **Audit / Logging Requirements:** Setup logs the runtime's version and signer.
+- **Analytics Events:** None (C1).
+
+**Dependencies & Assumptions**
+- **Dependencies:** `M11-FIX-DEPLOY-223`.
+- **API / Data Touchpoints:** `deploy/windows/setup/setup-bootstrap.ps1`, `deploy/windows/lib.ps1`, `deploy/windows/install.ps1`, `deploy/inference/askwell-inference`.
+- **Assumptions:** none untested; both halves were verified by hand on the VM.
+
+**Testing Notes / Scenarios**
+- **Windows walkthrough (not the agent's):** a clean VM, the Setup built from this branch, and the models placed. `/health` must show inference reachable with no manual step.
+
+**Effort & Granularity Check**
+- **Estimate:** 5 hours · **Priority:** Critical
+- **Labels / Component:** `phase:7`, `deploy`
+- **Granularity:** Two installer defects on one path to "the assistant starts".
+
+---
+
+### M11-FIX-SHELL-226 — The desktop app never starts a second AI supervisor, and "is it alive" does not compare two machines' clocks
+
+**Type:** Task
+
+**User Story**
+- **Actor:** anyone running Askwell on Windows or macOS.
+- **User Need:** no stray console window, and an assistant that is not reported dead while it is running.
+- **Business Value:** a visible `python.exe` console that closes Askwell's AI when the user closes it. Two supervisors fighting over one port. A working assistant reported as "stopped reporting".
+
+**Context / Background**
+**Detailed Description:** Two defects, found on the Windows VM.
+1. **A second supervisor.** `spawn_inference` in `web/src-tauri/src/supervisor.rs` starts its own `python askwell-inference` whenever it sees no fresh heartbeat. At sign-in the `AskwellInference` scheduled task is starting at the same moment and has not written one yet, so the app starts a second supervisor. On Windows it is a plain `python.exe` without `CREATE_NO_WINDOW`, so it shows a console window. Fix: before its first spawn, the app waits one heartbeat interval plus a margin for a supervisor to appear. On Windows it spawns with `CREATE_NO_WINDOW` (`std::os::windows::process::CommandExt`). The candidates stop at the first real Python (the Store's `WindowsApps` placeholder is never used, as in `Get-AskwellPython`).
+2. **Two clocks.** The API calls the supervisor stale when `now - state.updated_at` exceeds a limit. `now` is the container's clock, inside Podman's VM, and `updated_at` is the host's. On the VM the WSL clock ran about 7 hours ahead of Windows, and a `ready` supervisor was reported as "stopped reporting" until the clock was corrected by hand. WSL clock drift after sleep is also a known real-world problem. Fix: the API judges freshness by when *it last saw `state.json` change*, on its own clock. It never compares a timestamp written on another machine. Keep `updated_at` in the file for people reading it.
+
+**Scope**
+- `supervisor.rs`: the grace period, `CREATE_NO_WINDOW` and the candidate order, with Rust unit tests for the pure parts.
+- `api/src/askwell/inference/state.py` (or wherever staleness is computed): freshness by observed change, tested with a fake clock and a `state.json` whose `updated_at` is hours off.
+
+**Out of Scope**
+- The supervisor's settings on Windows (`M11-FIX-DEPLOY-225`).
+
+**Acceptance Criteria**
+- **Acceptance Criteria:**
+  - Tests: a heartbeat file 7 hours "in the future" and changing is fresh, and one not changing for longer than the limit is stale.
+  - The app does not spawn while a supervisor heartbeat appears within the grace period.
+  - `cargo check`, `scripts/dev.sh check` and `test-db` pass.
+- **Edge Cases:** No supervisor at all, where the app still starts one after the grace period, as today. The API started before the supervisor.
+- **Permissions / Roles:** Single user — no roles.
+- **UI States:** `../ux/ask.md` — the assistant states are unchanged; only when "stale" is decided changes.
+- **Validation Rules:** None new.
+- **Audit / Logging Requirements:** the app logs when it defers to an existing supervisor.
+- **Analytics Events:** None (C1).
+
+**Dependencies & Assumptions**
+- **Dependencies:** `M11-FIX-DEPLOY-223`.
+- **API / Data Touchpoints:** `web/src-tauri/src/supervisor.rs`, `api/src/askwell/inference/state.py`, `api/src/askwell/health.py`.
+- **Assumptions:** the heartbeat interval is `HEARTBEAT_SECONDS` in `deploy/inference/askwell-inference`; read it, do not guess it.
+
+**Testing Notes / Scenarios**
+- **Windows walkthrough (not the agent's):** sign in to the VM after an install. Exactly one `askwell-inference` process runs, and no console window appears.
+
+**Effort & Granularity Check**
+- **Estimate:** 5 hours · **Priority:** High
+- **Labels / Component:** `phase:7`, desktop shell, backend
+- **Granularity:** Two liveness defects in one handshake.
+
+---
+
+### M11-FIX-BE-227 — Askwell can read the user's own folder on every platform, and Windows paths work
+
+**Type:** Task
+
+**User Story**
+- **Actor:** anyone who adds a folder of documents after installing Askwell.
+- **User Need:** pick a folder and have it indexed, with no configuration file.
+- **Business Value:** today a new install on any platform cannot index anything until `ASKWELL_ROOTS_MOUNT` is edited by hand in `.env`. On Windows a folder is refused outright: `POST /sources` answered 400, *"Askwell needs the whole path, starting with a slash - 'C:\Users\askwell\Documents\corpus' is relative to something"* (found on the VM).
+
+**Context / Background**
+**Detailed Description:** **Decided by the owner on 2026-09-30: Askwell may read the user's whole home folder, read-only.** That means `C:\Users\<name>` on Windows, `/Users/<name>` on macOS and `$HOME` on Linux. The alternative, only the folders the user picks with a stack restart per new location, was declined as slower and more fragile for non-technical users. Record it in `docs/decisions.md` with that reasoning and what it widens: the containers still have no route off the machine, and the mount stays read-only.
+1. **All platforms.** Each installer sets `ASKWELL_ROOTS_MOUNT` to the user's home in `.env`, on install and on upgrade when it is empty. A value the user already set is left alone.
+2. **Windows.** `compose.yaml` mounts roots at the *same path* inside the container, which is impossible for `C:\...`. Introduce one translation, in one place: a Windows host path `C:\Users\n\x` maps to a fixed container path (for example `/host/c/Users/n/x`), and back. The mount becomes `C:\Users\n` → `/host/c/Users/n` on Windows only. `sources.root_path` and `documents.path` keep the **Windows** path, which is what the user sees and what a citation reopens. Every place the API or worker touches the filesystem goes through the translation, which is the identity on Linux and macOS. Path validation accepts `X:\...` on Windows. The compose file's comment on why identity mattered is updated, not deleted.
+
+**Scope**
+- The installers' `.env` step on three platforms, tested in each `install.test.*`.
+- `askwell.paths` (or similar): one translation function each way, pure and tested, including case-insensitive drive letters and `/` and `\` separators.
+- Path validation for Windows paths, with a test for the exact 400 above.
+
+**Out of Scope**
+- A folder picker that grants access per folder (declined).
+- Paths outside the home folder: a clear refusal naming the reason, not new mounts.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:**
+  - Unit tests for the translation both ways and for validation.
+  - A `requires_db` test adds a folder whose host path is Windows-shaped, through the translation, and indexes it.
+  - The three installer suites and Windows CI pass.
+  - The VM walkthrough is the orchestrating session's: add `C:\Users\askwell\Documents\corpus` and ask "What is the standard resignation notice period at Meridian Loom?" The answer must cite the handbook. Leave `docs/manual-tests/M11-FIX-BE-227.md` with an empty result.
+- **Edge Cases:** Paths with spaces and non-ASCII letters. A UNC path (`\\server\share`), refused clearly. A folder on another drive (`D:\`), refused, naming why.
+- **Permissions / Roles:** Single user — no roles.
+- **UI States:** `../ux/add-source.md` — the "not mounted" state now appears only outside the home folder.
+- **Validation Rules:** C1 unchanged: no network in the containers. The mount stays read-only.
+- **Audit / Logging Requirements:** the effective roots mount is logged at API start.
+- **Analytics Events:** None (C1).
+
+**Dependencies & Assumptions**
+- **Dependencies:** `M11-FIX-DEPLOY-223`.
+- **API / Data Touchpoints:** `compose.yaml`, `api/src/askwell/roots.py`, `api/src/askwell/sources.py`, the worker's file reads, `deploy/*/install.*`, `deploy/windows/lib.ps1`.
+- **Assumptions:** Podman on WSL accepts a Windows-path bind source (`C:\Users\n:/host/c/Users/n:ro`). The `.run` and models mounts already do, on the VM.
+
+**Testing Notes / Scenarios**
+- **Known gaps:** macOS is unverified on hardware (#592).
+
+**Effort & Granularity Check**
+- **Estimate:** 6 hours · **Priority:** Critical
+- **Labels / Component:** `phase:7`, backend, `deploy`, `constraint:local-first`
+- **Granularity:** One mount default and one path translation.
