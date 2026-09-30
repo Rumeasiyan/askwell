@@ -59,6 +59,11 @@ class SuiteRunReport:
     finished_at: datetime
     runs_per_task: int
     task_results: tuple[TaskResult, ...]
+    clarifications_skipped: int | None = None
+    """`grounded_qa.v1` only: how many pending clarifications on the corpus
+    were skipped after seeding (`eval.grounded.skip_pending_clarifications`,
+    #859). `None` for a suite that skips none, and then absent from the file,
+    so no other suite's result shape changes."""
 
     @property
     def category_mean(self) -> float:
@@ -81,7 +86,7 @@ class SuiteRunReport:
         return all(run.score >= 1.0 for task in self.task_results for run in task.runs)
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        report: dict[str, object] = {
             "suite": self.suite_name,
             "category": self.category,
             "pass_bar": self.pass_bar,
@@ -106,6 +111,9 @@ class SuiteRunReport:
                 for task in self.task_results
             ],
         }
+        if self.clarifications_skipped is not None:
+            report["clarifications_skipped"] = self.clarifications_skipped
+        return report
 
 
 def write_report(report: SuiteRunReport, results_dir: Path) -> Path:
@@ -136,6 +144,8 @@ def format_summary(report: SuiteRunReport) -> str:
         f"model: {report.model or 'unknown'}  profile: {report.profile}",
         f"runs per task: {report.runs_per_task}",
     ]
+    if report.clarifications_skipped is not None:
+        lines.append(f"clarifications skipped after seeding: {report.clarifications_skipped}")
     if report.strict:
         verdict = "PASS" if report.passed else "FAIL"
         lines.append(f"pass_bar: 1.00 (strict)  result: {verdict}")

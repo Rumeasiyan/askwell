@@ -98,3 +98,20 @@ def test_format_mean_worst_has_no_way_to_omit_worst_case() -> None:
     default that would let a caller supply one and skip the other."""
     parameters = inspect.signature(format_mean_worst).parameters
     assert all(parameter.default is inspect.Parameter.empty for parameter in parameters.values())
+
+
+def test_a_report_that_skipped_no_clarifications_keeps_its_old_shape() -> None:
+    """Only `grounded_qa.v1` skips clarifications (`M11-FIX-TEST-232`); every
+    other suite's result file stays exactly as it was."""
+    report = _report()
+    assert "clarifications_skipped" not in report.to_dict()
+    assert "clarifications skipped" not in format_summary(report)
+
+
+def test_skipped_clarifications_are_in_the_file_and_the_summary(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    report = replace(_report(), clarifications_skipped=0)
+    written = json.loads(write_report(report, tmp_path).read_text())
+    assert written["clarifications_skipped"] == 0
+    assert "clarifications skipped after seeding: 0" in format_summary(report)

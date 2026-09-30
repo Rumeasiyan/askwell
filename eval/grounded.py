@@ -21,11 +21,12 @@ import json
 import uuid
 from pathlib import Path
 
+from sqlalchemy import bindparam
 from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from askwell import ask as ask_module
-from askwell import ingest
+from askwell import ingest, review
 from askwell.config import Settings
 from askwell.db.engine import build_engine, session_factory, session_scope
 from askwell.inference.client import InferenceFailed, InferenceUnavailable
@@ -54,7 +55,9 @@ async def _ensure_root(db: AsyncSession, path: str) -> None:
         await db.execute(sql_text("INSERT INTO roots (path) VALUES (:path)"), {"path": path})
 
 
-async def seed_corpus(factory: async_sessionmaker[AsyncSession], settings: Settings) -> None:
+async def seed_corpus(
+    factory: async_sessionmaker[AsyncSession], settings: Settings
+) -> set[uuid.UUID]:
     """Index every file in `eval/fixtures/corpus/` through the real `add()`
     -> `ingest.process()` path — the ticket's own "index the fixture corpus
     through the normal add flow rather than a shortcut" walkthrough. A
@@ -62,6 +65,11 @@ async def seed_corpus(factory: async_sessionmaker[AsyncSession], settings: Setti
 
     Safe to call against a database that already has this corpus indexed:
     files already recorded come back `DUPLICATE` and are left alone.
+
+    Returns the sources the corpus now lives in: the new one for files
+    added, and for a duplicate the source its existing copy belongs to —
+    the one retrieval will actually read, and the one a clarification would
+    be pending on (`skip_pending_clarifications`).
     """
     filenames = sorted(p.name for p in FIXTURES_DIR.iterdir() if p.is_file())
     if not filenames:
@@ -74,6 +82,9 @@ async def seed_corpus(factory: async_sessionmaker[AsyncSession], settings: Setti
         await _ensure_root(db, str(FIXTURES_DIR))
         result = await add_source(db, str(FIXTURES_DIR), filenames)
 
+    source_ids: set[uuid.UUID] = set()
+    if result.source_id is not None:
+        source_ids.add(result.source_id)
     for file in result.files:
         if file.outcome == Outcome.ADDED:
             if file.document_id is None:  # pragma: no cover - add()'s own invariant
@@ -82,12 +93,50 @@ async def seed_corpus(factory: async_sessionmaker[AsyncSession], settings: Setti
             if outcome != "done":
                 raise HarnessError(f"fixture {file.relative_path} failed to ingest: {outcome}")
         elif file.outcome == Outcome.DUPLICATE:
-            continue
+            if file.existing is not None:
+                source_ids.add(file.existing.source_id)
         else:
             raise HarnessError(
                 f"fixture {file.relative_path}: unexpected add() outcome {file.outcome!r} "
                 f"({file.reason})"
             )
+    return source_ids
+
+
+async def skip_pending_clarifications(
+    factory: async_sessionmaker[AsyncSession], source_ids: set[uuid.UUID]
+) -> int:
+    """Skip every clarification still pending on the corpus's sources,
+    through `askwell.review.skip_clarification` — the product's own skip,
+    audit record included — and return how many (#859).
+
+    Ingesting the corpus raises a clarification, and the first question
+    that retrieves from its source then pauses in
+    `askwell.ask._await_clarification` for an answer this harness never
+    gives: on a fresh database the suite never finishes. Skipped rather than
+    answered, so the suite measures grounding with no memory at all — the
+    same on every database, and what it claims to measure;
+    `memory_apply.v1` measures answered clarifications separately.
+
+    Scoped to the corpus's own sources rather than every pending row, so a
+    run against a development database leaves the rest of its review queue
+    as it found it. On a fresh database the two are the same set.
+    """
+    if not source_ids:
+        return 0
+    async with session_scope(factory) as db:
+        rows = await db.execute(
+            sql_text(
+                "SELECT id FROM clarifications "
+                "WHERE status = 'pending' AND source_id IN :source_ids ORDER BY asked_at, id"
+            ).bindparams(bindparam("source_ids", expanding=True)),
+            {"source_ids": sorted(source_ids)},
+        )
+        pending: list[uuid.UUID] = list(rows.scalars().all())
+    for clarification_id in pending:
+        async with session_scope(factory) as db:
+            await review.skip_clarification(db, clarification_id)
+    return len(pending)
 
 
 async def _ask_one(
@@ -178,7 +227,8 @@ async def run_grounded_suite(settings: Settings, suite: Suite) -> SuiteRunReport
     started_at = now()
     try:
         try:
-            await seed_corpus(factory, settings)
+            corpus_sources = await seed_corpus(factory, settings)
+            skipped = await skip_pending_clarifications(factory, corpus_sources)
             task_results = [
                 await _run_grounded_task(factory, settings, task) for task in suite.tasks
             ]
@@ -200,6 +250,7 @@ async def run_grounded_suite(settings: Settings, suite: Suite) -> SuiteRunReport
         finished_at=finished_at,
         runs_per_task=RUNS_PER_TASK,
         task_results=tuple(task_results),
+        clarifications_skipped=skipped,
     )
 
 
