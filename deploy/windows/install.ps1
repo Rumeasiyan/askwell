@@ -259,6 +259,9 @@ function Copy-AskwellFiles {
     # Every run too: an upgrade from before M11-FIX-DEPLOY-223 has its
     # sockets on the bind mount, where Windows cannot hold them.
     Set-AskwellEnvValue $envFile 'ASKWELL_SOCKET_DIR' $script:AskwellWindowsSocketDir
+    # Every run too: an install from before M11-FIX-BE-227 has no folder to
+    # read, and a new one would otherwise index nothing until .env is edited.
+    Set-AskwellRootsMount $envFile $env:USERPROFILE
 
     Copy-Item (Join-Path $RepoRoot 'deploy\postgres\*') (Join-Path $InstallPrefix 'deploy\postgres\') -Recurse -Force
     Copy-Item (Join-Path $RepoRoot 'deploy\sandbox\*') (Join-Path $InstallPrefix 'deploy\sandbox\') -Recurse -Force

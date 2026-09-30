@@ -65,6 +65,147 @@ def test_a_path_that_climbs_back_to_the_disk_root_is_refused_too() -> None:
         roots.normalise("/home/anna/../../..")
 
 
+# --- normalise, on Windows (M11-FIX-BE-227) ----------------------------------
+
+HOME = "C:\\Users\\askwell"
+
+
+def test_the_windows_folder_the_vm_refused_is_accepted() -> None:
+    """The exact path `POST /sources` answered 400 for on the Windows VM:
+    *"Askwell needs the whole path, starting with a slash"*."""
+    assert (
+        roots.normalise("C:\\Users\\askwell\\Documents\\corpus", HOME)
+        == "C:\\Users\\askwell\\Documents\\corpus"
+    )
+
+
+@pytest.mark.parametrize(
+    ("requested", "stored"),
+    [
+        ("c:/Users/askwell/Documents/corpus/", "C:\\Users\\askwell\\Documents\\corpus"),
+        ("C:\\Users\\askwell\\My Files\\Privé", "C:\\Users\\askwell\\My Files\\Privé"),
+        ("  C:\\Users\\askwell\\x\\..\\corpus  ", "C:\\Users\\askwell\\corpus"),
+    ],
+)
+def test_a_windows_folder_is_stored_in_one_spelling(requested: str, stored: str) -> None:
+    assert roots.normalise(requested, HOME) == stored
+
+
+def test_a_folder_on_another_drive_is_refused_naming_why() -> None:
+    with pytest.raises(RootRefused) as refusal:
+        roots.normalise("D:\\corpus", HOME)
+    message = str(refusal.value)
+    assert "drive D:" in message
+    assert HOME in message
+
+
+@pytest.mark.parametrize("share", ["\\\\server\\share", "//server/share"])
+def test_a_network_share_is_refused_on_windows(share: str) -> None:
+    with pytest.raises(RootRefused) as refusal:
+        roots.normalise(share, HOME)
+    assert "network share" in str(refusal.value)
+
+
+def test_a_backslash_share_is_refused_everywhere() -> None:
+    with pytest.raises(RootRefused) as refusal:
+        roots.normalise("\\\\server\\share", "/home/anna")
+    assert "network share" in str(refusal.value)
+
+
+def test_a_double_slash_is_still_a_posix_path_on_linux() -> None:
+    assert roots.normalise("//home/anna", "/home/anna") == "//home/anna"
+
+
+def test_the_whole_windows_drive_is_refused() -> None:
+    with pytest.raises(RootRefused) as refusal:
+        roots.normalise("C:\\", HOME)
+    assert "whole disk" in str(refusal.value)
+
+
+def test_a_windows_path_on_a_host_that_is_not_windows_says_so() -> None:
+    """Not "starting with a slash" — the path is absolute, just not here."""
+    with pytest.raises(RootRefused) as refusal:
+        roots.normalise("C:\\Users\\askwell", "/home/anna")
+    message = str(refusal.value)
+    assert "Windows path" in message
+    assert "slash" not in message
+
+
+def test_a_relative_path_on_windows_is_still_refused() -> None:
+    with pytest.raises(RootRefused):
+        roots.normalise("Documents\\corpus", HOME)
+
+
+def test_windows_containment_is_by_component_not_prefix() -> None:
+    assert roots.contains(HOME, "C:\\Users\\askwell\\corpus\\a.pdf")
+    assert roots.contains(HOME, "c:/Users/askwell/corpus")
+    assert not roots.contains("C:\\Users\\askwell\\corpus", "C:\\Users\\askwell\\corpus-archive")
+    assert not roots.contains(HOME, "D:\\Users\\askwell")
+
+
+def test_a_windows_folder_probes_through_the_translation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The probe opens the container path, and reports in the host one."""
+    from askwell import paths
+
+    monkeypatch.setattr(paths, "CONTAINER_PREFIX", str(tmp_path / "host"))
+    (tmp_path / "host" / "c" / "Users" / "askwell" / "corpus").mkdir(parents=True)
+
+    assert roots.probe("C:\\Users\\askwell\\corpus", Path(HOME)) == (MountState.AVAILABLE, None)
+    state, _ = roots.probe("C:\\Users\\askwell\\gone", Path(HOME))
+    assert state is MountState.UNAVAILABLE
+    state, reason = roots.probe("C:\\Data", Path(HOME))
+    assert state is MountState.NOT_MOUNTED
+    assert reason is not None
+    assert HOME in reason
+    assert "home folder" in reason
+
+
+def test_a_windows_home_folder_is_a_valid_mount() -> None:
+    settings = Settings(
+        database_url="postgresql://a:b@127.0.0.1:1/c",  # type: ignore[arg-type]
+        sandbox_database_url="postgresql://a:b@127.0.0.1:1/c",  # type: ignore[arg-type]
+        sandbox_owner_password="pw",  # type: ignore[arg-type]
+        sandbox_readonly_password="pw",  # type: ignore[arg-type]
+        roots_mount="c:/Users/askwell/",  # type: ignore[arg-type]
+    )
+    assert str(settings.roots_mount) == HOME
+
+
+def test_the_effective_mount_is_logged_with_whether_the_container_sees_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ticket's logging requirement: the mount, logged at API start, with
+    its container side — and an error when the two copies of the translation
+    disagree, which shows here as the translated directory not existing."""
+    from structlog.testing import capture_logs
+
+    from askwell import paths
+
+    monkeypatch.setattr(paths, "CONTAINER_PREFIX", str(tmp_path / "host"))
+    settings = Settings(
+        database_url="postgresql://a:b@127.0.0.1:1/c",  # type: ignore[arg-type]
+        sandbox_database_url="postgresql://a:b@127.0.0.1:1/c",  # type: ignore[arg-type]
+        sandbox_owner_password="pw",  # type: ignore[arg-type]
+        sandbox_readonly_password="pw",  # type: ignore[arg-type]
+        roots_mount=HOME,  # type: ignore[arg-type]
+    )
+    inside = str(tmp_path / "host" / "c" / "Users" / "askwell")
+
+    with capture_logs() as missing:
+        roots.log_effective_mount(settings)
+    assert missing[0]["event"] == "roots_mount"
+    assert missing[0]["log_level"] == "error"
+    assert (missing[0]["mount"], missing[0]["container_path"]) == (HOME, inside)
+
+    Path(inside).mkdir(parents=True)
+    with capture_logs() as seen:
+        roots.log_effective_mount(settings)
+    assert seen[0]["log_level"] == "info"
+    assert seen[0]["visible"] is True
+
+
 def test_an_empty_path_is_refused() -> None:
     with pytest.raises(RootRefused):
         roots.normalise("   ")

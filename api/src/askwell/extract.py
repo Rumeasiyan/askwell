@@ -106,7 +106,7 @@ async def run(
             f"Askwell has no extractor for {work.mime!r} ({work.filename})."
         )
     metadata = (
-        await asyncio.to_thread(document_date.from_ooxml, work.path)
+        await asyncio.to_thread(document_date.from_ooxml, work.local)
         if work.mime in _OOXML
         else None
     )

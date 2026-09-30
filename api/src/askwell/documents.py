@@ -16,7 +16,8 @@ add time from a path `askwell.roots` had already checked against a nominated
 root (`askwell.sources`) — so there is no second containment check to make
 here; the containment already happened once, at write time, and re-deriving it
 from a mount prefix would be the second hand-maintained copy `AGENTS.md` §5
-warns a build number away from.
+warns a build number away from. It is opened through `askwell.paths`, the
+one host-to-container translation, which is the identity except on Windows.
 
 **Range requests, not a custom chunked stream.** `FileResponse` (Starlette
 1.6) already serves `Range: bytes=...` as `206 Partial Content` with
@@ -50,6 +51,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from askwell import paths
 from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
@@ -151,7 +153,7 @@ async def _availability(
     file that quietly came back clears its own flag on the next open rather
     than waiting for the sweep to notice.
     """
-    path = Path(str(found["path"]))
+    path = Path(paths.to_container(str(found["path"])))
     exists = await asyncio.to_thread(path.is_file)
     missing_since = found["missing_since"]
 
@@ -342,7 +344,7 @@ def register_documents(
             )
 
         return FileResponse(
-            Path(str(found["path"])),
+            Path(paths.to_container(str(found["path"]))),
             media_type=str(found["mime"]) if found["mime"] else "application/octet-stream",
             filename=str(found["filename"]),
             content_disposition_type="inline",
@@ -363,7 +365,7 @@ def register_documents(
         if found is None:
             return JSONResponse({"error": "No such document."}, status_code=404)
 
-        still_there = await asyncio.to_thread(Path(str(found["path"])).is_file)
+        still_there = await asyncio.to_thread(Path(paths.to_container(str(found["path"]))).is_file)
         if still_there and found["missing_since"] is None:
             return JSONResponse(
                 {"error": f"{found['filename']} is not missing — there is nothing to relocate."},
@@ -373,6 +375,10 @@ def register_documents(
         requested = body.path.strip()
         if not requested:
             return JSONResponse({"error": "No file was given."}, status_code=400)
+        if paths.is_windows(requested):
+            # Stored in the one Windows spelling `roots.normalise` stores, so
+            # the containment checks and the viewer compare like with like.
+            requested = paths.normalise_windows(requested)
 
         async with factory() as db:
             root = await covering(db, requested)
@@ -385,12 +391,12 @@ def register_documents(
                 status_code=400,
             )
 
-        new_path = Path(requested)
-        if not await asyncio.to_thread(new_path.is_file):
+        new_path = requested
+        if not await asyncio.to_thread(Path(paths.to_container(new_path)).is_file):
             return JSONResponse({"error": f"There is no file at {requested}."}, status_code=400)
 
         try:
-            stamp = await asyncio.to_thread(fingerprint, str(new_path))
+            stamp = await asyncio.to_thread(fingerprint, new_path)
         except FileUnsettled as error:
             return JSONResponse({"error": str(error)}, status_code=409)
 
@@ -401,8 +407,8 @@ def register_documents(
             # than a second copy of that logic built here.
             return JSONResponse(
                 {
-                    "error": f"{new_path.name} is not the same file as {found['filename']} — "
-                    "its content does not match.",
+                    "error": f"{paths.basename(new_path)} is not the same file as "
+                    f"{found['filename']} — its content does not match.",
                     "reason": "hash_mismatch",
                     "suggestion": "If this is an updated version rather than the same file "
                     "moved, add it to Askwell as a new file instead of relocating to it.",
@@ -414,7 +420,7 @@ def register_documents(
         async with session_scope(factory) as db:
             await db.execute(
                 text("UPDATE documents SET path = :path, missing_since = NULL WHERE id = :id"),
-                {"path": str(new_path), "id": document_id},
+                {"path": new_path, "id": document_id},
             )
             # A decisions record naming both paths — what actually changed,
             # not just that something did.
@@ -426,14 +432,14 @@ def register_documents(
                     "document_id": str(document_id),
                     "filename": found["filename"],
                     "from_path": old_path,
-                    "to_path": str(new_path),
+                    "to_path": new_path,
                 },
             )
             await refresh_source(
                 db, uuid.UUID(str(found["source_id"])), settings.ocr_confidence_threshold, settings
             )
 
-        return JSONResponse({"relocated": True, "path": str(new_path)})
+        return JSONResponse({"relocated": True, "path": new_path})
 
     @app.get("/documents/{document_id}/pages/{page_number}")
     async def document_page(document_id: uuid.UUID, page_number: int) -> JSONResponse:

@@ -48,7 +48,7 @@ from askwell.reset import register_reset
 from askwell.restore import register_restore
 from askwell.retrieve import register_retrieval_threshold, register_search
 from askwell.review import register_review
-from askwell.roots import register_roots
+from askwell.roots import log_effective_mount, register_roots
 from askwell.setup import register_setup, run_startup_discovery
 from askwell.sources import register_sources
 from askwell.suggestions import register_suggestions
@@ -84,6 +84,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         bind=f"{settings.host}:{settings.port}",
         components={item.name: str(item.state) for item in components},
     )
+
+    # Which folder Askwell may read, and whether the container can see it.
+    log_effective_mount(settings)
 
     unreachable = [item.name for item in components if item.state is not ComponentState.REACHABLE]
     if unreachable:

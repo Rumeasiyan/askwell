@@ -84,7 +84,7 @@ def check_readable(work: "Work") -> None:
     regardless of which format failed.
     """
     try:
-        with Path(work.path).open("rb"):
+        with Path(work.local).open("rb"):
             pass
     except FileNotFoundError as error:
         raise MissingSource(

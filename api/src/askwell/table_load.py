@@ -66,7 +66,7 @@ import psycopg
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from askwell import audit, sandbox
+from askwell import audit, paths, sandbox
 from askwell.audit import Store
 from askwell.config import Settings
 from askwell.db.engine import session_scope
@@ -410,7 +410,10 @@ async def create_table_source(session: AsyncSession, name: str, file_path: str) 
     return uuid.UUID(str(source_id))
 
 
-def _parse_file(file_path: Path) -> list[TableInference]:
+def _parse_file(host_path: Path) -> list[TableInference]:
+    # Stored paths are host paths; reading one goes through the translation
+    # (`askwell.paths`), which is the identity except on Windows.
+    file_path = Path(paths.to_container(str(host_path)))
     raw = file_path.read_bytes()
     extension = file_path.suffix.lower().lstrip(".")
     if extension == "xlsx":
@@ -837,6 +840,10 @@ class WorkbookOutcome:
 
 
 def _relative_path(path: str, root: str | None) -> str:
+    # Compared in container spelling so a Windows path's `\\` separators are
+    # separators here too. The result only names a table.
+    path = paths.to_container(path)
+    root = paths.to_container(root) if root else root
     if root and os.path.commonpath([root, path]) == os.path.normpath(root) and path != root:
         return os.path.relpath(path, root).replace(os.sep, "/")
     return os.path.basename(path)
@@ -971,7 +978,7 @@ async def _load_workbook_tables(
     relative = _relative_path(path, root)
     prefix, comment = workbook_table_prefix(relative), workbook_comment(relative)
 
-    raw = await asyncio.to_thread(Path(path).read_bytes)
+    raw = await asyncio.to_thread(Path(paths.to_container(path)).read_bytes)
     inferences = await asyncio.to_thread(infer_xlsx, relative, raw)
     loadable: list[TableInference] = []
     skipped: list[tuple[str, str]] = []

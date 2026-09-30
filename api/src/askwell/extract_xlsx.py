@@ -80,7 +80,7 @@ def _read(path: str) -> tuple[list[tuple[str, str]], int, int]:
 
 
 async def run(work: "Work", report: "Report", factory: "async_sessionmaker[AsyncSession]") -> None:
-    rows, sheet_count, merged_total = await asyncio.to_thread(_read, work.path)
+    rows, sheet_count, merged_total = await asyncio.to_thread(_read, work.local)
 
     anchors: list[Anchor] = []
     for index, (label, text) in enumerate(rows, start=1):

@@ -77,6 +77,43 @@ Test-Check 'compose.yaml mounts the sockets volume where Windows points the sock
     ($composeText -match [regex]::Escape("- askwell-sockets:$script:AskwellWindowsSocketDir")) $true
 Remove-Item -Recurse -Force $tmp
 
+# --- the home folder is the folder Askwell may read (M11-FIX-BE-227) -----------
+# The same cases api/tests/test_paths.py gives askwell.paths.to_container:
+# this is the second copy, and the two must agree.
+Test-Check 'a home folder maps under /host/<drive>' (Get-AskwellRootsTarget 'C:\Users\askwell') '/host/c/Users/askwell'
+Test-Check 'a lower-case drive letter maps the same' (Get-AskwellRootsTarget 'c:\Users\askwell') '/host/c/Users/askwell'
+Test-Check 'forward slashes map the same' (Get-AskwellRootsTarget 'C:/Users/askwell/') '/host/c/Users/askwell'
+# The e-acute built from its code point: Windows PowerShell 5.1 reads a .ps1
+# without a BOM as the ANSI code page, and the test must not depend on that.
+$prive = 'Anna Priv' + [char]0x00E9
+Test-Check 'a space and a non-ASCII letter are kept' (Get-AskwellRootsTarget "C:\Users\$prive") "/host/c/Users/$prive"
+Test-Check 'a .. is collapsed' (Get-AskwellRootsTarget 'C:\Users\x\..\askwell') '/host/c/Users/askwell'
+Test-Check 'a drive root maps to the drive' (Get-AskwellRootsTarget 'D:\') '/host/d'
+Test-Check 'a POSIX path has no Windows target' (Get-AskwellRootsTarget '/home/anna') $null
+Test-Check 'a UNC path has no Windows target' (Get-AskwellRootsTarget '\\server\share') $null
+
+$tmp = New-AskwellTempDir
+$rootsEnv = Join-Path $tmp '.env'
+Write-AskwellUtf8File -Path $rootsEnv -Lines @('OTHER=kept', 'ASKWELL_ROOTS_MOUNT=', 'ASKWELL_ROOTS_TARGET=')
+Set-AskwellRootsMount $rootsEnv 'C:\Users\askwell'
+Test-Check 'an empty roots mount becomes the home folder, with its target, in place' `
+    ((Get-Content $rootsEnv) -join '|') 'OTHER=kept|ASKWELL_ROOTS_MOUNT=C:\Users\askwell|ASKWELL_ROOTS_TARGET=/host/c/Users/askwell'
+Write-AskwellUtf8File -Path $rootsEnv -Lines @('OTHER=kept')
+Set-AskwellRootsMount $rootsEnv 'C:\Users\askwell'
+Set-AskwellRootsMount $rootsEnv 'C:\Users\askwell'
+Test-Check 'an older .env without the lines gains them once' `
+    ((Get-Content $rootsEnv) -join '|') 'OTHER=kept|ASKWELL_ROOTS_MOUNT=C:\Users\askwell|ASKWELL_ROOTS_TARGET=/host/c/Users/askwell'
+Write-AskwellUtf8File -Path $rootsEnv -Lines @('ASKWELL_ROOTS_MOUNT=C:\Users\askwell\Documents', 'ASKWELL_ROOTS_TARGET=')
+Set-AskwellRootsMount $rootsEnv 'C:\Users\askwell'
+Test-Check 'a folder the user chose is kept, and its target derived from it' `
+    ((Get-Content $rootsEnv) -join '|') 'ASKWELL_ROOTS_MOUNT=C:\Users\askwell\Documents|ASKWELL_ROOTS_TARGET=/host/c/Users/askwell/Documents'
+Remove-Item -Recurse -Force $tmp
+$installText = Get-Content (Join-Path $Here 'install.ps1') -Raw
+Test-Check 'install.ps1 sets the roots mount to the home folder on every run' `
+    ($installText -match [regex]::Escape('Set-AskwellRootsMount $envFile $env:USERPROFILE')) $true
+Test-Check 'compose.yaml mounts the roots at the target when one is set' `
+    ($composeText -match [regex]::Escape(':${ASKWELL_ROOTS_TARGET:-${ASKWELL_ROOTS_MOUNT:-/tmp/askwell-no-roots-mount}}:ro')) $true
+
 # --- .wslconfig: mirrored networking (M11-FIX-DEPLOY-223) ----------------------
 $crlf = "`r`n"
 

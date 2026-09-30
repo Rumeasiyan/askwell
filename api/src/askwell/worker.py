@@ -97,10 +97,11 @@ async def import_dump_job(ctx: dict[str, Any], source_id: str, dump_path: str) -
     """
     from pathlib import Path
 
-    from askwell import dump_import
+    from askwell import dump_import, paths
 
+    # `dump_path` is the stored host path; this is where the worker reads it.
     return await dump_import.import_dump(
-        ctx["sessions"], ctx["settings"], uuid.UUID(source_id), Path(dump_path)
+        ctx["sessions"], ctx["settings"], uuid.UUID(source_id), Path(paths.to_container(dump_path))
     )
 
 

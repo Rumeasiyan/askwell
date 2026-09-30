@@ -164,7 +164,7 @@ def _metadata_date(  # type: ignore[no-any-unimported]
 async def run(work: "Work", report: "Report", factory: "async_sessionmaker[AsyncSession]") -> None:
     document_id = str(work.document_id)
     try:
-        document = await asyncio.to_thread(pdfium.PdfDocument, work.path, work.password)
+        document = await asyncio.to_thread(pdfium.PdfDocument, work.local, work.password)
     except pdfium.PdfiumError as error:
         raise _classify_open_failure(
             error, filename=work.filename, password_supplied=work.password is not None

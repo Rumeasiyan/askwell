@@ -68,7 +68,7 @@ def _load(path: str) -> Presentation:
 
 
 async def run(work: "Work", report: "Report", factory: "async_sessionmaker[AsyncSession]") -> None:
-    presentation = await asyncio.to_thread(_load, work.path)
+    presentation = await asyncio.to_thread(_load, work.local)
     slides = list(presentation.slides)
 
     anchors: list[Anchor] = []

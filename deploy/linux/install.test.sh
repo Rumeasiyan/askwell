@@ -264,6 +264,38 @@ check "a real Redis password is kept" "$(grep '^REDIS_WORKER_PASSWORD=' "$env_fi
 value="$(grep '^REDIS_PROXY_PASSWORD=' "$env_file" | cut -d= -f2)"
 check "a placeholder Redis password is generated" "${#value}" "64"
 
+# --- M11-FIX-BE-227: the home folder is the folder Askwell may read ------------
+fresh
+env_file="$TMP/env-roots-fresh"
+printf 'OTHER=kept\nASKWELL_ROOTS_MOUNT=\nLAST=kept\n' > "$env_file"
+ensure_roots_mount "$env_file" "/home/anna"
+check "an empty roots mount becomes the home folder, in place" "$(tr '\n' '|' < "$env_file")" "OTHER=kept|ASKWELL_ROOTS_MOUNT=/home/anna|LAST=kept|"
+
+fresh
+env_file="$TMP/env-roots-upgrade"
+printf 'OTHER=kept' > "$env_file"
+ensure_roots_mount "$env_file" "/home/anna"
+ensure_roots_mount "$env_file" "/home/anna"
+check "an older .env without the line gains it once" "$(grep -c '^ASKWELL_ROOTS_MOUNT=/home/anna$' "$env_file")" "1"
+check "an upgrade keeps a last line that had no newline" "$(grep -c '^OTHER=kept$' "$env_file")" "1"
+
+fresh
+env_file="$TMP/env-roots-mine"
+printf 'ASKWELL_ROOTS_MOUNT=/srv/clients\n' > "$env_file"
+ensure_roots_mount "$env_file" "/home/anna"
+check "a roots mount the user chose is left alone" "$(cat "$env_file")" "ASKWELL_ROOTS_MOUNT=/srv/clients"
+
+fresh
+env_file="$TMP/env-roots-spaces"
+printf 'ASKWELL_ROOTS_MOUNT=\n' > "$env_file"
+ensure_roots_mount "$env_file" "/home/Anna Privé"
+check "a home folder with a space and a non-ASCII letter is written as it is" "$(cat "$env_file")" "ASKWELL_ROOTS_MOUNT=/home/Anna Privé"
+
+grep -q 'ensure_roots_mount "$INSTALL_PREFIX/.env" "$HOME"' "$HERE/install.sh" && r=0 || r=1
+check "install.sh sets the roots mount to the home folder on every run" "$r" 0
+grep -q '^ASKWELL_ROOTS_MOUNT=$' "$HERE/../../.env.example" && r=0 || r=1
+check ".env.example leaves the roots mount for the installer to fill" "$r" 0
+
 # --- generated files -------------------------------------------------------------
 fresh
 out="$(desktop_entry_contents "/home/x/.local/bin/askwell" "askwell")"

@@ -92,7 +92,7 @@ def _read(path: str) -> str:
 
 
 async def run(work: "Work", report: "Report", factory: "async_sessionmaker[AsyncSession]") -> None:
-    raw = await asyncio.to_thread(_read, work.path)
+    raw = await asyncio.to_thread(_read, work.local)
 
     if work.mime == _HTML_MIME:
         body = await asyncio.to_thread(_html_to_headed_text, raw)

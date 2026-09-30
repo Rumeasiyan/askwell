@@ -65,6 +65,7 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import FastAPI
@@ -73,7 +74,16 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from askwell import connections, crypto, dump_import, ingest, roots, schema_introspect, table_load
+from askwell import (
+    connections,
+    crypto,
+    dump_import,
+    ingest,
+    paths,
+    roots,
+    schema_introspect,
+    table_load,
+)
 from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
@@ -272,7 +282,7 @@ def _identity(path: str) -> tuple[int, int, int, int]:
     original, so the path stays valid and the contents are somebody else's.
     Size and modification time catch it being written in place.
     """
-    stat = os.stat(path)
+    stat = os.stat(paths.to_container(path))
     return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
 
 
@@ -293,7 +303,7 @@ def fingerprint(path: str, attempts: int = HASH_ATTEMPTS) -> Fingerprint:
         digest = hashlib.sha256()
         head = b""
         size = 0
-        with open(path, "rb") as handle:
+        with open(paths.to_container(path), "rb") as handle:
             while True:
                 block = handle.read(READ_CHUNK)
                 if not block:
@@ -369,7 +379,7 @@ async def _live_source(session: AsyncSession, root_path: str) -> tuple[uuid.UUID
 
 
 async def _create_source(session: AsyncSession, root_path: str) -> tuple[uuid.UUID, str, str]:
-    name = os.path.basename(root_path) or root_path
+    name = paths.basename(root_path) or root_path
     result = await session.execute(
         text(
             "INSERT INTO sources (kind, name, root_path, status) "
@@ -446,6 +456,7 @@ async def add(
     folder: str,
     relative_paths: list[str],
     version_decisions: Mapping[str, str] | None = None,
+    mount: Path | None = None,
 ) -> AddResult:
     """Record a batch of files as documents under one source.
 
@@ -460,9 +471,12 @@ async def add(
     — an answer already given, from a prior call's `NEW_VERSION` offer on the
     same path. A path with no entry that turns out to be a changed revision is
     offered rather than decided for it.
+
+    `mount` is `Settings.roots_mount`; it is what makes a Windows folder a
+    folder here (`roots.normalise`).
     """
     version_decisions = version_decisions or {}
-    root_path = roots.normalise(folder)
+    root_path = roots.normalise(folder, mount)
 
     if not relative_paths:
         raise AddRefused("No files were named.")
@@ -703,13 +717,13 @@ def _resolve(root_path: str, relative: str, nominated: list[str]) -> tuple[str, 
     the file's real path as well as its literal one so that a symlink dropped
     inside a nominated folder cannot stand in for the whole disk.
     """
-    joined = os.path.normpath(os.path.join(root_path, relative))
-    filename = os.path.basename(joined)
+    joined = paths.join(root_path, relative)
+    filename = paths.basename(joined)
 
     if not roots.contains(root_path, joined):
         return (joined, filename, _outside_reason(root_path))
 
-    real = os.path.realpath(joined)
+    real = os.path.realpath(paths.to_container(joined))
     if roots.first_covering(nominated, joined, real) is None:
         return (joined, filename, _uncovered_reason(joined))
 
@@ -965,8 +979,9 @@ def _peek(path: str) -> tuple[bytes, int]:
     real, and a dump can legitimately be gigabytes (`docs/data-sources.md` §7:
     a 5 GB cap).
     """
-    size = os.stat(path).st_size
-    with open(path, "rb") as handle:
+    local = paths.to_container(path)
+    size = os.stat(local).st_size
+    with open(local, "rb") as handle:
         head = handle.read(HEAD_BYTES)
     return head, size
 
@@ -999,7 +1014,9 @@ class DumpAddResult:
         }
 
 
-async def add_dump(session: AsyncSession, folder: str, relative: str) -> DumpAddResult:
+async def add_dump(
+    session: AsyncSession, folder: str, relative: str, mount: Path | None = None
+) -> DumpAddResult:
     """Register one PostgreSQL dump for import, or refuse it with a way out.
 
     One file, not a batch — `docs/ux/add-source.md` §3 is a single sealed
@@ -1016,7 +1033,7 @@ async def add_dump(session: AsyncSession, folder: str, relative: str) -> DumpAdd
     folder that is not a real, readable directory is wrong about the request
     itself, not about the file inside it.
     """
-    root_path = roots.normalise(folder)
+    root_path = roots.normalise(folder, mount)
     nominated = [item.path for item in await roots.active(session)]
     path, filename, refusal = await asyncio.to_thread(_resolve, root_path, relative, nominated)
     if refusal is not None:
@@ -1289,7 +1306,9 @@ def register_sources(
     async def add_source(body: AddRequest) -> JSONResponse:
         try:
             async with session_scope(factory) as db:
-                result = await add(db, body.folder, body.files, body.version_decisions)
+                result = await add(
+                    db, body.folder, body.files, body.version_decisions, settings.roots_mount
+                )
                 # After validation, before the commit: a request wrong on its
                 # own terms (bad folder, no files) is refused on those terms
                 # without ever needing a database, same as before this ticket
@@ -1319,7 +1338,7 @@ def register_sources(
     async def add_dump_route(body: AddDumpRequest) -> JSONResponse:
         try:
             async with session_scope(factory) as db:
-                outcome = await add_dump(db, body.folder, body.file)
+                outcome = await add_dump(db, body.folder, body.file, settings.roots_mount)
                 if outcome.source_id is not None:
                     await enforce_ingestion_allowed(db, settings)
         except roots.RootRefused as refusal:
