@@ -27,7 +27,7 @@ Now:
 The suite itself did not change: same forty questions, same scoring, and no abstention test was
 touched (C5).
 
-**Version under test:** `0.9.18`. Run `cat VERSION` and update this line if the version has moved
+**Version under test:** `0.9.21`. Run `cat VERSION` and update this line if the version has moved
 on.
 
 **Time:** about 60 minutes with a graphics card, most of it waiting for the suite (it took about
@@ -393,7 +393,7 @@ this one.
   (Part B). The suite indexes the corpus itself and does not coordinate with the indexer.
 - **The corpus's files cannot be opened from Askwell's screens.** They live inside the suite's
   container (see *Read this first*).
-- **Result files from before `0.9.18` have no `clarifications_skipped` key,** and neither does any
+- **Result files from before `0.9.21` have no `clarifications_skipped` key,** and neither does any
   other suite's result file. That is deliberate, so no other result file changes shape.
 - **Five eval-harness tests error before they start** (`eval/tests/test_runner.py`), #883.
 - **The suite's score is below its pass bar of 0.85** on a fresh database (0.82 when this ticket

@@ -86,7 +86,7 @@ _EXPLANATIONS: dict[ProcessState, tuple[str, str | None]] = {
     ),
     ProcessState.MODEL_MISSING: (
         "The assistant has no model file.",
-        "Askwell does not download models. Put a model file at the configured "
+        "Download the models from the setup screen, or put a model file at the configured "
         "path, or point ASKWELL_INFERENCE_MODEL_PATH at one you already have.",
     ),
     ProcessState.LOAD_FAILED: (

@@ -66,7 +66,7 @@ Var FinishTitle
 !define MUI_FINISHPAGE_TEXT_REBOOT "Everything else is installed. Windows needs to restart once to finish enabling the Windows Subsystem for Linux, which Askwell runs in.$\r$\n$\r$\nYou do not need to run Setup again. After the restart, sign in and a window opens by itself, finishes the install, and opens Askwell. It takes a few minutes."
 !define MUI_FINISHPAGE_TEXT_REBOOTNOW "Restart now"
 !define MUI_FINISHPAGE_TEXT_REBOOTLATER "I will restart later"
-!define MUI_FINISHPAGE_TEXT "Askwell is in your Start menu. The first time it opens, it will offer to download its AI model (about 3 GB). After that, it works without an internet connection."
+!define MUI_FINISHPAGE_TEXT "Askwell is in your Start menu. The first time it opens, it will offer to download its AI models (about 5.3 GB). After that, it works without an internet connection."
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_LANGUAGE "English"
 

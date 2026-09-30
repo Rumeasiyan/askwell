@@ -4,11 +4,33 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
-## 0.9.18 - 2026-09-30
+## 0.9.21 - 2026-10-01
 
 `Fixed`: the grounded-answers eval suite finishes on a fresh database (`M11-FIX-TEST-232`).
 
 - **`grounded_qa.v1` no longer waits forever for a clarification nobody answers.** Indexing the fixture corpus raises a clarification, and the first question that read from it waited for an answer the harness never gave, so the suite could only be run on a database where someone had already answered it. It now skips every clarification pending on the corpus after indexing, through the same skip a person uses, and the result file says how many (`clarifications_skipped`). Numbers from two fresh databases are now comparable. The other suites that index the same corpus are #881.
+
+## 0.9.20 - 2026-10-01
+
+`Fixed`: a CSV or spreadsheet sheet with 100,000 rows now loads as a table (`M11-FIX-ING-234`).
+
+- **A large table no longer runs out of time.** Rows were written one at a time, so a 100,000-row sheet or CSV could not finish within the 10-minute limit and never became a table. Rows now go in a thousand at a time. On the build machine, 100,000 rows take about three seconds. The size and time limits are unchanged.
+- **A row that cannot be loaded is still reported by its row number**, and the rows around it still load.
+
+## 0.9.19 - 2026-10-01
+
+`Fixed`: the database no longer restarts itself in the middle of work when the machine is busy (`M11-FIX-DEPLOY-236`).
+
+- **An answer, an indexing run or an eval no longer fails because Postgres reset every connection.** On a loaded machine, a routine health check that ran too long was stopped and left a process behind. Postgres took that process's death for a crash of its own and restarted. It happened four times in three days on the build machine and once on Windows. The databases and Redis now run under a small init process, which cleans up such processes so Postgres never sees them.
+- The containers now need Podman's `catatonit`. Fedora, and Podman on Windows and macOS, always have it. Ubuntu installs it by default. On Ubuntu with recommended packages turned off, the stack will not start until `catatonit` is installed (#888).
+
+## 0.9.18 - 2026-10-01
+
+`Fixed`: a fresh install could never answer a question, on any platform. Found by installing `0.9.15` on a clean Ubuntu 24.04 machine with no manual steps (`M11-FIX-BE-235`):
+
+- **The setup screen downloaded one of the three models Askwell needs.** The embedding and reranking models, without which nothing can be indexed or searched, had no download at all, and no release contains any model. Download now fetches all three, about 5.3 GB, shown as one total and checked against the registry's published checksums.
+- **The downloaded model was saved under a name Askwell did not look for.** It is now saved as the file Askwell loads, and identified by its checksum.
+- **A model that arrived after Askwell started was never noticed** until a restart. Askwell now looks for a missing model every few seconds and starts using it as soon as it is there, whether it was downloaded or placed by hand.
 
 ## 0.9.17 - 2026-09-30
 

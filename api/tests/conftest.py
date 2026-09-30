@@ -28,7 +28,7 @@ from askwell.config import Settings
 
 # Re-exported so every test module sees them without importing anything.
 from tests.conftest_db import app_database_url, database_url  # noqa: F401
-from tests.conftest_sandbox import sandbox_admin_url  # noqa: F401
+from tests.conftest_sandbox import sandbox_admin_url, use_test_prefix  # noqa: F401
 
 
 @pytest.fixture(autouse=True)

@@ -245,3 +245,112 @@ async def test_the_watcher_takes_its_request_from_the_run_directory(
     assert (models / "model.gguf").read_bytes() == _CONTENT
     assert not (run / "fetch-request.json").exists()
     assert _progress(run)["status"] == "ready"
+
+
+# --- M11-FIX-BE-235: one Download fetches every model a tier needs -------------
+
+_EMBED = b"e" * 1024
+_RERANK = b"r" * 2048
+
+
+def _companion(name: str, body: bytes) -> dict[str, Any]:
+    return {
+        "url": f"https://example.invalid/{name}",
+        "filename": name,
+        "sha256": hashlib.sha256(body).hexdigest(),
+        "size_bytes": len(body),
+    }
+
+
+def test_companions_are_fetched_after_the_model_as_one_download(
+    host: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bodies = {"model.gguf": _CONTENT, "embed.gguf": _EMBED, "rerank.gguf": _RERANK}
+    asked: list[str] = []
+
+    def fake_urlopen(req: Any, timeout: float) -> _Response:
+        name = req.full_url.rsplit("/", 1)[1]
+        asked.append(name)
+        return _Response(bodies[name])
+
+    monkeypatch.setattr(host.urllib.request, "urlopen", fake_urlopen)
+    request = _request(
+        companions=[_companion("embed.gguf", _EMBED), _companion("rerank.gguf", _RERANK)]
+    )
+    host._fetch_once(tmp_path, request, tmp_path)
+
+    assert asked == ["model.gguf", "embed.gguf", "rerank.gguf"]
+    for name, body in bodies.items():
+        assert (tmp_path / name).read_bytes() == body
+    progress = _progress(tmp_path)
+    # One download on the screen: the generation model's name, every byte.
+    assert progress["status"] == "ready"
+    assert progress["filename"] == "model.gguf"
+    assert progress["total_bytes"] == len(_CONTENT) + len(_EMBED) + len(_RERANK)
+    assert progress["downloaded_bytes"] == progress["total_bytes"]
+
+
+def test_a_companion_already_in_place_is_not_fetched_again(
+    host: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "embed.gguf").write_bytes(_EMBED)
+    asked: list[str] = []
+
+    def fake_urlopen(req: Any, timeout: float) -> _Response:
+        asked.append(req.full_url.rsplit("/", 1)[1])
+        return _Response(_CONTENT)
+
+    monkeypatch.setattr(host.urllib.request, "urlopen", fake_urlopen)
+    host._fetch_once(tmp_path, _request(companions=[_companion("embed.gguf", _EMBED)]), tmp_path)
+    assert asked == ["model.gguf"]
+    assert _progress(tmp_path)["status"] == "ready"
+
+
+def test_a_companion_with_a_bad_checksum_fails_the_download(
+    host: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_urlopen(req: Any, timeout: float) -> _Response:
+        name = req.full_url.rsplit("/", 1)[1]
+        return _Response(_CONTENT if name == "model.gguf" else b"not the embedding")
+
+    monkeypatch.setattr(host.urllib.request, "urlopen", fake_urlopen)
+    host._fetch_once(tmp_path, _request(companions=[_companion("embed.gguf", _EMBED)]), tmp_path)
+    progress = _progress(tmp_path)
+    assert progress["status"] == "failed"
+    assert "embed.gguf" in progress["error"]
+    assert not (tmp_path / "embed.gguf").exists()
+
+
+def test_a_companion_name_with_a_directory_is_refused(
+    host: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(host.urllib.request, "urlopen", lambda req, timeout: _Response(_CONTENT))
+    bad = _companion("../outside.gguf", _EMBED)
+    host._fetch_once(tmp_path, _request(companions=[bad]), tmp_path)
+    assert _progress(tmp_path)["status"] == "failed"
+    assert not (tmp_path.parent / "outside.gguf").exists()
+
+
+def test_a_role_whose_model_is_missing_starts_once_the_file_arrives(
+    host: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On a clean Ubuntu VM the roles reported `model_missing` at start and
+    never looked again, so a finished download changed nothing."""
+    model = tmp_path / "model.gguf"
+    monkeypatch.setattr(host, "MODEL_RECHECK_SECONDS", 0.01)
+
+    class _Role:
+        def __init__(self) -> None:
+            self.model = model
+
+    role = _Role()
+    waited = host.Supervisor.wait_for_model
+
+    async def scenario() -> None:
+        task = asyncio.create_task(waited(role))
+        await asyncio.sleep(0.05)
+        assert not task.done()
+        model.write_bytes(b"model")
+        await asyncio.wait_for(task, timeout=1)
+
+    asyncio.run(scenario())

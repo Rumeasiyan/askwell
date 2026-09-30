@@ -6,20 +6,42 @@ itself, and that is exactly the behaviour under test. What this fixture
 guarantees is the same thing `conftest_db.py` guarantees for the main
 database: a test run never depends on state a previous run left behind, and a
 crashed run's debris does not accumulate forever.
+
+`test-db` runs against the stack's own sandbox instance, which also holds the
+development database's imported dumps, CSVs and workbook sheets, and any
+running eval's. So every database a test creates carries `TEST_PREFIX`, never
+the product's `askwell.sandbox.PREFIX`, and `_sweep` matches only
+`TEST_PREFIX` (#858). `use_test_prefix` swaps the prefix inside
+`askwell.sandbox` for the whole session, so product code under test —
+`generate_name`, `known_databases`, `reclaim_orphans`, the name check behind
+`InvalidSandboxName` — sees only test databases. The product's names and
+roles are untouched outside the test process (C3).
 """
 
 import os
+import re
 import time
 from collections.abc import Iterator
 
 import psycopg
 import pytest
 
-from askwell.sandbox import PREFIX
+from askwell import sandbox
 
 SERVER_URL = "TEST_SANDBOX_DATABASE_URL"
 OWNER_PASSWORD = "TEST_SANDBOX_OWNER_PASSWORD"
 READONLY_PASSWORD = "TEST_SANDBOX_READONLY_PASSWORD"
+
+# The product's own naming, captured before `use_test_prefix` replaces it.
+PRODUCT_PREFIX = sandbox.PREFIX
+PRODUCT_NAME_RE = sandbox._NAME_RE
+
+# Deliberately not `askwell_sbx` followed by anything: the product enumerates
+# its databases with `LIKE 'askwell_sbx_%'`, where `_` matches any character,
+# so `askwell_sbxtest_` would still be found — and dropped — by a stack
+# worker's `reclaim_orphans` in the middle of a test run.
+TEST_PREFIX = "askwell_test_sbx_"
+TEST_NAME_RE = re.compile(rf"^{re.escape(TEST_PREFIX)}[0-9a-f]{{32}}$")
 
 # Same reasoning and the same figure as conftest_db.py's ORPHAN_AGE_SECONDS:
 # long enough that no realistic test run is still using one of these.
@@ -37,9 +59,15 @@ def _require(name: str) -> str:
     return value
 
 
+def _like_prefix(prefix: str) -> str:
+    """A `LIKE` pattern matching `prefix` literally — `_` is a wildcard."""
+    return prefix.replace("\\", "\\\\").replace("_", "\\_").replace("%", "\\%") + "%"
+
+
 def _sweep(admin: psycopg.Connection[tuple[object, ...]]) -> None:
-    """Drop `askwell_sbx_*` databases this module's own naming did not create
-    this run and that are old enough no other run could still be using.
+    """Drop `TEST_PREFIX` databases no test run has connected to recently —
+    a crashed earlier run's leftovers. Nothing else on the instance: a
+    product-named database belongs to the stack or an eval, however idle.
 
     Age is not derivable from the name the way `conftest_db.py`'s is —
     `generate_name()` carries no timestamp, deliberately, since a predictable
@@ -49,7 +77,8 @@ def _sweep(admin: psycopg.Connection[tuple[object, ...]]) -> None:
     """
     cutoff = time.time() - ORPHAN_AGE_SECONDS
     rows = admin.execute(
-        "SELECT datname FROM pg_database WHERE datname LIKE %s", (f"{PREFIX}%",)
+        "SELECT datname FROM pg_database WHERE datname LIKE %s",
+        (_like_prefix(TEST_PREFIX),),
     ).fetchall()
     for (name,) in rows:
         stat = admin.execute(
@@ -64,6 +93,17 @@ def _sweep(admin: psycopg.Connection[tuple[object, ...]]) -> None:
             admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
         except psycopg.errors.ObjectInUse:  # pragma: no cover - raced with a live run
             continue
+
+
+@pytest.fixture(scope="session", autouse=True)
+def use_test_prefix() -> Iterator[None]:
+    """Every sandbox name product code builds or accepts, this session, is a
+    test name. Autouse so no test can create a product-named database by
+    forgetting to ask for it."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(sandbox, "PREFIX", TEST_PREFIX)
+        patch.setattr(sandbox, "_NAME_RE", TEST_NAME_RE)
+        yield
 
 
 @pytest.fixture(scope="session")

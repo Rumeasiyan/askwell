@@ -170,6 +170,59 @@ async def test_malformed_rows_are_reported_by_row_number_not_dropped_silently(
     assert "oops" in result.failed_rows[0].reason
 
 
+async def test_a_100k_row_csv_loads_under_the_default_caps(
+    factory: async_sessionmaker[AsyncSession], table_settings: Settings, tmp_path: Path
+) -> None:
+    """`M11-FIX-ING-234`, #862: the CSV counterpart of the 100k-row sheet,
+    through the same `_load_table`, under caps nobody changed."""
+    csv_path = tmp_path / "ledger.csv"
+    csv_path.write_text("name,amount\n" + "".join(f"row{i},{i}\n" for i in range(100_000)))
+    source_id = await _make_source(factory, "ledger", csv_path)
+
+    [result] = await process_table_source(factory, table_settings, source_id, str(csv_path))
+
+    assert result.row_count == 100_000
+    assert result.failed_rows == []
+    status, database = await _source_row(factory, source_id)
+    assert status == "ready"
+    assert database is not None
+    admin_url = table_settings.sandbox_database_url.get_secret_value()
+    with psycopg.connect(admin_url.rsplit("/", 1)[0] + f"/{database}", autocommit=True) as conn:
+        counted = conn.execute("SELECT count(*), sum(amount) FROM ledger_csv").fetchone()
+    assert counted == (100_000, sum(range(100_000)))
+
+
+async def test_a_row_the_database_refuses_is_reported_by_row_number_and_its_batch_still_loads(
+    factory: async_sessionmaker[AsyncSession], table_settings: Settings, tmp_path: Path
+) -> None:
+    """`M11-FIX-ING-234`'s edge case. A value Python casts but Postgres
+    refuses (an integer past `bigint`) fails its whole batch, which is then
+    retried row by row: that row alone is reported, with its number, and
+    every other row of the batch is loaded. A Python cast failure in the same
+    batch is reported alongside it, in row order."""
+    rows = [f"row{i},{i}" for i in range(2_500)]
+    rows[1_200] = "row1200,99999999999999999999"  # row 1202, counting the header
+    rows[1_500] = "row1500,oops"  # row 1502
+    csv_path = tmp_path / "ledger.csv"
+    csv_path.write_text("name,amount\n" + "\n".join(rows) + "\n")
+    source_id = await _make_source(factory, "ledger", csv_path)
+
+    [result] = await process_table_source(factory, table_settings, source_id, str(csv_path))
+
+    assert [failure.row_number for failure in result.failed_rows] == [1_202, 1_502]
+    assert "out of range" in result.failed_rows[0].reason
+    assert "oops" in result.failed_rows[1].reason
+    assert result.row_count == 2_498
+    _, database = await _source_row(factory, source_id)
+    assert database is not None
+    admin_url = table_settings.sandbox_database_url.get_secret_value()
+    with psycopg.connect(admin_url.rsplit("/", 1)[0] + f"/{database}", autocommit=True) as conn:
+        names = {name for (name,) in conn.execute("SELECT name FROM ledger_csv").fetchall()}
+    assert len(names) == 2_498
+    assert {"row1199", "row1201", "row1499", "row1501"} <= names
+    assert not {"row1200", "row1500"} & names
+
+
 async def test_an_empty_file_is_refused_with_the_reason(
     factory: async_sessionmaker[AsyncSession], table_settings: Settings, tmp_path: Path
 ) -> None:
@@ -215,6 +268,45 @@ async def test_the_size_cap_aborts_the_load_and_drops_the_database(
         assert row[0] == "attention"
         assert row[1] is None
         assert "size cap" in row[2]
+
+
+async def test_a_batch_that_crosses_the_size_cap_mid_load_aborts_it(
+    factory: async_sessionmaker[AsyncSession], table_settings: Settings, tmp_path: Path
+) -> None:
+    """`M11-FIX-ING-234`'s edge case. The 1 KiB cap above is crossed before a
+    single row lands (an empty database is megabytes), so it cannot tell a
+    per-batch check from none. Here the cap sits just above an empty
+    database's size: the first batches fit, a later one crosses it inside the
+    uncommitted transaction, and the load stops on the size cap."""
+    from tests.conftest_sandbox import TEST_PREFIX
+
+    admin_url = table_settings.sandbox_database_url.get_secret_value()
+    probe = f"{TEST_PREFIX}{uuid.uuid4().hex}"
+    with psycopg.connect(admin_url, autocommit=True) as admin:
+        admin.execute(f'CREATE DATABASE "{probe}"')
+        try:
+            row = admin.execute("SELECT pg_database_size(%s)", (probe,)).fetchone()
+        finally:
+            admin.execute(f'DROP DATABASE "{probe}"')
+    assert row is not None
+    empty_size = int(row[0])
+
+    # ~130 bytes a row: one 1,000-row batch is ~130 KiB, well under the
+    # 512 KiB margin, and 20,000 rows are ~2.6 MB, well over it.
+    wide = "x" * 100
+    csv_path = tmp_path / "wide.csv"
+    csv_path.write_text("name\n" + "".join(f"{wide}{i}\n" for i in range(20_000)))
+    source_id = await _make_source(factory, "wide", csv_path)
+    async with factory() as session:
+        await set_dump_size_cap_bytes(session, empty_size + 512 * 1024)
+        await session.commit()
+
+    with pytest.raises(TableCapExceeded) as exc_info:
+        await process_table_source(factory, table_settings, source_id, str(csv_path))
+    assert exc_info.value.cap == "size"
+    status, database = await _source_row(factory, source_id)
+    assert status == "attention"
+    assert database is None
 
 
 async def test_answering_a_date_format_clarification_reloads_the_column_as_a_real_date(
@@ -634,26 +726,24 @@ async def test_a_sheet_over_the_size_cap_fails_without_failing_the_document(
     assert failed["cap"] == "size"
 
 
-async def test_a_100k_row_sheet_is_stopped_by_the_time_cap_without_failing_the_document(
+async def test_a_sheet_over_the_time_cap_is_stopped_without_failing_the_document(
     factory: async_sessionmaker[AsyncSession], table_settings: Settings, tmp_path: Path
 ) -> None:
-    """The ticket's large-sheet edge case, at its real size: the load is
-    bounded by the same time cap a CSV's is. A sheet this size does not load
-    within the default cap on the build host (rows go in one at a time, the
-    CSV loader's own path, #862), so the cap is lowered here to keep the
-    test short; what is asserted is that the load stops, cleans up after
-    itself, and records why."""
+    """The time cap still bounds a sheet's load, checked between batches
+    (`M11-FIX-ING-234`): the load stops, cleans up after itself, and records
+    why. The cap is set far below one batch's insert time so the first check
+    trips it."""
     from askwell.dump_import import set_dump_time_cap_seconds
 
     root = tmp_path / "work"
     workbook = root / "large.xlsx"
     _write_workbook(
-        workbook, {"Ledger": [["name", "amount"]] + [[f"row{i}", i] for i in range(100_000)]}
+        workbook, {"Ledger": [["name", "amount"]] + [[f"row{i}", i] for i in range(5_000)]}
     )
     source_id = await _folder_source(factory, root)
     document_id = await _workbook_document(factory, source_id, workbook)
     async with factory() as session:
-        await set_dump_time_cap_seconds(session, 2.0)
+        await set_dump_time_cap_seconds(session, 0.001)
         await session.commit()
 
     outcome = await load_workbook_tables(factory, table_settings, source_id, document_id)
@@ -667,6 +757,36 @@ async def test_a_100k_row_sheet_is_stopped_by_the_time_cap_without_failing_the_d
     [failed] = await _audit(factory, WORKBOOK_TABLES_FAILED)
     assert failed["source_id"] == str(source_id)
     assert failed["cap"] == "time"
+
+
+async def test_a_100k_row_sheet_loads_under_the_default_caps(
+    factory: async_sessionmaker[AsyncSession], table_settings: Settings, tmp_path: Path
+) -> None:
+    """`M11-FIX-ING-234`, #862: a sheet this size used to run past the
+    default 600 s time cap, one autocommitted insert per row. Nothing here
+    lowers or raises a cap."""
+    root = tmp_path / "work"
+    workbook = root / "large.xlsx"
+    _write_workbook(
+        workbook, {"Ledger": [["name", "amount"]] + [[f"row{i}", i] for i in range(100_000)]}
+    )
+    source_id = await _folder_source(factory, root)
+    document_id = await _workbook_document(factory, source_id, workbook)
+
+    outcome = await load_workbook_tables(factory, table_settings, source_id, document_id)
+
+    assert outcome.failure is None
+    [result] = outcome.tables
+    assert result.row_count == 100_000
+    assert result.failed_rows == []
+    _, database = await _source_row(factory, source_id)
+    assert database is not None
+    admin_url = table_settings.sandbox_database_url.get_secret_value()
+    with psycopg.connect(admin_url.rsplit("/", 1)[0] + f"/{database}", autocommit=True) as conn:
+        counted = conn.execute(
+            f"SELECT count(*), sum(amount) FROM {result.sql_table_name}"
+        ).fetchone()
+    assert counted == (100_000, sum(range(100_000)))
 
 
 async def test_deleting_a_workbook_takes_its_tables_out_of_every_answer_then_drops_them(

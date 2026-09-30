@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from askwell import models_catalog
 from askwell.model_download import (
     FETCH_PROGRESS,
     FETCH_REQUEST,
@@ -27,6 +28,9 @@ from askwell.model_download import (
     NoDiskSpace,
 )
 from askwell.models_catalog import CATALOG, ModelSpec
+
+# Taken before any fixture replaces it.
+_REAL_COMPANIONS = list(models_catalog.COMPANIONS)
 
 _CONTENT = b"x" * 4096
 _SPEC = ModelSpec(
@@ -57,6 +61,9 @@ _SPEC_OTHER = ModelSpec(
 
 @pytest.fixture(autouse=True)
 def _patch_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The tests above `M11-FIX-BE-235` are about one file; the companions
+    # have their own tests at the end, with their own stand-ins.
+    monkeypatch.setattr(models_catalog, "COMPANIONS", [])
     monkeypatch.setitem(CATALOG, "light", _SPEC)
     # Mirrors the real catalog: "standard" aliases to the same `ModelSpec` as
     # "light", and that spec's own `.tier` field says "light" — exactly the
@@ -395,3 +402,78 @@ def test_alternatives_are_named_in_the_folder_on_the_users_machine(tmp_path: Pat
     (models / "other.gguf").write_bytes(_CONTENT_OTHER)
     alternatives = manager.available_alternatives()
     assert [a["path"] for a in alternatives] == ["~/.local/share/askwell/models/other.gguf"]
+
+
+# --- M11-FIX-BE-235 -------------------------------------------------------------
+
+_EMBED = ModelSpec(
+    tier="embedding",
+    display_name="Test embedding",
+    repo="test/embed",
+    filename="embed.gguf",
+    url="https://example.invalid/embed.gguf",
+    size_bytes=1000,
+    sha256="e" * 64,
+)
+
+
+async def test_the_request_names_the_file_the_supervisor_loads_not_the_registry_name(
+    tmp_path: Path,
+) -> None:
+    """The catalog's file is `Qwen_Qwen3.5-4B-…`, every `.env` says
+    `Qwen3.5-4B-…`; a verified download under the first name was never found."""
+    manager = ModelDownloadManager(tmp_path / "configured-name.gguf")
+    await manager.start("light")
+    request = json.loads((tmp_path / FETCH_REQUEST).read_text(encoding="utf-8"))
+    assert request["filename"] == "configured-name.gguf"
+    assert request["sha256"] == _SPEC.sha256
+
+
+async def test_one_download_asks_for_the_companions_and_counts_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(models_catalog, "COMPANIONS", [_EMBED])
+    manager = _manager(tmp_path)
+    progress = await manager.start("light")
+    assert progress.total_bytes == _SPEC.size_bytes + _EMBED.size_bytes
+
+    request = json.loads((tmp_path / FETCH_REQUEST).read_text(encoding="utf-8"))
+    assert request["companions"] == [
+        {
+            "url": _EMBED.url,
+            "filename": "embed.gguf",
+            "sha256": _EMBED.sha256,
+            "size_bytes": _EMBED.size_bytes,
+        }
+    ]
+
+
+def test_ready_only_when_every_model_is_in_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(models_catalog, "COMPANIONS", [_EMBED])
+    manager = _manager(tmp_path)
+    (tmp_path / "model.gguf").write_bytes(_CONTENT)
+    assert manager.snapshot("light").status != DownloadStatus.READY
+    (tmp_path / "embed.gguf").write_bytes(b"x" * _EMBED.size_bytes)
+    assert manager.snapshot("light").status == DownloadStatus.READY
+
+
+def test_disk_space_counts_the_companions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(models_catalog, "COMPANIONS", [_EMBED])
+    _, needed_with, _ = _manager(tmp_path).disk_space_needed("light")
+    monkeypatch.setattr(models_catalog, "COMPANIONS", [])
+    _, needed_without, _ = _manager(tmp_path).disk_space_needed("light")
+    assert needed_with - needed_without == _EMBED.size_bytes
+
+
+def test_the_real_companions_are_the_models_the_supervisor_loads() -> None:
+    """Registry-verified on 2026-09-30; names equal `.env.example`'s."""
+    names = {c.filename for c in _REAL_COMPANIONS}
+    assert names == {"bge-m3-FP16.gguf", "bge-reranker-v2-m3-FP16.gguf"}
+    env = (Path(__file__).resolve().parents[2] / ".env.example").read_text(encoding="utf-8")
+    for name in names:
+        assert f"/{name}" in env
+    for c in _REAL_COMPANIONS:
+        assert len(c.sha256) == 64 and c.size_bytes > 1_000_000_000
+        assert c.url.endswith("/" + c.filename)

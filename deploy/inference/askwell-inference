@@ -65,6 +65,8 @@ STOPPED = "stopped"
 # would confidently report an assistant that is not there, which is the worst
 # thing this surface can do.
 HEARTBEAT_SECONDS = 10
+# How often a role whose model is missing looks for it again.
+MODEL_RECHECK_SECONDS = 5
 
 # Backoff between restarts, then it stops. Restarting forever turns one problem
 # into a log nobody reads and a machine that never settles, and by then the
@@ -433,14 +435,19 @@ class Supervisor:
                     devices.append(entry)
         return devices
 
+    async def wait_for_model(self) -> None:
+        while not self.model.is_file():
+            await asyncio.sleep(MODEL_RECHECK_SECONDS)
+
     async def start_once(self) -> bool:
         if not self.model.is_file():
-            # Never a crash loop. Retrying cannot help: the file is not there,
-            # and only the user can put it there.
+            # Never a crash loop: the caller waits for the file instead
+            # (`wait_for_model`), and starts the role the moment it arrives.
             self._write(
                 MODEL_MISSING,
-                f"No model file at {self.model}. Askwell does not download "
-                f"models. Put one there, or set ASKWELL_INFERENCE_MODEL_PATH.",
+                f"No model file at {self.model}. Download it from Askwell's setup "
+                f"screen, or put the file there yourself; Askwell starts it as "
+                f"soon as it appears.",
             )
             return False
 
@@ -667,7 +674,21 @@ class Supervisor:
                     ready = True
                 else:
                     if not await self.start_once():
-                        return
+                        if self.model.is_file():
+                            # Not a missing model (the binary, say): nothing
+                            # this loop can wait for.
+                            return
+                        # A missing model is waited for, not given up on
+                        # (`M11-FIX-BE-235`). It arrives by the setup screen's
+                        # download or by the user placing it, and either way
+                        # this role must start without anyone restarting
+                        # Askwell. Checking a file's existence every few
+                        # seconds is not a crash loop. Settled first: the
+                        # other roles wait on it, and a missing generation
+                        # model must not hold retrieval back.
+                        self.settled.set()
+                        await self.wait_for_model()
+                        continue
                     ready = await self.wait_until_ready()
 
                 if ready:
@@ -889,35 +910,68 @@ def _fetch_write(signal_dir: Path, payload: dict) -> None:
 
 
 def _fetch_once(models_dir: Path, request: dict, signal_dir: Path | None = None) -> None:
-    """One model, resumable, verified against the checksum the API sent.
+    """Every file one Download asked for, resumable, each verified against the
+    checksum the API sent.
+
+    The request names the generation model and, since `M11-FIX-BE-235`, its
+    `companions`: the embedding and reranking models every tier needs, which
+    had no download at all before. They are fetched one after another and
+    reported as one download: `filename` stays the generation model's, so the
+    API recognises its own request, and the bytes are counted across all of
+    them, because the user pressed one button.
 
     The checksum is not optional and is not computed here: it comes from the
     request, which the API took from a registry lookup. A file that arrives
     with the wrong bytes is deleted rather than kept, because a half-right model
     fails in ways that look like bad answers rather than like a bad download.
     """
-    url = str(request["url"])
-    filename = str(request["filename"])
-    expected = str(request["sha256"])
-    total = int(request["size_bytes"])
-    target = models_dir / filename
-    part = target.with_suffix(target.suffix + ".part")
+    files = [request] + [dict(c) for c in request.get("companions") or []]
+    grand_total = sum(int(f["size_bytes"]) for f in files)
+    main_filename = str(request["filename"])
     signals = signal_dir if signal_dir is not None else models_dir
-    cancel = signals / FETCH_CANCEL
+    completed = 0
 
     def publish(status: str, done: int, error: str | None = None) -> None:
         _fetch_write(signals, {
-            "filename": filename,
+            "filename": main_filename,
             "status": status,
-            "downloaded_bytes": done,
-            "total_bytes": total,
+            "downloaded_bytes": completed + done,
+            "total_bytes": grand_total,
             "error": error,
             "updated_at": time.time(),
         })
 
+    for entry in files:
+        if not _fetch_file(models_dir, entry, signals, publish):
+            return
+        completed += int(entry["size_bytes"])
+    completed = 0
+    publish("ready", grand_total)
+
+
+def _fetch_file(
+    models_dir: Path,
+    entry: dict,
+    signals: Path,
+    publish: Callable[..., None],
+) -> bool:
+    """One file of a download. True once it is in place and verified; False
+    after publishing why not (paused, failed)."""
+    url = str(entry["url"])
+    filename = str(entry["filename"])
+    expected = str(entry["sha256"])
+    total = int(entry["size_bytes"])
+    target = _model_in(models_dir, filename)
+    if target is None:
+        # A name with a directory in it would let a request file write
+        # anywhere this process can.
+        publish("failed", 0, f"{filename!r} is not a file name in the models directory.")
+        return False
+    part = target.with_suffix(target.suffix + ".part")
+    cancel = signals / FETCH_CANCEL
+
     if target.is_file() and target.stat().st_size == total:
-        publish("ready", total)
-        return
+        return True
 
     done = part.stat().st_size if part.is_file() else 0
     if done > total:
@@ -940,7 +994,7 @@ def _fetch_once(models_dir: Path, request: dict, signal_dir: Path | None = None)
                     if cancel.exists():
                         cancel.unlink(missing_ok=True)
                         publish("paused", done)
-                        return
+                        return False
                     chunk = response.read(FETCH_CHUNK)
                     if not chunk:
                         break
@@ -949,7 +1003,7 @@ def _fetch_once(models_dir: Path, request: dict, signal_dir: Path | None = None)
                     publish("downloading", done)
     except Exception as error:  # noqa: BLE001 - a failed download is reported, never raised
         publish("failed", done, f"{type(error).__name__}: {error}. Nothing already downloaded was lost.")
-        return
+        return False
 
     digest = hashlib.sha256()
     with open(part, "rb") as handle:
@@ -957,11 +1011,11 @@ def _fetch_once(models_dir: Path, request: dict, signal_dir: Path | None = None)
             digest.update(block)
     if digest.hexdigest() != expected:
         part.unlink(missing_ok=True)
-        publish("failed", 0, "The downloaded file did not match its published checksum, so it was discarded.")
-        return
+        publish("failed", 0, f"The downloaded {filename} did not match its published checksum, so it was discarded.")
+        return False
 
     os.replace(part, target)
-    publish("ready", total)
+    return True
 
 
 async def watch_for_fetch_requests(
