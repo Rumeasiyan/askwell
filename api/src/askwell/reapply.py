@@ -449,11 +449,13 @@ async def _reembed_chunk(session: AsyncSession, settings: Settings, chunk_id: uu
 
 async def _promote_schema_note(
     session: AsyncSession, note_id: uuid.UUID, answer: str
-) -> uuid.UUID | None:
-    """Returns the note's `source_id` on a real promotion, `None` when there
-    was nothing left to promote — the caller (`_process_item`) uses this to
-    decide whether a `date_format` answer has an actual table left to
-    `askwell.table_load.reload_source` against."""
+) -> tuple[uuid.UUID, str] | None:
+    """Returns the note's `source_id` and `table_name` on a real promotion,
+    `None` when there was nothing left to promote — the caller
+    (`_process_item`) uses this to decide whether a `date_format` answer has
+    an actual table left to `askwell.table_load.reload_source` against. The
+    table name is what says which workbook of a folder to reload
+    (`M11-FIX-ING-228`)."""
     from askwell.memory import write_schema_note
 
     row = (
@@ -480,7 +482,7 @@ async def _promote_schema_note(
         origin="user",
         confidence=1.0,
     )
-    return source_id
+    return source_id, table_name
 
 
 async def _dismiss_conflict(session: AsyncSession, clarification_id: uuid.UUID) -> None:
@@ -517,14 +519,14 @@ async def _process_item(
     answer: str,
     trigger: str | None,
 ) -> None:
-    reload_source_id: uuid.UUID | None = None
+    reload_target: tuple[uuid.UUID, str] | None = None
     async with session_scope(sessions) as session:
         if kind == "chunk":
             await _reembed_chunk(session, settings, target_id)
         elif kind == "schema_note":
-            promoted_source_id = await _promote_schema_note(session, target_id, answer)
-            if promoted_source_id is not None and trigger == "date_format":
-                reload_source_id = promoted_source_id
+            promoted = await _promote_schema_note(session, target_id, answer)
+            if promoted is not None and trigger == "date_format":
+                reload_target = promoted
         elif kind == "conflict":
             await _dismiss_conflict(session, target_id)
         await session.execute(
@@ -532,7 +534,7 @@ async def _process_item(
             {"id": item_id},
         )
 
-    if reload_source_id is not None:
+    if reload_target is not None:
         # Outside the item's own transaction, deliberately: `reload_source`
         # (`askwell.table_load`, `M4-CSV-ING-094`) does its own DDL against
         # the sandbox instance — a different Postgres instance from the one
@@ -541,7 +543,7 @@ async def _process_item(
         # so it must not be nested inside a transaction of its own.
         from askwell import table_load
 
-        await table_load.reload_source(sessions, settings, reload_source_id)
+        await table_load.reload_source(sessions, settings, *reload_target)
 
 
 async def run_job(

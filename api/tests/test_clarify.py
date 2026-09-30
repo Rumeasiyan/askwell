@@ -24,11 +24,11 @@ from askwell.clarify import (
     _defined_inline,
     _evaluate,
     _normalize_filename,
-    _rank_candidates,
     _unresolved_occurrences,
     column_distribution_evidence,
     get_clarification_cap,
     raise_candidates,
+    rank_candidates,
     set_clarification_cap,
 )
 from askwell.config import Settings
@@ -670,12 +670,12 @@ def _date_format_candidate(subject: str, row_count: int = 10) -> Candidate:
 
 
 def test_a_contradiction_outranks_an_abbreviation() -> None:
-    ranked = _rank_candidates([_abbrev_candidate("RFQ", 10), _contradiction_candidate("term")])
+    ranked = rank_candidates([_abbrev_candidate("RFQ", 10), _contradiction_candidate("term")])
     assert [c.trigger for c in ranked] == ["contradiction", "abbreviation"]
 
 
 def test_date_format_ranks_second_only_to_contradiction() -> None:
-    ranked = _rank_candidates(
+    ranked = rank_candidates(
         [
             _abbrev_candidate("RFQ", 10),
             _date_format_candidate("dt_reg"),
@@ -686,15 +686,15 @@ def test_date_format_ranks_second_only_to_contradiction() -> None:
 
 
 def test_within_a_tier_higher_volume_ranks_first() -> None:
-    ranked = _rank_candidates([_abbrev_candidate("A", 2), _abbrev_candidate("B", 9)])
+    ranked = rank_candidates([_abbrev_candidate("A", 2), _abbrev_candidate("B", 9)])
     assert [c.subject for c in ranked] == ["B", "A"]
 
 
 def test_ties_break_deterministically_by_subject() -> None:
     a = [_abbrev_candidate("B", 5), _abbrev_candidate("A", 5)]
     b = [_abbrev_candidate("A", 5), _abbrev_candidate("B", 5)]
-    assert [c.subject for c in _rank_candidates(a)] == [c.subject for c in _rank_candidates(b)]
-    assert [c.subject for c in _rank_candidates(a)] == ["A", "B"]
+    assert [c.subject for c in rank_candidates(a)] == [c.subject for c in rank_candidates(b)]
+    assert [c.subject for c in rank_candidates(a)] == ["A", "B"]
 
 
 @pytest.mark.asyncio
@@ -1166,7 +1166,112 @@ async def test_the_same_time_in_different_case_is_not_a_conflict(session: AsyncS
 
 
 def test_a_conflict_outranks_a_term_that_passes_the_floor() -> None:
-    ranked = _rank_candidates(
+    ranked = rank_candidates(
         [_abbrev_candidate("PM", 50), _contradiction_candidate("retail stores close")]
     )
     assert [c.trigger for c in ranked] == ["contradiction", "abbreviation"]
+
+
+# --- a folder's workbook questions beside its document questions (#851) -------
+
+
+async def _workbook_question(
+    session: AsyncSession, source_id: uuid.UUID, *, status: str = "pending"
+) -> None:
+    """A sheet's question, as `table_infer.raise_workbook_questions` writes it:
+    its evidence names the workbook it was asked about."""
+    await session.execute(
+        text(
+            "INSERT INTO clarifications "
+            "(id, source_id, subject, question, evidence, status, answer, answered_at) "
+            "VALUES (:id, :source_id, 'Placed', 'which?', CAST(:evidence AS jsonb), :status, "
+            ":answer, CASE WHEN CAST(:answer AS text) IS NULL THEN NULL ELSE now() END)"
+        ),
+        {
+            "id": uuid.uuid4(),
+            "source_id": source_id,
+            "evidence": (
+                '{"trigger": "date_format", "table_name": "orders.xlsx:North", '
+                '"workbook": "orders.xlsx"}'
+            ),
+            "status": status,
+            "answer": "DD/MM/YYYY (day first)" if status == "answered" else None,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_sheet_question_does_not_stop_a_folders_document_questions(
+    session: AsyncSession,
+) -> None:
+    """`M11-FIX-ING-228`. A workbook's sheets are asked about when the
+    workbook loads, before the folder's documents are scanned. Its question
+    is about that workbook only, so it must not count as the folder having
+    been scanned."""
+    source_id = await _source(session)
+    await _workbook_question(session, source_id)
+    document_id = await _document(session, source_id, "tender.pdf")
+    await _chunk(session, document_id, "The RFQ closes Friday.")
+    await _chunk(session, document_id, "Submit the RFQ to procurement.")
+
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
+
+    assert result.raised == 1
+    subjects = (
+        await session.execute(text("SELECT subject FROM clarifications ORDER BY subject"))
+    ).scalars()
+    assert list(subjects) == ["Placed", "RFQ"]
+
+
+@pytest.mark.asyncio
+async def test_a_folders_document_questions_share_the_cap_with_its_pending_sheet_questions(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session)
+    await set_clarification_cap(session, 2)
+    await _workbook_question(session, source_id)
+    document_id = await _document(session, source_id, "notes.pdf")
+    for token, repeats in (("AAA", 3), ("BBB", 2)):
+        for _ in range(repeats):
+            await _chunk(session, document_id, f"The {token} applies here.")
+
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
+
+    assert result == RaiseResult(raised=1, inferred=1, dropped=0, capped=1)
+    pending = (
+        await session.execute(
+            text("SELECT subject FROM clarifications WHERE status = 'pending' ORDER BY subject")
+        )
+    ).scalars()
+    assert list(pending) == ["AAA", "Placed"]
+    fact = (await session.execute(text("SELECT fact FROM memory"))).scalar_one()
+    assert "1 question(s) already waiting" in fact
+
+
+@pytest.mark.asyncio
+async def test_an_answered_sheet_question_does_not_use_up_the_cap(session: AsyncSession) -> None:
+    source_id = await _source(session)
+    await set_clarification_cap(session, 1)
+    await _workbook_question(session, source_id, status="answered")
+    document_id = await _document(session, source_id, "notes.pdf")
+    await _chunk(session, document_id, "The AAA applies. The AAA again.")
+
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
+
+    assert result.raised == 1
+
+
+@pytest.mark.asyncio
+async def test_a_csv_source_keeps_its_once_per_source_guard(session: AsyncSession) -> None:
+    source_id = uuid.uuid4()
+    await session.execute(
+        text("INSERT INTO sources (id, kind, name) VALUES (:id, 'csv', 'a table')"),
+        {"id": source_id},
+    )
+    await _workbook_question(session, source_id)
+    document_id = await _document(session, source_id, "tender.pdf")
+    await _chunk(session, document_id, "The RFQ closes Friday. The RFQ again.")
+
+    result = await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
+
+    assert result == RaiseResult(raised=0, inferred=0, dropped=0)

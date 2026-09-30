@@ -790,3 +790,284 @@ async def test_a_sheets_inferred_notes_stay_out_of_a_document_answer_and_in_sql_
     assert [(note.origin, note.description) for note in for_documents.notes] == [
         ("user", "Q1 revenue is in US dollars.")
     ]
+
+
+# --- a workbook's sheets ask about what they could not type (`M11-FIX-ING-228`) ---
+
+
+# Both parts of every `Placed` value are `<= 12`, so no value settles DD/MM
+# against MM/DD and the column loads as `text` until someone says which.
+_ORDERS: list[list[object]] = [
+    ["Customer", "Placed", "Units"],
+    ["Anna", "03/04/2025", 4],
+    ["Ben", "05/06/2025", 7],
+    ["Cara", "11/12/2025", 2],
+]
+
+
+async def _document_with_an_abbreviation(
+    factory: async_sessionmaker[AsyncSession], source_id: uuid.UUID, root: Path
+) -> None:
+    async with factory() as session:
+        document_id = (
+            await session.execute(
+                text(
+                    "INSERT INTO documents (source_id, filename, path, mime, sha256, status) "
+                    "VALUES (:source_id, 'tender.pdf', :path, 'application/pdf', :sha256, "
+                    "'ready') RETURNING id"
+                ),
+                {
+                    "source_id": source_id,
+                    "path": str(root / "tender.pdf"),
+                    "sha256": hashlib.sha256(os.urandom(8)).hexdigest(),
+                },
+            )
+        ).scalar_one()
+        for ordinal, content in enumerate(
+            ("The RFQ closes Friday.", "Submit the RFQ to procurement.")
+        ):
+            await session.execute(
+                text(
+                    "INSERT INTO chunks (id, document_id, ordinal, content) "
+                    "VALUES (:id, :document_id, :ordinal, :content)"
+                ),
+                {
+                    "id": uuid.uuid4(),
+                    "document_id": document_id,
+                    "ordinal": ordinal,
+                    "content": content,
+                },
+            )
+        await session.commit()
+
+
+async def _raise_document_questions(
+    factory: async_sessionmaker[AsyncSession], settings: Settings, source_id: uuid.UUID
+) -> None:
+    from askwell.clarify import raise_candidates
+
+    async with factory() as session:
+        await raise_candidates(session, source_id, 0.6, settings)
+        await session.commit()
+
+
+async def _questions(
+    factory: async_sessionmaker[AsyncSession], source_id: uuid.UUID
+) -> list[tuple[str, str, str | None]]:
+    async with factory() as session:
+        rows = await session.execute(
+            text(
+                "SELECT subject, question, evidence->>'workbook' FROM clarifications "
+                "WHERE source_id = :id ORDER BY subject"
+            ),
+            {"id": source_id},
+        )
+        return [(row[0], row[1], row[2]) for row in rows]
+
+
+def _column_type(settings: Settings, database: str, table: str, column: str) -> str:
+    admin_url = settings.sandbox_database_url.get_secret_value()
+    with psycopg.connect(admin_url.rsplit("/", 1)[0] + f"/{database}", autocommit=True) as conn:
+        row = conn.execute(
+            "SELECT data_type FROM information_schema.columns "
+            "WHERE table_name = %s AND column_name = %s",
+            (table, column),
+        ).fetchone()
+    assert row is not None
+    return str(row[0])
+
+
+async def test_a_folder_with_a_document_and_a_workbook_asks_both_kinds_of_question(
+    factory: async_sessionmaker[AsyncSession], table_settings: Settings, tmp_path: Path
+) -> None:
+    root = tmp_path / "work"
+    workbook = root / "orders.xlsx"
+    _write_workbook(workbook, {"North": _ORDERS})
+    source_id = await _folder_source(factory, root)
+    await _document_with_an_abbreviation(factory, source_id, root)
+    document_id = await _workbook_document(factory, source_id, workbook)
+
+    # The order ingestion runs them in: a workbook's sheets load while it is
+    # indexed, the folder is scanned once nothing is left outstanding.
+    await load_workbook_tables(factory, table_settings, source_id, document_id)
+    await _raise_document_questions(factory, table_settings, source_id)
+
+    questions = await _questions(factory, source_id)
+    assert [(subject, workbook) for subject, _question, workbook in questions] == [
+        ("Placed", "orders.xlsx"),
+        ("RFQ", None),
+    ]
+    # Reads like a CSV's, and says which workbook and sheet it is about.
+    assert questions[0][1].startswith(
+        "*Placed* in *orders.xlsx*, sheet *North*, looks like a date in DD/MM/YYYY or MM/DD/YYYY"
+    )
+    assert await _audit(factory, "table_clarification_raised") == [
+        {
+            "source_id": str(source_id),
+            "trigger": "date_format",
+            "subject": "Placed",
+            "rank": 1,
+            "workbook": "orders.xlsx",
+        }
+    ]
+
+
+async def test_a_folder_asked_about_its_documents_before_this_change_still_asks_about_a_sheet(
+    factory: async_sessionmaker[AsyncSession], table_settings: Settings, tmp_path: Path
+) -> None:
+    root = tmp_path / "work"
+    workbook = root / "orders.xlsx"
+    _write_workbook(workbook, {"North": _ORDERS})
+    source_id = await _folder_source(factory, root)
+    await _document_with_an_abbreviation(factory, source_id, root)
+    await _raise_document_questions(factory, table_settings, source_id)
+    document_id = await _workbook_document(factory, source_id, workbook)
+
+    await load_workbook_tables(factory, table_settings, source_id, document_id)
+    # A later scan of the folder asks nothing new about its documents.
+    await _raise_document_questions(factory, table_settings, source_id)
+
+    assert [(s, w) for s, _q, w in await _questions(factory, source_id)] == [
+        ("Placed", "orders.xlsx"),
+        ("RFQ", None),
+    ]
+
+
+async def test_a_workbooks_questions_are_capped_with_the_folders_pending_ones(
+    factory: async_sessionmaker[AsyncSession], table_settings: Settings, tmp_path: Path
+) -> None:
+    from askwell.clarify import set_clarification_cap
+
+    root = tmp_path / "work"
+    workbook = root / "orders.xlsx"
+    _write_workbook(
+        workbook,
+        {
+            "North": _ORDERS,
+            "South": [["Customer", "Shipped", "Units"], *_ORDERS[1:]],
+        },
+    )
+    source_id = await _folder_source(factory, root)
+    await _document_with_an_abbreviation(factory, source_id, root)
+    async with factory() as session:
+        await set_clarification_cap(session, 2)
+        await session.commit()
+    await _raise_document_questions(factory, table_settings, source_id)
+    document_id = await _workbook_document(factory, source_id, workbook)
+
+    await load_workbook_tables(factory, table_settings, source_id, document_id)
+
+    # One slot was taken by the folder's pending document question.
+    assert len(await _questions(factory, source_id)) == 2
+    capped = await _audit(factory, "clarification_capped")
+    assert len(capped) == 1
+    assert capped[0]["workbook"] == "orders.xlsx"
+
+
+async def test_answering_a_sheets_date_question_turns_the_column_into_a_date(
+    factory: async_sessionmaker[AsyncSession], table_settings: Settings, tmp_path: Path
+) -> None:
+    from askwell import reapply
+
+    root = tmp_path / "work"
+    orders, other = root / "orders.xlsx", root / "other.xlsx"
+    _write_workbook(orders, {"North": _ORDERS})
+    _write_workbook(other, {"North": _ORDERS})
+    source_id = await _folder_source(factory, root)
+    orders_id = await _workbook_document(factory, source_id, orders)
+    other_id = await _workbook_document(factory, source_id, other)
+    await load_workbook_tables(factory, table_settings, source_id, orders_id)
+    await load_workbook_tables(factory, table_settings, source_id, other_id)
+    _status, database = await _source_row(factory, source_id)
+    assert database is not None
+    assert _column_type(table_settings, database, "orders_xlsx_north", "placed") == "text"
+
+    async with factory() as session:
+        clarification_id, options = (
+            await session.execute(
+                text(
+                    "SELECT id, options FROM clarifications WHERE source_id = :id "
+                    "AND evidence->>'workbook' = 'orders.xlsx'"
+                ),
+                {"id": source_id},
+            )
+        ).one()
+        outcome = await answer_clarification(session, clarification_id, options[0])
+        await session.commit()
+    assert outcome.reapply_job_id is not None
+
+    await reapply.run_job(factory, table_settings, outcome.reapply_job_id)
+
+    assert _column_type(table_settings, database, "orders_xlsx_north", "placed") == "date"
+    # The other workbook's own question is still open, so its column is not.
+    assert _column_type(table_settings, database, "other_xlsx_north", "placed") == "text"
+    admin_url = table_settings.sandbox_database_url.get_secret_value()
+    with psycopg.connect(admin_url.rsplit("/", 1)[0] + f"/{database}", autocommit=True) as conn:
+        placed = conn.execute(
+            "SELECT customer, placed FROM orders_xlsx_north ORDER BY customer"
+        ).fetchall()
+        comment = conn.execute(
+            "SELECT obj_description('orders_xlsx_north'::regclass, 'pg_class')"
+        ).fetchone()
+    # Day first: `03/04/2025` is 3 April.
+    assert [(name, value.isoformat()) for name, value in placed] == [
+        ("Anna", "2025-04-03"),
+        ("Ben", "2025-06-05"),
+        ("Cara", "2025-12-11"),
+    ]
+    assert comment == ("askwell workbook: orders.xlsx",)
+    assert await _audit(factory, "table_column_reloaded") == [
+        {
+            "source_id": str(source_id),
+            "workbook": "orders.xlsx",
+            "tables": ["orders_xlsx_north"],
+            "failed_rows": 0,
+        }
+    ]
+
+
+async def test_a_workbook_re_ingested_after_its_question_was_answered_keeps_the_answer(
+    factory: async_sessionmaker[AsyncSession], table_settings: Settings, tmp_path: Path
+) -> None:
+    from askwell import reapply
+
+    root = tmp_path / "work"
+    workbook = root / "orders.xlsx"
+    _write_workbook(workbook, {"North": _ORDERS})
+    source_id = await _folder_source(factory, root)
+    document_id = await _workbook_document(factory, source_id, workbook)
+    await load_workbook_tables(factory, table_settings, source_id, document_id)
+    async with factory() as session:
+        clarification_id, options = (
+            await session.execute(
+                text("SELECT id, options FROM clarifications WHERE source_id = :id"),
+                {"id": source_id},
+            )
+        ).one()
+        outcome = await answer_clarification(session, clarification_id, options[1])
+        await session.commit()
+    assert outcome.reapply_job_id is not None
+    await reapply.run_job(factory, table_settings, outcome.reapply_job_id)
+
+    # The file changes and is indexed again, as a new version of itself.
+    _write_workbook(workbook, {"North": [*_ORDERS, ["Dev", "07/08/2025", 1]]})
+    newer_id = await _workbook_document(factory, source_id, workbook)
+    await load_workbook_tables(factory, table_settings, source_id, newer_id)
+
+    _status, database = await _source_row(factory, source_id)
+    assert database is not None
+    assert _column_type(table_settings, database, "orders_xlsx_north", "placed") == "date"
+    # Asked once: the answered question is the only one.
+    assert len(await _questions(factory, source_id)) == 1
+    async with factory() as session:
+        notes = (
+            await session.execute(
+                text(
+                    "SELECT origin, description FROM schema_notes WHERE source_id = :id "
+                    "AND column_name = 'Placed' AND superseded_by IS NULL"
+                ),
+                {"id": source_id},
+            )
+        ).all()
+    # The person's answer is the column's note; no fresh guess sits beside it.
+    assert notes == [("user", options[1])]

@@ -81,6 +81,7 @@ from askwell.table_infer import (
     infer_csv,
     infer_xlsx,
     raise_table_inference,
+    raise_workbook_questions,
 )
 
 log = get_logger(__name__)
@@ -741,7 +742,10 @@ async def load_source(
 
 
 async def reload_source(
-    factory: async_sessionmaker[AsyncSession], settings: Settings, source_id: uuid.UUID
+    factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    source_id: uuid.UUID,
+    table_name: str | None = None,
 ) -> list[LoadResult] | None:
     """Re-load every table this source produced, applying every
     `date_format` clarification answered so far. `askwell.reapply` calls
@@ -749,11 +753,16 @@ async def reload_source(
     column loaded as `text` because its day/month order was undecided
     becomes a real `date` the moment that is settled.
 
-    Returns `None` without touching the sandbox when the source is not a
-    `csv` source, or has not loaded yet — `askwell.reapply`'s dependency
-    resolution matches on `schema_notes` alone and cannot tell a table
-    source's inferred note from any other source's, so this is the one place
-    that actually checks.
+    A folder (`M11-FIX-ING-228`) reloads only the workbook whose sheet
+    `table_name` names, through `load_workbook_tables`, which finds that
+    workbook's tables by their comment and leaves every other workbook's
+    alone. The reload runs in the folder's own sandbox database (C3).
+
+    Returns `None` without touching the sandbox when the source is neither a
+    `csv` source nor a folder with that workbook in it, or has not loaded
+    yet — `askwell.reapply`'s dependency resolution matches on
+    `schema_notes` alone and cannot tell a table source's inferred note from
+    any other source's, so this is the one place that actually checks.
     """
     async with session_scope(factory) as session:
         row = (
@@ -762,12 +771,33 @@ async def reload_source(
                 {"id": source_id},
             )
         ).first()
-        if row is None or row[0] != "csv" or row[2] is None:
-            return None
-        root_path = row[1]
+        if row is not None and row[0] == "file" and row[2] is not None and table_name:
+            document = await _workbook_of_table(session, source_id, table_name)
+        else:
+            document = None
+    if document is not None:
+        document_id, relative = document
+        outcome = await load_workbook_tables(factory, settings, source_id, document_id)
+        async with session_scope(factory) as session:
+            await audit.record(
+                session,
+                Store.DECISIONS,
+                TABLE_COLUMN_RELOADED,
+                {
+                    "source_id": str(source_id),
+                    "workbook": relative,
+                    "tables": [result.sql_table_name for result in outcome.tables],
+                    "failed_rows": sum(len(result.failed_rows) for result in outcome.tables),
+                },
+            )
+        return outcome.tables
+
+    if row is None or row[0] != "csv" or row[2] is None:
+        return None
+    async with session_scope(factory) as session:
         overrides = await _date_format_overrides(session, source_id)
 
-    inferences = _parse_file(Path(root_path))
+    inferences = _parse_file(Path(row[1]))
     results = await _load_inferences(
         factory, settings, source_id, inferences, overrides=overrides, is_reload=True
     )
@@ -871,6 +901,27 @@ def _orphaned(tables: dict[str, str | None], live: set[str]) -> list[str]:
     )
 
 
+async def _workbook_of_table(
+    session: AsyncSession, source_id: uuid.UUID, table_name: str
+) -> tuple[uuid.UUID, str] | None:
+    """The live workbook whose sheet `table_name` (`<path>:<sheet>`) is, as
+    its newest document and its path inside the folder."""
+    rows = await session.execute(
+        text(
+            "SELECT d.id, d.path, s.root_path FROM documents d "
+            "JOIN sources s ON s.id = d.source_id "
+            "WHERE d.source_id = :id AND d.mime = :mime AND d.deleted_at IS NULL "
+            "AND d.superseded_by IS NULL ORDER BY d.added_at DESC"
+        ),
+        {"id": source_id, "mime": WORKBOOK_MIME},
+    )
+    for document_id, path, root in rows:
+        relative = _relative_path(str(path), root)
+        if table_name.startswith(workbook_table_prefix(relative)):
+            return uuid.UUID(str(document_id)), relative
+    return None
+
+
 async def _live_workbooks(session: AsyncSession, source_id: uuid.UUID) -> set[str]:
     rows = await session.execute(
         text(
@@ -921,8 +972,11 @@ async def load_workbook_tables(
 
     - the source's status is never touched. It describes the folder's
       documents, and a sheet that did not load has not failed a document;
-    - no clarifications are raised (`raise_table_inference`'s own note,
-      issue #851), so an ambiguous column loads as `text`.
+    - its questions are asked once per workbook, within the folder's cap
+      (`table_infer.raise_workbook_questions`, `M11-FIX-ING-228`). An
+      ambiguous column loads as `text` until its question is answered, and
+      as the answered type from then on, including when the workbook is
+      indexed again.
 
     Never raises. A workbook's passages answer questions whether or not its
     tables exist, so the outcome is recorded — `workbook_tables_loaded` or
@@ -1011,6 +1065,7 @@ async def _load_workbook_tables(
         async with session_scope(factory) as session:
             size_cap_bytes = await get_dump_size_cap_bytes(session)
             time_cap_seconds = await get_dump_time_cap_seconds(session)
+            overrides = await _date_format_overrides(session, source_id)
             database = (
                 await session.execute(
                     text("SELECT sandbox_db FROM sources WHERE id = :id"), {"id": source_id}
@@ -1055,7 +1110,7 @@ async def _load_workbook_tables(
                         database,
                         inference,
                         sql_table_name,
-                        overrides={},
+                        overrides=overrides,
                         size_cap_bytes=size_cap_bytes,
                         time_cap_seconds=time_cap_seconds,
                         comment=comment,
@@ -1104,6 +1159,7 @@ async def _load_workbook_tables(
                 await raise_table_inference(
                     session, source_id, inference, raise_clarifications=False
                 )
+            await raise_workbook_questions(session, source_id, relative, loadable)
             await _write_load_notes(session, source_id, loadable, results)
             await _record_loaded(session, source_id, document_id, relative, results, skipped)
 

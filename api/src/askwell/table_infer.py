@@ -25,7 +25,7 @@ import io
 import json
 import re
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any
 
@@ -35,10 +35,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from askwell.audit import Store, record
 from askwell.clarify import (
+    WORKBOOK_EVIDENCE_KEY,
     Candidate,
     RaiseResult,
     column_distribution_evidence,
     get_clarification_cap,
+    pending_clarifications,
+    rank_candidates,
 )
 from askwell.logging import get_logger
 
@@ -853,17 +856,38 @@ async def raise_table_inference(
     a source that already has a clarification row is not re-scanned.
 
     `raise_clarifications=False` writes the notes and asks nothing. A
-    workbook's sheets (`M11-FIX-ING-224`) belong to a folder source, and the
-    guard above is per source: a sheet question raised first would stop the
-    folder's document questions from ever being asked. Issue #851.
+    workbook's sheets (`M11-FIX-ING-224`) belong to a folder source, where
+    this per-source guard would let a sheet's question stop the folder's
+    document questions from ever being asked (#851); they are asked through
+    `raise_workbook_questions` instead, once per workbook.
+
+    A column a person has already described keeps their note and gets no
+    inferred one beside it. A workbook's sheets are re-inferred every time
+    the workbook is indexed again (`M11-FIX-ING-228`), and a fresh "date
+    format could not be determined" next to the answer that determined it
+    would tell SQL generation both.
     """
     already = await session.execute(
         text("SELECT 1 FROM clarifications WHERE source_id = :id LIMIT 1"),
         {"id": source_id},
     )
     already_raised = already.first() is not None
+    described = set(
+        (
+            await session.execute(
+                text(
+                    "SELECT column_name FROM schema_notes WHERE source_id = :id "
+                    "AND table_name = :table_name AND column_name IS NOT NULL "
+                    "AND origin = 'user' AND superseded_by IS NULL"
+                ),
+                {"id": source_id, "table_name": inference.table_name},
+            )
+        ).scalars()
+    )
 
     for column in inference.columns:
+        if column.name in described:
+            continue
         description = f"Inferred type: {column.inferred_type} ({column.confidence:.0%} confidence)."
         if column.ambiguous and column.ambiguity_reason:
             description += f" {column.ambiguity_reason}."
@@ -910,64 +934,162 @@ async def raise_table_inference(
             },
         )
 
-    raised = 0
-    capped = 0
+    result = RaiseResult(raised=0, inferred=0, dropped=0)
     if raise_clarifications and not already_raised and inference.candidates:
         cap = await get_clarification_cap(session)
-        to_raise, to_cap = inference.candidates[:cap], inference.candidates[cap:]
-
-        for rank, candidate in enumerate(to_raise, start=1):
-            await session.execute(
-                text(
-                    "INSERT INTO clarifications "
-                    "(id, source_id, subject, question, options, evidence, rank, status) "
-                    "VALUES (:id, :source_id, :subject, :question, "
-                    "CAST(:options AS jsonb), CAST(:evidence AS jsonb), :rank, 'pending')"
-                ),
-                {
-                    "id": uuid.uuid4(),
-                    "source_id": source_id,
-                    "subject": candidate.subject,
-                    "question": candidate.question,
-                    "options": json.dumps(candidate.options) if candidate.options else None,
-                    "evidence": json.dumps({**candidate.evidence, "trigger": candidate.trigger}),
-                    "rank": rank,
-                },
-            )
-            await record(
-                session,
-                Store.DECISIONS,
-                TABLE_CLARIFICATION_RAISED,
-                {
-                    "source_id": str(source_id),
-                    "trigger": candidate.trigger,
-                    "subject": candidate.subject,
-                    "rank": rank,
-                },
-            )
-            raised += 1
-
-        for offset, candidate in enumerate(to_cap, start=1):
-            capped += 1
-            await record(
-                session,
-                Store.DECISIONS,
-                "clarification_capped",
-                {
-                    "source_id": str(source_id),
-                    "trigger": candidate.trigger,
-                    "subject": candidate.subject,
-                    "rank": cap + offset,
-                    "cap": cap,
-                },
-            )
+        result = await _insert_questions(session, source_id, inference.candidates, cap, cap)
 
     log.info(
         "table_inferred",
         source_id=str(source_id),
         table_name=inference.table_name,
         columns=len(inference.columns),
-        raised=raised,
-        capped=capped,
+        raised=result.raised,
+        capped=result.capped,
     )
-    return RaiseResult(raised=raised, inferred=0, dropped=0, capped=capped)
+    return result
+
+
+async def _insert_questions(
+    session: AsyncSession,
+    source_id: uuid.UUID,
+    candidates: list[Candidate],
+    budget: int,
+    cap: int,
+    workbook: str | None = None,
+) -> RaiseResult:
+    """Ask the first `budget` candidates, in the order given, and record the
+    rest as capped. A CSV's and a sheet's questions are written and audited
+    the same way; a sheet's also name their workbook."""
+    to_raise, to_cap = candidates[:budget], candidates[budget:]
+    located = {WORKBOOK_EVIDENCE_KEY: workbook} if workbook is not None else {}
+
+    for rank, candidate in enumerate(to_raise, start=1):
+        await session.execute(
+            text(
+                "INSERT INTO clarifications "
+                "(id, source_id, subject, question, options, evidence, rank, status) "
+                "VALUES (:id, :source_id, :subject, :question, "
+                "CAST(:options AS jsonb), CAST(:evidence AS jsonb), :rank, 'pending')"
+            ),
+            {
+                "id": uuid.uuid4(),
+                "source_id": source_id,
+                "subject": candidate.subject,
+                "question": candidate.question,
+                "options": json.dumps(candidate.options) if candidate.options else None,
+                "evidence": json.dumps(
+                    {**candidate.evidence, "trigger": candidate.trigger, **located}
+                ),
+                "rank": rank,
+            },
+        )
+        await record(
+            session,
+            Store.DECISIONS,
+            TABLE_CLARIFICATION_RAISED,
+            {
+                "source_id": str(source_id),
+                "trigger": candidate.trigger,
+                "subject": candidate.subject,
+                "rank": rank,
+                **located,
+            },
+        )
+
+    for offset, candidate in enumerate(to_cap, start=1):
+        await record(
+            session,
+            Store.DECISIONS,
+            "clarification_capped",
+            {
+                "source_id": str(source_id),
+                "trigger": candidate.trigger,
+                "subject": candidate.subject,
+                "rank": budget + offset,
+                "cap": cap,
+                **located,
+            },
+        )
+
+    return RaiseResult(raised=len(to_raise), inferred=0, dropped=0, capped=len(to_cap))
+
+
+def _name_the_sheet(candidate: Candidate, workbook: str, sheet: str) -> Candidate:
+    """A sheet's question reads like a CSV's, and says which workbook and
+    sheet it is about: "*Placed* in *orders.xlsx*, sheet *North*, looks like
+    a date…". A folder can hold several workbooks with a `Placed` column,
+    and a CSV's own question has only one file it can be about. A question
+    that does not open with its column (a blank header cell's) already names
+    its table."""
+    opening = f"*{candidate.subject}* "
+    if not candidate.question.startswith(opening):
+        return candidate
+    rest = candidate.question[len(opening) :]
+    return replace(
+        candidate,
+        question=f"*{candidate.subject}* in *{workbook}*, sheet *{sheet}*, {rest}",
+    )
+
+
+async def raise_workbook_questions(
+    session: AsyncSession,
+    source_id: uuid.UUID,
+    workbook: str,
+    inferences: list[TableInference],
+) -> RaiseResult:
+    """Ask about what one workbook's loaded sheets could not settle — an
+    undecided DD/MM date, mixed number formats, a blank header cell.
+    `M11-FIX-ING-228`, issue #851.
+
+    Once per workbook, not once per source: a folder's documents and each of
+    its workbooks are asked about independently, and a question whose
+    evidence names this workbook (`WORKBOOK_EVIDENCE_KEY`, its path inside
+    the folder) means it has been. Keyed on the path rather than the
+    document, so a workbook indexed again after it changed is not asked
+    again; an answer already given still applies, since
+    `table_load._date_format_overrides` reads every answered question of the
+    source.
+
+    The cap is the folder's, shared with its other questions: this asks at
+    most the cap less what the folder already has waiting, ranked the way
+    `askwell.clarify` ranks (a date question first). The rest are recorded
+    as capped, as a CSV's are.
+
+    Not checked against memory and schema notes first, as a folder's
+    document questions are: every column of the sheet has just been given
+    its own inferred note, which would answer every question before it was
+    asked. A CSV's questions are not checked either.
+    """
+    asked = await session.execute(
+        text(
+            "SELECT 1 FROM clarifications WHERE source_id = :id "
+            f"AND evidence->>'{WORKBOOK_EVIDENCE_KEY}' = :workbook LIMIT 1"
+        ),
+        {"id": source_id, "workbook": workbook},
+    )
+    if asked.first() is not None:
+        return RaiseResult(raised=0, inferred=0, dropped=0)
+
+    candidates = [
+        _name_the_sheet(candidate, workbook, inference.sheet or inference.table_name)
+        for inference in inferences
+        for candidate in inference.candidates
+        if candidate.passes
+    ]
+    if not candidates:
+        return RaiseResult(raised=0, inferred=0, dropped=0)
+
+    cap = await get_clarification_cap(session)
+    budget = max(cap - await pending_clarifications(session, source_id), 0)
+    result = await _insert_questions(
+        session, source_id, rank_candidates(candidates), budget, cap, workbook
+    )
+    log.info(
+        "workbook_questions_raised",
+        source_id=str(source_id),
+        workbook=workbook,
+        raised=result.raised,
+        capped=result.capped,
+    )
+    return result
