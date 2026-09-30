@@ -1457,6 +1457,7 @@ async def retrieve_relevant_facts(
     source_id: uuid.UUID | None = None,
     fact_limit: int = RELEVANT_FACT_LIMIT,
     note_limit: int = RELEVANT_NOTE_LIMIT,
+    include_inferred_sheet_notes: bool = True,
 ) -> RelevantMemory:
     """Active memory facts and schema notes whose text bears on `question`,
     bounded and ranked by relevance — the retrieval half of `M3-APPLY-RET-078`.
@@ -1490,6 +1491,15 @@ async def retrieve_relevant_facts(
     it, unfiltered, for the library and memory screens: staleness is a
     caveat to surface, not a reason to hide the note from a person who might
     fix it.
+
+    `include_inferred_sheet_notes=False` leaves out what Askwell inferred
+    about a workbook's sheet tables (a folder source's notes,
+    `M11-FIX-ING-224`), for a document answer. The same workbook is also
+    passages, which carry the same numbers with a citation; an inferred
+    note ("Loaded as column `q1_revenue`") only competes with them, and a
+    model that cites the note has cited nothing the person can open (C4).
+    SQL generation keeps them — writing a query is what they are for. A
+    note a person wrote about a sheet is memory, and is kept either way.
     """
     fact_rows = (
         await session.execute(
@@ -1531,6 +1541,8 @@ async def retrieve_relevant_facts(
                 "FROM schema_notes "
                 "WHERE superseded_by IS NULL AND NOT stale "
                 "AND (CAST(:source_id AS uuid) IS NULL OR source_id = :source_id) "
+                "AND (CAST(:sheets AS boolean) OR origin != 'inferred' OR source_id NOT IN "
+                "(SELECT id FROM sources WHERE kind = 'file')) "
                 "AND to_tsvector(:cfg, table_name || ' ' || coalesce(column_name, '') "
                 "|| ' ' || description) @@ " + _OR_MATCH + " "
                 "ORDER BY ts_rank(to_tsvector(:cfg, table_name || ' ' || coalesce(column_name, '') "
@@ -1542,6 +1554,7 @@ async def retrieve_relevant_facts(
                 "cfg": TEXT_SEARCH_CONFIG,
                 "query": question,
                 "source_id": source_id,
+                "sheets": include_inferred_sheet_notes,
                 "limit": note_limit,
             },
         )

@@ -39,6 +39,16 @@ Pipeline: parse → infer types and header → **raise clarifications for what c
 
 Date format ambiguity is the one to be most careful about. `03/04/2025` is valid in two formats meaning different months, and getting it wrong produces answers that look completely reasonable and are wrong by up to eleven months. **Never infer silently between DD/MM and MM/DD when the data does not disambiguate** — ask, every time.
 
+
+### A workbook is both
+
+An Excel workbook added with a folder is a document first: its sheets are extracted, chunked and searched like any other file. Since `M11-FIX-ING-224` each sheet with a recognisable header row is **also** loaded as a table, through the same loader a CSV uses, into the folder's own sandbox database (§3). The workbook stays one source in the library; a question its passages miss can still be answered from the sheet.
+
+- A sheet with no recognisable header row, a merged header cell, or nothing in it is not a table. It is still in the passages.
+- Cached values only: formulas are read as their last computed value, and charts are ignored.
+- No clarifications are raised for a workbook's columns yet (#851); an ambiguous column loads as text rather than as a guess.
+- A workbook's tables are keyed on its path inside the folder: a table comment `askwell workbook: <path>`, and schema notes named `<path>:<sheet>`. Deleting the workbook retires both.
+- `.xls` (the older binary format) is not loaded as a table, as it is not extracted either.
 ---
 
 ## 3. SQL dumps — the sandbox

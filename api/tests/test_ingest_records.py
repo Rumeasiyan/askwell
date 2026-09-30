@@ -2100,3 +2100,76 @@ async def test_sweep_missing_skips_a_source_whose_root_is_unreachable(
     ).first()
     assert row is not None
     assert row[0] is None
+
+
+# --- a workbook's sheets become tables after its document (`M11-FIX-ING-224`) ---
+
+
+def _xlsx() -> bytes:
+    import openpyxl
+
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    assert sheet is not None
+    sheet.append(["Department", "Headcount"])
+    sheet.append(["Logistics", 19])
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("name", "body", "loads"), [("figures.xlsx", _xlsx(), True), ("contract.pdf", PDF, False)]
+)
+async def test_a_workbook_loads_its_sheet_tables_once_its_document_is_indexed(
+    factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    tmp_path: Path,
+    unreachable_queue: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    body: bytes,
+    loads: bool,
+) -> None:
+    """Both, not either: the document stages run as for any file, and the
+    sheet load follows. The load's outcome cannot fail the document — its
+    passages answer questions whether or not a table exists."""
+    from askwell import table_load
+
+    await nominate(session, str(tmp_path))
+    written(tmp_path, name, body)
+    documents = await recorded(session, tmp_path, name)
+
+    async def extract(
+        work: Work, report: Report, factory: async_sessionmaker[AsyncSession], _settings: Settings
+    ) -> None:
+        await report(1, 1)
+
+    calls: list[tuple[uuid.UUID, uuid.UUID]] = []
+
+    async def load(
+        _factory: async_sessionmaker[AsyncSession],
+        _settings: Settings,
+        source_id: uuid.UUID,
+        document_id: uuid.UUID,
+    ) -> table_load.WorkbookOutcome:
+        calls.append((source_id, document_id))
+        return table_load.WorkbookOutcome(tables=[], skipped=[], failure="the sandbox is down")
+
+    monkeypatch.setattr(ingest, "STAGES", (Stage("extract", "M1-EXTRACT-ING-026", extract),))
+    monkeypatch.setattr(table_load, "load_workbook_tables", load)
+
+    assert await ingest.process(factory, unreachable_queue, documents[0]) == "done"
+
+    source_id = (
+        await session.execute(
+            text("SELECT source_id FROM documents WHERE id = :id"), {"id": documents[0]}
+        )
+    ).scalar_one()
+    assert calls == ([(source_id, documents[0])] if loads else [])
+    status = (
+        await session.execute(
+            text("SELECT status FROM documents WHERE id = :id"), {"id": documents[0]}
+        )
+    ).scalar_one()
+    assert status == "ready"

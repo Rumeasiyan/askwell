@@ -3073,6 +3073,43 @@ def test_documents_finding_nothing_try_a_weakly_matched_table(
     assert "abstain" not in kinds
 
 
+def test_a_weakly_matched_table_with_no_matching_rows_keeps_the_abstention(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    """`M11-FIX-ING-224`. "What was the headcount in the Support department?"
+    shares a word with a sheet that has no Support row. The query runs and
+    finds nothing, which says no more than the documents already did, and
+    "No matching records." in place of C5's own answer would drop the
+    searched-and-found-nothing proof and the pointer to what to add."""
+    _truncate(database_url)
+    executed = _executed()
+    assert executed.sql_result is not None
+    empty = ask_module._SqlAnswer(
+        text="No matching records.",
+        status="completed",
+        sql_result={**executed.sql_result, "rows": [], "row_count": 0},
+        trace_step={**executed.trace_step, "rows": 0},
+        schema_step=executed.schema_step,
+    )
+    attempts = _route(monkeypatch, ask_module.TableMatchStrength.WEAK, empty)
+
+    events, done, trace = _ask_routed(
+        settings, monkeypatch, tmp_path, database_url, rerank_score=-4.0
+    )
+
+    assert len(attempts) == 1
+    assert "No matching records." not in _text(events)
+    assert done["sql_result"] is None
+    kinds = [step["kind"] for step in trace["steps"]]
+    assert kinds[-1] == "abstain"
+    assert "sql" in kinds
+    with psycopg.connect(database_url, autocommit=True) as db:
+        (content,) = db.execute(
+            "SELECT content FROM messages WHERE id = %s", (done["message_id"],)
+        ).fetchone()
+    assert content.startswith("Nothing in your files answers this.")
+
+
 def test_a_weakly_matched_table_that_cannot_answer_keeps_the_abstention(
     settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
 ) -> None:

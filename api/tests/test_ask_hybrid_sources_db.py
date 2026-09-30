@@ -146,3 +146,20 @@ async def test_a_document_still_indexing_does_not_count_as_hybrid_yet(
     await _source(session, kind="dump")
 
     assert await _has_hybrid_sources(session, settings) is False
+
+
+@pytest.mark.asyncio
+async def test_a_folder_whose_workbook_loaded_sheet_tables_is_still_not_hybrid(
+    session: AsyncSession, settings: Settings
+) -> None:
+    """`M11-FIX-ING-224`. The folder is a database source for routing, but
+    counting it here would send every question in any folder holding one
+    spreadsheet to the loop, whose answers carry no citations yet (#407)."""
+    file_source = await _source(session, kind="file")
+    await _document(session, source_id=file_source)
+    await session.execute(
+        text("UPDATE sources SET sandbox_db = 'sandbox_folder' WHERE id = :id"),
+        {"id": file_source},
+    )
+
+    assert await _has_hybrid_sources(session, settings) is False

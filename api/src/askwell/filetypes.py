@@ -377,16 +377,20 @@ _BY_EXTENSION: dict[str, tuple[str, Route]] = {
     "bmp": ("a BMP image", Route.FILES),
 }
 
+# The media type an `.xlsx` is stored with. Named because it is the one mime
+# something outside this module acts on: since `M11-FIX-ING-224` a document
+# with it also has its sheets loaded as tables (`askwell.table_load.
+# load_workbook_tables`), while its route stays `files` — a workbook is one
+# source in the library, searchable and queryable both.
+WORKBOOK_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
 # What the zipped and OLE Office containers hold, from the name alone.
 _OOXML: dict[str, tuple[str, str]] = {
     "docx": (
         "a Word document",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ),
-    "xlsx": (
-        "an Excel workbook",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    ),
+    "xlsx": ("an Excel workbook", WORKBOOK_MIME),
     "pptx": (
         "a PowerPoint deck",
         "application/vnd.openxmlformats-officedocument.presentationml.presentation",

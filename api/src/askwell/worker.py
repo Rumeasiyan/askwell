@@ -471,7 +471,7 @@ async def _reclaim_sandbox_orphans(
     rest of startup — `askwell.health` reports it separately, and there is
     nothing here that document sources depend on.
     """
-    from askwell import dump_import, sandbox
+    from askwell import dump_import, sandbox, table_load
 
     admin_url = settings.sandbox_database_url.get_secret_value()
     try:
@@ -479,6 +479,8 @@ async def _reclaim_sandbox_orphans(
             interrupted = await dump_import.reclaim_interrupted(session, admin_url)
         async with session_scope(sessions) as session:
             orphaned = await sandbox.reclaim_orphans(session, admin_url)
+        # Tables a deleted workbook left in its folder's database (#852).
+        await table_load.sweep_workbook_tables(sessions, settings)
     except Exception as error:  # the sandbox instance may not be up yet
         log.warning("sandbox_reclaim_deferred", error=f"{type(error).__name__}: {error}")
         return ()

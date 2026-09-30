@@ -2,7 +2,7 @@
 
 **Goal:** An installed Askwell answers a question on Windows, not only on Linux, and a spreadsheet question reaches the spreadsheet.
 
-**Phase:** 7 (`../build-plan.md`) · **Depends on:** M10 · **Tickets:** 2 to start; the C5 ticket is added once the GPU experiment (`M10-FIX-DEPLOY-222` made it possible) has a result · **Estimated:** 11 hours
+**Phase:** 7 (`../build-plan.md`) · **Depends on:** M10 · **Tickets:** 2 to start, 225–227 from the Windows VM run, and 228–234 added by `M11-FIX-ING-224` for what it left open; the C5 ticket is added once the GPU experiment (`M10-FIX-DEPLOY-222` made it possible) has a result · **Estimated:** 11 hours
 
 **Exit condition:** On the Windows test VM (`scripts/winvm.sh`, #836), a fresh install downloads the model and answers a question with a citation. `figures-logistics-headcount`, `figures-design-headcount` and `figures-retail-headcount-paraphrase` in `grounded_qa.v1` score above 0.
 
@@ -262,3 +262,223 @@ Two changes remain.
 - **Estimate:** 6 hours · **Priority:** Critical
 - **Labels / Component:** `phase:7`, backend, `deploy`, `constraint:local-first`
 - **Granularity:** One mount default and one path translation.
+
+---
+
+> **Added 2026-09-30 by `M11-FIX-ING-224`,** for what it left open. Each one is filed as an issue too.
+
+### M11-FIX-ING-228 — A workbook's sheets ask about the columns they could not type
+
+**Type:** Task
+
+**User Story**
+- **Actor:** anyone whose workbook has a date column like `03/04/2025`.
+- **User Need:** asked once whether that is DD/MM or MM/DD, so "orders in March" is answered by date, not by text.
+- **Business Value:** `docs/data-sources.md` §2 calls spreadsheets the clarification loop's best case, and for a workbook added with a folder the loop does not run.
+
+**Context / Background**
+**Detailed Description:** Read #851. `M11-FIX-ING-224` loads sheets with `raise_clarifications=False`, because `clarify.raise_candidates` and `table_infer.raise_table_inference` each skip a source that already has any clarification row, and a folder is one source. Make that guard once per document for a folder (the clarification row's evidence can carry the document), raise a workbook's table candidates within the same cap, and let `table_load.reload_source` reload one workbook's tables in a folder source by their table comment.
+
+**Scope**
+- The once-per-source guard becomes once per document for a `file` source; unchanged for `csv`/`dump`.
+- A workbook's sheet candidates are raised, capped with the folder's other candidates.
+- Answering a sheet's `date_format` question reloads that workbook's tables.
+
+**Out of Scope**
+- Merged headers (still skipped).
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** Tests first. A folder with a PDF and a workbook asks both kinds of question. Answering a sheet's date question turns the column into `date`. `abstention.v1` does not regress.
+- **Edge Cases:** a folder whose document questions were raised before this change; a workbook re-ingested after its question was answered.
+- **Permissions / Roles:** Single user — no roles.
+- **UI States:** `../ux/clarifications.md` — a sheet question reads like a CSV one, naming the workbook and sheet.
+- **Validation Rules:** C3 unchanged: the reload runs in the folder's sandbox database.
+- **Audit / Logging Requirements:** as for CSV clarifications.
+- **Analytics Events:** None (C1).
+
+**Dependencies & Assumptions**
+- **Dependencies:** `M11-FIX-ING-224`.
+- **API / Data Touchpoints:** `askwell.clarify`, `askwell.table_infer`, `askwell.table_load.reload_source`, `askwell.reapply`.
+
+**Effort & Granularity Check**
+- **Estimate:** 5 hours · **Priority:** Medium
+- **Labels / Component:** `phase:7`, `constraint:grounding`, backend
+
+---
+
+### M11-FIX-UI-229 — The library says when a workbook sheet was not loaded as a table, and why
+
+**Type:** Task
+
+**User Story**
+- **Actor:** anyone whose spreadsheet question abstained.
+- **User Need:** to learn that the sheet which could have answered it was not loaded, and what to change.
+- **Business Value:** an abstention the user cannot explain reads as the product not working.
+
+**Context / Background**
+**Detailed Description:** Read #849. `table_load.load_workbook_tables` records `workbook_tables_loaded` (with a reason per skipped sheet) and `workbook_tables_failed` (with the cap) to the decisions store, which the library does not read. Store the outcome per workbook document where the library reads (a column or a small table, by migration). A failed load puts the folder in `attention` with the workbook, sheet and reason; a skipped sheet is a note on the document, not attention.
+
+**Scope**
+- Per-document storage of the sheet-load outcome.
+- `ingest.coverage` and the library render it.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** Tests first. `docs/states-and-edge-cases.md` §3's "A workbook sheet not loaded as a table" row no longer says "Nothing today".
+- **Edge Cases:** a workbook later re-ingested successfully clears the note.
+- **Permissions / Roles:** Single user — no roles.
+- **UI States:** `../ux/library.md`.
+- **Analytics Events:** None (C1).
+
+**Dependencies & Assumptions**
+- **Dependencies:** `M11-FIX-ING-224`.
+
+**Effort & Granularity Check**
+- **Estimate:** 5 hours · **Priority:** Medium
+- **Labels / Component:** `phase:7`, backend, frontend
+
+---
+
+### M11-FIX-ING-230 — Workbooks indexed before `0.9.12` get their tables without being re-indexed
+
+**Type:** Task
+
+**User Story**
+- **Actor:** anyone who added spreadsheets before upgrading.
+- **User Need:** their spreadsheet questions answered from the sheet, as a new user's are.
+- **Business Value:** without it, `M11-FIX-ING-224` helps only files added after the upgrade, and nothing tells the user to re-index.
+
+**Context / Background**
+**Detailed Description:** Read #850. Sheet tables load only when a workbook is ingested. At worker start, for each live `ready` document with `mime = filetypes.WORKBOOK_MIME` that has neither a `workbook_tables_loaded` nor a `workbook_tables_failed` decision, call `table_load.load_workbook_tables`. Idempotent, bounded by the number of workbooks, no re-embedding. The marker must not rescan a workbook whose sheets were all skipped at every start.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** Tests first. `grounded_qa.v1` run against the stack's own database (where `figures.xlsx` is a duplicate `seed_corpus` leaves alone) measures the tables.
+- **Edge Cases:** the sandbox is not up at worker start (deferred, not failed); a workbook deleted between the scan and the load.
+- **Permissions / Roles:** Single user — no roles.
+- **Analytics Events:** None (C1).
+
+**Dependencies & Assumptions**
+- **Dependencies:** `M11-FIX-ING-224`.
+
+**Effort & Granularity Check**
+- **Estimate:** 3 hours · **Priority:** Medium
+- **Labels / Component:** `phase:7`, backend
+
+---
+
+### M11-FIX-BE-231 — An answer from a workbook's sheet cites the workbook
+
+**Type:** Task
+
+**User Story**
+- **Actor:** anyone whose spreadsheet question is answered from a sheet.
+- **User Need:** see which file and which rows the number came from, and open them, as for any other answer.
+- **Business Value:** since `M11-FIX-ING-224`, a sheet answer is right but uncited. That is the C4 gap: the citation is the only check the user has. In `grounded_qa.v1` each of the three headcount tasks is capped at 0.5 for the same reason.
+
+**Context / Background**
+**Detailed Description:** Read #857. A sheet is queried only after the workbook's passages abstain (`match_tables` never calls a sheet match strong). The answer then shows its query and rows, and no citation. The workbook is also a document, and its `sheet_row` chunks already anchor sheet and row. When a SQL answer's source is a folder (`DatabaseSource.kind == 'file'`), map the returned rows back to the workbook document and its sheet's row anchors, and cite those. The table comment `askwell workbook: <path>` names the document. Only cite a row that is in the result.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** Tests first. `figures-logistics-headcount`, `figures-design-headcount` and `figures-retail-headcount-paraphrase` in `grounded_qa.v1` score above 0.5, with nothing else lower. Record in `docs/BRAIN.md`.
+- **Edge Cases:** an aggregate over many rows (cite the sheet, not every row); a workbook re-indexed since its tables loaded (the anchors must be current, never a retired chunk); a sheet with no document chunk left.
+- **Validation Rules:** C4: never cite a row the query did not return. C7 unchanged.
+- **Permissions / Roles:** Single user — no roles.
+- **Analytics Events:** None (C1).
+
+**Dependencies & Assumptions**
+- **Dependencies:** `M11-FIX-ING-224`.
+
+**Effort & Granularity Check**
+- **Estimate:** 5 hours · **Priority:** High
+- **Labels / Component:** `phase:7`, `constraint:grounding`, backend
+
+---
+
+### M11-FIX-TEST-232 — `grounded_qa.v1` runs to the end on a fresh database
+
+**Type:** Task
+
+**User Story**
+- **Actor:** whoever measures a change with `grounded_qa.v1`.
+- **User Need:** a before/after run on two fresh databases, with numbers that do not depend on which clarifications someone answered in the development database.
+- **Business Value:** today the suite hangs on a fresh database, so every recorded number was taken on the stack's own database or a copy of it.
+
+**Context / Background**
+**Detailed Description:** Read #859. `eval/grounded.py::seed_corpus` ingests the corpus, ingestion raises a clarification, and the first question that retrieves from that source waits in `askwell.ask._await_clarification` for an answer the harness never gives. Take #859's option 1: after seeding, skip every pending clarification through `askwell.review.skip_clarification`, and record the count in the result file's metadata. `M11-FIX-ING-224` did exactly this by hand (`~/.cache/askwell-evalwt/preseed/preseed.py`) for its before and after runs.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** Tests first, for the skip after seeding. `grounded_qa.v1` finishes against a freshly migrated database with no manual step. The result file says how many clarifications were skipped.
+- **Edge Cases:** a corpus that raises none; a re-run on a seeded database (`DUPLICATE`, nothing pending).
+- **Validation Rules:** C5 unchanged: no abstention task changes.
+- **Permissions / Roles:** Single user — no roles.
+- **Analytics Events:** None (C1).
+
+**Dependencies & Assumptions**
+- **Dependencies:** none.
+
+**Effort & Granularity Check**
+- **Estimate:** 2 hours · **Priority:** Medium
+- **Labels / Component:** `phase:7`, `eval`
+
+---
+
+### M11-FIX-TEST-233 — `test-db` never drops a sandbox database it did not create
+
+**Type:** Task
+
+**User Story**
+- **Actor:** whoever runs `scripts/dev.sh test-db` on a machine with the stack up.
+- **User Need:** run the tests without destroying the stack's imported tables or a running eval's.
+- **Business Value:** today every `test-db` run can drop the sandbox databases behind the development database's dumps, CSVs and workbook sheets, and any eval running at the time loses its tables mid-run.
+
+**Context / Background**
+**Detailed Description:** Read #858. `api/tests/conftest_sandbox.py::_sweep` drops every idle `askwell_sbx_*` database, and the product uses the same prefix (`askwell.sandbox.PREFIX`). Take #858's option 1: test-created sandbox databases get their own prefix, and `_sweep` matches only that one.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** Tests first. A `test-db` run leaves an idle `askwell_sbx_*` database it did not create in place, and still sweeps its own leftovers.
+- **Edge Cases:** a crashed earlier test run's databases (still swept); `InvalidSandboxName` still refuses any other name in product code.
+- **Validation Rules:** C3 unchanged: the product's own names and roles do not change.
+- **Permissions / Roles:** Single user — no roles.
+- **Analytics Events:** None (C1).
+
+**Dependencies & Assumptions**
+- **Dependencies:** none.
+
+**Effort & Granularity Check**
+- **Estimate:** 2 hours · **Priority:** Medium
+- **Labels / Component:** `phase:7`, `constraint:sandbox`
+
+---
+
+### M11-FIX-ING-234 — A 100,000-row CSV or sheet loads within the time cap
+
+**Type:** Task
+
+**User Story**
+- **Actor:** anyone whose CSV or spreadsheet has a hundred thousand rows.
+- **User Need:** their table loaded and queryable, as a smaller one is.
+- **Business Value:** a 100k-row sheet is an ordinary spreadsheet, not an abuse case, and today it never becomes a table.
+
+**Context / Background**
+**Detailed Description:** Read #862. `askwell.table_load._insert_rows_blocking` inserts every row with its own autocommitted `INSERT`, so on the build host 100,000 rows do not finish within the default 600 s cap (`dump_import.DEFAULT_DUMP_TIME_CAP_SECONDS`) and the load is stopped with `TableCapExceeded("time")`. `M11-FIX-ING-224` made that failure bounded (the workbook still indexes as a document); this ticket makes it not happen. Take #862's option 1: insert in batches inside one transaction, and on a batch error retry that batch row by row, so `RowFailure`s keep their row numbers.
+
+**Scope**
+- Batched inserts for CSV and workbook sheets alike (one code path, `_load_table`).
+- Size and time caps unchanged, checked between batches.
+
+**Out of Scope**
+- Raising either cap.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:** Tests first. A 100,000-row sheet and a 100,000-row CSV load under the default caps on the build host. Every existing row-failure test passes unchanged.
+- **Edge Cases:** one bad row in a batch (reported by row number, the rest of the batch loads); a batch that crosses the size cap.
+- **Validation Rules:** C3 unchanged: the load runs as the sandbox owner, in the sandbox.
+- **Permissions / Roles:** Single user — no roles.
+- **Analytics Events:** None (C1).
+
+**Dependencies & Assumptions**
+- **Dependencies:** `M11-FIX-ING-224`.
+- **API / Data Touchpoints:** `askwell.table_load` (`_insert_rows_blocking`).
+
+**Effort & Granularity Check**
+- **Estimate:** 3 hours · **Priority:** Medium
+- **Labels / Component:** `phase:7`, `constraint:sandbox`, backend

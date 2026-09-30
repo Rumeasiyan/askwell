@@ -8,8 +8,10 @@ split `test_table_infer.py`/`test_table_infer_db.py` and
 `test_dump_import.py` already use.
 """
 
+import io
 from datetime import date
 
+import openpyxl
 import pytest
 
 from askwell.table_infer import (
@@ -17,13 +19,17 @@ from askwell.table_infer import (
     DateFormatDetection,
     DateFormatVerdict,
     infer_csv,
+    infer_xlsx,
 )
 from askwell.table_load import (
     RowFailure,
     cast_value,
     normalise_columns,
     normalise_identifier,
+    sheet_skip_reason,
     sql_type_for,
+    workbook_comment,
+    workbook_table_prefix,
 )
 
 # --- identifier normalisation -------------------------------------------------
@@ -193,3 +199,87 @@ def test_row_failure_is_a_plain_row_number_and_reason() -> None:
 def test_infer_csv_carries_the_data_rows_for_loading_to_use() -> None:
     inference = infer_csv("people.csv", b"name,amount\nAnna,10\nBen,20\n")
     assert inference.rows == [["Anna", "10"], ["Ben", "20"]]
+
+
+# --- workbook sheets (`M11-FIX-ING-224`) ----------------------------------------
+
+
+def _workbook(sheets: dict[str, list[list[object]]], *, merge: str | None = None) -> bytes:
+    workbook = openpyxl.Workbook()
+    first = True
+    for title, rows in sheets.items():
+        sheet = workbook.active if first else workbook.create_sheet()
+        assert sheet is not None
+        sheet.title = title
+        for row in rows:
+            sheet.append(row)
+        if merge and first:
+            sheet.merge_cells(merge)
+        first = False
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+_FIGURES = [
+    ["Department", "Q1 Revenue", "Headcount", "Avg Tenure Years"],
+    ["Textiles", 482000, 34, 4.1],
+    ["Logistics", 215000, 19, 2.7],
+]
+
+
+def test_a_sheet_with_a_header_row_over_typed_data_is_loadable() -> None:
+    [sheet] = infer_xlsx("figures.xlsx", _workbook({"Figures": _FIGURES}))
+    assert sheet_skip_reason(sheet) is None
+
+
+def test_a_sheet_whose_first_row_is_data_is_skipped_with_the_reason() -> None:
+    [sheet] = infer_xlsx("figures.xlsx", _workbook({"Raw": [[1, 2], [3, 4], [5, 6]]}))
+    reason = sheet_skip_reason(sheet)
+    assert reason is not None
+    assert "header" in reason
+
+
+def test_a_sheet_of_free_text_is_skipped_because_its_header_cannot_be_told_apart() -> None:
+    [sheet] = infer_xlsx("notes.xlsx", _workbook({"Notes": [["alpha"], ["beta"], ["gamma"]]}))
+    reason = sheet_skip_reason(sheet)
+    assert reason is not None
+    assert "header" in reason
+
+
+def test_an_empty_sheet_is_skipped() -> None:
+    [sheet] = infer_xlsx("empty.xlsx", _workbook({"Blank": []}))
+    assert sheet_skip_reason(sheet) == "the sheet is empty"
+
+
+def test_a_merged_header_is_skipped_rather_than_guessed_at() -> None:
+    raw = _workbook(
+        {"Grouped": [["group", "", "amount"], ["Anna", "x", 10], ["Ben", "y", 20]]}, merge="A1:B1"
+    )
+    [sheet] = infer_xlsx("grouped.xlsx", raw)
+    reason = sheet_skip_reason(sheet)
+    assert reason is not None
+    assert "merged" in reason
+
+
+def test_two_sheets_with_the_same_headers_are_both_loadable_under_their_own_names() -> None:
+    raw = _workbook({"North": _FIGURES, "South": _FIGURES})
+    north, south = infer_xlsx(workbook_table_prefix("sub/figures.xlsx")[:-1], raw)
+    assert (north.table_name, south.table_name) == (
+        "sub/figures.xlsx:North",
+        "sub/figures.xlsx:South",
+    )
+    assert sheet_skip_reason(north) is None
+    assert sheet_skip_reason(south) is None
+
+
+def test_a_workbooks_notes_and_tables_are_keyed_on_its_path_inside_the_source() -> None:
+    assert workbook_table_prefix("sub/figures.xlsx") == "sub/figures.xlsx:"
+    assert workbook_comment("sub/figures.xlsx") == "askwell workbook: sub/figures.xlsx"
+
+
+def test_a_sheet_name_that_is_not_an_identifier_normalises_to_one() -> None:
+    assert (
+        normalise_identifier("figures.xlsx:Quarterly Department Figures", set())
+        == "figures_xlsx_quarterly_department_figures"
+    )

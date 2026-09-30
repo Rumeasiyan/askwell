@@ -4,6 +4,22 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.12 - 2026-09-30
+
+`Added`: a spreadsheet's rows can be queried like a table (#827, `M11-FIX-ING-224`). "How many people work in Logistics?" is answered from the sheet even when the column is called **Headcount**, where searching the workbook's text found nothing close enough.
+
+- **A workbook is searchable and queryable both.** After an Excel workbook (`.xlsx`) is indexed as a document, each sheet with a header row is also loaded as a table, the same way a CSV is. It is still one source in your library.
+- **The text is searched first.** A sheet is queried only when searching the workbook's text found nothing close enough. If the sheet has no matching row either, the answer is still "Nothing in your files answers this". A question the text answers keeps its citation to the workbook, not to Askwell's own notes about the sheet's columns.
+- **The tables stay in the sandbox.** They load into the folder's own isolated database, never Askwell's, under the same size and time limits as a CSV.
+- **Some sheets are not loaded as tables:** one with no recognisable header row, a merged header cell, or nothing in it. They are still searched as text. Formulas are read as their last saved value.
+- **Deleting a workbook** stops its sheets answering at once, as its text does. The tables themselves are removed the next time Askwell starts.
+
+`Known`: a workbook added before this version gets its tables only once it is indexed again, for example by re-indexing its folder (#850). Askwell does not yet say when a sheet was not loaded as a table, or why (#849), and does not ask about a sheet column it could not type, such as a date that could be DD/MM or MM/DD; such a column is kept as text (#851). An answer from a sheet shows the query and its rows, not a citation to the workbook's text. A very large sheet may not load within the time limit, and is then searched as text only: 100,000 rows did not on the test machine (#862).
+
+`Changed`: an answer from a database, CSV or sheet that comes back as one short row now says it, for example "Found 1 row: headcount 19.", instead of only "Found 1 row." with the number in the table. A spoken answer now reads the number out. Larger results still show the count and the table.
+
+`Fixed`: a question answered from a database, CSV or sheet no longer fails as "could not be read" when the model thinks before writing its query. Its reasoning is now dropped before the query is checked, as it already was for answers. The check itself is unchanged.
+
 ## 0.9.11 - 2026-09-30
 
 `Fixed`: on Windows, Askwell's services can now reach its AI (#845, `M11-FIX-DEPLOY-223`). Before, an installed Askwell opened and downloaded its model, then could not answer anything: the AI runs on Windows itself, for the graphics card, and the services in Podman's WSL machine could not reach it.

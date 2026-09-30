@@ -73,7 +73,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from askwell import connections, crypto, dump_import, ingest, roots, schema_introspect
+from askwell import connections, crypto, dump_import, ingest, roots, schema_introspect, table_load
 from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
@@ -832,6 +832,9 @@ async def _tombstone_document(
         ),
         {"id": document_id, "reason": reason},
     )
+    # A workbook's sheet tables stop answering in the same transaction
+    # (`M11-FIX-ING-224`, #852); no-op for any other document.
+    await table_load.forget_deleted_workbook(session, document_id)
     await session.execute(
         text(
             "UPDATE chunks SET content = NULL, content_tsv = NULL, "
