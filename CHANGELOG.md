@@ -4,6 +4,12 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.21 - 2026-10-01
+
+`Fixed`: the grounded-answers eval suite finishes on a fresh database (`M11-FIX-TEST-232`).
+
+- **`grounded_qa.v1` no longer waits forever for a clarification nobody answers.** Indexing the fixture corpus raises a clarification, and the first question that read from it waited for an answer the harness never gave, so the suite could only be run on a database where someone had already answered it. It now skips every clarification pending on the corpus after indexing, through the same skip a person uses, and the result file says how many (`clarifications_skipped`). Numbers from two fresh databases are now comparable. The other suites that index the same corpus are #881.
+
 ## 0.9.20 - 2026-10-01
 
 `Fixed`: a CSV or spreadsheet sheet with 100,000 rows now loads as a table (`M11-FIX-ING-234`).
