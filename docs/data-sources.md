@@ -46,7 +46,7 @@ An Excel workbook added with a folder is a document first: its sheets are extrac
 
 - A sheet with no recognisable header row, a merged header cell, or nothing in it is not a table. It is still in the passages.
 - Cached values only: formulas are read as their last computed value, and charts are ignored.
-- No clarifications are raised for a workbook's columns yet (#851); an ambiguous column loads as text rather than as a guess.
+- A column a sheet cannot type — an undecided DD/MM date, mixed number formats, a blank header cell — is asked about, as a CSV's is, with the question naming the workbook and the sheet (`M11-FIX-ING-228`). Until it is answered it loads as text, never as a guess; answering a date question reloads that workbook's tables with the column as a date, and a later re-index keeps the answer. Each workbook is asked about once, separately from the folder's documents, and the folder's questions share one cap.
 - A workbook's tables are keyed on its path inside the folder: a table comment `askwell workbook: <path>`, and schema notes named `<path>:<sheet>`. Deleting the workbook retires both.
 - `.xls` (the older binary format) is not loaded as a table, as it is not extracted either.
 ---

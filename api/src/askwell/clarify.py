@@ -72,6 +72,13 @@ CAP_CHANGED = "clarification_cap_changed"
 CLARIFICATION_CAP_KEY = "clarification_cap"
 DEFAULT_CLARIFICATION_CAP = 5
 
+# The evidence key naming the workbook a sheet's question is about
+# (`M11-FIX-ING-228`), as its path inside the folder. A folder is one source
+# that holds both documents and workbooks, and this is what tells a sheet's
+# question apart from the folder's own: each workbook is asked about once,
+# and the folder's documents once, independently.
+WORKBOOK_EVIDENCE_KEY = "workbook"
+
 # A guess this uncertain is exactly what `origin = 'inferred'` exists to mark
 # — visible, correctable, never confused with something the user actually
 # said (`docs/memory-and-clarification.md` §3).
@@ -277,7 +284,7 @@ def _rank_weight(candidate: Candidate) -> float:
     return 0.0
 
 
-def _rank_candidates(candidates: list[Candidate]) -> list[Candidate]:
+def rank_candidates(candidates: list[Candidate]) -> list[Candidate]:
     """Highest priority first. Deterministic: two runs over the same source
     produce the same order, since the sort key is built only from stored,
     reproducible data (trigger, evidence counts, subject) — never from
@@ -290,6 +297,15 @@ def _rank_candidates(candidates: list[Candidate]) -> list[Candidate]:
             c.subject,
         ),
     )
+
+
+async def pending_clarifications(session: AsyncSession, source_id: uuid.UUID) -> int:
+    """How many of this source's questions are waiting for an answer."""
+    count = await session.execute(
+        text("SELECT count(*) FROM clarifications WHERE source_id = :id AND status = 'pending'"),
+        {"id": source_id},
+    )
+    return int(count.scalar_one())
 
 
 async def get_clarification_cap(session: AsyncSession) -> int:
@@ -759,11 +775,25 @@ async def raise_candidates(
     (`docs/BRAIN.md`). Scanning here happens exactly once, when a source
     first finishes with nothing left outstanding, and the cap
     (`M3-RAISE-BE-069`) is applied to everything found in that one pass.
+
+    A folder (`kind = 'file'`) differs in two ways, both because its
+    workbooks' sheets ask their own questions when they load
+    (`askwell.table_infer.raise_workbook_questions`, `M11-FIX-ING-228`),
+    before the folder is scanned. A sheet's question, marked by
+    `WORKBOOK_EVIDENCE_KEY`, does not count as the folder having been
+    scanned: only a question without that key does, which is every question
+    raised before sheets asked any. And the cap is shared: this pass asks at
+    most the cap less what the folder already has waiting, so a folder never
+    has more than the cap pending because its questions came from two
+    places. A `csv` or `dump` source is unchanged.
     """
-    already = await session.execute(
-        text("SELECT 1 FROM clarifications WHERE source_id = :id LIMIT 1"),
-        {"id": source_id},
-    )
+    kind = (
+        await session.execute(text("SELECT kind FROM sources WHERE id = :id"), {"id": source_id})
+    ).scalar_one_or_none()
+    guard = "SELECT 1 FROM clarifications WHERE source_id = :id"
+    if kind == "file":
+        guard += f" AND evidence->>'{WORKBOOK_EVIDENCE_KEY}' IS NULL"
+    already = await session.execute(text(guard + " LIMIT 1"), {"id": source_id})
     if already.first() is not None:
         return RaiseResult(raised=0, inferred=0, dropped=0)
 
@@ -783,8 +813,10 @@ async def raise_candidates(
     candidates = [c for c in all_candidates if c.subject not in known]
 
     cap = await get_clarification_cap(session)
-    ranked = _rank_candidates([c for c in candidates if c.passes])
-    to_raise, to_cap = ranked[:cap], ranked[cap:]
+    waiting = await pending_clarifications(session, source_id) if kind == "file" else 0
+    budget = max(cap - waiting, 0)
+    ranked = rank_candidates([c for c in candidates if c.passes])
+    to_raise, to_cap = ranked[:budget], ranked[budget:]
     failing = [c for c in candidates if not c.passes]
 
     raised = inferred = dropped = capped = 0
@@ -834,7 +866,7 @@ async def raise_candidates(
         raised += 1
 
     for offset, candidate in enumerate(to_cap, start=1):
-        rank = cap + offset
+        rank = budget + offset
         # Passed all three tests but the source already had `cap` better
         # candidates — not a case of "nothing safe to guess"
         # (`Candidate.inferred_fact`'s own docstring), since nothing about
@@ -850,7 +882,9 @@ async def raise_candidates(
                 "subject": candidate.subject,
                 "fact": (
                     f"{candidate.question} Not asked — ranked {rank} of "
-                    f"{len(ranked)} for this source, below the cap of {cap}."
+                    f"{len(ranked)} for this source, "
+                    + (f"with {waiting} question(s) already waiting, " if waiting else "")
+                    + f"below the cap of {cap}."
                 ),
                 "confidence": LOW_CONFIDENCE,
             },

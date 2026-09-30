@@ -4,7 +4,14 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
-## 0.9.15 - 2026-09-30
+## 0.9.16 - 2026-09-30
+
+`Added`: a spreadsheet in a folder asks about the columns Askwell could not type, as a CSV does (`M11-FIX-ING-228`).
+
+- **A workbook's sheets ask their questions.** A column like `03/04/2025` that could be day-first or month-first used to load as text in a folder's spreadsheet, and nobody was asked. It is now a question in the review queue, naming the workbook and the sheet: "*Placed* in *orders.xlsx*, sheet *North*, looks like a date in DD/MM/YYYY or MM/DD/YYYY — which is it?" Answering it reloads that workbook's tables with the column as a real date, so "orders in March" is answered by date rather than by comparing text.
+- **A folder asks about its documents and its spreadsheets both.** Before, a folder that had been asked anything was never asked anything else, so a spreadsheet question would have stopped every document question, and the other way round. Each workbook is now asked about once, and the folder's documents once, and together they stay within the question cap.
+- **An answer survives re-indexing.** A spreadsheet that changes and is indexed again is not asked the same question again, and its column keeps the answered type.
+
 
 `Fixed`: a new install can read your folders with no configuration file to edit, and on Windows a folder is no longer refused as "relative to something" (`M11-FIX-BE-227`).
 
