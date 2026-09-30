@@ -69,6 +69,7 @@ Deleting a source removes its schema notes. **General memory learned from it sur
 | **Needs attention** | Affected sources first, with the reason and a fix |
 | **Connection dead** | Last successful check, the error, reconnect |
 | **Stale annotations** | A described table or column no longer exists in the live schema |
+| **A workbook sheet not loaded as a table** | Failed (over the size or time cap): needs attention, naming the workbook, the sheet and the reason, and that its text is still searched. Skipped (no usable header row, merged header cells, empty): a note under the source, not attention. Both clear when the workbook is indexed again successfully (`M11-FIX-UI-229`, `../states-and-edge-cases.md` §3) |
 | **Deleted, filtered in** | Greyed, deletion date, not openable |
 
 ---

@@ -21,6 +21,7 @@ import {
   attentionCauses,
   deletedSentence,
   matchesFilters,
+  sheetNotesFor,
   type LibraryFilters,
 } from "@/lib/library";
 
@@ -261,7 +262,10 @@ function SourceRow({ source, state }: { source: SourceCoverage; state: IngestSta
   const deleted = source.status === "deleted";
   const active = state.active.find((item) => item.source_id === source.id);
   const causes =
-    source.status === "attention" ? attentionCauses(source.id, state.failures, state.flagged) : [];
+    source.status === "attention"
+      ? attentionCauses(source.id, state.failures, state.flagged, state.sheet_notes)
+      : [];
+  const sheetNotes = sheetNotesFor(source.id, state.sheet_notes);
 
   return (
     <li>
@@ -329,6 +333,8 @@ function SourceRow({ source, state }: { source: SourceCoverage; state: IngestSta
               </>
             )}
 
+            {sheetNotes.length === 0 ? null : <SheetNotes notes={sheetNotes} />}
+
             <div className="flex gap-2">
               <ReindexControl sourceId={source.id} name={source.name ?? "this source"} />
               <DeleteControl sourceId={source.id} name={source.name ?? "this source"} />
@@ -337,6 +343,27 @@ function SourceRow({ source, state }: { source: SourceCoverage; state: IngestSta
         )}
       </article>
     </li>
+  );
+}
+
+/**
+ * Sheets of a workbook that were skipped rather than loaded as tables.
+ * `M11-FIX-UI-229`: shown whatever the source's status, and never as
+ * attention — nothing failed, and the workbook's text is still searched.
+ * Said at all because a spreadsheet question that abstains has no other
+ * explanation the user can act on.
+ */
+function SheetNotes({ notes }: { notes: ReturnType<typeof sheetNotesFor> }) {
+  return (
+    <ul className="flex flex-col gap-1 list-none p-0" aria-label="Sheets not loaded as tables">
+      {notes.flatMap((note) =>
+        note.sentences.map((sentence) => (
+          <li key={`${note.documentId}:${sentence}`} className="ask-micro" style={{ color: "var(--muted)" }}>
+            {note.filename}: {sentence}
+          </li>
+        )),
+      )}
+    </ul>
   );
 }
 
@@ -352,8 +379,8 @@ function AttentionDetail({
 
   return (
     <ul className="mt-1 flex flex-col gap-1 list-none p-0" aria-label={`Why ${sourceId} needs attention`}>
-      {causes.map((cause) => (
-        <li key={cause.documentId} className="ask-micro">
+      {causes.map((cause, index) => (
+        <li key={`${cause.documentId}:${index}`} className="ask-micro">
           <span style={{ color: cause.fixable ? "var(--alarm)" : "var(--inferred)" }}>
             {cause.filename}: {cause.sentence}
           </span>

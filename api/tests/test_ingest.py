@@ -290,3 +290,48 @@ def test_a_retry_is_not_deduplicated_against_the_attempt_it_is_retrying(
     asyncio.run(ingest.dispatch(settings, [document], unique=False))
 
     assert ids == [f"ingest:{document}:0", None]
+
+
+# --- a workbook sheet not loaded as a table (`M11-FIX-UI-229`) ---------------
+
+
+def test_a_workbook_whose_sheets_failed_to_load_puts_the_folder_in_attention() -> None:
+    """#849. The document is ready — its passages are searched — but the
+    table that could have answered a spreadsheet question does not exist,
+    and `attention` is the only place the library has to say so."""
+    assert (
+        ingest.source_status(total=4, ready=4, running=0, outstanding=0, failed=0, sheets_failed=1)
+        == "attention"
+    )
+
+
+def test_the_attention_reason_names_the_workbook_the_sheet_and_the_reason() -> None:
+    assert ingest._attention_reason(
+        failed=0,
+        flagged=0,
+        missing=0,
+        total=4,
+        sheet_failures=[
+            (
+                "figures.xlsx",
+                "Big",
+                "Load aborted: loaded data reached 2.0 KB, over the size cap of 1.0 KB.",
+            )
+        ],
+    ) == (
+        "figures.xlsx: the sheet Big was not loaded as a table. Load aborted: loaded "
+        "data reached 2.0 KB, over the size cap of 1.0 KB."
+    )
+
+
+def test_a_failure_not_tied_to_one_sheet_still_names_the_workbook() -> None:
+    assert ingest._attention_reason(
+        failed=1,
+        flagged=0,
+        missing=0,
+        total=4,
+        sheet_failures=[("figures.xlsx", None, "OSError: the file could not be read")],
+    ) == (
+        "1 of 4 files could not be indexed. figures.xlsx: its sheets were not loaded as "
+        "tables. OSError: the file could not be read."
+    )

@@ -246,7 +246,8 @@ documents          id, source_id, filename, path, mime, sha256, page_count,
                    deleted_at, deleted_reason, status, ocr_confidence,
                    missing_since, added_at,                               -- path/missing_since NEW
                    document_date, document_date_precision(day|month|year),
-                   document_date_source(metadata|filename)                -- the document's own date, never added_at
+                   document_date_source(metadata|filename),               -- the document's own date, never added_at
+                   sheet_load_failure, sheets_skipped                     -- a workbook's last sheet-to-table load (M11-FIX-UI-229)
 
 document_pages     id, document_id, page_number, text, has_text,
                    anchor_label, added_at                                 -- NEW TABLE

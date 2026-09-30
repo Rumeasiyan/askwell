@@ -4,6 +4,14 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.17 - 2026-09-30
+
+`Added`: the library says when a sheet of a spreadsheet was not loaded as a table, and why (`M11-FIX-UI-229`).
+
+- **A sheet that failed to load is a reason the folder needs attention.** When a sheet is too big for the size cap, or takes longer than the time cap, the folder shows *Needs attention* with the workbook, the sheet and the reason: "*ledger.xlsx*: the sheet *Ledger* was not loaded as a table. Load aborted: running for 31.0s, over the time cap of 30.0s." The workbook's text is still searched, and the detail says so. Before, the folder showed as ready and a spreadsheet question that could not be answered gave no hint why.
+- **A skipped sheet is a note under the folder, not a problem.** A sheet with no clear header row, merged header cells or nothing in it is listed under its folder with the reason and what would make it loadable ("give it one header row"). The folder stays *Ready*, because nothing failed.
+- **Fixing it clears it.** Indexing the workbook again after raising the cap or fixing the sheet removes the reason and the note. A newer version of the workbook replaces the older one's.
+
 ## 0.9.16 - 2026-09-30
 
 `Added`: a spreadsheet in a folder asks about the columns Askwell could not type, as a CSV does (`M11-FIX-ING-228`).

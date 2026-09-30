@@ -19,6 +19,7 @@ import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from askwell import ingest
 from askwell.config import Settings
 from askwell.dump_import import set_dump_size_cap_bytes
 from askwell.filetypes import WORKBOOK_MIME
@@ -1071,3 +1072,158 @@ async def test_a_workbook_re_ingested_after_its_question_was_answered_keeps_the_
         ).all()
     # The person's answer is the column's note; no fresh guess sits beside it.
     assert notes == [("user", options[1])]
+
+
+# --- the library says when a sheet was not loaded (`M11-FIX-UI-229`) ---------
+
+
+async def _sheet_outcome(
+    factory: async_sessionmaker[AsyncSession], document_id: uuid.UUID
+) -> tuple[object, object]:
+    async with factory() as session:
+        row = (
+            await session.execute(
+                text("SELECT sheet_load_failure, sheets_skipped FROM documents WHERE id = :id"),
+                {"id": document_id},
+            )
+        ).one()
+    return row[0], row[1]
+
+
+async def _refresh(
+    factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    source_id: uuid.UUID,
+    document_id: uuid.UUID,
+) -> tuple[str, str | None]:
+    """The document finished indexing: what `ingest._finish` does next."""
+    async with factory() as session:
+        await session.execute(
+            text("UPDATE documents SET status = 'ready' WHERE id = :id"), {"id": document_id}
+        )
+        await ingest.refresh_source(session, source_id, settings.ocr_confidence_threshold, settings)
+        await session.commit()
+        row = (
+            await session.execute(
+                text("SELECT status, last_error FROM sources WHERE id = :id"), {"id": source_id}
+            )
+        ).one()
+    return row[0], row[1]
+
+
+async def test_a_skipped_sheet_is_a_note_on_its_document_not_attention(
+    factory: async_sessionmaker[AsyncSession], table_settings: Settings, tmp_path: Path
+) -> None:
+    root = tmp_path / "work"
+    workbook = root / "figures.xlsx"
+    _write_workbook(workbook, {"Figures": _FIGURES, "Raw": [[1, 2], [3, 4], [5, 6]]})
+    source_id = await _folder_source(factory, root)
+    document_id = await _workbook_document(factory, source_id, workbook)
+
+    await load_workbook_tables(factory, table_settings, source_id, document_id)
+
+    failure, skipped = await _sheet_outcome(factory, document_id)
+    assert failure is None
+    assert isinstance(skipped, list)
+    [note] = skipped
+    assert note["sheet"] == "Raw"
+    assert note["reason"].startswith("no recognisable header row")
+
+    # Nothing failed, so the folder is ready — and the library still hears it.
+    assert await _refresh(factory, table_settings, source_id, document_id) == ("ready", None)
+    async with factory() as session:
+        snapshot = await ingest.snapshot(session, table_settings)
+    [entry] = snapshot["sheet_notes"]
+    assert entry["document_id"] == str(document_id)
+    assert entry["filename"] == "figures.xlsx"
+    assert entry["failure"] is None
+    assert [item["sheet"] for item in entry["skipped"]] == ["Raw"]
+    [source] = snapshot["sources"]
+    assert source["sheets_failed"] == 0
+
+
+async def test_a_failed_sheet_load_puts_the_folder_in_attention_naming_workbook_sheet_and_reason(
+    factory: async_sessionmaker[AsyncSession], table_settings: Settings, tmp_path: Path
+) -> None:
+    root = tmp_path / "work"
+    workbook = root / "big.xlsx"
+    _write_workbook(workbook, {"Big": [["name", "amount"]] + [[f"row{i}", i] for i in range(500)]})
+    source_id = await _folder_source(factory, root)
+    document_id = await _workbook_document(factory, source_id, workbook)
+    async with factory() as session:
+        await set_dump_size_cap_bytes(session, 1024)
+        await session.commit()
+
+    await load_workbook_tables(factory, table_settings, source_id, document_id)
+
+    failure, _ = await _sheet_outcome(factory, document_id)
+    assert isinstance(failure, dict)
+    assert failure["sheet"] == "Big"
+    assert "size cap" in failure["reason"]
+
+    status, reason = await _refresh(factory, table_settings, source_id, document_id)
+    assert status == "attention"
+    assert reason is not None
+    assert reason.startswith("big.xlsx: the sheet Big was not loaded as a table. Load aborted")
+    assert "size cap" in reason
+
+    async with factory() as session:
+        snapshot = await ingest.snapshot(session, table_settings)
+    [source] = snapshot["sources"]
+    assert source["sheets_failed"] == 1
+    [entry] = snapshot["sheet_notes"]
+    assert entry["failure"]["sheet"] == "Big"
+
+
+async def test_a_workbook_re_ingested_successfully_clears_the_note(
+    factory: async_sessionmaker[AsyncSession], table_settings: Settings, tmp_path: Path
+) -> None:
+    """The ticket's edge case: the cap is raised, the workbook indexed again,
+    and neither the attention nor the note survives it."""
+    root = tmp_path / "work"
+    workbook = root / "big.xlsx"
+    _write_workbook(workbook, {"Big": [["name", "amount"]] + [[f"row{i}", i] for i in range(500)]})
+    source_id = await _folder_source(factory, root)
+    document_id = await _workbook_document(factory, source_id, workbook)
+    async with factory() as session:
+        await set_dump_size_cap_bytes(session, 1024)
+        await session.commit()
+    await load_workbook_tables(factory, table_settings, source_id, document_id)
+    assert (await _refresh(factory, table_settings, source_id, document_id))[0] == "attention"
+
+    async with factory() as session:
+        await set_dump_size_cap_bytes(session, 1024 * 1024 * 1024)
+        await session.commit()
+    outcome = await load_workbook_tables(factory, table_settings, source_id, document_id)
+
+    assert outcome.failure is None
+    assert await _sheet_outcome(factory, document_id) == (None, None)
+    assert await _refresh(factory, table_settings, source_id, document_id) == ("ready", None)
+    async with factory() as session:
+        snapshot = await ingest.snapshot(session, table_settings)
+    assert snapshot["sheet_notes"] == []
+
+
+async def test_a_newer_version_of_the_workbook_hides_the_older_versions_note(
+    factory: async_sessionmaker[AsyncSession], table_settings: Settings, tmp_path: Path
+) -> None:
+    root = tmp_path / "work"
+    workbook = root / "figures.xlsx"
+    _write_workbook(workbook, {"Raw": [[1, 2], [3, 4], [5, 6]]})
+    source_id = await _folder_source(factory, root)
+    older = await _workbook_document(factory, source_id, workbook)
+    await load_workbook_tables(factory, table_settings, source_id, older)
+
+    _write_workbook(workbook, {"Figures": _FIGURES})
+    newer = await _workbook_document(factory, source_id, workbook)
+    async with factory() as session:
+        await session.execute(
+            text("UPDATE documents SET superseded_by = :newer WHERE id = :older"),
+            {"newer": newer, "older": older},
+        )
+        await session.commit()
+    await load_workbook_tables(factory, table_settings, source_id, newer)
+
+    async with factory() as session:
+        snapshot = await ingest.snapshot(session, table_settings)
+    assert snapshot["sheet_notes"] == []

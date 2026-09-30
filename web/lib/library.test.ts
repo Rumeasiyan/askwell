@@ -13,13 +13,14 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import type { FailedDocument, FlaggedDocument, SourceCoverage } from "./ingest.ts";
+import type { FailedDocument, FlaggedDocument, SheetNote, SourceCoverage } from "./ingest.ts";
 import {
   DEFAULT_FILTERS,
   addedSentence,
   attentionCauses,
   deletedSentence,
   matchesFilters,
+  sheetNotesFor,
   type LibraryFilters,
 } from "./library.ts";
 
@@ -40,6 +41,7 @@ function source(over: Partial<SourceCoverage> = {}): SourceCoverage {
     running: 0,
     outstanding: 0,
     flagged: 0,
+    sheets_failed: 0,
     askable: true,
     fraction: 1,
     ...over,
@@ -207,4 +209,65 @@ test("the library is one click from the rail, and the narrow-window drawer is th
 test("the welcome copy names where Add a source actually is", () => {
   assert.doesNotMatch(WELCOME, /Add a source<\/code> any time from the rail/);
   assert.match(WELCOME, /<code>Library<\/code> in the rail and choose <code>Add a source<\/code>/);
+});
+
+// --- a workbook sheet not loaded as a table (`M11-FIX-UI-229`) -----------
+
+function sheetNote(over: Partial<SheetNote> = {}): SheetNote {
+  return {
+    document_id: "d3",
+    filename: "figures.xlsx",
+    source_id: "s1",
+    failure: null,
+    skipped: [],
+    ...over,
+  };
+}
+
+test("a failed sheet load is an attention cause naming the workbook, sheet and reason", () => {
+  const causes = attentionCauses("s1", [], [], [
+    sheetNote({
+      failure: {
+        sheet: "Big",
+        reason: "Load aborted: loaded data reached 2.0 KB, over the size cap of 1.0 KB.",
+      },
+    }),
+  ]);
+  assert.equal(causes.length, 1);
+  assert.equal(causes[0]?.filename, "figures.xlsx");
+  // Nothing to retry: the fix is the cap, or the sheet itself.
+  assert.equal(causes[0]?.fixable, false);
+  assert.match(causes[0]?.sentence ?? "", /The sheet Big was not loaded as a table/);
+  assert.match(causes[0]?.sentence ?? "", /size cap/);
+  assert.match(causes[0]?.sentence ?? "", /still searched/);
+});
+
+test("a skipped sheet is not an attention cause", () => {
+  const causes = attentionCauses("s1", [], [], [
+    sheetNote({ skipped: [{ sheet: "Raw", reason: "the header row has merged cells" }] }),
+  ]);
+  assert.equal(causes.length, 0);
+});
+
+test("a skipped sheet is a note on its document, naming the sheet and why", () => {
+  const notes = sheetNotesFor("s1", [
+    sheetNote({ skipped: [{ sheet: "Raw", reason: "the header row has merged cells" }] }),
+    sheetNote({ source_id: "s2", skipped: [{ sheet: "Other", reason: "the sheet is empty" }] }),
+  ]);
+  assert.equal(notes.length, 1);
+  assert.equal(notes[0]?.filename, "figures.xlsx");
+  assert.deepEqual(notes[0]?.sentences, [
+    "The sheet Raw was not loaded as a table: the header row has merged cells. Its text is still searched; give it one header row to ask it as a table.",
+  ]);
+});
+
+test("a workbook with no skipped sheet has no note", () => {
+  assert.deepEqual(sheetNotesFor("s1", [sheetNote({ failure: { sheet: "Big", reason: "x" } })]), []);
+});
+
+test("an empty sheet is noted without advice to add a header row", () => {
+  const [note] = sheetNotesFor("s1", [
+    sheetNote({ skipped: [{ sheet: "Blank", reason: "the sheet is empty" }] }),
+  ]);
+  assert.deepEqual(note?.sentences, ["The sheet Blank was not loaded as a table: the sheet is empty."]);
 });
