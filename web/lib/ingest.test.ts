@@ -46,6 +46,7 @@ function state(over: Partial<IngestState> = {}): IngestState {
     next: [],
     failures: [],
     flagged: [],
+    sheet_notes: [],
     sources: [],
     awaiting: null,
     stages: [
@@ -74,6 +75,7 @@ function coverage(over: Partial<SourceCoverage> = {}): SourceCoverage {
     running: 2,
     outstanding: 420,
     flagged: 0,
+    sheets_failed: 0,
     askable: true,
     fraction: 0.16,
     ...over,

@@ -79,6 +79,29 @@ export interface FlaggedDocument {
   poor_pages: number[];
 }
 
+/** One sheet of a workbook, and why it is not a table. */
+export interface SheetReason {
+  /** `null` when the load failed before any one sheet was responsible. */
+  sheet: string | null;
+  reason: string;
+}
+
+/**
+ * A workbook whose sheets were not all loaded as tables. `M11-FIX-UI-229`.
+ *
+ * `failure` is the load failing — over the size or time cap, say — and puts
+ * the folder in attention. `skipped` is a sheet with no usable header row:
+ * nothing failed, so it is only a note on the document. Either way the
+ * workbook's passages are still searched.
+ */
+export interface SheetNote {
+  document_id: string;
+  filename: string;
+  source_id: string;
+  failure: SheetReason | null;
+  skipped: SheetReason[];
+}
+
 export interface SourceCoverage {
   id: string;
   name: string | null;
@@ -106,6 +129,8 @@ export interface SourceCoverage {
   outstanding: number;
   /** Read poorly by OCR. Never subtracted from `ready` — these are askable too. */
   flagged: number;
+  /** Workbooks whose sheets failed to load as tables. Their passages are askable. */
+  sheets_failed: number;
   /** One indexed file is enough to ask. Waiting for all five hundred is the bug. */
   askable: boolean;
   fraction: number;
@@ -135,6 +160,7 @@ export interface IngestState {
   next: QueuedDocument[];
   failures: FailedDocument[];
   flagged: FlaggedDocument[];
+  sheet_notes: SheetNote[];
   sources: SourceCoverage[];
   awaiting: AwaitingStage | null;
   stages: PipelineStage[];

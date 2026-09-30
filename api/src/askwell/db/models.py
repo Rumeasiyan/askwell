@@ -307,6 +307,14 @@ class Document(Base):
     document_date_precision: Mapped[str | None] = mapped_column(String(8))
     document_date_source: Mapped[str | None] = mapped_column(String(16))
 
+    # A workbook's sheets, as tables (`M11-FIX-UI-229`). What the last load
+    # of this workbook's sheets did, where the library can read it: a failed
+    # load (`{"sheet", "reason"}`) puts the folder in `attention`; a sheet
+    # skipped for having no usable header row is only a note. Both are
+    # rewritten by every load, so a later successful one clears them.
+    sheet_load_failure: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    sheets_skipped: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
+
     added_at: Mapped[datetime] = created_at()
 
 

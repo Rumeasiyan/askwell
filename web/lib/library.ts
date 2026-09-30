@@ -7,7 +7,13 @@
  * below is what turns that one payload into rows, filters and reasons.
  */
 
-import type { FailedDocument, FlaggedDocument, SourceCoverage } from "@/lib/ingest";
+import type {
+  FailedDocument,
+  FlaggedDocument,
+  SheetNote,
+  SheetReason,
+  SourceCoverage,
+} from "@/lib/ingest";
 
 /** `docs/ux/library.md` §2: the label a row's kind column shows. Only `file`
  * is reachable before `M4`; the rest are named so a filter built against the
@@ -103,6 +109,7 @@ export function attentionCauses(
   sourceId: string,
   failures: readonly FailedDocument[],
   flagged: readonly FlaggedDocument[],
+  sheetNotes: readonly SheetNote[] = [],
 ): AttentionCause[] {
   const own = failures
     .filter((failure) => failure.source_id === sourceId)
@@ -120,7 +127,61 @@ export function attentionCauses(
       sentence: flaggedSentenceShort(document),
       fixable: false,
     }));
-  return [...own, ...poor];
+  // `M11-FIX-UI-229`: a workbook whose sheets failed to load. Not fixable
+  // here — "Try again" retries a failed document, and this document did not
+  // fail; the fix is the cap in Settings, or the sheet itself.
+  const sheets = sheetNotes.flatMap((note) =>
+    note.source_id === sourceId && note.failure !== null
+      ? [
+          {
+            documentId: note.document_id,
+            filename: note.filename,
+            sentence: `${sheetLead(note.failure)}. ${withStop(note.failure.reason)} Its text is still searched.`,
+            fixable: false,
+          },
+        ]
+      : [],
+  );
+  return [...own, ...poor, ...sheets];
+}
+
+export interface SheetNoteLine {
+  documentId: string;
+  filename: string;
+  sentences: string[];
+}
+
+/**
+ * The sheets of this source's workbooks that were skipped rather than
+ * loaded as tables — no usable header row, merged header cells, or empty.
+ * `M11-FIX-UI-229`: a note on the document, not attention, because nothing
+ * failed. Said anyway, because a spreadsheet question that abstains
+ * otherwise has no explanation the user can act on.
+ */
+export function sheetNotesFor(sourceId: string, sheetNotes: readonly SheetNote[]): SheetNoteLine[] {
+  return sheetNotes
+    .filter((note) => note.source_id === sourceId && note.skipped.length > 0)
+    .map((note) => ({
+      documentId: note.document_id,
+      filename: note.filename,
+      sentences: note.skipped.map((skipped) =>
+        // `table_load.sheet_skip_reason`'s wording. An empty sheet has
+        // nothing to search and nothing to change.
+        skipped.reason === "the sheet is empty"
+          ? `${sheetLead(skipped)}: ${withStop(skipped.reason)}`
+          : `${sheetLead(skipped)}: ${withStop(skipped.reason)} Its text is still searched; give it one header row to ask it as a table.`,
+      ),
+    }));
+}
+
+function sheetLead(reason: SheetReason): string {
+  return reason.sheet === null
+    ? "Its sheets were not loaded as tables"
+    : `The sheet ${reason.sheet} was not loaded as a table`;
+}
+
+function withStop(sentence: string): string {
+  return /[.!?]$/.test(sentence) ? sentence : `${sentence}.`;
 }
 
 function failureSentenceShort(failure: FailedDocument): string {

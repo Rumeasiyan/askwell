@@ -687,6 +687,7 @@ def source_status(
     failed: int,
     flagged: int = 0,
     missing: int = 0,
+    sheets_failed: int = 0,
 ) -> str:
     """What a source's status is, given what its documents are doing.
 
@@ -716,10 +717,16 @@ def source_status(
     askable from what was already indexed — it needs relocating, not
     re-indexing — so `missing` joins `flagged` here rather than sitting in
     `outstanding` waiting for a retry that would never fix it.
+
+    **So does a workbook whose sheets failed to load as tables.**
+    `M11-FIX-UI-229`: the document is `ready` and its passages are searched;
+    only the table that could have answered a spreadsheet question is
+    missing. A sheet *skipped* for having no usable header row is not
+    counted — nothing failed, and the library shows it as a note instead.
     """
     if total == 0:
         return "queued"
-    if flagged or missing:
+    if flagged or missing or sheets_failed:
         return "attention"
     if ready == total:
         return "ready"
@@ -754,6 +761,10 @@ class Coverage:
     # askable, only the file needs relocating. `M1-VIEW-BE-049`.
     missing: int = 0
 
+    # Live workbooks whose sheets failed to load as tables. The documents
+    # are `ready` and askable; this is the table beside them. `M11-FIX-UI-229`.
+    sheets_failed: int = 0
+
     @property
     def askable(self) -> bool:
         """The partial-coverage marker: one indexed file is enough to ask.
@@ -773,6 +784,7 @@ class Coverage:
             "outstanding": self.outstanding,
             "flagged": self.flagged,
             "missing": self.missing,
+            "sheets_failed": self.sheets_failed,
             "askable": self.askable,
             "fraction": round(self.ready / self.total, 4) if self.total else 0.0,
         }
@@ -796,7 +808,8 @@ async def coverage(
             # milestones this ticket does not depend on.
             "count(*) FILTER (WHERE d.ocr_confidence IS NOT NULL "
             "AND d.ocr_confidence < :threshold) AS flagged, "
-            "count(*) FILTER (WHERE d.missing_since IS NOT NULL) AS missing "
+            "count(*) FILTER (WHERE d.missing_since IS NOT NULL) AS missing, "
+            f"count(*) FILTER (WHERE {_SHEETS_FAILED}) AS sheets_failed "
             "FROM documents d LEFT JOIN ingest_jobs j ON j.document_id = d.id "
             "WHERE d.source_id = :id AND d.deleted_at IS NULL"
         ),
@@ -811,10 +824,42 @@ async def coverage(
         outstanding=int(row[4]),
         flagged=int(row[5]),
         missing=int(row[6]),
+        sheets_failed=int(row[7]),
     )
 
 
-def _attention_reason(*, failed: int, flagged: int, missing: int, total: int) -> str | None:
+# A superseded version's outcome is history: the newer version's load is the
+# one that describes the tables now. `M11-FIX-UI-229`.
+_SHEETS_FAILED = "d.sheet_load_failure IS NOT NULL AND d.superseded_by IS NULL"
+
+
+async def _sheet_failures(
+    session: AsyncSession, source_id: uuid.UUID
+) -> list[tuple[str, str | None, str]]:
+    """Each live workbook in the source whose sheets failed to load, as
+    `(filename, sheet, reason)` — what the attention sentence names."""
+    rows = await session.execute(
+        text(
+            "SELECT d.filename, d.sheet_load_failure FROM documents d "
+            f"WHERE d.source_id = :id AND d.deleted_at IS NULL AND {_SHEETS_FAILED} "
+            "ORDER BY d.filename"
+        ),
+        {"id": source_id},
+    )
+    return [
+        (str(filename), failure.get("sheet"), str(failure.get("reason") or ""))
+        for filename, failure in rows
+    ]
+
+
+def _attention_reason(
+    *,
+    failed: int,
+    flagged: int,
+    missing: int,
+    total: int,
+    sheet_failures: Sequence[tuple[str, str | None, str]] = (),
+) -> str | None:
     """The sentence `sources.last_error` carries while a source needs attention.
 
     Every cause named when several are true — a source can have two failed
@@ -832,6 +877,15 @@ def _attention_reason(*, failed: int, flagged: int, missing: int, total: int) ->
     if missing:
         noun, verb = ("file", "needs") if missing == 1 else ("files", "need")
         parts.append(f"{missing} {noun} moved or renamed and {verb} relocating")
+    # Named one by one, not counted: "the sheet *Big* of `figures.xlsx`, over
+    # the size cap" is what tells someone what to change (`M11-FIX-UI-229`).
+    for filename, sheet, why in sheet_failures:
+        what = (
+            "its sheets were not loaded as tables"
+            if sheet is None
+            else f"the sheet {sheet} was not loaded as a table"
+        )
+        parts.append(f"{filename}: {what}. {why.rstrip('.')}")
     return ". ".join(parts) + "." if parts else None
 
 
@@ -846,7 +900,7 @@ async def refresh_source(
     saying the same thing about one import.
     """
     current = await session.execute(
-        text("SELECT status FROM sources WHERE id = :id AND status <> 'deleted'"),
+        text("SELECT status, last_error FROM sources WHERE id = :id AND status <> 'deleted'"),
         {"id": source_id},
     )
     found = current.first()
@@ -862,8 +916,25 @@ async def refresh_source(
         failed=counts.failed,
         flagged=counts.flagged,
         missing=counts.missing,
+        sheets_failed=counts.sheets_failed,
+    )
+    reason = _attention_reason(
+        failed=counts.failed,
+        flagged=counts.flagged,
+        missing=counts.missing,
+        total=counts.total,
+        sheet_failures=(await _sheet_failures(session, source_id) if counts.sheets_failed else ()),
     )
     if wanted == found[0]:
+        if wanted == "attention" and reason != found[1]:
+            # Still needing attention, for a different reason — a second
+            # workbook's sheet failing while the first still has. The status
+            # did not move, so there is no decisions record; the sentence
+            # the library shows must still be the true one (`M11-FIX-UI-229`).
+            await session.execute(
+                text("UPDATE sources SET last_error = :last_error WHERE id = :id"),
+                {"last_error": reason, "id": source_id},
+            )
         return wanted
 
     await session.execute(
@@ -880,12 +951,7 @@ async def refresh_source(
         {
             "status": wanted,
             "became_ready": wanted == "ready",
-            "last_error": _attention_reason(
-                failed=counts.failed,
-                flagged=counts.flagged,
-                missing=counts.missing,
-                total=counts.total,
-            ),
+            "last_error": reason,
             "id": source_id,
         },
     )
@@ -902,6 +968,7 @@ async def refresh_source(
             "failed": counts.failed,
             "flagged": counts.flagged,
             "missing": counts.missing,
+            "sheets_failed": counts.sheets_failed,
         },
     )
     log.info(
@@ -1211,6 +1278,17 @@ async def snapshot(session: AsyncSession, settings: Settings) -> dict[str, Any]:
         ),
         {"threshold": settings.ocr_confidence_threshold},
     )
+    # `M11-FIX-UI-229`: a workbook whose sheets were not all loaded as
+    # tables — failed, which the source's attention also carries, or skipped,
+    # which is only a note. The newest live version only.
+    sheet_notes = await session.execute(
+        text(
+            "SELECT d.id, d.filename, d.source_id, d.sheet_load_failure, d.sheets_skipped "
+            "FROM documents d WHERE d.deleted_at IS NULL AND d.superseded_by IS NULL "
+            "AND (d.sheet_load_failure IS NOT NULL OR d.sheets_skipped IS NOT NULL) "
+            "ORDER BY d.added_at DESC"
+        )
+    )
     sources = await session.execute(
         text(
             "SELECT s.id, s.name, s.status, s.kind, s.added_at, s.last_error, s.deleted_at, "
@@ -1221,7 +1299,8 @@ async def snapshot(session: AsyncSession, settings: Settings) -> dict[str, Any]:
             "count(*) FILTER (WHERE d.status = 'indexing') AS running, "
             "count(*) FILTER (WHERE j.state IN ('queued', 'running', 'parked')) AS outstanding, "
             "count(*) FILTER (WHERE d.ocr_confidence IS NOT NULL "
-            "AND d.ocr_confidence < :threshold) AS flagged "
+            "AND d.ocr_confidence < :threshold) AS flagged, "
+            f"count(*) FILTER (WHERE {_SHEETS_FAILED}) AS sheets_failed "
             "FROM sources s LEFT JOIN documents d ON d.source_id = s.id AND d.deleted_at IS NULL "
             "LEFT JOIN ingest_jobs j ON j.document_id = d.id "
             # Deleted sources stay in the snapshot, greyed by the library and
@@ -1298,6 +1377,16 @@ async def snapshot(session: AsyncSession, settings: Settings) -> dict[str, Any]:
             }
             for row in flagged_rows
         ],
+        "sheet_notes": [
+            {
+                "document_id": str(row[0]),
+                "filename": row[1],
+                "source_id": str(row[2]),
+                "failure": row[3],
+                "skipped": row[4] or [],
+            }
+            for row in sheet_notes.all()
+        ],
         "sources": [
             {
                 "id": str(row[0]),
@@ -1324,6 +1413,7 @@ async def snapshot(session: AsyncSession, settings: Settings) -> dict[str, Any]:
                     running=int(row[11]),
                     outstanding=int(row[12]),
                     flagged=int(row[13]),
+                    sheets_failed=int(row[14]),
                 ).as_dict(),
             }
             for row in sources.all()

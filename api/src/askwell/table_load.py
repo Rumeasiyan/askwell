@@ -53,6 +53,7 @@ not two.
 """
 
 import asyncio
+import json
 import os
 import re
 import time
@@ -779,6 +780,14 @@ async def reload_source(
         document_id, relative = document
         outcome = await load_workbook_tables(factory, settings, source_id, document_id)
         async with session_scope(factory) as session:
+            # No document is indexing here, so nothing else will refresh the
+            # folder: a reload that failed, or that cleared an earlier
+            # failure, moves its attention now (`M11-FIX-UI-229`).
+            from askwell import ingest
+
+            await ingest.refresh_source(
+                session, source_id, settings.ocr_confidence_threshold, settings
+            )
             await audit.record(
                 session,
                 Store.DECISIONS,
@@ -970,8 +979,11 @@ async def load_workbook_tables(
     notes are written the way a CSV's are. Two things differ, both because
     the source is a folder rather than a table:
 
-    - the source's status is never touched. It describes the folder's
-      documents, and a sheet that did not load has not failed a document;
+    - the source's status is not set here. The outcome is kept on the
+      document (`_store_outcome`, `M11-FIX-UI-229`), and the source's next
+      `ingest.refresh_source` reads it: a failed load is `attention`, naming
+      the workbook, sheet and reason; a skipped sheet is only a note, since
+      nothing failed. The document itself is never failed by either;
     - its questions are asked once per workbook, within the folder's cap
       (`table_infer.raise_workbook_questions`, `M11-FIX-ING-228`). An
       ambiguous column loads as `text` until its question is answered, and
@@ -990,6 +1002,7 @@ async def load_workbook_tables(
         log.exception("workbook_tables_failed", source_id=str(source_id), reason=reason)
         try:
             async with session_scope(factory) as session:
+                await _store_outcome(session, document_id, (None, reason), [])
                 await audit.record(
                     session,
                     Store.DECISIONS,
@@ -1075,6 +1088,7 @@ async def _load_workbook_tables(
             if created and not loadable:
                 # Nothing loaded before and nothing to load now: no database.
                 await _forget_workbook_notes(session, source_id, prefix)
+                await _store_outcome(session, document_id, None, skipped)
                 await _record_loaded(session, source_id, document_id, relative, [], skipped)
                 return WorkbookOutcome(tables=[], skipped=skipped)
             if created:
@@ -1092,6 +1106,10 @@ async def _load_workbook_tables(
         dsn = sandbox.owner_url(admin_url, database, owner_password)
         own: list[str] = []
         results: list[LoadResult] = []
+        # The sheet being loaded when something failed, so the library can
+        # name it. `None` while dropping the previous tables, which no one
+        # sheet is responsible for.
+        current: str | None = None
         try:
             existing = await asyncio.to_thread(_tables_blocking, dsn)
             own = [name for name, note in existing.items() if note == comment]
@@ -1101,6 +1119,7 @@ async def _load_workbook_tables(
             await asyncio.to_thread(_drop_tables_blocking, dsn, replaced)
             taken = set(existing) - set(replaced)
             for inference in loadable:
+                current = inference.sheet or inference.table_name
                 sql_table_name = normalise_identifier(inference.table_name, taken)
                 own.append(sql_table_name)
                 results.append(
@@ -1143,6 +1162,7 @@ async def _load_workbook_tables(
                     await asyncio.to_thread(_drop_tables_blocking, dsn, own)
                     await sandbox.seal_owner(session, admin_url, database)
                 await _forget_workbook_notes(session, source_id, prefix)
+                await _store_outcome(session, document_id, (current, reason), skipped)
                 await audit.record(session, Store.DECISIONS, WORKBOOK_TABLES_FAILED, payload)
             log.warning(
                 "workbook_tables_failed",
@@ -1161,6 +1181,7 @@ async def _load_workbook_tables(
                 )
             await raise_workbook_questions(session, source_id, relative, loadable)
             await _write_load_notes(session, source_id, loadable, results)
+            await _store_outcome(session, document_id, None, skipped)
             await _record_loaded(session, source_id, document_id, relative, results, skipped)
 
     log.info(
@@ -1171,6 +1192,35 @@ async def _load_workbook_tables(
         skipped=len(skipped),
     )
     return WorkbookOutcome(tables=results, skipped=skipped)
+
+
+async def _store_outcome(
+    session: AsyncSession,
+    document_id: uuid.UUID,
+    failure: tuple[str | None, str] | None,
+    skipped: list[tuple[str, str]],
+) -> None:
+    """Keep what this load did on the workbook's document, where the library
+    reads it (`M11-FIX-UI-229`, #849) — the decisions store records the same
+    thing, but nothing on screen reads that. Both columns are overwritten on
+    every load, so a workbook indexed again successfully loses its note."""
+    await session.execute(
+        text(
+            "UPDATE documents SET sheet_load_failure = CAST(:failure AS jsonb), "
+            "sheets_skipped = CAST(:skipped AS jsonb) WHERE id = :id"
+        ),
+        {
+            "id": document_id,
+            "failure": (
+                None if failure is None else json.dumps({"sheet": failure[0], "reason": failure[1]})
+            ),
+            "skipped": (
+                json.dumps([{"sheet": sheet, "reason": reason} for sheet, reason in skipped])
+                if skipped
+                else None
+            ),
+        },
+    )
 
 
 async def _record_loaded(
