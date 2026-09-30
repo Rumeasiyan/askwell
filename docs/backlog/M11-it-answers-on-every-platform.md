@@ -112,28 +112,27 @@ Two changes remain.
 
 > **Added 2026-09-30, after the first end-to-end run of the real `0.9.11` release on the Windows test VM.** Setup installed Askwell from a clean Windows 11 through the restart, and every service came up. With the models in place, the AI came up only after three manual steps and one clock correction. A question then reached `/ask` and completed. Adding a folder failed outright. The three tickets below are what that run found. Evidence is in the tickets; the run itself used `scripts/winvm.sh`.
 
-### M11-FIX-DEPLOY-225 — On Windows, the AI supervisor starts with Askwell's settings and a runtime it can use
+### M11-FIX-DEPLOY-225 — The AI supervisor starts with Askwell's settings on every platform, and on Windows with a runtime it can use
 
 **Type:** Task
 
 **User Story**
-- **Actor:** anyone who installs Askwell on a Windows PC.
+- **Actor:** anyone who installs Askwell, on any platform.
 - **User Need:** the assistant starts once the model is in place, with nothing to set up by hand.
-- **Business Value:** today the assistant never starts on a new Windows PC, for two separate reasons, and neither is visible to the user.
+- **Business Value:** today the assistant never starts on an installed Askwell on **Linux or Windows**, and very likely macOS. Neither the user nor `/health` sees why.
 
 **Context / Background**
 **Detailed Description:** Two defects, both found on the Windows VM with `0.9.11`.
 1. **No Visual C++ runtime.** Every bundled `llama-server.exe` (the GPU and the CPU build) exits with `3221225781` (`0xC0000135`, a DLL not found). A new Windows has no `vcruntime140.dll`, `msvcp140.dll` or `vcruntime140_1.dll`. The VM test: installing Microsoft's `https://aka.ms/vs/17/release/vc_redist.x64.exe` with `/install /quiet /norestart` gives exit 0, after which `llama-server.exe --version` runs. The file is Authenticode-signed by `CN=Microsoft Corporation` (status `Valid`). It is a moving permalink, so there is no fixed SHA-256 to pin; verify the signature instead (`Get-AuthenticodeSignature`: status `Valid`, signer subject begins `CN=Microsoft Corporation,`). Setup installs it when those three DLLs are missing, before Askwell itself, and the success codes are 0, 3010 and 1638 (a newer version is already installed). It is downloaded at install time, not bundled, like Python and WSL, so C9 is not engaged.
-2. **The inference task has no settings.** The `AskwellInference` scheduled task runs `pythonw.exe askwell-inference` with no environment, so the supervisor saw no `ASKWELL_INFERENCE_MODEL_PATH` ("No model file at .") and took `ASKWELL_INFERENCE_SOCKET`'s default, `/run/askwell/inference.sock`. On Windows that is `C:\run\askwell`, so it wrote its `state.json` there. The API reads `<app>\.run\state.json`. On Linux the systemd unit loads `.env`; on Windows nothing does. Give `askwell-inference` an `--env-file PATH` option: it loads the file without overriding variables already set. Make `Get-AskwellInferenceTaskArguments` pass the app's `.env` and point the run directory at `<app>\.run`. Verified by hand on the VM: with the `.env` loaded and the socket under `<app>\.run`, all three roles reported `ready` and `/health` showed inference reachable.
+2. **The supervisor has no settings, on every platform.** On a clean Ubuntu 24.04 VM, a fresh `0.9.11` install shows the same defect. `~/.config/systemd/user/askwell-inference.service` has no `EnvironmentFile=` and no `WorkingDirectory=`. The journal shows `No model file at .` and `could not write state: [Errno 13] Permission denied: '/run/askwell'`, while the stack itself came up and `/health` answered. Loading `.env` alone is not enough, because `.env`'s `ASKWELL_INFERENCE_SOCKET` is the **containers'** path, `/run/askwell/inference.sock`. The supervisor must write its state into the host directory the containers mount there: `ASKWELL_RUN_DIR` (default `./.run`), resolved against the app directory. The developer path works only because `scripts/dev.sh inference` sets the socket explicitly. On Windows, the `AskwellInference` scheduled task runs `pythonw.exe askwell-inference` with no environment, so the supervisor saw no `ASKWELL_INFERENCE_MODEL_PATH` ("No model file at .") and took `ASKWELL_INFERENCE_SOCKET`'s default, `/run/askwell/inference.sock`. On Windows that is `C:\run\askwell`, so it wrote its `state.json` there. The API reads `<app>\.run\state.json`. On Linux the systemd unit loads `.env`; on Windows nothing does. Give `askwell-inference` an `--env-file PATH` option: it loads the file without overriding variables already set, and derives its socket and state paths from `ASKWELL_RUN_DIR` resolved against the `.env` file's directory, not from the container path. Every installer passes it: the systemd unit on Linux (plus `WorkingDirectory=`), the launchd agent on macOS, and `Get-AskwellInferenceTaskArguments` on Windows. Verified by hand on the VM: with the `.env` loaded and the socket under `<app>\.run`, all three roles reported `ready` and `/health` showed inference reachable.
 
 **Scope**
 - The VC++ runtime step in `setup-bootstrap.ps1`: a signature check, a new exit code, and a `Get-AskwellSetupCodeMeaning` entry.
-- `--env-file` in `deploy/inference/askwell-inference`, tested.
-- The Windows task arguments.
+- `--env-file` in `deploy/inference/askwell-inference`, tested, including the run-directory derivation.
+- The Linux systemd unit, the macOS launchd agent and the Windows task arguments, each tested in its platform's `install.test.*`.
 
 **Out of Scope**
 - The desktop app starting its own supervisor (`M11-FIX-SHELL-226`).
-- Linux and macOS: unchanged, and their tests must show it.
 
 **Acceptance Criteria**
 - **Acceptance Criteria:**
@@ -155,7 +154,7 @@ Two changes remain.
 - **Assumptions:** none untested; both halves were verified by hand on the VM.
 
 **Testing Notes / Scenarios**
-- **Windows walkthrough (not the agent's):** a clean VM, the Setup built from this branch, and the models placed. `/health` must show inference reachable with no manual step.
+- **Walkthroughs (not the agent's):** a clean Windows VM (`scripts/winvm.sh`) and a clean Ubuntu 24.04 VM, each with the models placed. `/health` must show inference reachable with no manual step.
 
 **Effort & Granularity Check**
 - **Estimate:** 5 hours · **Priority:** Critical
