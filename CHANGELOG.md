@@ -4,6 +4,14 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.14 - 2026-09-30
+
+`Fixed`: Askwell's AI is no longer reported as "stopped reporting" while it is running, and opening the desktop app no longer starts a second copy of it (`M11-FIX-SHELL-226`).
+
+- **"Is the AI running" no longer depends on two clocks agreeing.** Askwell used to compare the time the AI wrote into its status file, which is your computer's time, with the time inside its own services. On Windows and macOS those services run in a small virtual machine whose clock can drift, for example by hours after sleep. When it did, a working assistant was reported as stopped. Askwell now judges only whether the status file is still being updated, measured on its own clock.
+- **One AI supervisor, not two.** At sign-in, the desktop app and the AI's own startup task start together. The app used to start a second supervisor because the first had not reported yet. It now waits 20 seconds for one to appear before starting its own, and it logs that it is waiting and when it takes over an existing one. With no supervisor installed at all, the app still starts one, after that wait.
+- **Windows: no console window.** When the app does start the AI itself, it starts it without a console window. Before, closing that window stopped Askwell's AI. It also skips the Microsoft Store's `python.exe` placeholder and uses the first real Python on your PATH.
+
 ## 0.9.13 - 2026-09-30
 
 `Fixed`: an installed Askwell's AI now starts once its models are in place, on every platform, with nothing to set up by hand (`M11-FIX-DEPLOY-225`). Before, the stack came up and `/health` answered, but the assistant never started, and neither you nor `/health` could see why.

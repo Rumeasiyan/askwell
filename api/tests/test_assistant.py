@@ -20,6 +20,7 @@ import pytest
 
 from askwell.assistant import STILL_WORKS, read
 from askwell.config import Settings
+from askwell.inference import state as inference_state
 from askwell.inference.state import ProcessState
 
 
@@ -111,16 +112,21 @@ def test_a_failed_load_points_at_memory_rather_than_a_generic_error(
 
 
 def test_a_supervisor_that_was_killed_outright_is_not_believed(
-    configured: Settings, tmp_path: Path
+    configured: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The worst thing this surface can do is report available when it is not.
 
     A supervisor killed with SIGKILL cannot write anything on the way out, so
     its last state says `ready` for as long as the file survives. The
-    supervisor heartbeats while it runs; a state older than three missed
-    heartbeats is treated as stopped rather than believed.
+    supervisor heartbeats while it runs; a state that has not changed for three
+    missed heartbeats, on the API's own clock, is treated as stopped rather
+    than believed.
     """
+    clock = [1000.0]
+    monkeypatch.setattr(inference_state, "_clock", lambda: clock[0])
     publish(tmp_path, state="ready", model="a-model.gguf", updated_at=time.time() - 3600)
+    read(configured)
+    clock[0] += inference_state.STALE_AFTER_SECONDS + 1
     assistant = read(configured)
 
     assert not assistant.available

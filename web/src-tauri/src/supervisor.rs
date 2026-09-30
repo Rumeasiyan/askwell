@@ -62,6 +62,26 @@ const STACK_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 /// or not the last state it recorded was `ready`.
 const INFERENCE_STALE_AFTER_SECONDS: f64 = 35.0;
 
+/// Mirrors `deploy/inference/askwell-inference`'s `HEARTBEAT_SECONDS` — read
+/// from there, and a test fails if the two part.
+const INFERENCE_HEARTBEAT_SECONDS: u64 = 10;
+
+/// How long the shell waits, from its own launch, for a supervisor it did not
+/// start to appear before starting its own (`M11-FIX-SHELL-226`). At sign-in
+/// the `AskwellInference` scheduled task (Windows) or login agent is starting
+/// at the same moment as the shell and has not written `state.json` yet;
+/// spawning at once gave the Windows VM two supervisors fighting over one
+/// socket. One heartbeat plus a margin: the supervisor writes `starting`
+/// before its first heartbeat, after a Python start that is slow on a cold
+/// sign-in. A machine with no supervisor at all pays this once, at launch.
+const INFERENCE_SPAWN_GRACE: Duration = Duration::from_secs(INFERENCE_HEARTBEAT_SECONDS + 10);
+
+/// `CREATE_NO_WINDOW` from the Win32 process-creation flags. Without it the
+/// shell — a GUI process with no console — gives `python.exe` a console
+/// window of its own, and closing that window stops Askwell's AI.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 /// How long `stop()` waits for a SIGTERM'd process to exit on its own before
 /// escalating to a hard kill — matches the Python supervisor's own shutdown
 /// timeout (`deploy/inference/askwell-inference`'s `stop()`).
@@ -554,16 +574,43 @@ fn inference_last_reason(run_dir: &Path) -> Option<String> {
         .map(str::to_string)
 }
 
-fn python_candidates() -> &'static [&'static str] {
-    // `deploy/windows/install.ps1` tries `python` then falls back to `py`;
-    // `deploy/macos/install.sh` and `deploy/linux/install.sh` both use
-    // `python3` — matched here rather than invented, so a machine that can
-    // run the installer's own probe step can run this too.
+/// The interpreters to try, in order. `deploy/windows/install.ps1` asks for
+/// every `python` then every `py` on PATH, skipping the Microsoft Store's
+/// placeholder (`Get-AskwellPython`, `deploy/windows/lib.ps1`);
+/// `deploy/macos/install.sh` and `deploy/linux/install.sh` both use `python3`
+/// — matched here rather than invented, so a machine that can run the
+/// installer's own probe step can run this too.
+fn python_candidates() -> Vec<PathBuf> {
     if cfg!(windows) {
-        &["python", "py"]
+        let dirs: Vec<PathBuf> = std::env::var_os("PATH")
+            .map(|path| std::env::split_paths(&path).collect())
+            .unwrap_or_default();
+        windows_python_candidates(&dirs, |path| path.is_file())
     } else {
-        &["python3"]
+        vec![PathBuf::from("python3")]
     }
+}
+
+/// Every real `python.exe`, then every `py.exe`, in PATH order. Resolved
+/// here rather than by handing a bare name to `CreateProcess`, which would
+/// take the first match on PATH — and on a fresh Windows that is the Store's
+/// `WindowsApps\python.exe`, a placeholder that opens the Store instead of
+/// running anything.
+fn windows_python_candidates(dirs: &[PathBuf], exists: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
+    ["python.exe", "py.exe"]
+        .iter()
+        .flat_map(|name| dirs.iter().map(move |dir| dir.join(name)))
+        .filter(|candidate| !is_store_python_stub(candidate) && exists(candidate))
+        .collect()
+}
+
+/// `Test-AskwellStorePythonStub`'s rule: anything under a `WindowsApps`
+/// directory. Compared by segment on both separators so the rule is testable
+/// off Windows, where a `C:\...` path is one opaque component.
+fn is_store_python_stub(path: &Path) -> bool {
+    path.to_string_lossy()
+        .split(['\\', '/'])
+        .any(|segment| segment.eq_ignore_ascii_case("WindowsApps"))
 }
 
 fn spawn_inference(config: &SupervisorConfig) -> Result<Child, String> {
@@ -579,7 +626,7 @@ fn spawn_inference(config: &SupervisorConfig) -> Result<Child, String> {
     let mut last_error: Option<String> = None;
 
     for interpreter in python_candidates() {
-        let mut command = Command::new(interpreter);
+        let mut command = Command::new(&interpreter);
         command
             .arg(&script)
             .envs(env_vars.iter().map(|(k, v)| (k.as_str(), v.as_str())))
@@ -587,10 +634,15 @@ fn spawn_inference(config: &SupervisorConfig) -> Result<Child, String> {
             .current_dir(&config.install_root)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
         match command.spawn() {
             Ok(child) => return Ok(child),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                last_error = Some(format!("{interpreter} is not on PATH"));
+                last_error = Some(format!("{} is not on PATH", interpreter.display()));
                 continue;
             }
             Err(error) => {
@@ -599,7 +651,10 @@ fn spawn_inference(config: &SupervisorConfig) -> Result<Child, String> {
         }
     }
 
-    Err(last_error.unwrap_or_else(|| "No Python interpreter was found on PATH.".to_string()))
+    Err(last_error.unwrap_or_else(|| {
+        "No Python interpreter was found on PATH (the Microsoft Store's placeholder is not one)."
+            .to_string()
+    }))
 }
 
 #[cfg(unix)]
@@ -731,8 +786,16 @@ fn run(
     let mut inference_capped = false;
     let mut inference_manual_stopped = false;
     let mut next_inference_attempt = Instant::now();
+    let launched = Instant::now();
+    let mut announced: Option<StartAction> = None;
     log_supervisor_event("inference", "supervisor_inference_start", None);
-    if let Some(delay) = bring_up_inference(&config, &mut inference, &mut inference_policy) {
+    if let Some(delay) = bring_up_inference(
+        &config,
+        &mut inference,
+        &mut inference_policy,
+        launched.elapsed(),
+        &mut announced,
+    ) {
         next_inference_attempt = Instant::now() + delay;
     }
 
@@ -869,9 +932,13 @@ fn run(
                 },
                 None => {
                     if !inference_capped && Instant::now() >= next_inference_attempt {
-                        if let Some(delay) =
-                            bring_up_inference(&config, &mut inference, &mut inference_policy)
-                        {
+                        if let Some(delay) = bring_up_inference(
+                            &config,
+                            &mut inference,
+                            &mut inference_policy,
+                            launched.elapsed(),
+                            &mut announced,
+                        ) {
                             next_inference_attempt = Instant::now() + delay;
                         }
                     }
@@ -933,14 +1000,36 @@ fn attempt_stack_up(
 /// `RestartPolicy` a crash does, so it retries with backoff and eventually
 /// reaches the capped, reason-retained state instead of being silently
 /// dropped — the fix for issue #602.
+///
+/// Within `INFERENCE_SPAWN_GRACE` of the shell's launch, no heartbeat means
+/// "wait", not "spawn" (`M11-FIX-SHELL-226`): a supervisor started by the
+/// session at the same moment has not written one yet. Each change of mind is
+/// logged once, not on every poll tick.
 fn bring_up_inference(
     config: &SupervisorConfig,
     slot: &mut Option<Child>,
     policy: &mut RestartPolicy,
+    since_launch: Duration,
+    announced: &mut Option<StartAction>,
 ) -> Option<Duration> {
-    if inference_heartbeat_fresh(&config.run_dir) {
-        log_supervisor_event("inference", "supervisor_inference_adopted", None);
-        return None;
+    let action = start_action(inference_heartbeat_fresh(&config.run_dir), since_launch);
+    if *announced != Some(action) {
+        match action {
+            StartAction::Adopt => {
+                log_supervisor_event("inference", "supervisor_inference_adopted", None)
+            }
+            StartAction::Wait => log_supervisor_event(
+                "inference",
+                "supervisor_inference_waiting",
+                Some("waiting for a supervisor the session may be starting"),
+            ),
+            StartAction::Spawn => {}
+        }
+        *announced = Some(action);
+    }
+    match action {
+        StartAction::Adopt | StartAction::Wait => return None,
+        StartAction::Spawn => {}
     }
     match spawn_inference(config) {
         Ok(child) => {
@@ -957,6 +1046,27 @@ fn bring_up_inference(
                 None
             }
         },
+    }
+}
+
+/// What to do about the inference process when the shell holds none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StartAction {
+    /// A live supervisor already owns the role; leave it be.
+    Adopt,
+    /// None yet, but one may be starting alongside the shell.
+    Wait,
+    /// None, and the grace period is over: start our own.
+    Spawn,
+}
+
+fn start_action(heartbeat_fresh: bool, since_launch: Duration) -> StartAction {
+    if heartbeat_fresh {
+        StartAction::Adopt
+    } else if since_launch < INFERENCE_SPAWN_GRACE {
+        StartAction::Wait
+    } else {
+        StartAction::Spawn
     }
 }
 
@@ -1094,6 +1204,77 @@ mod tests {
         assert!(!inference_heartbeat_fresh(&dir));
         assert!(!inference_confirmed_ready(&dir));
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn heartbeat_seconds_matches_the_supervisor() {
+        let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../deploy/inference/askwell-inference");
+        let text = fs::read_to_string(&script).unwrap();
+        let line = text
+            .lines()
+            .find(|line| line.starts_with("HEARTBEAT_SECONDS = "))
+            .expect("askwell-inference defines HEARTBEAT_SECONDS");
+        let value: u64 = line["HEARTBEAT_SECONDS = ".len()..].trim().parse().unwrap();
+        assert_eq!(value, INFERENCE_HEARTBEAT_SECONDS);
+        assert!(INFERENCE_SPAWN_GRACE > Duration::from_secs(INFERENCE_HEARTBEAT_SECONDS));
+    }
+
+    #[test]
+    fn a_heartbeat_within_the_grace_period_is_adopted_not_spawned_over() {
+        assert_eq!(start_action(false, Duration::ZERO), StartAction::Wait);
+        assert_eq!(
+            start_action(false, INFERENCE_SPAWN_GRACE - Duration::from_millis(1)),
+            StartAction::Wait
+        );
+        // The session's supervisor writes its first state mid-grace.
+        assert_eq!(start_action(true, Duration::from_secs(5)), StartAction::Adopt);
+        assert_eq!(start_action(true, INFERENCE_SPAWN_GRACE * 10), StartAction::Adopt);
+    }
+
+    #[test]
+    fn with_no_supervisor_at_all_the_shell_still_starts_one_after_the_grace_period() {
+        assert_eq!(start_action(false, INFERENCE_SPAWN_GRACE), StartAction::Spawn);
+        assert_eq!(start_action(false, INFERENCE_SPAWN_GRACE * 10), StartAction::Spawn);
+    }
+
+    #[test]
+    fn windows_python_candidates_skip_the_store_placeholder() {
+        let store = PathBuf::from(r"C:\Users\a\AppData\Local\Microsoft\WindowsApps");
+        let real = PathBuf::from(r"C:\Python312");
+        let launcher = PathBuf::from(r"C:\Windows");
+        let dirs = vec![store.clone(), real.clone(), launcher.clone()];
+        let candidates = windows_python_candidates(&dirs, |_| true);
+        assert_eq!(
+            candidates,
+            vec![
+                real.join("python.exe"),
+                launcher.join("python.exe"),
+                real.join("py.exe"),
+                launcher.join("py.exe"),
+            ],
+            "every python before any py, PATH order within each, never WindowsApps"
+        );
+    }
+
+    #[test]
+    fn windows_python_candidates_only_name_files_that_exist() {
+        let real = PathBuf::from(r"C:\Python312");
+        let launcher = PathBuf::from(r"C:\Windows");
+        let dirs = vec![real.clone(), launcher.clone()];
+        let only_py = launcher.join("py.exe");
+        let candidates = windows_python_candidates(&dirs, |path| path == only_py.as_path());
+        assert_eq!(candidates, vec![only_py]);
+    }
+
+    #[test]
+    fn the_store_stub_rule_matches_install_ps1() {
+        assert!(is_store_python_stub(Path::new(
+            r"C:\Users\a\AppData\Local\Microsoft\WindowsApps\python.exe"
+        )));
+        assert!(is_store_python_stub(Path::new(r"c:\x\windowsapps\py.exe")));
+        assert!(!is_store_python_stub(Path::new(r"C:\Python312\python.exe")));
+        assert!(!is_store_python_stub(Path::new(r"C:\NotWindowsAppsReally\python.exe")));
     }
 
     #[test]
