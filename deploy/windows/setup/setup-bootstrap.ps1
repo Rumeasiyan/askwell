@@ -33,6 +33,7 @@
       22  Docker Compose could not be installed
       23  Setup's own files did not load (lib.ps1 failed to parse)
       24  running as 32-bit PowerShell, which cannot see wsl.exe
+      25  Python could not be installed
       30  WSL was just enabled; Windows must restart, and Setup continues
           by itself after the next sign-in
       31  the Podman machine could not be started
@@ -64,6 +65,15 @@ $SetupLog = Join-Path $env:TEMP 'AskwellSetup.log'
 
 function Say([string]$Text) {
     Write-Output $Text
+    try { [System.IO.File]::AppendAllText($SetupLog, "$Text`r`n") } catch { }
+}
+
+# Say for a function that returns a value: Write-Output would become part of
+# what it returns. Get-VerifiedDownload returned its progress lines along
+# with the path, and msiexec would have been handed all three as one file
+# name. Caught by setup-bootstrap.test.ps1.
+function Tell([string]$Text) {
+    Write-Host $Text
     try { [System.IO.File]::AppendAllText($SetupLog, "$Text`r`n") } catch { }
 }
 
@@ -100,12 +110,13 @@ function Save-SetupReport([int]$Code) {
                 '64-bit PowerShell'        = [Environment]::Is64BitProcess
                 'Virtual Machine Platform' = Get-Fact { Get-VmPlatformState }
                 'Podman'                   = Get-Fact { & podman --version }
-                'Compose'                  = Get-Fact { & podman compose version 2>&1 | Select-Object -Last 1 }
+                'Compose'                  = Get-Fact { Get-AskwellComposeVersionText }
                 'WSL'                      = Get-Fact { & wsl.exe --version }
                 'Time (UTC)'               = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm')
             }
-            $text = Format-AskwellSetupReport -Code $Code -Facts $facts -Log $log
-            $text = Protect-AskwellReportText -Text $text -UserProfile $env:USERPROFILE -UserName $env:USERNAME -ComputerName $env:COMPUTERNAME
+            $protect = { param($t) Protect-AskwellReportText -Text $t -UserProfile $env:USERPROFILE -UserName $env:USERNAME -ComputerName $env:COMPUTERNAME }
+            foreach ($key in @($facts.Keys)) { $facts[$key] = & $protect "$($facts[$key])" }
+            $text = Format-AskwellSetupReport -Code $Code -Facts $facts -Log (& $protect $log)
         } else {
             # lib.ps1 did not load (code 23): the raw log is still worth sending.
             $text = "Askwell Setup report (code $Code). Please send this file to whoever gave you Askwell.`r`n`r`n$log"
@@ -173,10 +184,11 @@ function Test-ComposeProvider {
     # output into a single line, which the installer's line-anchored version
     # match cannot read. Calling install.ps1's function means the two can
     # never disagree again.
-    if (-not (Test-Command 'podman')) { return $false }
-    $out = (& podman compose version 2>&1 | ForEach-Object { "$_" }) -join "`n"
-    if ($LASTEXITCODE -ne 0) { return $false }
-    return [bool](Test-AskwellComposeMeetsMinimum $out)
+    #
+    # 0.9.6 still stopped with 22 on every new PC: it asked `podman compose
+    # version`, which needs Podman's machine, and the machine is created only
+    # after this check. Get-AskwellComposeVersionText asks docker-compose.
+    return [bool](Test-AskwellComposeMeetsMinimum (Get-AskwellComposeVersionText))
 }
 
 function Get-VmPlatformState {
@@ -218,9 +230,74 @@ function Remove-AskwellStage {
     }
 }
 
+function Test-WslAnswers {
+    # `wsl --version` exists only in the WSL that winget and the Store
+    # install; the in-box stub answers it with an error. So it is the test
+    # that WSL is actually installed, not just its launcher.
+    & wsl.exe --version *> $null
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Get-VerifiedDownload([string]$Url, [string]$Sha256, [string]$Label, [string]$Size) {
+    # Download to %TEMP% and check against the pinned SHA-256; the path, or
+    # '' after saying why. A copy already there and matching is reused, so a
+    # second run of Setup does not download it again.
+    $file = Join-Path $env:TEMP (Split-Path -Leaf $Url)
+    if ((Test-Path $file) -and ((Get-FileHash -Algorithm SHA256 -Path $file).Hash -eq $Sha256)) { return $file }
+    Tell "Downloading $Label ($Size)..."
+    try {
+        # Windows PowerShell 5.1 needs TLS 1.2 asked for, and draws a
+        # progress bar so slowly that it makes a large download crawl.
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $file -ErrorAction Stop
+    } catch {
+        Tell "  The download failed: $($_.Exception.Message)"
+        return ''
+    }
+    $hash = (Get-FileHash -Algorithm SHA256 -Path $file).Hash
+    if ($hash -ne $Sha256) {
+        Tell "  The download does not match its published checksum (got $hash), so it was not run."
+        Remove-Item -Path $file -Force -ErrorAction SilentlyContinue
+        return ''
+    }
+    Tell "  Downloaded and checked."
+    return $file
+}
+
+function Install-Wsl {
+    # See $AskwellWslMsiUrl in lib.ps1 for why it is this and not winget.
+    $msi = Get-VerifiedDownload $AskwellWslMsiUrl $AskwellWslMsiSha256 "the Windows Subsystem for Linux $AskwellWslMsiVersion from Microsoft" 'about 250 MB'
+    if (-not $msi) { return }
+    Say "Installing the Windows Subsystem for Linux..."
+    $msiLog = Join-Path $env:TEMP 'AskwellSetup-wsl-msi.log'
+    $process = Start-Process -FilePath "$env:SystemRoot\System32\msiexec.exe" -Wait -PassThru `
+        -ArgumentList "/i `"$msi`" /quiet /norestart /log `"$msiLog`""
+    $code = if ($process) { $process.ExitCode } else { -1 }
+    if (Test-AskwellMsiSucceeded $code) {
+        Say "  Installed (Windows Installer code $code)."
+    } else {
+        Say "  Windows Installer stopped with code $code. Its log: $msiLog"
+    }
+}
+
+function Install-Python {
+    # See $AskwellPythonUrl in lib.ps1. For all users, on PATH, no tests.
+    $exe = Get-VerifiedDownload $AskwellPythonUrl $AskwellPythonSha256 "Python $AskwellPythonVersion from python.org" 'about 28 MB'
+    if (-not $exe) { return }
+    Say "Installing Python $AskwellPythonVersion (runs Askwell's hardware probe and AI supervisor)..."
+    $process = Start-Process -FilePath $exe -Wait -PassThru `
+        -ArgumentList '/quiet InstallAllUsers=1 PrependPath=1 Include_test=0 Include_launcher=1 Shortcuts=0'
+    $code = if ($process) { $process.ExitCode } else { -1 }
+    Say "  Python installer finished with code $code."
+    Update-AskwellPath
+}
+
 function Install-WithWinget([string]$Id, [string]$Label) {
     Say "Installing $Label. This can take a few minutes..."
-    & winget install -e --id $Id --silent --accept-source-agreements --accept-package-agreements 2>&1 |
+    # --disable-interactivity: no progress bars, which reached the log and the
+    # report as lines of garbled block characters.
+    & winget install -e --id $Id --silent --disable-interactivity --accept-source-agreements --accept-package-agreements 2>&1 |
         ForEach-Object { Say "  $_" }
     Update-AskwellPath
 }
@@ -264,21 +341,55 @@ if (-not (Test-ComposeProvider)) {
         Stop-Setup 22
     }
 }
-Say "Compose provider: $((& podman compose version 2>&1) -join ' ')"
+Say "Compose provider: $(Get-AskwellComposeVersionText)"
+
+if (-not (Get-AskwellPython)) {
+    Install-Python
+    if (-not (Get-AskwellPython)) {
+        Say "Python did not install. The messages above say why. Run Askwell Setup again once that is fixed."
+        Stop-Setup 25
+    }
+}
+Say "Python: $(Get-AskwellPython)"
 
 # WSL is what Podman's machine runs in, and it comes last among the
 # prerequisites because it is the one that can need a restart: everything
 # that can be installed before it has been.
-$state = Get-AskwellWslState (Get-VmPlatformState)
-if ($state -eq 'missing') {
-    Say "Enabling the Windows Subsystem for Linux, which Podman needs..."
-    & wsl.exe --install --no-distribution 2>&1 | ForEach-Object { Say "  $_" }
-    $state = Get-AskwellWslState (Get-VmPlatformState)
-    if ($state -eq 'missing') {
-        Say ("The Windows Subsystem for Linux could not be enabled. The messages above say why. " +
-            "If they mention virtualisation, turn on Intel VT-x / AMD-V in this PC's firmware (BIOS/UEFI) setup, then run Askwell Setup again.")
+#
+# Two parts, both done without `wsl.exe --install`: Windows' in-box wsl.exe
+# refuses to install anything when it has no console ("The Windows Subsystem
+# for Linux is not installed. You can install by running 'wsl.exe
+# --install'", exit 1), and the setup exe always runs this script without
+# one. Found on the Windows test VM, 0.9.6. Instead:
+#   - the Virtual Machine Platform, a Windows feature, is turned on with
+#     Enable-WindowsOptionalFeature, which needs no console;
+#   - WSL itself is installed from winget (Microsoft.WSL, MIT), like Podman.
+# Proven on the VM: after these and one restart, `podman machine init` and
+# `start` succeed.
+$enabledThisRun = $false
+if ((Get-AskwellWslState (Get-VmPlatformState)) -eq 'missing') {
+    Say "Enabling the Virtual Machine Platform, which the Windows Subsystem for Linux needs..."
+    try {
+        $result = Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -All -NoRestart -ErrorAction Stop
+        Say "  Enabled. Windows restart needed: $($result.RestartNeeded)"
+    } catch {
+        Say "  $($_.Exception.Message)"
+    }
+    $enabledThisRun = $true
+}
+if (-not (Test-WslAnswers)) {
+    Install-Wsl
+    if (-not (Test-WslAnswers)) {
+        Say "The Windows Subsystem for Linux did not install. The messages above say why. Run Askwell Setup again once that is fixed."
         Stop-Setup 32
     }
+    $enabledThisRun = $true
+}
+$state = Get-AskwellWslState (Get-VmPlatformState) -EnabledThisRun:$enabledThisRun
+if ($state -eq 'missing') {
+    Say ("The Virtual Machine Platform could not be enabled. The messages above say why. " +
+        "If they mention virtualisation, turn on Intel VT-x / AMD-V in this PC's firmware (BIOS/UEFI) setup, then run Askwell Setup again.")
+    Stop-Setup 32
 }
 if ($state -eq 'restart') {
     if ($Resume) {
@@ -291,14 +402,6 @@ if ($state -eq 'restart') {
     Register-AskwellResume
     Say "Windows needs to restart once to finish enabling WSL. Setup will continue by itself after you sign in again."
     exit 30
-}
-
-# Store WSL carries its own kernel; the older in-box WSL needs this once.
-# `wsl --version` exists only in the Store WSL, so it is the test.
-& wsl.exe --version *> $null
-if ($LASTEXITCODE -ne 0) {
-    Say "Updating the Windows Subsystem for Linux..."
-    & wsl.exe --update 2>&1 | ForEach-Object { Say "  $_" }
 }
 
 # The Podman machine: create it on first use, start it if stopped.

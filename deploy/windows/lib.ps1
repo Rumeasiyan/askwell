@@ -113,6 +113,22 @@ function ConvertFrom-AskwellComposeVersion {
     return $null
 }
 
+# What Docker Compose reports about itself, asked directly: `docker-compose
+# version`, not `podman compose version`. The latter connects to Podman's
+# machine before it runs the provider, and on a new PC Setup has not created
+# the machine yet, so it failed there however well Compose had installed:
+# every new PC stopped with code 22. Found on the Windows test VM, 0.9.6.
+# `podman compose` runs this same docker-compose later. "" when there is none.
+function Get-AskwellComposeVersionText {
+    $cmd = Get-Command docker-compose -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $cmd) { return '' }
+    try {
+        return ((& $cmd version 2>&1 | ForEach-Object { "$_" }) -join "`n")
+    } catch {
+        return ''
+    }
+}
+
 function Test-AskwellComposeMeetsMinimum {
     param([string]$RawOutput)
     $parsed = ConvertFrom-AskwellComposeVersion $RawOutput
@@ -500,16 +516,111 @@ function Get-AskwellUninstallRegistryValues {
 # distribution is installed - and Setup installs WSL with none on purpose,
 # because Podman creates its own. So after every restart it asked for
 # another one. Only Windows saying "EnablePending" means a restart will help.
+#
+# -EnabledThisRun: Setup itself just enabled it. Then a restart is needed
+# whatever Windows reports: on the Windows test VM (0.9.6) `wsl --install`
+# said "Changes will not be effective until the system is rebooted" while
+# the feature already read Enabled, and `podman machine init` then failed
+# with HCS_E_SERVICE_NOT_AVAILABLE.
 #   'ready'   - enabled, nothing pending
 #   'restart' - enabled, waiting for Windows to restart
 #   'missing' - anything else: not enabled, or the state could not be read
 function Get-AskwellWslState {
-    param([string]$VmPlatformState)
+    param([string]$VmPlatformState, [switch]$EnabledThisRun)
     switch ($VmPlatformState) {
-        'Enabled' { return 'ready' }
+        'Enabled' { if ($EnabledThisRun) { return 'restart' } else { return 'ready' } }
         'EnablePending' { return 'restart' }
         default { return 'missing' }
     }
+}
+
+# The WSL installer Setup downloads when WSL is missing: Microsoft's own MSI
+# from its GitHub release (MIT), pinned by version and SHA-256 (GitHub's
+# published digest). Not `wsl.exe --install`, which refuses without a
+# console, and not winget, which on the Windows VM downloaded this same file
+# for 7 minutes and then cancelled without running it. 2.7.13 is the version
+# proven on the VM with `podman machine init`; WSL updates itself later.
+$script:AskwellWslMsiVersion = '2.7.13'
+$script:AskwellWslMsiUrl = 'https://github.com/microsoft/WSL/releases/download/2.7.13/wsl.2.7.13.0.x64.msi'
+$script:AskwellWslMsiSha256 = 'A3505A50F4CC585551D11D9DE824BA4375448D7A68F2E71D3FB315FA986FC754'
+
+# The Python Setup installs when the PC has none. Askwell's hardware probe
+# and its inference supervisor are standard-library Python scripts that run
+# on Windows itself (docs/decisions.md), so without a Python Askwell cannot
+# answer anything. A new Windows PC has none: the python.exe on its PATH is
+# the Microsoft Store's placeholder under WindowsApps, which fails with "The
+# file cannot be accessed by the system" (found on the Windows test VM,
+# 0.9.6). python.org's installer, pinned by version and python.org's
+# published SHA-256; not winget, which on the VM twice did not install.
+$script:AskwellPythonVersion = '3.13.15'
+$script:AskwellPythonUrl = 'https://www.python.org/ftp/python/3.13.15/python-3.13.15-amd64.exe'
+$script:AskwellPythonSha256 = 'EDEC09C4853AEAE9AC36EFB8C9F95B6B8E2FEE65EEE56D9767A8B7C69C574403'
+
+# The Store's placeholder python.exe, which is not a Python.
+function Test-AskwellStorePythonStub {
+    param([string]$Path)
+    return [bool]($Path -match '\\WindowsApps\\')
+}
+
+# A real Python 3.9 or newer, as a path, or '' when there is none. Asks each
+# python.exe on PATH, in order, skipping the Store's placeholder.
+function Get-AskwellPython {
+    $candidates = @(Get-Command python -All -ErrorAction SilentlyContinue) +
+        @(Get-Command py -All -ErrorAction SilentlyContinue)
+    foreach ($candidate in $candidates) {
+        if (Test-AskwellStorePythonStub $candidate.Source) { continue }
+        try {
+            & $candidate -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                if ($candidate.Source) { return $candidate.Source }
+                return $candidate.Name
+            }
+        } catch { }
+    }
+    return ''
+}
+
+# Where the AI models live: the default both readers already share.
+# compose.yaml mounts ${ASKWELL_MODELS_DIR:-~/.local/share/askwell/models}
+# into the API and voice containers, and the inference supervisor reads the
+# same default (askwell-inference, os.path.expanduser). On Windows "~" is the
+# profile. Nothing created it, so on the Windows test VM (0.9.6) every
+# container that mounts it failed to be created ("statfs ... models: no such
+# file or directory") and Askwell sat at "Still starting".
+function Get-AskwellModelsDir {
+    param([string]$UserProfile)
+    return "$($UserProfile.TrimEnd('\'))\.local\share\askwell\models"
+}
+
+# The windowless pythonw.exe beside a python.exe, or the python.exe itself
+# when there is none. The inference supervisor runs for the whole session;
+# under python.exe it sat in a black console window on the Windows test VM
+# (0.9.6), and closing that window would stop Askwell's AI.
+function Get-AskwellWindowlessPython {
+    param([string]$Python)
+    if (-not $Python) { return '' }
+    $leaf = Split-Path -Leaf $Python
+    if ($leaf -ieq 'python.exe') {
+        $pythonw = Join-Path (Split-Path -Parent $Python) 'pythonw.exe'
+        if (Test-Path $pythonw) { return $pythonw }
+    }
+    return $Python
+}
+
+# Whether a running process is this install's own - the one an upgrade has
+# to close before it can replace askwell-shell.exe. By path, not name: a
+# second copy of Askwell elsewhere is left alone.
+function Test-AskwellProcessInPrefix {
+    param([string]$ProcessPath, [string]$InstallPrefix)
+    if (-not $ProcessPath -or -not $InstallPrefix) { return $false }
+    $prefix = $InstallPrefix.TrimEnd('\') + '\'
+    return $ProcessPath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+# msiexec's success codes: 0, and 3010 "succeeded, restart required".
+function Test-AskwellMsiSucceeded {
+    param([int]$ExitCode)
+    return ($ExitCode -eq 0 -or $ExitCode -eq 3010)
 }
 
 # Where Setup keeps its files across the restart. The exe unpacks to %TEMP%,
@@ -545,6 +656,7 @@ $script:AskwellSetupCodeMeanings = @{
     22 = 'Docker Compose could not be installed'
     23 = "Setup's own files did not load"
     24 = 'Setup ran as 32-bit PowerShell'
+    25 = 'Python could not be installed'
     31 = "Podman's machine could not be started"
     32 = 'WSL could not be enabled'
     33 = 'WSL still waited for a restart after Setup restarted'
@@ -557,19 +669,24 @@ function Get-AskwellSetupCodeMeaning {
 }
 
 # The report goes to a person, maybe onward to a public issue, so the Windows
-# account name, the profile path and the PC's name are replaced. Longest
-# first, so the profile path is replaced whole rather than around the name
-# inside it. A name shorter than three characters is left alone: replacing
-# every "al" in a log would destroy it and hide very little.
+# profile path, the PC's name and the account name are replaced - in what
+# Setup collected (the log, the facts), never in the report's own wording.
+# The profile path goes first and whole, so the name inside it is not
+# replaced around. The path and PC name are distinctive and are replaced in
+# any case; the account name only as a whole word in its own case, because
+# it can be an ordinary word: on the test VM the account is "askwell", and
+# replacing it everywhere turned the report into "<user> Setup report". A
+# name shorter than three characters is left alone.
 function Protect-AskwellReportText {
     param([string]$Text, [string]$UserProfile, [string]$UserName, [string]$ComputerName)
-    $pairs = @(
-        [pscustomobject]@{ Find = $UserProfile; With = '<profile>' },
-        [pscustomobject]@{ Find = $ComputerName; With = '<pc>' },
-        [pscustomobject]@{ Find = $UserName; With = '<user>' }
-    ) | Where-Object { $_.Find -and $_.Find.Length -ge 3 } | Sort-Object { - $_.Find.Length }
-    foreach ($pair in $pairs) {
-        $Text = [regex]::Replace($Text, [regex]::Escape($pair.Find), $pair.With, 'IgnoreCase')
+    if ($UserProfile -and $UserProfile.Length -ge 3) {
+        $Text = [regex]::Replace($Text, [regex]::Escape($UserProfile), '<profile>', 'IgnoreCase')
+    }
+    if ($ComputerName -and $ComputerName.Length -ge 3) {
+        $Text = [regex]::Replace($Text, [regex]::Escape($ComputerName), '<pc>', 'IgnoreCase')
+    }
+    if ($UserName -and $UserName.Length -ge 3) {
+        $Text = [regex]::Replace($Text, '(?<![\w.-])' + [regex]::Escape($UserName) + '(?![\w.-])', '<user>')
     }
     return $Text
 }

@@ -140,8 +140,7 @@ function Test-AskwellRuntime {
 # copied. Not installed from here: winget does not refresh this session's
 # PATH, so a provider installed now would still not be found until the next.
 function Test-AskwellComposeProvider {
-    $reported = ''
-    try { $reported = (& podman compose version 2>$null) -join "`n" } catch { }
+    $reported = Get-AskwellComposeVersionText
     if (Test-AskwellComposeMeetsMinimum $reported) {
         Write-AskwellSay "Compose provider found: Docker Compose $(ConvertFrom-AskwellComposeVersion $reported)"
         return
@@ -354,7 +353,10 @@ function New-AskwellDataDirs {
     New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $DataDir 'models') | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $DataDir 'logs') | Out-Null
+    $models = Get-AskwellModelsDir $env:USERPROFILE
+    New-Item -ItemType Directory -Force -Path $models | Out-Null
     Write-AskwellSay "Data directory: $DataDir"
+    Write-AskwellSay "Models directory: $models"
 }
 
 # ---------------------------------------------------------------- 6a. stop the old version
@@ -378,6 +380,19 @@ function Stop-AskwellPreviousStack {
         exit 1
     }
     Write-AskwellSay 'Stopped the running Askwell so its database can be upgraded; the new version starts once the upgrade is done.'
+}
+
+# An upgrade with Askwell open failed on the Windows test VM (0.9.6):
+# "The process cannot access the file ...\askwell-shell.exe because it is
+# being used by another process". Windows will not replace a running exe, so
+# the app is closed first; the installer opens the new one at the end.
+function Stop-AskwellRunningApp {
+    $running = @(Get-Process -Name 'askwell-shell' -ErrorAction SilentlyContinue |
+        Where-Object { Test-AskwellProcessInPrefix $_.Path $InstallPrefix })
+    if ($running.Count -eq 0) { return }
+    Write-AskwellSay 'Closing the running Askwell so it can be updated...'
+    $running | Stop-Process -Force -ErrorAction SilentlyContinue
+    $running | Wait-Process -Timeout 20 -ErrorAction SilentlyContinue
 }
 
 # ---------------------------------------------------------------- 6b. database schema
@@ -416,14 +431,13 @@ function Invoke-AskwellDatabaseMigration {
 
 function Invoke-AskwellProbe {
     Write-AskwellSay 'Probing this machine''s hardware...'
-    $python = Get-Command python -ErrorAction SilentlyContinue
-    if (-not $python) { $python = Get-Command py -ErrorAction SilentlyContinue }
+    $python = Get-AskwellPython
     if (-not $python) {
         Write-AskwellSay 'No Python found on PATH; Askwell will fall back to the standard profile on first launch.'
         return
     }
     $env:ASKWELL_PROBE_RESULT_PATH = Join-Path $DataDir 'probe.json'
-    & $python.Source (Join-Path $InstallPrefix 'askwell-probe')
+    & $python (Join-Path $InstallPrefix 'askwell-probe')
     if ($LASTEXITCODE -ne 0) {
         Write-AskwellSay 'Probe did not complete; Askwell will fall back to the standard profile on first launch.'
     }
@@ -495,15 +509,14 @@ function Register-AskwellStackTask {
 }
 
 function Register-AskwellInferenceTask {
-    $python = Get-Command python -ErrorAction SilentlyContinue
-    if (-not $python) { $python = Get-Command py -ErrorAction SilentlyContinue }
+    $python = Get-AskwellPython
     if (-not $python) {
         Write-AskwellSay 'No Python found on PATH; cannot register the inference scheduled task.'
         return
     }
     $taskName = Get-AskwellInferenceTaskName
     $taskArgs = Get-AskwellInferenceTaskArguments -ScriptPath (Join-Path $InstallPrefix 'askwell-inference')
-    $action = New-ScheduledTaskAction -Execute $python.Source -Argument $taskArgs -WorkingDirectory $InstallPrefix
+    $action = New-ScheduledTaskAction -Execute (Get-AskwellWindowlessPython $python) -Argument $taskArgs -WorkingDirectory $InstallPrefix
     $trigger = New-ScheduledTaskTrigger -AtLogOn
     $settings = New-ScheduledTaskSettingsSet -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1) `
         -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero)
@@ -545,6 +558,7 @@ function Main {
     Test-AskwellDiskSpace
     Test-AskwellPrevious
     Test-AskwellArtefacts
+    Stop-AskwellRunningApp
     Copy-AskwellFiles
     Import-AskwellImages
     New-AskwellDataDirs

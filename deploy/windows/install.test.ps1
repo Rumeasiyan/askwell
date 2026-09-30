@@ -237,6 +237,8 @@ Remove-Item -Path $imgRoot -Recurse -Force -ErrorAction SilentlyContinue
 
 # --- setup: WSL state and the one restart ---------------------------------------
 Test-Check 'VirtualMachinePlatform enabled is ready' (Get-AskwellWslState 'Enabled') 'ready'
+Test-Check 'enabled by this run still needs the restart' (Get-AskwellWslState 'Enabled' -EnabledThisRun) 'restart'
+Test-Check 'enabled by this run but not enabled is missing' (Get-AskwellWslState 'Disabled' -EnabledThisRun) 'missing'
 Test-Check 'enable pending means restart' (Get-AskwellWslState 'EnablePending') 'restart'
 Test-Check 'disabled is missing, not restart' (Get-AskwellWslState 'Disabled') 'missing'
 Test-Check 'payload removed is missing' (Get-AskwellWslState 'DisabledWithPayloadRemoved') 'missing'
@@ -250,13 +252,33 @@ Test-Check 'the RunOnce command, exactly' $resume '"C:\Windows\System32\WindowsP
 if ($resume -match '-Resume$') { Test-Ok 'the RunOnce command resumes' } else { Test-Bad 'the RunOnce command resumes' $resume '...-Resume' }
 if ($resume -match 'System32\\WindowsPowerShell') { Test-Ok 'the RunOnce command names the 64-bit PowerShell' } else { Test-Bad 'the RunOnce command names the 64-bit PowerShell' $resume 'System32' }
 
+Test-Check 'models live where compose.yaml and the supervisor both look' (Get-AskwellModelsDir 'C:\Users\nimal') 'C:\Users\nimal\.local\share\askwell\models'
+
+$pyDir = New-AskwellTempDir
+Set-Content -Path (Join-Path $pyDir 'python.exe') -Value ''
+Test-Check 'no pythonw.exe: the python.exe itself' (Get-AskwellWindowlessPython (Join-Path $pyDir 'python.exe')) (Join-Path $pyDir 'python.exe')
+Set-Content -Path (Join-Path $pyDir 'pythonw.exe') -Value ''
+Test-Check 'the supervisor runs windowless, as pythonw.exe' (Get-AskwellWindowlessPython (Join-Path $pyDir 'python.exe')) (Join-Path $pyDir 'pythonw.exe')
+Remove-Item -Path $pyDir -Recurse -Force -ErrorAction SilentlyContinue
+
+if (Test-AskwellProcessInPrefix 'C:\Users\n\AppData\Local\Askwell\app\askwell-shell.exe' 'C:\Users\n\AppData\Local\Askwell\app') { Test-Ok 'the running app of this install is found' } else { Test-Bad 'the running app of this install is found' $false $true }
+if (-not (Test-AskwellProcessInPrefix 'D:\Other\Askwell\app\askwell-shell.exe' 'C:\Users\n\AppData\Local\Askwell\app')) { Test-Ok 'another copy of Askwell is left alone' } else { Test-Bad 'another copy of Askwell is left alone' $true $false }
+if (-not (Test-AskwellProcessInPrefix 'C:\Users\n\AppData\Local\Askwell\app-old\askwell-shell.exe' 'C:\Users\n\AppData\Local\Askwell\app')) { Test-Ok 'a sibling folder with the same prefix is not this install' } else { Test-Bad 'a sibling folder with the same prefix is not this install' $true $false }
+
+# --- setup: Python ------------------------------------------------------------
+if (Test-AskwellStorePythonStub 'C:\Users\nimal\AppData\Local\Microsoft\WindowsApps\python.exe') { Test-Ok "the Store's placeholder python.exe is recognised" } else { Test-Bad "the Store's placeholder python.exe is recognised" $false $true }
+if (-not (Test-AskwellStorePythonStub 'C:\Program Files\Python313\python.exe')) { Test-Ok 'a real Python is not taken for the placeholder' } else { Test-Bad 'a real Python is not taken for the placeholder' $true $false }
+Test-Check 'Python comes from python.org, pinned' $script:AskwellPythonUrl 'https://www.python.org/ftp/python/3.13.15/python-3.13.15-amd64.exe'
+Test-Check 'a missing Python is explained' (Get-AskwellSetupCodeMeaning 25) 'Python could not be installed'
+
 # --- setup: the failure report ------------------------------------------------
 Test-Check 'a known code is explained' (Get-AskwellSetupCodeMeaning 22) 'Docker Compose could not be installed'
 if ((Get-AskwellSetupCodeMeaning 7) -match 'install.ps1') { Test-Ok "install.ps1's own code points at the log" } else { Test-Bad "install.ps1's own code points at the log" (Get-AskwellSetupCodeMeaning 7) 'install.ps1' }
 $raw = 'Copying to C:\Users\Nimal.Perera\AppData\Local\Temp on NIMAL-LAPTOP as nimal.perera; Podman 5.8.3'
-$safe = Protect-AskwellReportText -Text $raw -UserProfile 'C:\Users\Nimal.Perera' -UserName 'Nimal.Perera' -ComputerName 'NIMAL-LAPTOP'
-Test-Check 'profile, PC and account names are replaced, any case' $safe 'Copying to <profile>\AppData\Local\Temp on <pc> as <user>; Podman 5.8.3'
+$safe = Protect-AskwellReportText -Text $raw -UserProfile 'C:\Users\Nimal.Perera' -UserName 'nimal.perera' -ComputerName 'NIMAL-LAPTOP'
+Test-Check 'profile and PC replaced in any case, account name as a word' $safe 'Copying to <profile>\AppData\Local\Temp on <pc> as <user>; Podman 5.8.3'
 Test-Check 'a two-letter name is left alone, not stripped everywhere' (Protect-AskwellReportText -Text 'al alpha' -UserName 'al') 'al alpha'
+Test-Check 'an account named like the product leaves the product name alone' (Protect-AskwellReportText -Text 'Askwell Setup ran as askwell; see github.com/Rumeasiyan/askwell-docs' -UserName 'askwell') 'Askwell Setup ran as <user>; see github.com/Rumeasiyan/askwell-docs'
 Test-Check 'one name alone still works' (Protect-AskwellReportText -Text 'user nimal here' -UserName 'nimal') 'user <user> here'
 $report = Format-AskwellSetupReport -Code 22 -Facts ([ordered]@{ 'Askwell version' = '1.2.3'; 'Windows' = 'Windows 11 Home' }) -Log "line one`r`nline two"
 foreach ($want in @('send this file to whoever gave you Askwell', 'Result: code 22 - Docker Compose could not be installed', 'Askwell version: 1.2.3', 'Windows: Windows 11 Home', 'line two')) {

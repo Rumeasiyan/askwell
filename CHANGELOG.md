@@ -4,6 +4,22 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.10 - 2026-09-30
+
+`Fixed`: Windows Setup now installs Askwell on a new PC, all the way to an open window. Every item below was found by running Setup on a real Windows 11 virtual machine, from a clean install, restart included (`scripts/winvm.sh`, #836). Each one would have stopped every new PC:
+
+- **Code 22 after Docker Compose installed.** The check asked `podman compose version`, which needs Podman's machine, and the machine is created only later. It now asks `docker-compose` itself. This was the real cause of the first failure a tester reported with 0.9.1.
+- **WSL was never enabled.** Windows' built-in `wsl.exe` refuses `--install` without a console window, and Setup has none. Setup now turns on the Virtual Machine Platform itself and installs WSL from Microsoft's own installer, pinned to Microsoft's published checksum. winget downloaded that installer, then cancelled without running it.
+- **The restart was skipped.** Windows reported the platform as enabled before the restart it needed, so Podman then failed. Setup now restarts whenever it enabled something in this run.
+- **No Python.** A new PC has only the Microsoft Store's placeholder `python.exe`, which cannot run anything, and Askwell's hardware probe and AI supervisor are Python. Setup installs Python 3.13 from python.org, pinned to python.org's published checksum, and never mistakes the placeholder for a Python.
+- **The services could not start.** The AI models folder that `compose.yaml` mounts was never created. It now is.
+- **The window stayed on "Still starting".** Its check for the API was refused as a cross-origin request. It now only checks that the API answers.
+- **Upgrading with Askwell open failed.** The running app is closed first, and reopened at the end.
+- The AI supervisor no longer runs in a black console window, where closing it would stop Askwell's AI.
+- The failure report no longer turns "Askwell" into `<user>` when the Windows account name is a common word.
+
+`Known`: Askwell does not answer questions on Windows yet: the containers cannot reach the AI there (#845, `M11-FIX-DEPLOY-223`).
+
 ## 0.9.9 - 2026-09-30
 
 `Added`: `M10-FIX-DEPLOY-222`. Every download now carries llama.cpp, the program that runs Askwell's models, and the installer puts it on the computer. Before, nothing did, and an installed Askwell could not answer until someone installed llama.cpp by hand (#810, the llama.cpp half). Linux and Windows get two builds, one that can use a graphics card (Vulkan: NVIDIA, AMD and Intel) and one for the processor; Macs with Apple silicon get one build that uses the chip's graphics side (Metal). Each build is pinned and checked against its published checksum when the release is made. Nothing is downloaded on your computer.
