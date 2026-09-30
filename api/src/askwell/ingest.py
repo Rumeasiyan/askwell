@@ -67,11 +67,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from askwell import chunk, clarify, embed, extract, passphrase, roots
+from askwell import chunk, clarify, embed, extract, passphrase, roots, table_load
 from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
 from askwell.extract_common import PasswordProtected, WrongPassword
+from askwell.filetypes import WORKBOOK_MIME
 from askwell.logging import get_logger
 
 log = get_logger(__name__)
@@ -652,6 +653,13 @@ async def process(
                 text("UPDATE ingest_jobs SET stage = :stage WHERE document_id = :id"),
                 {"stage": stage.name, "id": document_id},
             )
+
+    if work.mime == WORKBOOK_MIME:
+        # `M11-FIX-ING-224`: a workbook is searchable and queryable both. Its
+        # sheets load as tables once its passages are in, and whatever the
+        # load does it does not fail the document — `load_workbook_tables`
+        # records its own outcome and never raises.
+        await table_load.load_workbook_tables(factory, settings, work.source_id, document_id)
 
     await _finish(factory, settings, work)
     return "done"

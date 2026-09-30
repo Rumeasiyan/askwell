@@ -885,10 +885,33 @@ async def _trim_rotated_traces(db: AsyncSession, dropped: tuple[uuid.UUID, ...])
     )
 
 
-def _sql_result_text(row_count: int, truncated: bool) -> str:
+# A one-row result this small is said in the answer's own text, not only in
+# the table: "Found 1 row: headcount 19." (`M11-FIX-ING-224`). Past these it
+# is a table to look at, not a line to read out.
+_SAID_COLUMNS = 4
+_SAID_VALUE_LENGTH = 80
+
+
+def _sql_result_text(
+    row_count: int,
+    truncated: bool,
+    columns: Sequence[str] = (),
+    rows: Sequence[Sequence[Any]] = (),
+) -> str:
+    """The answer's text for an executed query. Still a fixed-shape line, not
+    prose (`docs/decisions.md`, `M4-SQL-BE-108a`), but a single row of a few
+    short values is said in it: the text is what a spoken answer reads out
+    and what a reopened turn's summary is made from, and "Found 1 row." for
+    "how many people work in Logistics?" answers neither. The values are the
+    result's own, rendered as they are; the model composes nothing here."""
     if row_count == 0:
         return "No matching records."
     label = f"Found {row_count} row{'' if row_count == 1 else 's'}."
+    if row_count == 1 and len(rows) == 1 and 0 < len(columns) <= _SAID_COLUMNS:
+        said = ["empty" if value is None else str(value) for value in rows[0]]
+        if all(len(value) <= _SAID_VALUE_LENGTH for value in said):
+            pairs = ", ".join(f"{name} {value}" for name, value in zip(columns, said, strict=False))
+            label = f"Found 1 row: {pairs}."
     if truncated:
         label += " This may not be all of them — the result was capped."
     return label
@@ -964,7 +987,9 @@ async def _no_database_answer(
     """
     if not _looks_database_shaped(question):
         return None
-    ready = await list_database_sources(db, settings)
+    # A folder's sheet tables (`M11-FIX-ING-224`) are not a connected
+    # database, and the sentence below is about connecting one.
+    ready = [s for s in await list_database_sources(db, settings) if s.kind != "file"]
     if ready:
         # A database is connected and none of it matched this question at
         # all — a genuine "not about your data" case, not a connection
@@ -1186,7 +1211,9 @@ async def _run_sql_turn(
         "duration_ms": checked.duration_ms,
     }
     return _SqlAnswer(
-        text=_sql_result_text(checked.row_count, checked.truncated),
+        text=_sql_result_text(
+            checked.row_count, checked.truncated, list(checked.columns), checked.rows
+        ),
         status="completed",
         sql_result=sql_result,
         schema_step=schema_step,
@@ -1223,7 +1250,11 @@ async def _has_hybrid_sources(db: AsyncSession, settings: Settings) -> bool:
     if not ready_documents:
         return False
     database_sources = await list_database_sources(db, settings)
-    return bool(database_sources)
+    # A folder whose workbooks loaded sheet tables (`M11-FIX-ING-224`) is
+    # still a documents corpus. Counting it here would move every question
+    # in it to the loop, whose answers carry no citations yet (#407); its
+    # sheets are reached by the routing in `_run_generation` instead.
+    return any(source.kind != "file" for source in database_sources)
 
 
 async def _generate(
@@ -2137,8 +2168,9 @@ async def _run_generation(
             # `M10-FIX-BE-220`: the documents found nothing, so a table gets
             # its turn — the one SQL already tried first, whose outcome now
             # stands as the answer, or a weakly matched one tried only now.
-            # A weak match whose query does not execute keeps the abstention:
-            # one shared word is not enough to show a refusal instead.
+            # A weak match whose query does not execute, or finds no rows,
+            # keeps the abstention: one shared word is not enough to show a
+            # refusal or an empty result instead.
             table_answer = unexecuted_sql
             if (
                 table_answer is None
@@ -2153,7 +2185,10 @@ async def _run_generation(
                 )
                 if attempted is not None:
                     trace_steps.extend(_sql_steps(attempted))
-                    if attempted.sql_result is not None:
+                    # Zero rows keeps the abstention too (`M11-FIX-ING-224`):
+                    # a sheet sharing one word with the question and holding
+                    # no matching row says no more than the documents did.
+                    if attempted.sql_result is not None and attempted.sql_result.get("row_count"):
                         table_answer = attempted
             if table_answer is not None:
                 await _finish_sql_turn(
@@ -2219,7 +2254,10 @@ async def _run_generation(
             # already going to be grounded in the user's own material.
             async with session_scope(factory) as db:
                 relevant_memory = await retrieve_relevant_facts(
-                    db, question=question, source_id=source_id
+                    db,
+                    question=question,
+                    source_id=source_id,
+                    include_inferred_sheet_notes=False,
                 )
             memory_fact_ids = [fact.id for fact in relevant_memory.facts]
             schema_note_ids = [note.id for note in relevant_memory.notes]

@@ -53,6 +53,7 @@ not two.
 """
 
 import asyncio
+import os
 import re
 import time
 import uuid
@@ -69,6 +70,7 @@ from askwell import audit, sandbox
 from askwell.audit import Store
 from askwell.config import Settings
 from askwell.db.engine import session_scope
+from askwell.filetypes import WORKBOOK_MIME
 from askwell.logging import get_logger
 from askwell.memory import write_schema_note
 from askwell.table_infer import (
@@ -296,7 +298,9 @@ def cast_value(raw: str, sql_type: str, day_first: bool | None) -> Any:
 # --- creating and populating one table ---------------------------------------
 
 
-def _create_table_blocking(dsn: str, sql_table_name: str, columns: list[tuple[str, str]]) -> None:
+def _create_table_blocking(
+    dsn: str, sql_table_name: str, columns: list[tuple[str, str]], comment: str | None = None
+) -> None:
     from psycopg import sql as psql
 
     column_defs = psql.SQL(", ").join(
@@ -308,6 +312,12 @@ def _create_table_blocking(dsn: str, sql_table_name: str, columns: list[tuple[st
         conn.execute(
             psql.SQL("CREATE TABLE {} ({})").format(psql.Identifier(sql_table_name), column_defs)
         )
+        if comment is not None:
+            conn.execute(
+                psql.SQL("COMMENT ON TABLE {} IS {}").format(
+                    psql.Identifier(sql_table_name), psql.Literal(comment)
+                )
+            )
 
 
 def _insert_rows_blocking(
@@ -450,6 +460,103 @@ async def _date_format_overrides(
     return overrides
 
 
+async def _load_table(
+    dsn: str,
+    admin_url: str,
+    database: str,
+    inference: TableInference,
+    sql_table_name: str,
+    *,
+    overrides: dict[tuple[str, str], bool],
+    size_cap_bytes: int,
+    time_cap_seconds: float,
+    comment: str | None = None,
+) -> LoadResult:
+    """Create one table and insert its rows, as the sandbox owner. Everything
+    about a table that is not about the source it belongs to — the one path
+    a CSV and a workbook's sheet (`M11-FIX-ING-224`) both load through."""
+    sql_column_names = normalise_columns([column.name for column in inference.columns])
+
+    sql_types: list[str] = []
+    day_firsts: list[bool | None] = []
+    for column in inference.columns:
+        override = overrides.get((inference.table_name, column.name))
+        sql_type, day_first = sql_type_for(column, day_first_override=override)
+        sql_types.append(sql_type)
+        day_firsts.append(day_first)
+
+    await asyncio.to_thread(
+        _create_table_blocking,
+        dsn,
+        sql_table_name,
+        list(zip(sql_column_names, sql_types, strict=True)),
+        comment,
+    )
+    failures = await asyncio.to_thread(
+        _insert_rows_blocking,
+        dsn,
+        admin_url,
+        database,
+        sql_table_name,
+        sql_column_names,
+        sql_types,
+        day_firsts,
+        inference.rows,
+        header_present=inference.header.verdict is HeaderVerdict.PRESENT,
+        size_cap_bytes=size_cap_bytes,
+        time_cap_seconds=time_cap_seconds,
+    )
+    return LoadResult(
+        table_name=inference.table_name,
+        sql_table_name=sql_table_name,
+        row_count=len(inference.rows) - len(failures),
+        failed_rows=failures,
+    )
+
+
+async def _write_load_notes(
+    session: AsyncSession,
+    source_id: uuid.UUID,
+    inferences: list[TableInference],
+    results: list[LoadResult],
+) -> None:
+    """The table-level note naming the physical table, and one note per
+    column whose header had to be renamed to become an identifier."""
+    for inference, result in zip(inferences, results, strict=True):
+        await write_schema_note(
+            session,
+            source_id=source_id,
+            table_name=inference.table_name,
+            column_name=None,
+            description=(
+                f"Loaded as table `{result.sql_table_name}`, "
+                f"{result.row_count} row(s), {len(inference.columns)} column(s)."
+                + (
+                    f" {len(result.failed_rows)} row(s) failed to load."
+                    if result.failed_rows
+                    else ""
+                )
+            ),
+            origin="inferred",
+            confidence=1.0,
+        )
+        sql_names = normalise_columns([c.name for c in inference.columns])
+        for sql_name, column in zip(sql_names, inference.columns, strict=True):
+            if sql_name != column.name:
+                await write_schema_note(
+                    session,
+                    source_id=source_id,
+                    table_name=inference.table_name,
+                    column_name=column.name,
+                    description=(
+                        f"Loaded as column `{sql_name}` — the original header "
+                        f"was {column.name!r}, which is not a valid column name."
+                    ),
+                    origin="inferred",
+                    confidence=1.0,
+                )
+
+
 async def _load_inferences(
     factory: async_sessionmaker[AsyncSession],
     settings: Settings,
@@ -504,43 +611,16 @@ async def _load_inferences(
 
     try:
         for inference in non_empty:
-            sql_table_name = normalise_identifier(inference.table_name, sql_table_names)
-            sql_column_names = normalise_columns([column.name for column in inference.columns])
-
-            sql_types: list[str] = []
-            day_firsts: list[bool | None] = []
-            for column in inference.columns:
-                override = overrides.get((inference.table_name, column.name))
-                sql_type, day_first = sql_type_for(column, day_first_override=override)
-                sql_types.append(sql_type)
-                day_firsts.append(day_first)
-
-            await asyncio.to_thread(
-                _create_table_blocking,
-                dsn,
-                sql_table_name,
-                list(zip(sql_column_names, sql_types, strict=True)),
-            )
-            failures = await asyncio.to_thread(
-                _insert_rows_blocking,
-                dsn,
-                admin_url,
-                database,
-                sql_table_name,
-                sql_column_names,
-                sql_types,
-                day_firsts,
-                inference.rows,
-                header_present=inference.header.verdict is HeaderVerdict.PRESENT,
-                size_cap_bytes=size_cap_bytes,
-                time_cap_seconds=time_cap_seconds,
-            )
             results.append(
-                LoadResult(
-                    table_name=inference.table_name,
-                    sql_table_name=sql_table_name,
-                    row_count=len(inference.rows) - len(failures),
-                    failed_rows=failures,
+                await _load_table(
+                    dsn,
+                    admin_url,
+                    database,
+                    inference,
+                    normalise_identifier(inference.table_name, sql_table_names),
+                    overrides=overrides,
+                    size_cap_bytes=size_cap_bytes,
+                    time_cap_seconds=time_cap_seconds,
                 )
             )
     except Exception as error:
@@ -588,39 +668,7 @@ async def _load_inferences(
             # reload rather than replacing the one already there. A reload
             # changes row counts, not the table's existence or its column
             # names, so nothing here goes stale across one.
-            for inference, result in zip(non_empty, results, strict=True):
-                await write_schema_note(
-                    session,
-                    source_id=source_id,
-                    table_name=inference.table_name,
-                    column_name=None,
-                    description=(
-                        f"Loaded as table `{result.sql_table_name}`, "
-                        f"{result.row_count} row(s), {len(inference.columns)} column(s)."
-                        + (
-                            f" {len(result.failed_rows)} row(s) failed to load."
-                            if result.failed_rows
-                            else ""
-                        )
-                    ),
-                    origin="inferred",
-                    confidence=1.0,
-                )
-                sql_names = normalise_columns([c.name for c in inference.columns])
-                for sql_name, column in zip(sql_names, inference.columns, strict=True):
-                    if sql_name != column.name:
-                        await write_schema_note(
-                            session,
-                            source_id=source_id,
-                            table_name=inference.table_name,
-                            column_name=column.name,
-                            description=(
-                                f"Loaded as column `{sql_name}` — the original header "
-                                f"was {column.name!r}, which is not a valid column name."
-                            ),
-                            origin="inferred",
-                            confidence=1.0,
-                        )
+            await _write_load_notes(session, source_id, non_empty, results)
         await session.execute(
             text("UPDATE sources SET status = 'ready', last_indexed_at = now() WHERE id = :id"),
             {"id": source_id},
@@ -732,3 +780,462 @@ async def reload_source(
             },
         )
     return results
+
+
+# --- a workbook's sheets, alongside its document (`M11-FIX-ING-224`) ----------
+
+WORKBOOK_TABLES_LOADED = "workbook_tables_loaded"
+WORKBOOK_TABLES_FAILED = "workbook_tables_failed"
+
+# Every table a workbook's sheets become carries this comment, followed by the
+# workbook's path inside its folder. The comment, not the table name, is how a
+# reload finds its own tables: two workbooks whose names normalise the same
+# way (`a b.xlsx`, `a_b.xlsx`) get `a_b_xlsx_data` and `a_b_xlsx_data_2`, and
+# only the comment says which is whose.
+_WORKBOOK_COMMENT_PREFIX = "askwell workbook: "
+
+
+def workbook_table_prefix(relative_path: str) -> str:
+    """What every schema note for this workbook's sheets starts its
+    `table_name` with — `infer_xlsx` names a sheet `<workbook>:<sheet>`."""
+    return f"{relative_path}:"
+
+
+def workbook_comment(relative_path: str) -> str:
+    return f"{_WORKBOOK_COMMENT_PREFIX}{relative_path}"
+
+
+def sheet_skip_reason(inference: TableInference) -> str | None:
+    """Why a sheet does not become a table, or `None` when it does.
+
+    A table needs column names, and a sheet's only source of them is its
+    first row. When `detect_header` cannot say that row is names — it reads
+    as data, or every column is free text and gives no signal — loading it
+    would either name the columns `Column 1`, `Column 2`, which no question
+    will ever use, or trust a guess `docs/data-sources.md` §2 says to ask
+    about. A merged header cell cannot be split into per-column names at
+    all. Such a sheet is still in the document's passages; it is only not a
+    table.
+    """
+    if not inference.columns:
+        return "the sheet is empty"
+    if inference.merged_header:
+        return "the header row has merged cells"
+    if inference.header.verdict is not HeaderVerdict.PRESENT:
+        return f"no recognisable header row: {inference.header.reason}"
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class WorkbookOutcome:
+    """What loading one workbook's sheets did. `skipped` is `(sheet, reason)`;
+    `failure` is set when nothing was loaded because the load itself failed."""
+
+    tables: list[LoadResult]
+    skipped: list[tuple[str, str]]
+    failure: str | None = None
+
+
+def _relative_path(path: str, root: str | None) -> str:
+    if root and os.path.commonpath([root, path]) == os.path.normpath(root) and path != root:
+        return os.path.relpath(path, root).replace(os.sep, "/")
+    return os.path.basename(path)
+
+
+def _tables_blocking(dsn: str) -> dict[str, str | None]:
+    """Every table in a sandbox database, with its comment."""
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        rows = conn.execute(
+            "SELECT c.relname, obj_description(c.oid, 'pg_class') FROM pg_class c "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE n.nspname = 'public' AND c.relkind = 'r'"
+        ).fetchall()
+    return {str(name): comment for name, comment in rows}
+
+
+def _orphaned(tables: dict[str, str | None], live: set[str]) -> list[str]:
+    """The workbook tables whose workbook is no longer a live document."""
+    return sorted(
+        name
+        for name, comment in tables.items()
+        if comment is not None
+        and comment.startswith(_WORKBOOK_COMMENT_PREFIX)
+        and comment[len(_WORKBOOK_COMMENT_PREFIX) :] not in live
+    )
+
+
+async def _live_workbooks(session: AsyncSession, source_id: uuid.UUID) -> set[str]:
+    rows = await session.execute(
+        text(
+            "SELECT d.path, s.root_path FROM documents d JOIN sources s ON s.id = d.source_id "
+            "WHERE d.source_id = :id AND d.mime = :mime AND d.deleted_at IS NULL"
+        ),
+        {"id": source_id, "mime": WORKBOOK_MIME},
+    )
+    return {_relative_path(str(path), root) for path, root in rows}
+
+
+def _drop_tables_blocking(dsn: str, names: list[str]) -> None:
+    from psycopg import sql as psql
+
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        for name in names:
+            conn.execute(psql.SQL("DROP TABLE IF EXISTS {}").format(psql.Identifier(name)))
+
+
+async def _forget_workbook_notes(session: AsyncSession, source_id: uuid.UUID, prefix: str) -> None:
+    """Retire what Askwell inferred about this workbook's sheets. A note a
+    person wrote is left alone, the same rule `write_schema_inventory`
+    follows: nothing here deletes what someone said."""
+    await session.execute(
+        text(
+            "DELETE FROM schema_notes WHERE source_id = :id AND origin = 'inferred' "
+            "AND left(table_name, length(:prefix)) = :prefix"
+        ),
+        {"id": source_id, "prefix": prefix},
+    )
+
+
+async def load_workbook_tables(
+    factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    source_id: uuid.UUID,
+    document_id: uuid.UUID,
+) -> WorkbookOutcome:
+    """Load each sheet of an indexed workbook as a table, alongside its
+    document. `M11-FIX-ING-224`, issue #827.
+
+    The tables go into the folder source's own sandbox database (C3), created
+    on the first workbook and shared by every workbook in that folder, so a
+    workbook stays one source in the library. Each sheet goes through the
+    same `_load_table` a CSV does, under the same size and time caps, and its
+    notes are written the way a CSV's are. Two things differ, both because
+    the source is a folder rather than a table:
+
+    - the source's status is never touched. It describes the folder's
+      documents, and a sheet that did not load has not failed a document;
+    - no clarifications are raised (`raise_table_inference`'s own note,
+      issue #851), so an ambiguous column loads as `text`.
+
+    Never raises. A workbook's passages answer questions whether or not its
+    tables exist, so the outcome is recorded — `workbook_tables_loaded` or
+    `workbook_tables_failed`, with the source id — and returned, and the
+    document is indexed either way.
+    """
+    try:
+        return await _load_workbook_tables(factory, settings, source_id, document_id)
+    except Exception as error:
+        reason = f"{type(error).__name__}: {error}"
+        log.exception("workbook_tables_failed", source_id=str(source_id), reason=reason)
+        try:
+            async with session_scope(factory) as session:
+                await audit.record(
+                    session,
+                    Store.DECISIONS,
+                    WORKBOOK_TABLES_FAILED,
+                    {
+                        "source_id": str(source_id),
+                        "document_id": str(document_id),
+                        "reason": reason,
+                    },
+                )
+        except Exception:
+            log.exception("workbook_tables_failure_unrecorded", source_id=str(source_id))
+        return WorkbookOutcome(tables=[], skipped=[], failure=reason)
+
+
+async def _load_workbook_tables(
+    factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    source_id: uuid.UUID,
+    document_id: uuid.UUID,
+) -> WorkbookOutcome:
+    from askwell.dump_import import get_dump_size_cap_bytes, get_dump_time_cap_seconds
+
+    async with session_scope(factory) as session:
+        row = (
+            await session.execute(
+                text(
+                    "SELECT d.path, s.root_path FROM documents d "
+                    "JOIN sources s ON s.id = d.source_id "
+                    "WHERE d.id = :document_id AND d.source_id = :source_id "
+                    "AND d.deleted_at IS NULL AND s.status != 'deleted'"
+                ),
+                {"document_id": document_id, "source_id": source_id},
+            )
+        ).first()
+    if row is None:
+        # Deleted while its document was indexing: nothing to load for.
+        return WorkbookOutcome(tables=[], skipped=[])
+    path, root = str(row[0]), row[1]
+    relative = _relative_path(path, root)
+    prefix, comment = workbook_table_prefix(relative), workbook_comment(relative)
+
+    raw = await asyncio.to_thread(Path(path).read_bytes)
+    inferences = await asyncio.to_thread(infer_xlsx, relative, raw)
+    loadable: list[TableInference] = []
+    skipped: list[tuple[str, str]] = []
+    for inference in inferences:
+        reason = sheet_skip_reason(inference)
+        if reason is None:
+            loadable.append(inference)
+        else:
+            skipped.append((inference.sheet or inference.table_name, reason))
+            log.info(
+                "workbook_sheet_skipped",
+                source_id=str(source_id),
+                workbook=relative,
+                sheet=inference.sheet,
+                reason=reason,
+            )
+
+    admin_url = settings.sandbox_database_url.get_secret_value()
+    owner_password = settings.sandbox_owner_password.get_secret_value()
+
+    # One workbook load per folder at a time. Two workbooks from one folder
+    # are ingested concurrently (`ingest_concurrency`), and they share one
+    # database: without this, both could create it, or one could reseal the
+    # owner while the other is still inserting.
+    async with session_scope(factory) as lock:
+        await lock.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext('workbook_tables'), hashtext(:id))"),
+            {"id": str(source_id)},
+        )
+        async with session_scope(factory) as session:
+            size_cap_bytes = await get_dump_size_cap_bytes(session)
+            time_cap_seconds = await get_dump_time_cap_seconds(session)
+            database = (
+                await session.execute(
+                    text("SELECT sandbox_db FROM sources WHERE id = :id"), {"id": source_id}
+                )
+            ).scalar_one()
+            created = database is None
+            if created and not loadable:
+                # Nothing loaded before and nothing to load now: no database.
+                await _forget_workbook_notes(session, source_id, prefix)
+                await _record_loaded(session, source_id, document_id, relative, [], skipped)
+                return WorkbookOutcome(tables=[], skipped=skipped)
+            if created:
+                database = sandbox.generate_name()
+                await sandbox.create_database(session, admin_url, database)
+                await session.execute(
+                    text("UPDATE sources SET sandbox_db = :db WHERE id = :id"),
+                    {"db": database, "id": source_id},
+                )
+            else:
+                await sandbox.unseal_owner(session, admin_url, database)
+
+            live = await _live_workbooks(session, source_id)
+
+        dsn = sandbox.owner_url(admin_url, database, owner_password)
+        own: list[str] = []
+        results: list[LoadResult] = []
+        try:
+            existing = await asyncio.to_thread(_tables_blocking, dsn)
+            own = [name for name, note in existing.items() if note == comment]
+            # This workbook's previous tables, and any a deleted workbook left
+            # behind (#852) — see `sweep_workbook_tables`.
+            replaced = sorted(set(own) | set(_orphaned(existing, live)))
+            await asyncio.to_thread(_drop_tables_blocking, dsn, replaced)
+            taken = set(existing) - set(replaced)
+            for inference in loadable:
+                sql_table_name = normalise_identifier(inference.table_name, taken)
+                own.append(sql_table_name)
+                results.append(
+                    await _load_table(
+                        dsn,
+                        admin_url,
+                        database,
+                        inference,
+                        sql_table_name,
+                        overrides={},
+                        size_cap_bytes=size_cap_bytes,
+                        time_cap_seconds=time_cap_seconds,
+                        comment=comment,
+                    )
+                )
+        except Exception as error:
+            reason = (
+                str(error)
+                if isinstance(error, TableLoadFailed)
+                else f"{type(error).__name__}: {error}"
+            )
+            payload: dict[str, object] = {
+                "source_id": str(source_id),
+                "document_id": str(document_id),
+                "workbook": relative,
+                "database": database,
+                "reason": reason,
+            }
+            if isinstance(error, TableCapExceeded):
+                payload["cap"] = error.cap
+            async with session_scope(factory) as session:
+                # Nothing half-loaded is left to answer from.
+                if created:
+                    await sandbox.drop_database(session, admin_url, database, reason=reason)
+                    await session.execute(
+                        text("UPDATE sources SET sandbox_db = NULL WHERE id = :id"),
+                        {"id": source_id},
+                    )
+                else:
+                    await asyncio.to_thread(_drop_tables_blocking, dsn, own)
+                    await sandbox.seal_owner(session, admin_url, database)
+                await _forget_workbook_notes(session, source_id, prefix)
+                await audit.record(session, Store.DECISIONS, WORKBOOK_TABLES_FAILED, payload)
+            log.warning(
+                "workbook_tables_failed",
+                source_id=str(source_id),
+                workbook=relative,
+                reason=reason,
+            )
+            return WorkbookOutcome(tables=[], skipped=skipped, failure=reason)
+
+        async with session_scope(factory) as session:
+            await sandbox.seal_owner(session, admin_url, database)
+            await _forget_workbook_notes(session, source_id, prefix)
+            for inference in loadable:
+                await raise_table_inference(
+                    session, source_id, inference, raise_clarifications=False
+                )
+            await _write_load_notes(session, source_id, loadable, results)
+            await _record_loaded(session, source_id, document_id, relative, results, skipped)
+
+    log.info(
+        "workbook_tables_loaded",
+        source_id=str(source_id),
+        workbook=relative,
+        tables=len(results),
+        skipped=len(skipped),
+    )
+    return WorkbookOutcome(tables=results, skipped=skipped)
+
+
+async def _record_loaded(
+    session: AsyncSession,
+    source_id: uuid.UUID,
+    document_id: uuid.UUID,
+    workbook: str,
+    results: list[LoadResult],
+    skipped: list[tuple[str, str]],
+) -> None:
+    await audit.record(
+        session,
+        Store.DECISIONS,
+        WORKBOOK_TABLES_LOADED,
+        {
+            "source_id": str(source_id),
+            "document_id": str(document_id),
+            "workbook": workbook,
+            "tables": [result.sql_table_name for result in results],
+            "rows": sum(result.row_count for result in results),
+            "failed_rows": sum(len(result.failed_rows) for result in results),
+            "skipped": [{"sheet": sheet, "reason": reason} for sheet, reason in skipped],
+        },
+    )
+
+
+# --- a deleted workbook's tables (#852) ----------------------------------------
+
+WORKBOOK_TABLES_DROPPED = "workbook_tables_dropped"
+
+
+async def forget_deleted_workbook(session: AsyncSession, document_id: uuid.UUID) -> None:
+    """Make a deleted workbook's sheet tables unreachable, in the caller's
+    transaction — the one that tombstones the document.
+
+    SQL generation and `match_tables` see a table only through its schema
+    notes, so retiring the inferred ones takes the tables out of every
+    answer the moment the delete commits. A note a person wrote is kept and
+    marked stale, as `write_schema_inventory` does for a dropped table. The
+    tables themselves are dropped later by `sweep_workbook_tables`: the
+    sandbox is a separate instance, and a delete must not depend on it
+    being up.
+
+    Nothing happens when another live document in the folder has the same
+    path — a newer version of the same file, whose tables these now are.
+    """
+    row = (
+        await session.execute(
+            text(
+                "SELECT d.path, d.mime, d.source_id, s.root_path FROM documents d "
+                "JOIN sources s ON s.id = d.source_id WHERE d.id = :id"
+            ),
+            {"id": document_id},
+        )
+    ).first()
+    if row is None or row[1] != WORKBOOK_MIME:
+        return
+    relative = _relative_path(str(row[0]), row[3])
+    source_id = row[2]
+    if relative in await _live_workbooks(session, source_id):
+        return
+    prefix = workbook_table_prefix(relative)
+    await _forget_workbook_notes(session, source_id, prefix)
+    await session.execute(
+        text(
+            "UPDATE schema_notes SET stale = true, stale_reason = 'dropped' "
+            "WHERE source_id = :id AND superseded_by IS NULL "
+            "AND left(table_name, length(:prefix)) = :prefix"
+        ),
+        {"id": source_id, "prefix": prefix},
+    )
+
+
+async def sweep_workbook_tables(
+    factory: async_sessionmaker[AsyncSession], settings: Settings
+) -> int:
+    """Drop every sheet table whose workbook is no longer a live document.
+    Called at worker start, next to `sandbox.reclaim_orphans`; a load of any
+    workbook in the same folder does the same for that folder. Returns how
+    many tables were dropped."""
+    admin_url = settings.sandbox_database_url.get_secret_value()
+    owner_password = settings.sandbox_owner_password.get_secret_value()
+    readonly_password = settings.sandbox_readonly_password.get_secret_value()
+    async with session_scope(factory) as session:
+        sources = (
+            await session.execute(
+                text(
+                    "SELECT id, sandbox_db FROM sources WHERE kind = 'file' "
+                    "AND sandbox_db IS NOT NULL AND status != 'deleted'"
+                )
+            )
+        ).all()
+
+    dropped = 0
+    for source_id, database in sources:
+        async with session_scope(factory) as lock:
+            await lock.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext('workbook_tables'), hashtext(:id))"),
+                {"id": str(source_id)},
+            )
+            async with session_scope(factory) as session:
+                live = await _live_workbooks(session, source_id)
+            # Read as the readonly role first, so a folder with nothing to
+            # drop never reopens the owner's grant.
+            tables = await asyncio.to_thread(
+                _tables_blocking, sandbox.readonly_url(admin_url, database, readonly_password)
+            )
+            orphans = _orphaned(tables, live)
+            if not orphans:
+                continue
+            async with session_scope(factory) as session:
+                await sandbox.unseal_owner(session, admin_url, database)
+            try:
+                await asyncio.to_thread(
+                    _drop_tables_blocking,
+                    sandbox.owner_url(admin_url, database, owner_password),
+                    orphans,
+                )
+            finally:
+                async with session_scope(factory) as session:
+                    await sandbox.seal_owner(session, admin_url, database)
+            async with session_scope(factory) as session:
+                await audit.record(
+                    session,
+                    Store.DECISIONS,
+                    WORKBOOK_TABLES_DROPPED,
+                    {"source_id": str(source_id), "database": database, "tables": orphans},
+                )
+            log.info("workbook_tables_dropped", source_id=str(source_id), tables=orphans)
+            dropped += len(orphans)
+    return dropped

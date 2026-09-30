@@ -175,7 +175,7 @@ Full detail in `data-sources.md`. The architectural point:
 
 **A `.sql` dump is a program, not data.** Importing one means executing arbitrary DDL and DML from a file the user supplied. `sqlglot` validation governs *querying* and cannot govern *loading* — a dump that cannot write is a dump that cannot import.
 
-So imports never touch Askwell's own database. They load into a **separate sandbox Postgres instance**, one database per imported source, owned by a role with no access to Askwell's tables and no superuser rights. A malicious or broken dump destroys its own sandbox and nothing else.
+So imports never touch Askwell's own database. They load into a **separate sandbox Postgres instance**, one database per imported source, owned by a role with no access to Askwell's tables and no superuser rights. A malicious or broken dump destroys its own sandbox and nothing else. CSVs load there the same way, and so do the sheets of a folder's Excel workbooks: one database per folder, holding every workbook's tables, each tagged with its workbook's path (`M11-FIX-ING-224`, `data-sources.md` §2).
 
 Retrofitting this after imports exist would be a migration on users' machines, so it is in from the start.
 

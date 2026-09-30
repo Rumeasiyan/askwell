@@ -72,6 +72,7 @@ from askwell.agent.compose import (
     delimit_schema_notes,
     flag_injection_text,
 )
+from askwell.agent.think import ThinkStripper
 from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.inference.client import InferenceClient
@@ -133,7 +134,7 @@ class DatabaseSource:
 
     id: uuid.UUID
     name: str
-    kind: str  # "dump" | "csv" | "connection"
+    kind: str  # "dump" | "csv" | "connection" | "file" (a folder's workbook sheets)
     engine: str  # "postgresql" | "mysql" | "mariadb" | "sqlserver"
 
 
@@ -231,12 +232,25 @@ def _extract_query(completion_text: str) -> str | None:
     finding about small-model prompt compliance, e.g. `M2-PARTIAL-BE-057`'s
     `<think>` block), never trusted to have followed the "no fence, no
     semicolon" instruction exactly.
+
+    The shipped model reasons in a `<think>` block first, and drafts the
+    query inside it, so the block is dropped the same way an answer's is
+    (`askwell.agent.think`); an unclosed one is no query at all. Then only
+    the first fenced block is kept, not the sentence the model adds after
+    it. `M11-FIX-ING-224`: before this, a sheet's query reached
+    `askwell.sql.validate` with its reasoning attached and was rejected as
+    unparseable. This only picks which text is the candidate — every
+    candidate is still parsed and checked by `sqlglot` there (C2).
     """
-    stripped = completion_text.strip()
+    stripper = ThinkStripper()
+    stripped = (stripper.feed(completion_text) + stripper.flush()).strip()
     if not stripped or stripped.upper().startswith(_CANNOT_ANSWER_PREFIX):
         return None
     if stripped.startswith("```"):
-        stripped = stripped.strip("`")
+        stripped = stripped[3:]
+        end = stripped.find("```")
+        if end != -1:
+            stripped = stripped[:end]
         if stripped.lower().startswith("sql"):
             stripped = stripped[3:]
         stripped = stripped.strip()
@@ -269,12 +283,20 @@ async def list_database_sources(session: AsyncSession, settings: Settings) -> li
     runs in the sandbox, which is always PostgreSQL (C3); a connection's
     engine is whatever it was created with, read from its own encrypted
     configuration.
+
+    Since `M11-FIX-ING-224`, also a folder whose workbooks loaded sheet
+    tables into its own sandbox database (`askwell.table_load.
+    load_workbook_tables`). A folder's `attention` is about its documents —
+    one scanned page below the OCR bar — and says nothing about its sheet
+    tables, so it does not hide them the way a failed import's does.
     """
     rows = (
         await session.execute(
             text(
                 "SELECT id, name, kind, config_encrypted FROM sources "
-                "WHERE status = 'ready' AND kind = ANY(:kinds) ORDER BY name"
+                "WHERE (status = 'ready' AND kind = ANY(:kinds)) "
+                "OR (kind = 'file' AND sandbox_db IS NOT NULL "
+                "AND status IN ('ready', 'attention')) ORDER BY name"
             ),
             {"kinds": list(_DATABASE_SOURCE_KINDS)},
         )
@@ -350,8 +372,15 @@ async def match_tables(
     """
     sources = await list_database_sources(session, settings)
     if source_id is not None:
-        scoped = any(source.id == source_id for source in sources)
-        return TableMatch(TableMatchStrength.STRONG) if scoped else None
+        scoped = next((source for source in sources if source.id == source_id), None)
+        if scoped is None:
+            return None
+        if scoped.kind != "file":
+            return TableMatch(TableMatchStrength.STRONG)
+        # A folder is mostly documents. Choosing it says nothing about
+        # whether the question is about its sheets, so the words decide, as
+        # they do unscoped — over its own notes only, and weakly at most.
+        sources = [scoped]
     if not sources:
         return None
 
@@ -361,20 +390,25 @@ async def match_tables(
             {"cfg": TEXT_SEARCH_CONFIG, "question": question},
         )
     ).scalar_one()
-    schema_terms = set(
-        (
-            await session.execute(
-                text(
-                    "SELECT DISTINCT unnest(tsvector_to_array(to_tsvector(:cfg, "
-                    "translate(table_name || ' ' || coalesce(column_name, ''), '_.:', '   ') "
-                    "|| CASE WHEN origin != 'inferred' THEN ' ' || description ELSE '' END"
-                    "))) FROM schema_notes "
-                    "WHERE superseded_by IS NULL AND NOT stale AND source_id = ANY(:ids)"
-                ),
-                {"cfg": TEXT_SEARCH_CONFIG, "ids": [source.id for source in sources]},
-            )
-        ).scalars()
-    )
+    rows = (
+        await session.execute(
+            text(
+                "SELECT DISTINCT source_id, unnest(tsvector_to_array(to_tsvector(:cfg, "
+                "translate(table_name || ' ' || coalesce(column_name, ''), '_.:', '   ') "
+                "|| CASE WHEN origin != 'inferred' THEN ' ' || description ELSE '' END"
+                "))) FROM schema_notes "
+                "WHERE superseded_by IS NULL AND NOT stale AND source_id = ANY(:ids)"
+            ),
+            {"cfg": TEXT_SEARCH_CONFIG, "ids": [source.id for source in sources]},
+        )
+    ).all()
+    # A folder's sheets (`M11-FIX-ING-224`) are a fallback only. The same
+    # workbook is also passages, which answer with a citation and a SQL
+    # answer does not yet, so a sheet goes after the passages abstain, never
+    # before them (#857). Its words can make a match weak, never strong.
+    sheet_sources = {source.id for source in sources if source.kind == "file"}
+    schema_terms = {term for _, term in rows}
+    database_terms = {term for source, term in rows if source not in sheet_sources}
     terms = tuple(
         sorted(
             term
@@ -382,7 +416,7 @@ async def match_tables(
             if len(term) >= _MIN_TERM_LENGTH and term in schema_terms
         )
     )
-    if len(terms) >= STRONG_MATCH_TERMS:
+    if len([term for term in terms if term in database_terms]) >= STRONG_MATCH_TERMS:
         return TableMatch(TableMatchStrength.STRONG, terms)
     if terms:
         return TableMatch(TableMatchStrength.WEAK, terms)

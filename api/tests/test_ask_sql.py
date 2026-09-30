@@ -354,3 +354,32 @@ def test_no_two_of_the_five_states_share_a_message() -> None:
         "rejected_marker": "could not safely run",
     }
     assert len(set(messages.values())) == len(messages)
+
+
+# --- the answer line says a single row's values (`M11-FIX-ING-224`) ----------
+
+
+def test_a_single_row_result_says_its_values_in_the_answer_text() -> None:
+    """A question like "how many people work in Logistics?" is answered by one number. The
+    table shows it, but the answer's own text is what is spoken aloud and
+    what a reopened conversation's summary is made from, so it says it too —
+    read straight from the rows, never composed by the model."""
+    assert (
+        ask_module._sql_result_text(1, False, ["headcount"], [[19]]) == "Found 1 row: headcount 19."
+    )
+    assert (
+        ask_module._sql_result_text(1, False, ["department", "avg_tenure_years"], [["Retail", 1.9]])
+        == "Found 1 row: department Retail, avg_tenure_years 1.9."
+    )
+    assert ask_module._sql_result_text(1, False, ["note"], [[None]]) == "Found 1 row: note empty."
+
+
+def test_a_result_too_big_to_say_keeps_the_count_only() -> None:
+    assert ask_module._sql_result_text(2, False, ["headcount"], [[19], [34]]) == "Found 2 rows."
+    wide = [f"c{i}" for i in range(5)]
+    assert ask_module._sql_result_text(1, False, wide, [list(range(5))]) == "Found 1 row."
+    assert ask_module._sql_result_text(1, False, ["body"], [["x" * 200]]) == "Found 1 row."
+    assert ask_module._sql_result_text(0, False, [], []) == "No matching records."
+    assert ask_module._sql_result_text(3, True, ["a"], [[1], [2], [3]]) == (
+        "Found 3 rows. This may not be all of them — the result was capped."
+    )

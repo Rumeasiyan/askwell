@@ -835,7 +835,11 @@ TABLE_CLARIFICATION_RAISED = "table_clarification_raised"
 
 
 async def raise_table_inference(
-    session: AsyncSession, source_id: uuid.UUID, inference: TableInference
+    session: AsyncSession,
+    source_id: uuid.UUID,
+    inference: TableInference,
+    *,
+    raise_clarifications: bool = True,
 ) -> RaiseResult:
     """Write what was inferred, but never as fact: every column lands in
     `schema_notes` as `origin='inferred'` with its confidence attached
@@ -847,6 +851,11 @@ async def raise_table_inference(
 
     Idempotent per source, the same guard `clarify.raise_candidates` uses:
     a source that already has a clarification row is not re-scanned.
+
+    `raise_clarifications=False` writes the notes and asks nothing. A
+    workbook's sheets (`M11-FIX-ING-224`) belong to a folder source, and the
+    guard above is per source: a sheet question raised first would stop the
+    folder's document questions from ever being asked. Issue #851.
     """
     already = await session.execute(
         text("SELECT 1 FROM clarifications WHERE source_id = :id LIMIT 1"),
@@ -903,7 +912,7 @@ async def raise_table_inference(
 
     raised = 0
     capped = 0
-    if not already_raised and inference.candidates:
+    if raise_clarifications and not already_raised and inference.candidates:
         cap = await get_clarification_cap(session)
         to_raise, to_cap = inference.candidates[:cap], inference.candidates[cap:]
 

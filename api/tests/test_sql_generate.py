@@ -263,6 +263,38 @@ def test_extract_query_passes_through_plain_sql() -> None:
     assert _extract_query("SELECT count(*) FROM orders") == "SELECT count(*) FROM orders"
 
 
+# The shipped model's real completion for `grounded_qa.v1`'s
+# `figures-logistics-headcount` (`M11-FIX-ING-224`): it reasons first, drafts
+# the query inside its reasoning, then writes it. Before, the whole text went
+# to `sqlglot`, which rejected it as unparseable, and the sheet never answered.
+_THINKING_COMPLETION = (
+    "<think>\nThe user is asking about the Logistics headcount.\n\n"
+    "```sql\nSELECT headcount FROM figures WHERE department = 'Logistics';\n```\n\n"
+    "This should return the number of people.\n</think>\n\n"
+    "```sql\nSELECT headcount FROM figures WHERE department = 'Logistics';\n```"
+)
+
+
+def test_extract_query_drops_a_leading_think_block() -> None:
+    assert (
+        _extract_query(_THINKING_COMPLETION)
+        == "SELECT headcount FROM figures WHERE department = 'Logistics'"
+    )
+
+
+def test_extract_query_is_none_when_the_model_never_stopped_thinking() -> None:
+    # A draft inside an unclosed block is not the answer (`agent.think`).
+    assert _extract_query("<think>\n```sql\nSELECT 1;\n```\nstill going") is None
+
+
+def test_extract_query_after_thinking_can_still_decline() -> None:
+    assert _extract_query("<think>\nno table fits\n</think>\n\nCANNOT_ANSWER: none.") is None
+
+
+def test_extract_query_keeps_only_the_fenced_query_not_the_prose_after_it() -> None:
+    assert _extract_query("```sql\nSELECT 1;\n```\n\nThis returns one.") == "SELECT 1"
+
+
 # --- select_database_source / list_database_sources ------------------------
 
 
@@ -670,3 +702,114 @@ async def test_scoping_to_a_non_database_source_is_no_match(
         session, settings, question="How many orders per customer?", source_id=uuid.uuid4()
     )
     assert match is None
+
+
+# --- a folder whose workbooks loaded as tables (`M11-FIX-ING-224`) ----------
+
+
+async def _folder_with_workbook(
+    session: AsyncSession, *, status: str = "ready", sandbox_db: str | None = "sandbox_folder"
+) -> uuid.UUID:
+    source_id = uuid.uuid4()
+    await session.execute(
+        text(
+            "INSERT INTO sources (id, kind, name, root_path, sandbox_db, status) "
+            "VALUES (:id, 'file', 'work', '/work', :db, :status)"
+        ),
+        {"id": source_id, "db": sandbox_db, "status": status},
+    )
+    table = "figures.xlsx:Quarterly Department Figures"
+    await _write_note(
+        session,
+        _note(
+            source_id=source_id,
+            table_name=table,
+            description="Loaded as table `figures_xlsx_quarterly_department_figures`.",
+        ),
+    )
+    for column in ("Department", "Q1 Revenue", "Headcount", "Avg Tenure Years"):
+        await _write_note(
+            session,
+            _note(source_id=source_id, table_name=table, column_name=column, description="x"),
+        )
+    return source_id
+
+
+@pytest.mark.parametrize("status", ["ready", "attention"])
+async def test_a_folder_with_a_loaded_workbook_is_a_database_source(
+    session: AsyncSession, settings: Settings, status: str
+) -> None:
+    """`attention` on a folder is about its documents — one failed PDF — and
+    says nothing about the sheet tables, which loaded."""
+    source_id = await _folder_with_workbook(session, status=status)
+    sources = await list_database_sources(session, settings)
+    assert [(source.id, source.kind, source.engine) for source in sources] == [
+        (source_id, "file", "postgresql")
+    ]
+
+
+async def test_a_folder_with_no_sheet_tables_is_not_a_database_source(
+    session: AsyncSession, settings: Settings
+) -> None:
+    await _folder_with_workbook(session, sandbox_db=None)
+    assert await list_database_sources(session, settings) == []
+
+
+async def test_the_headcount_question_reaches_the_sheet_only_as_a_fallback(
+    session: AsyncSession, settings: Settings
+) -> None:
+    """#827's own question, against the sheet `grounded_qa.v1` ships. It
+    names the sheet twice ("department", "figures"), which against a
+    database would send it to SQL first. A sheet is also a document whose
+    passages answer with a citation, so it is only a fallback: weak, tried
+    after the passages come back below threshold (#857)."""
+    await _folder_with_workbook(session)
+    match = await match_tables(
+        session,
+        settings,
+        question="How many people work in the Logistics department, per the department figures?",
+    )
+    assert match is not None
+    assert match.strength is TableMatchStrength.WEAK
+    assert {"depart", "figur"} <= set(match.terms)
+
+
+async def test_a_sheets_words_never_make_a_database_match_strong(
+    session: AsyncSession, settings: Settings
+) -> None:
+    """One word naming a database column and one naming a sheet is the same
+    single word of evidence about the database it was before any workbook
+    was loaded."""
+    await _eval_shaped_schema(session)
+    await _folder_with_workbook(session)
+    match = await match_tables(session, settings, question="What is the headcount in each region?")
+    assert match is not None
+    assert match.strength is TableMatchStrength.WEAK
+    assert set(match.terms) == {"headcount", "region"}
+
+
+async def test_a_database_match_stays_strong_beside_a_folders_sheets(
+    session: AsyncSession, settings: Settings
+) -> None:
+    await _eval_shaped_schema(session)
+    await _folder_with_workbook(session)
+    match = await match_tables(
+        session, settings, question="Which customers in each region are on the gold tier?"
+    )
+    assert match is not None
+    assert match.strength is TableMatchStrength.STRONG
+
+
+async def test_scoping_to_a_folder_still_weighs_the_words(
+    session: AsyncSession, settings: Settings
+) -> None:
+    """A folder is mostly documents. Scoping a question to it is not a
+    statement that the question is about its sheets, so the words decide,
+    as they do unscoped — otherwise every scoped question about a folder
+    holding one workbook would go to SQL first."""
+    source_id = await _folder_with_workbook(session)
+    match = await match_tables(
+        session, settings, question="What is the notice period?", source_id=source_id
+    )
+    assert match is not None
+    assert match.strength is TableMatchStrength.NONE
