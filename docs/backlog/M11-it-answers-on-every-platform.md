@@ -1,6 +1,6 @@
 # M11 — It answers on every platform
 
-**Goal:** An installed Askwell answers a question on Windows and macOS, not only on Linux, and a spreadsheet question reaches the spreadsheet.
+**Goal:** An installed Askwell answers a question on Windows, not only on Linux, and a spreadsheet question reaches the spreadsheet.
 
 **Phase:** 7 (`../build-plan.md`) · **Depends on:** M10 · **Tickets:** 2 to start; the C5 ticket is added once the GPU experiment (`M10-FIX-DEPLOY-222` made it possible) has a result · **Estimated:** 11 hours
 
@@ -10,54 +10,57 @@
 
 ---
 
-### M11-FIX-DEPLOY-223 — The containers reach the AI on Windows and macOS
+### M11-FIX-DEPLOY-223 — The containers reach the AI on Windows
 
 **Type:** Task
 
 **User Story**
-- **Actor:** anyone who installs Askwell on Windows or macOS.
+- **Actor:** anyone who installs Askwell on Windows.
 - **User Need:** to ask a question and get an answer.
-- **Business Value:** today an installed Askwell on Windows opens, downloads its model, and then cannot answer anything. That is the whole product, on the platform most testers use.
+- **Business Value:** today an installed Askwell on Windows opens, downloads its model, and then cannot answer anything.
 
 **Context / Background**
-**Detailed Description:** Read #845 first; it has the evidence and the options. Two problems. (1) `inference-bridge` listens on a Unix socket in `/run/askwell`, which is a bind mount of the host's `.run`; on Windows that path is on the Windows drive, reached through WSL's drvfs, which cannot hold a Unix socket (`OSError: [Errno 95] Operation not supported`). (2) The bridge dials `127.0.0.1` only (`UPSTREAM_HOST` in `api/src/askwell/inference/bridge.py`), but on Windows and macOS the containers run inside Podman's own Linux VM, so 127.0.0.1 is that VM, not the machine where `llama-server` runs.
+**Detailed Description:** Read #845, including its comments. The first version of this ticket assumed `host.containers.internal` would reach the PC; the build agent tested it on the Windows VM and it does not (it resolves back into the WSL VM). The orchestrating session then tested WSL **mirrored networking** on the same VM on 2026-09-30:
+- **Test:** `%USERPROFILE%\.wslconfig` with `[wsl2]` and `networkingMode=mirrored`, then `wsl --shutdown`, then `podman machine start`. A Windows process listens on `127.0.0.1:18080`, and a container on `--network host` dials it.
+- **Result:** default NAT, `Connection refused`. Mirrored, HTTP `200`.
 
-The recommended design is #845's option B: on Windows and macOS only, the bridge dials the VM's host gateway (`host.containers.internal`), and the socket lives on a named volume inside the VM rather than on the host's drive. Linux keeps 127.0.0.1 and its bind mount unchanged. This changes what C1 says about the bridge, so it starts with a `docs/decisions.md` entry and the matching change to `docs/architecture.md` §5 and the bridge's docstring: the guarantee becomes "the bridge dials only this machine: 127.0.0.1 on Linux, the Podman VM's host gateway on Windows and macOS", and it must still be true by reading the code.
+So the design is: **on Windows, WSL runs in mirrored networking mode, and the bridge keeps dialling `127.0.0.1` exactly as on Linux.** `UPSTREAM_HOST` and C1's reading of the bridge do not change. That is why this beat the alternatives: a firewall hole for the WSL subnet, a vsock relay, or llama.cpp inside the VM without the GPU.
+
+Two changes remain.
+1. **The sockets.** The bridge's Unix socket, and the worker-unlock socket (`api/src/askwell/worker_unlock.py`), cannot live on a bind mount of a Windows directory: drvfs has no Unix sockets (`Errno 95`). Put the sockets on a named volume shared by the containers that use them. Keep the files the host supervisor writes (its status) on the existing bind mount, because the host must reach them. On Linux, nothing changes by default.
+2. **Setup.** Before the Podman machine is created or started, `setup-bootstrap.ps1` makes sure `%USERPROFILE%\.wslconfig` has `networkingMode=mirrored` under `[wsl2]`. It edits the file rather than replaces it, keeps every other setting, and says in its log exactly what it changed. When it changed anything and a machine is already running, it runs `wsl --shutdown` and starts the machine again. Mirrored mode needs Windows 11 22H2 (build 22621) or newer. Setup refuses older builds with a clear message and its own exit code. Windows 10 has passed its end of support, and Askwell never worked on it.
 
 **Scope**
-- The bridge's upstream host becomes configuration with exactly two allowed values, `127.0.0.1` and `host.containers.internal`. Any other value refuses to start.
-- The socket directory can be a named volume. `compose.yaml` keeps Linux's bind mount as the default.
-- The Windows and macOS installers set both in `.env`.
-- `llama-server` on Windows and macOS listens where the VM can reach it. If that means an address other than 127.0.0.1, it must stay unreachable from other machines, and that is stated and tested.
-- `docs/decisions.md`, `docs/architecture.md` §5 and the constraint text in `AGENTS.md` §3 C1's enforcement column are updated in the same change.
+- The socket paths become settings. `compose.yaml` gains a named volume for them; Linux keeps its current paths by default.
+- `.wslconfig` handling in `lib.ps1` is pure and tested (merge into an existing file, add the section, leave other keys, idempotent). `setup-bootstrap.ps1` calls it.
+- The build check, with its own exit code and a report meaning (`Get-AskwellSetupCodeMeaning`).
+- `docs/decisions.md` entry: mirrored networking, what was tested, and what was rejected and why.
 
 **Out of Scope**
-- Running llama.cpp inside the VM (#845 option C).
-- Changing any user's WSL configuration (#845 option A).
-- Anything on Linux beyond keeping it unchanged.
+- macOS, which needs its own verified answer (#592); file a follow-up.
+- Any change to `UPSTREAM_HOST` or C1.
 
 **Acceptance Criteria**
-- **Acceptance Criteria:** Unit tests: the bridge refuses any upstream but the two named; Linux's `compose.yaml` resolution is unchanged. `scripts/dev.sh test` and `test-db` pass. The Windows walkthrough (see Testing Notes) is done by a person or the orchestrating session with the VM, not by the build agent. Leave `docs/manual-tests/M11-FIX-DEPLOY-223.md` with the steps and an empty result, and do not claim it passed.
-- **Edge Cases:** `llama-server` not yet running. The bridge must fail requests with a clear error, not crash-loop. A second Windows machine on the same network must not reach the llama-server port.
+- **Acceptance Criteria:** `install.test.ps1` covers the `.wslconfig` merge. `setup-bootstrap.test.ps1` gains scenarios for "mirrored set, machine restarted" and "Windows too old: refused". `scripts/dev.sh test`, `test-db` and the Windows CI pass. The end-to-end run on the Windows VM is the orchestrating session's, not the agent's: fresh install, model download, and a question answered with a citation. Leave `docs/manual-tests/M11-FIX-DEPLOY-223.md` with the steps and an empty result.
+- **Edge Cases:** `.wslconfig` already has `networkingMode=nat`, which is changed, and the log says so. It is UTF-16, which is read and written back correctly. It has `[wsl2]` with other keys, which are kept.
 - **Permissions / Roles:** Single user — no roles.
-- **UI States:** unchanged; the existing inference-unreachable states apply.
-- **Validation Rules:** C1: no address that leaves this machine. C8: nothing secret in `.env.example` beyond placeholders.
-- **Audit / Logging Requirements:** the bridge logs its upstream host at start.
+- **UI States:** unchanged.
+- **Validation Rules:** C1 unchanged; `inference-bridge` still dials only `127.0.0.1`. C8: nothing secret added.
+- **Audit / Logging Requirements:** Setup logs the `.wslconfig` change. The bridge logs its socket path at start.
 - **Analytics Events:** None (C1).
 
 **Dependencies & Assumptions**
-- **Dependencies:** `fix/setup-compose-before-machine` merged (the Windows installer fixes), `M10-FIX-DEPLOY-222`.
-- **API / Data Touchpoints:** `api/src/askwell/inference/bridge.py`, `api/src/askwell/inference/client.py`, `compose.yaml`, `deploy/windows/install.ps1`, `deploy/windows/lib.ps1`, `deploy/macos/install.sh`, `deploy/inference/askwell-inference`.
-- **Assumptions:** `host.containers.internal` resolves inside Podman machine containers on Windows (WSL) and macOS. **Verify it on the Windows VM before building on it**; if it does not resolve, say so and stop.
+- **Dependencies:** `M10-FIX-DEPLOY-222`; the Windows installer as of `0.9.10`.
+- **API / Data Touchpoints:** `api/src/askwell/inference/bridge.py`, `api/src/askwell/inference/client.py`, `api/src/askwell/worker_unlock.py`, `compose.yaml`, `deploy/windows/lib.ps1`, `deploy/windows/setup/setup-bootstrap.ps1`, `deploy/windows/install.ps1`.
+- **Assumptions:** Podman's own port publishing (`127.0.0.1:8000` for the API) still reaches Windows in mirrored mode. The orchestrating session checks this in the end-to-end run.
 
 **Testing Notes / Scenarios**
-- **Windows walkthrough (not the agent's):** `scripts/winvm.sh reset && scripts/winvm.sh start`, then install a Setup built from this branch, download the model from the setup screen, and ask "What is the notice period in handbook A?" with `eval/fixtures/corpus` added.
-- **Known gaps:** macOS is unverified on hardware (#592); say so in the manual test.
+- **Windows walkthrough (not the agent's):** `scripts/winvm.sh reset && scripts/winvm.sh start`, install a Setup built from this branch, download the model from the setup screen, add `eval/fixtures/corpus`, and ask "What is the notice period in handbook A?"
 
 **Effort & Granularity Check**
 - **Estimate:** 6 hours · **Priority:** Critical
 - **Labels / Component:** `phase:7`, `deploy`, `constraint:local-first`
-- **Granularity:** One transport change behind one decision.
+- **Granularity:** One networking mode and one socket move.
 
 ---
 
