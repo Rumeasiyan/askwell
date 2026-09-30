@@ -518,7 +518,8 @@ function Register-AskwellInferenceTask {
         return
     }
     $taskName = Get-AskwellInferenceTaskName
-    $taskArgs = Get-AskwellInferenceTaskArguments -ScriptPath (Join-Path $InstallPrefix 'askwell-inference')
+    $taskArgs = Get-AskwellInferenceTaskArguments -ScriptPath (Join-Path $InstallPrefix 'askwell-inference') `
+        -EnvPath (Join-Path $InstallPrefix '.env')
     $action = New-ScheduledTaskAction -Execute (Get-AskwellWindowlessPython $python) -Argument $taskArgs -WorkingDirectory $InstallPrefix
     $trigger = New-ScheduledTaskTrigger -AtLogOn
     $settings = New-ScheduledTaskSettingsSet -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1) `

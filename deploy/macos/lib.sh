@@ -511,8 +511,15 @@ EOF
 # it — restarting the outer Python process itself if something kills it
 # outright, which the script's own retry loop cannot cover because there is
 # no script left running to do it.
+#
+# `--env-file` and `WorkingDirectory` give it Askwell's settings
+# (M11-FIX-DEPLOY-225): launchd starts it with no environment of its own, so
+# without them it looked for a model at "." and wrote its state into
+# `/run/askwell`, the containers' path, which the API never reads from here.
+# Given the file, the supervisor puts its socket and state.json in
+# ASKWELL_RUN_DIR, the host directory compose mounts there.
 launch_agent_inference_plist_contents() {
-  local exec_path="$1" log_dir="$2"
+  local exec_path="$1" log_dir="$2" env_path="$3" working_dir="$4"
   cat <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -523,7 +530,11 @@ launch_agent_inference_plist_contents() {
   <key>ProgramArguments</key>
   <array>
     <string>$exec_path</string>
+    <string>--env-file</string>
+    <string>$env_path</string>
   </array>
+  <key>WorkingDirectory</key>
+  <string>$working_dir</string>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>

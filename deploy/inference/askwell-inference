@@ -24,11 +24,15 @@ owned by a tiny bridge container instead, and this script only supervises the
 model. See `docs/decisions.md`.
 
 Configuration comes from the environment, with the same ASKWELL_ names the
-application uses.
+application uses, and from Askwell's `.env` when `--env-file` names it. Every
+installer names it (`M11-FIX-DEPLOY-225`): a service manager starts this with
+no environment of its own, and without it the supervisor looked for a model
+at "." and wrote its state where no container could read it.
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import contextlib
 import hashlib
@@ -96,8 +100,53 @@ DEFAULT_BINARY = "llama-server"
 STATE_LOCK = threading.Lock()
 
 
+# What `--env-file` read. Consulted after the environment, never copied into
+# it: the file also holds the database and Redis passwords, and a llama-server
+# started from here has no business inheriting them (C8).
+SETTINGS: dict[str, str] = {}
+
+
 def env(name: str, default: str) -> str:
-    return os.environ.get(name, default)
+    return os.environ.get(name, SETTINGS.get(name, default))
+
+
+def load_env_file(path: Path) -> None:
+    """Read Askwell's `.env` into SETTINGS, below anything already set.
+
+    The same subset of the format compose reads: `NAME=value`, `#` comments,
+    an optional `export `, and one pair of matching quotes around a value.
+    Everything after the first `=` is the value, `=` included. An empty value
+    is left out, so it means the default here as it does in `.env.example`.
+    Only `ASKWELL_` names are kept; nothing else is this script's.
+
+    `ASKWELL_INFERENCE_SOCKET` in the file is the *containers'* path,
+    `/run/askwell/inference.sock`, which on the host is a directory this
+    account cannot write (Linux) or `C:\\run\\askwell` (Windows), where the API
+    never looks. So it is ignored, and unless the environment names a socket,
+    the socket and `state.json` go in `ASKWELL_RUN_DIR` — the host directory
+    compose bind-mounts at that path — resolved against the file's own
+    directory the way compose resolves it against the app directory.
+
+    Values are never printed: the file holds passwords.
+    """
+    path = path.expanduser().resolve()
+    for raw in path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw.strip()
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+        name, separator, value = line.partition("=")
+        name, value = name.strip(), value.strip()
+        if not separator or not name.startswith("ASKWELL_") or line.startswith("#"):
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        if value and name != "ASKWELL_INFERENCE_SOCKET":
+            SETTINGS[name] = value
+    if "ASKWELL_INFERENCE_SOCKET" not in os.environ:
+        run_dir = Path(env("ASKWELL_RUN_DIR", "./.run")).expanduser()
+        if not run_dir.is_absolute():
+            run_dir = path.parent / run_dir
+        SETTINGS["ASKWELL_INFERENCE_SOCKET"] = str(run_dir / "inference.sock")
 
 
 # The three roles, and what makes each one different.
@@ -1050,7 +1099,32 @@ async def main() -> int:
     return 0
 
 
+def parse_arguments(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="askwell-inference", description="Askwell's native inference supervisor."
+    )
+    parser.add_argument(
+        "--env-file",
+        type=Path,
+        help="Askwell's .env; read below the environment, and its ASKWELL_RUN_DIR "
+        "is where the socket and state.json go",
+    )
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
+    arguments = parse_arguments(sys.argv[1:])
+    if arguments.env_file is not None:
+        try:
+            load_env_file(arguments.env_file)
+        except OSError as error:
+            print(f"askwell-inference: cannot read settings: {error}", file=sys.stderr)
+            raise SystemExit(1) from error
+        print(
+            f"askwell-inference: settings from {arguments.env_file}, "
+            f"state in {Path(env('ASKWELL_INFERENCE_SOCKET', '')).parent}",
+            flush=True,
+        )
     try:
         raise SystemExit(asyncio.run(main()))
     except KeyboardInterrupt:

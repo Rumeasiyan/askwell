@@ -378,9 +378,16 @@ function Get-AskwellStackTaskArguments {
 # Python process if it is killed or crashes outright; the script's own
 # five-step backoff for a failed llama.cpp spawn happens inside that process
 # and is unaffected by whether this task ever fires.
+#
+# `--env-file` is how it gets Askwell's settings (M11-FIX-DEPLOY-225). A
+# scheduled task has no environment of Askwell's, so the supervisor saw no
+# model ("No model file at .") and wrote its state.json to C:\run\askwell,
+# from the containers' socket path, where the API never reads. Given the
+# .env, it takes the models from it and puts its state in ASKWELL_RUN_DIR,
+# `<app>\.run`, the folder compose mounts into the containers.
 function Get-AskwellInferenceTaskArguments {
-    param([string]$ScriptPath)
-    return "`"$ScriptPath`""
+    param([string]$ScriptPath, [string]$EnvPath)
+    return "`"$ScriptPath`" --env-file `"$EnvPath`""
 }
 
 # Stops the inference task and every llama-server started from $Dir
@@ -794,6 +801,46 @@ function Test-AskwellProcessInPrefix {
     return $ProcessPath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
+# ---------------------------------------------------------------- setup: the Visual C++ runtime
+
+# Every llama-server.exe Askwell carries, the GPU and the CPU build, needs
+# Microsoft's Visual C++ runtime, which a new Windows does not have: without
+# it they exit with 0xC0000135, a DLL not found (M11-FIX-DEPLOY-225, found on
+# the Windows VM with 0.9.11). Setup installs it when any of these three is
+# missing from System32.
+$script:AskwellVcRuntimeDlls = @('vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll')
+
+# Microsoft's permanent link to the current x64 redistributable. It moves
+# with every release, so there is no checksum to pin as there is for WSL and
+# Python; its Authenticode signature is checked instead, and a file that is
+# not validly signed by Microsoft is deleted, never run. Downloaded at install
+# time, like Python and WSL, not bundled: C9 is not engaged.
+$script:AskwellVcRedistUrl = 'https://aka.ms/vs/17/release/vc_redist.x64.exe'
+
+function Test-AskwellVcRuntimePresent {
+    param([string]$System32)
+    foreach ($dll in $script:AskwellVcRuntimeDlls) {
+        if (-not (Test-Path -LiteralPath (Join-Path $System32 $dll))) { return $false }
+    }
+    return $true
+}
+
+# What `Get-AuthenticodeSignature` reports for a file Setup is about to run:
+# Windows' own verdict `Valid`, and a signer certificate whose subject names
+# Microsoft Corporation as its common name. The comma is part of the check,
+# so "CN=Microsoft Corporation Fake Ltd" does not pass.
+function Test-AskwellMicrosoftSignature {
+    param([string]$Status, [string]$Subject)
+    return ($Status -eq 'Valid') -and ("$Subject".StartsWith('CN=Microsoft Corporation,', [StringComparison]::Ordinal))
+}
+
+# The redistributable's success codes: 0; 3010, installed but a restart is
+# needed; and 1638, a newer version is already installed.
+function Test-AskwellVcRedistSucceeded {
+    param([int]$ExitCode)
+    return ($ExitCode -eq 0 -or $ExitCode -eq 3010 -or $ExitCode -eq 1638)
+}
+
 # msiexec's success codes: 0, and 3010 "succeeded, restart required".
 function Test-AskwellMsiSucceeded {
     param([int]$ExitCode)
@@ -836,6 +883,7 @@ $script:AskwellSetupCodeMeanings = @{
     25 = 'Python could not be installed'
     26 = 'Windows is older than Windows 11 22H2 (build 22621)'
     27 = "WSL's settings file (.wslconfig) could not be updated"
+    28 = "Microsoft's Visual C++ runtime could not be installed"
     31 = "Podman's machine could not be started"
     32 = 'WSL could not be enabled'
     33 = 'WSL still waited for a restart after Setup restarted'

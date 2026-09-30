@@ -36,6 +36,8 @@
       25  Python could not be installed
       26  Windows is older than Windows 11 22H2 (build 22621)
       27  WSL's settings file (%USERPROFILE%\.wslconfig) could not be updated
+      28  Microsoft's Visual C++ runtime could not be installed, or its
+          installer was not validly signed by Microsoft
       30  WSL was just enabled; Windows must restart, and Setup continues
           by itself after the next sign-in
       31  the Podman machine could not be started
@@ -313,6 +315,44 @@ function Install-Python {
     Update-AskwellPath
 }
 
+function Install-VcRuntime {
+    # See $AskwellVcRedistUrl in lib.ps1: a moving link, so the signature is
+    # what is checked, and it is checked before the file is run, every time.
+    # Downloaded afresh rather than reused, so a file left in %TEMP% is never
+    # what runs.
+    $file = Join-Path $env:TEMP (Split-Path -Leaf $AskwellVcRedistUrl)
+    Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
+    Say "Downloading Microsoft's Visual C++ runtime, which Askwell's AI needs (about 25 MB)..."
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -UseBasicParsing -Uri $AskwellVcRedistUrl -OutFile $file -ErrorAction Stop
+    } catch {
+        Say "  The download failed: $($_.Exception.Message)"
+        return
+    }
+    $signature = Get-AuthenticodeSignature -FilePath $file
+    $status = "$($signature.Status)"
+    $signer = "$($signature.SignerCertificate.Subject)"
+    $version = Get-Fact { (Get-Item -LiteralPath $file).VersionInfo.ProductVersion }
+    Say "  Installer version $version, signature $status, signed by: $signer"
+    if (-not (Test-AskwellMicrosoftSignature $status $signer)) {
+        Say "  It is not validly signed by Microsoft, so it was not run."
+        Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
+        return
+    }
+    Say "Installing Microsoft's Visual C++ runtime..."
+    $process = Start-Process -FilePath $file -Wait -PassThru -ArgumentList '/install /quiet /norestart'
+    $code = if ($process) { $process.ExitCode } else { -1 }
+    if ($code -eq 1638) {
+        Say "  A newer version is already installed (code 1638)."
+    } elseif (Test-AskwellVcRedistSucceeded $code) {
+        Say "  Installed (code $code)."
+    } else {
+        Say "  The installer stopped with code $code."
+    }
+}
+
 function Install-WithWinget([string]$Id, [string]$Label) {
     Say "Installing $Label. This can take a few minutes..."
     # --disable-interactivity: no progress bars, which reached the log and the
@@ -371,6 +411,19 @@ if (-not (Get-AskwellPython)) {
     }
 }
 Say "Python: $(Get-AskwellPython)"
+
+# Microsoft's Visual C++ runtime, without which every llama-server.exe exits
+# with 0xC0000135 and the assistant never starts (M11-FIX-DEPLOY-225). Before
+# Askwell itself, so its AI can start the first time it is asked to.
+$system32 = Join-Path $env:SystemRoot 'System32'
+if (-not (Test-AskwellVcRuntimePresent $system32)) {
+    Install-VcRuntime
+    if (-not (Test-AskwellVcRuntimePresent $system32)) {
+        Say "Microsoft's Visual C++ runtime did not install. The messages above say why. Run Askwell Setup again once that is fixed."
+        Stop-Setup 28
+    }
+}
+Say "Visual C++ runtime: $(Get-Fact { (Get-Item -LiteralPath (Join-Path $system32 'vcruntime140.dll')).VersionInfo.FileVersion })"
 
 # WSL is what Podman's machine runs in, and it comes last among the
 # prerequisites because it is the one that can need a restart: everything
