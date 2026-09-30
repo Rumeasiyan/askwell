@@ -267,6 +267,59 @@ Two changes remain.
 
 > **Added 2026-09-30 by `M11-FIX-ING-224`,** for what it left open. Each one is filed as an issue too.
 
+### M11-FIX-BE-235 — A fresh install gets every model it needs from the setup screen, and finds what it downloaded
+
+**Type:** Task
+
+**User Story**
+- **Actor:** anyone who installs Askwell, on any platform.
+- **User Need:** press Download once on the setup screen, and have Askwell answer questions afterwards.
+- **Business Value:** today no fresh install can ever work. Found on a clean Ubuntu 24.04 VM with `0.9.15`, installed with no manual steps.
+
+**Context / Background**
+**Detailed Description:** Three defects, all on the first-run path. Every earlier test hid them, because the models were copied in by hand.
+1. **Two of three models have no download.** `api/src/askwell/models_catalog.py` lists only the generation model per tier. The embedding model (`bge-m3`, the file `.env.example` names `bge-m3-FP16.gguf`) and the reranker (`bge-reranker-v2-m3-FP16.gguf`) have no catalog entry and no download, and the release bundles no `.gguf` at all (checked: `tar -tzf askwell-0.9.15-linux-x86_64.tar.gz | grep -c .gguf` is 0). Without them the supervisor's `embedding` and `reranking` roles stay `model_missing`, and nothing can be indexed or searched. Add both to the catalog. **Verify each against the registry before writing it down (`AGENTS.md` §4):** repo, file, size, SHA-256, licence (C9: GPLv3-compatible, redistributable, commercial use) and gating. The setup screen's one Download fetches all the models the tier needs, and shows one total. The stated size changes from "about 3 GB" to the real total.
+2. **The downloaded file is not the file looked for.** The catalog downloads `Qwen_Qwen3.5-4B-Q4_K_M.gguf` (bartowski's name), while every installer's `.env` and `.env.example` point `ASKWELL_INFERENCE_MODEL_PATH` at `.../Qwen3.5-4B-Q4_K_M.gguf`. On the VM, the download finished (`status: ready`, checksum verified), the file was in place, and the supervisor went on reporting `No model file at .../Qwen3.5-4B-Q4_K_M.gguf` indefinitely. Make one source of truth. The installers write the catalog's filenames for the chosen tier, and the verify-manual path accepts a file by checksum whatever its name, as it already claims to.
+3. **A supervisor that found a model missing never looks again.** Roles that reported `model_missing` at start stayed there after the files arrived, until a restart. When a download or a verify-manual completes, the supervisor must (re)start the affected roles; check whether the existing swap signal already carries this. It must also re-check a missing model on a modest interval, so a file placed by hand is picked up without a restart.
+
+**Also found, for the record:** this build machine's evals ran against a *different* 4B file (2,740,937,888 bytes, not the catalog's 3,013,027,808). Askwell's own verify-manual rejects it as unrecognised. So `docs/BRAIN.md`'s eval baseline was measured on a model users never get. Say so in `BRAIN.md`, and leave the re-measurement to the orchestrating session.
+
+**Scope**
+- The catalog: two new roles, each with registry-verified metadata.
+- The setup download of all of a tier's models, with progress totalled.
+- The installers' `.env` model paths on all three platforms, matching the catalog.
+- The supervisor re-checking and starting roles when models arrive.
+
+**Out of Scope**
+- Changing which models Askwell uses.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:**
+  - Tests: every catalog entry has a size, a SHA-256 and a licence; the installers' `.env` paths equal the catalog filenames for the default tier; a role that was `model_missing` starts when its file appears (with a fake clock and a fake `llama-server`).
+  - `scripts/dev.sh check`, `test-db` and the installer suites pass.
+  - The clean-VM walkthrough is the orchestrating session's. Leave `docs/manual-tests/M11-FIX-BE-235.md` with an empty result.
+- **Edge Cases:** An interrupted download of one of three models, which resumes, as today. A model already present with the right checksum, which is not downloaded again. Disk space too small for the total, refused before starting, naming the total.
+- **Permissions / Roles:** Single user — no roles.
+- **UI States:** `../ux/` setup screen, where the progress and size copy change.
+- **Validation Rules:** C1: the download stays an explicit user action on the setup screen. C9: each new model's licence is verified and recorded in `api/src/askwell/notices.py`.
+- **Audit / Logging Requirements:** each model's verified checksum is logged on completion.
+- **Analytics Events:** None (C1).
+
+**Dependencies & Assumptions**
+- **Dependencies:** `M11-FIX-DEPLOY-225`.
+- **API / Data Touchpoints:** `api/src/askwell/models_catalog.py`, `api/src/askwell/setup.py`, `deploy/inference/askwell-inference`, `deploy/*/install.*`, `.env.example`, `api/src/askwell/notices.py`.
+- **Assumptions:** the `bge-m3` and `bge-reranker-v2-m3` GGUF files the supervisor already runs are published by an ungated, verified uploader. If they are not, say so and stop.
+
+**Testing Notes / Scenarios**
+- **Clean-VM walkthrough (not the agent's):** on a fresh Ubuntu 24.04 VM, install, press Download (`POST /setup/model/start`), nominate and add `eval/fixtures/corpus`, and ask "What is the standard resignation notice period at Meridian Loom?" The answer must be "sixty-three days" with a citation, with no file copied by hand.
+
+**Effort & Granularity Check**
+- **Estimate:** 6 hours · **Priority:** Critical
+- **Labels / Component:** `phase:7`, backend, `deploy`
+- **Granularity:** One first-run path, three defects on it.
+
+---
+
 ### M11-FIX-ING-228 — A workbook's sheets ask about the columns they could not type
 
 **Type:** Task
