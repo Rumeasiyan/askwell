@@ -320,6 +320,52 @@ Two changes remain.
 
 ---
 
+### M11-FIX-DEPLOY-236 — The databases do not restart themselves when a stray process in their container dies
+
+**Type:** Task
+
+**User Story**
+- **Actor:** anyone using Askwell.
+- **User Need:** an answer that does not fail because the database restarted in the middle of it.
+- **Business Value:** three times in 36 hours on the build machine, and once on the Windows test VM, Postgres reset every connection mid-work. Whatever was running failed: an eval died at task 50 of 120, and a question on the VM returned 500.
+
+**Context / Background**
+**Detailed Description:** Every occurrence logs the same line. The build machine's dev stack shows it on 2026-09-29 14:59:46, 2026-09-30 08:46:31 and 14:42:25 UTC; the Windows VM shows it on 2026-09-30 08:43:
+`LOG:  untracked child process (PID …) was terminated by signal 13: Broken pipe` then `terminating any other active server processes`.
+Postgres runs as PID 1 in its container, so any process that becomes orphaned there is reparented to it. That includes a `podman exec … psql` whose reader closed its pipe, and a health check. PostgreSQL 18 treats an unknown child dying on a signal as a possible crash and reinitialises. The standard fix is an init process as PID 1 (`init: true` in `compose.yaml`, Podman's `catatonit`), which reaps orphans so Postgres never sees them. Apply it to `postgres` and `sandbox`, and to any other service that runs a server as PID 1 and is exec'd into (check `redis`).
+
+**Scope**
+- `init: true` on those services in `compose.yaml`.
+- A test that pins it: `compose.yaml` read as text, in the style `test_release_workflow.py` already uses.
+- Find what is exec'd into the database containers and pipes into a closing reader (`scripts/dev.sh psql … | …`, health checks). Name them in the decision entry, even though `init: true` makes them harmless.
+
+**Out of Scope**
+- Postgres configuration.
+
+**Acceptance Criteria**
+- **Acceptance Criteria:**
+  - The pin test passes.
+  - `scripts/dev.sh check` and `test-db` pass with the stack recreated.
+  - A reproduction: `podman exec askwell-postgres-1 sh -c 'yes | head -1' &` in a loop against the recreated stack leaves no `untracked child process` line in the log. Record the command and its result in the manual test.
+- **Edge Cases:** the migrate service's one-shot run, unaffected. The healthcheck's exit codes, which pass through the init.
+- **Permissions / Roles:** Single user — no roles.
+- **UI States:** unchanged.
+- **Validation Rules:** C3: the sandbox container's restrictions are unchanged.
+- **Audit / Logging Requirements:** none new.
+- **Analytics Events:** None (C1).
+
+**Dependencies & Assumptions**
+- **Dependencies:** none.
+- **API / Data Touchpoints:** `compose.yaml`.
+- **Assumptions:** Podman's `init: true` (catatonit) is present on the Podman versions the installers accept (4.9 on Ubuntu 24.04, and 5.x). Verify on 4.9; if it is missing, say so.
+
+**Effort & Granularity Check**
+- **Estimate:** 2 hours · **Priority:** High
+- **Labels / Component:** `phase:7`, `deploy`
+- **Granularity:** One compose setting and its evidence.
+
+---
+
 ### M11-FIX-ING-228 — A workbook's sheets ask about the columns they could not type
 
 **Type:** Task
