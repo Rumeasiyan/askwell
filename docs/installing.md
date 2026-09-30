@@ -45,7 +45,7 @@ tar -xzf askwell-<version>-linux-x86_64.tar.gz
 askwell-<version>-linux-x86_64/deploy/linux/install.sh
 ```
 
-It installs Podman if it is missing (asking for your password to do so), and Docker Compose, which Askwell uses to run its containers through Podman. On Fedora it offers to install Docker Compose for you. On other distributions it stops before copying anything and tells you to install Docker Compose 2.20 or newer yourself (docs.docker.com/compose/install/linux). It then loads Askwell's containers from the download, sets up Askwell's database, and opens the Askwell window. Afterwards Askwell is in your applications menu.
+It installs what is missing, asking for your password once to do so: Podman; Docker Compose, which Askwell uses to run its containers through Podman; and the OpenMP runtime (`libgomp`), which Askwell's AI needs. On Fedora, Ubuntu and distributions built on Ubuntu it offers to install all three for you. On other distributions it stops before copying anything and tells you what to install yourself — for Docker Compose, version 2.20 or newer (docs.docker.com/compose/install/linux). It then loads Askwell's containers from the download, sets up Askwell's database, and opens the Askwell window. Afterwards Askwell is in your applications menu.
 
 ---
 
@@ -86,7 +86,7 @@ Only run that after the checksum matches. It is the same decision as clicking Op
 **Askwell needs Windows 11, version 22H2 or newer.** On an older Windows, Setup says so and installs nothing.
 
 1. Windows asks for administrator permission. Setup needs it once, to install Podman, which runs Askwell's local services.
-2. Click **Install**. Setup checks this PC and installs anything Askwell needs that is missing: Podman, the Windows Subsystem for Linux and Docker Compose. It then installs Askwell itself, and every step is shown as it happens. This takes several minutes. Only those components come from the internet; nothing of yours is sent anywhere.
+2. Click **Install**. Setup checks this PC and installs anything Askwell needs that is missing: Podman, the Windows Subsystem for Linux, Docker Compose, Python and Microsoft's Visual C++ runtime. The Visual C++ runtime is checked to be signed by Microsoft before it runs; one that is not is refused, and Setup stops with code 28. It then installs Askwell itself, and every step is shown as it happens. This takes several minutes. Only those components come from the internet; nothing of yours is sent anywhere.
 3. When it finishes, Askwell is in your Start menu and in *Add or remove programs*.
 
 Setup changes one Windows setting, and its log says so. It sets WSL's networking to *mirrored* (`networkingMode=mirrored` under `[wsl2]` in `%USERPROFILE%\.wslconfig`), which is how Askwell's services reach its AI on your PC. It keeps everything else in that file. If WSL was running, it restarts WSL once, which also stops any other Linux distribution you had open.

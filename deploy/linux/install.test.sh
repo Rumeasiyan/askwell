@@ -23,6 +23,8 @@ fresh() {
   unset XDG_DATA_HOME XDG_CONFIG_HOME ASKWELL_DATA_DIR ASKWELL_INSTALL_PREFIX \
         ASKWELL_BIN_DIR ASKWELL_DESKTOP_DIR ASKWELL_SYSTEMD_USER_DIR \
         ASKWELL_REQUIRED_INSTALL_BYTES ASKWELL_PODMAN
+  # Never the test runner's own distribution.
+  export ASKWELL_OS_RELEASE="$TMP/no-os-release"
   mkdir -p "$HOME"
   # shellcheck source=./lib.sh
   . "$HERE/lib.sh"
@@ -62,6 +64,42 @@ fresh
 check "dnf install command names podman" "$(runtime_install_cmd dnf)" "dnf install -y podman"
 runtime_install_cmd nosuchmanager >/dev/null 2>&1 && r=0 || r=1
 check "unrecognised manager has no install command" "$r" 1
+# M11-FIX-DEPLOY-225: Docker Compose and OpenMP ride in the same command.
+check "dnf installs podman, docker-compose and libgomp in one command" \
+  "$(runtime_install_cmd dnf docker-compose libgomp)" "dnf install -y podman docker-compose libgomp"
+check "apt installs podman, docker-compose-v2 and libgomp1 in one command" \
+  "$(runtime_install_cmd apt docker-compose-v2 libgomp1)" \
+  "apt-get update && apt-get install -y podman docker-compose-v2 libgomp1"
+
+# --- the OpenMP runtime (M11-FIX-DEPLOY-225) ---------------------------------
+fresh
+check "dnf's OpenMP package is libgomp" "$(openmp_package dnf)" "libgomp"
+check "apt's OpenMP package is libgomp1" "$(openmp_package apt)" "libgomp1"
+openmp_package pacman >/dev/null 2>&1 && r=0 || r=1
+check "no guessed OpenMP package elsewhere" "$r" 1
+LISTING='	libgomp.so.1 (libc6,x86-64) => /lib/x86_64-linux-gnu/libgomp.so.1
+	libgcc_s.so.1 (libc6,x86-64) => /lib/x86_64-linux-gnu/libgcc_s.so.1'
+openmp_listed "$LISTING" && r=0 || r=1
+check "libgomp.so.1 in the loader cache is found" "$r" 0
+openmp_listed '	libgcc_s.so.1 (libc6,x86-64) => /lib/x86_64-linux-gnu/libgcc_s.so.1' && r=0 || r=1
+check "a loader cache without it is not" "$r" 1
+openmp_listed '	libgomp.so.10 (libc6,x86-64) => /opt/libgomp.so.10' && r=0 || r=1
+check "a different soname is not mistaken for it" "$r" 1
+
+# The extra packages the first install command carries: only what is missing.
+extras() {
+  local compose="$1" openmp="$2" os="$3" mgr="$4"
+  (
+    compose_provider_present() { [ "$compose" = yes ]; }
+    openmp_runtime_present() { [ "$openmp" = yes ]; }
+    extra_packages "$mgr" "$os" yes
+  )
+}
+check "a new Ubuntu gets docker-compose-v2 and libgomp1" "$(extras no no 'ID=ubuntu' apt)" "docker-compose-v2 libgomp1"
+check "a new Fedora gets docker-compose and libgomp" "$(extras no no 'ID=fedora' dnf)" "docker-compose libgomp"
+check "a compose already here is left alone" "$(extras yes no 'ID=ubuntu' apt)" "libgomp1"
+check "both already here: nothing extra" "$(extras yes yes 'ID=ubuntu' apt)" ""
+check "Debian gets no guessed compose package" "$(extras no no 'ID=debian' apt)" "libgomp1"
 
 # --- sudo access: the #503 fix -----------------------------------------------
 # The bug: `sudo -n true` only succeeds for passwordless sudo, so a normal
@@ -261,7 +299,7 @@ case "$out" in *"StartLimitIntervalSec=300"*"StartLimitBurst=5"*)
                  ok "stack unit caps restarts (StartLimitIntervalSec/StartLimitBurst)" ;;
                *) bad "stack unit caps restarts (StartLimitIntervalSec/StartLimitBurst)" ;; esac
 
-out="$(systemd_inference_unit_contents "/data/askwell-inference")"
+out="$(systemd_inference_unit_contents "/data/askwell-inference" "/data/.env" "/data")"
 case "$out" in *"ExecStart=/data/askwell-inference"*) ok "inference unit execs the real supervisor script" ;;
                *) bad "inference unit execs the real supervisor script" ;; esac
 case "$out" in *"After=askwell-stack.service"*"Wants=askwell-stack.service"*)
@@ -269,6 +307,19 @@ case "$out" in *"After=askwell-stack.service"*"Wants=askwell-stack.service"*)
                *) bad "inference unit orders itself after the stack, without requiring it" ;; esac
 case "$out" in *"StartLimitIntervalSec=300"*"StartLimitBurst=5"*)
                  ok "inference unit caps restarts (StartLimitIntervalSec/StartLimitBurst)" ;;
+               *) bad "inference unit caps restarts (StartLimitIntervalSec/StartLimitBurst)" ;; esac
+# M11-FIX-DEPLOY-225: the supervisor is handed the install's .env, and not
+# through EnvironmentFile=, whose socket path is the containers'.
+out="$(systemd_inference_unit_contents "/data/askwell-inference" "/data/.env" "/data")"
+case "$out" in *"ExecStart=/data/askwell-inference --env-file /data/.env"*)
+                 ok "inference unit passes the install's .env to the supervisor" ;;
+               *) bad "inference unit passes the install's .env to the supervisor (got: $out)" ;; esac
+case "$out" in *"WorkingDirectory=/data"*) ok "inference unit runs in the app directory" ;;
+               *) bad "inference unit runs in the app directory" ;; esac
+case "$out" in *"EnvironmentFile="*) bad "inference unit does not load .env as its environment" ;;
+               *) ok "inference unit does not load .env as its environment" ;; esac
+case "$out" in *"StartLimitIntervalSec=300"*"StartLimitBurst=5"*)
+                 ok "inference unit still caps restarts" ;;
                *) bad "inference unit caps restarts (StartLimitIntervalSec/StartLimitBurst)" ;; esac
 
 # --- bundled images (M9-REL-DEPLOY-214) --------------------------------------
@@ -442,8 +493,16 @@ check "podman-compose is refused" "$r" 1
 compose_provider_meets_minimum '' && r=0 || r=1
 check "no provider at all is refused" "$r" 1
 check "dnf installs Fedora's docker-compose" "$(compose_install_cmd dnf)" "dnf install -y docker-compose"
-compose_install_cmd apt >/dev/null && r=0 || r=1
-check "apt gets no guessed package name" "$r" 1
+check "dnf adds libgomp to the same command" "$(compose_install_cmd dnf '' libgomp)" "dnf install -y docker-compose libgomp"
+check "Ubuntu installs docker-compose-v2, with libgomp1" \
+  "$(compose_install_cmd apt 'ID=ubuntu' libgomp1)" "apt-get update && apt-get install -y docker-compose-v2 libgomp1"
+check "a distribution built on Ubuntu counts (ID_LIKE)" \
+  "$(compose_install_cmd apt "$(printf 'ID=linuxmint\nID_LIKE="ubuntu debian"')")" \
+  "apt-get update && apt-get install -y docker-compose-v2"
+compose_install_cmd apt 'ID=debian' >/dev/null && r=0 || r=1
+check "Debian gets no guessed package name (it has no docker-compose-v2)" "$r" 1
+compose_install_cmd apt '' >/dev/null && r=0 || r=1
+check "no os-release: apt gets no guessed package name" "$r" 1
 
 # install.sh refuses, by name, before copying anything, when there is no
 # provider and no verified way to install one.
@@ -692,6 +751,73 @@ check "a release tree's llama.cpp is placed" "$r" 0
 check "both builds sit beside askwell-inference, executable" "$r" 0
 [ -e "$TMP/prefix/llama.cpp/gpu/libggml-old.so" ] && r=1 || r=0
 check "an older build's files do not linger (replaced, not merged)" "$r" 0
+
+# --- one sudo for everything a new machine lacks (M11-FIX-DEPLOY-225) --------
+# install.sh's own check_runtime on a new Ubuntu: no Podman, no Compose, no
+# libgomp. The package manager and sudo are fakes that record what they were
+# asked; PATH holds only them and the basic tools, so the runner's own podman
+# is not found.
+new_machine_path() {
+  local dir="$TMP/newmachine" tool
+  rm -rf "$dir"; mkdir -p "$dir"
+  for tool in bash sh cat grep id dirname chmod printf head sed; do
+    ln -s "$(command -v "$tool")" "$dir/$tool"
+  done
+  cat > "$dir/sudo" <<'SH'
+#!/bin/sh
+exec "$@"
+SH
+  cat > "$dir/apt-get" <<'SH'
+#!/bin/sh
+printf '%s\n' "$*" >> "$(dirname "$0")/apt.calls"
+case "$1" in install) printf '#!/bin/sh\necho podman version 5.0.0\n' > "$(dirname "$0")/podman"; chmod +x "$(dirname "$0")/podman" ;; esac
+SH
+  chmod +x "$dir/sudo" "$dir/apt-get"
+  echo "$dir"
+}
+fresh
+printf 'ID=ubuntu\nVERSION_ID="24.04"\n' > "$TMP/os-release"
+np="$(new_machine_path)"
+out="$(
+  cd "$TMP" && ASKWELL_OS_RELEASE="$TMP/os-release" PATH="$np" bash -c '
+    set -Eeuo pipefail
+    . "'"$HERE"'/install.sh"
+    ASSUME_YES=1
+    detect_pkg_manager() { echo apt; }
+    compose_provider_present() { return 1; }
+    openmp_runtime_present() { return 1; }
+    check_runtime
+  ' 2>&1
+)" && r=0 || r=1
+check "a new Ubuntu: check_runtime succeeds" "$r" 0
+check "one install command carries podman, docker-compose-v2 and libgomp1" \
+  "$(grep '^install' "$np/apt.calls" 2>/dev/null)" "install -y podman docker-compose-v2 libgomp1"
+case "$out" in *"sudo apt-get update && apt-get install -y podman docker-compose-v2 libgomp1"*)
+                 ok "the one command is shown before it runs" ;;
+               *) bad "the one command is shown before it runs (got: $out)" ;; esac
+
+# check_openmp_runtime on a machine that already had Podman and Compose.
+fresh
+out="$(PATH="$(fake_path_with):/usr/bin:/bin" bash -c '
+    set -Eeuo pipefail
+    . "'"$HERE"'/install.sh"
+    openmp_runtime_present() { return 0; }
+    check_openmp_runtime
+  ' 2>&1)" && r=0 || r=1
+check "OpenMP present: carries on" "$r" 0
+case "$out" in *"OpenMP runtime found"*) ok "and says so" ;; *) bad "and says so (got: $out)" ;; esac
+out="$(PATH="$(fake_path_with):/usr/bin:/bin" bash -c '
+    set -Eeuo pipefail
+    . "'"$HERE"'/install.sh"
+    detect_pkg_manager() { echo pacman; }
+    openmp_runtime_present() { return 1; }
+    check_openmp_runtime
+    echo REACHED_NEXT_STEP
+  ' 2>&1)" && r=0 || r=1
+check "OpenMP missing, no known package: install stops" "$r" 1
+case "$out" in *REACHED_NEXT_STEP*) bad "and never carries on" ;; *) ok "and never carries on" ;; esac
+case "$out" in *"libgomp.so.1"*"Nothing has been copied"*) ok "the refusal names the library" ;;
+               *) bad "the refusal names the library (got: $out)" ;; esac
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

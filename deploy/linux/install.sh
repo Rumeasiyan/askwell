@@ -96,12 +96,16 @@ check_runtime() {
     exit 1
   fi
 
-  local mgr cmd
+  local mgr cmd extras
   mgr="$(detect_pkg_manager)" || {
     askwell_die "Podman is not installed and this installer does not recognise your package manager. Install Podman $ASKWELL_MIN_PODMAN_VERSION or newer yourself (podman.io/docs/installation), then run this installer again."
     exit 1
   }
-  cmd="$(runtime_install_cmd "$mgr")"
+  # Docker Compose and the OpenMP runtime in the same command, so this is
+  # the one `sudo` a new machine is asked for (M11-FIX-DEPLOY-225).
+  extras="$(extra_packages "$mgr" "$(os_release_text)" yes)"
+  # shellcheck disable=SC2086 # package names, split on purpose
+  cmd="$(runtime_install_cmd "$mgr" $extras)"
 
   if ! have_admin_path; then
     askwell_die "Podman is not installed, and this account has no path to root (no 'sudo' on this machine and not running as root). Ask whoever administers this machine to run: sudo $cmd — then run this installer again."
@@ -110,7 +114,7 @@ check_runtime() {
 
   askwell_say "Podman is not installed. This installer needs to run:"
   askwell_say "  sudo $cmd"
-  confirm "Install Podman now?" || { askwell_die "Podman is required. Install it and re-run this installer."; exit 1; }
+  confirm "Install Podman${extras:+ and $extras} now?" || { askwell_die "Podman is required. Install it and re-run this installer."; exit 1; }
   # Real sudo, not `sudo -n`: it prompts for a password like any other command
   # on a normal desktop account, which is the whole fix for issue #503.
   if [ "$(id -u)" -eq 0 ]; then
@@ -140,9 +144,11 @@ check_compose_provider() {
 
   local found="none"
   [ -n "$reported" ] && found="$(printf '%s\n' "$reported" | head -n1)"
-  local mgr cmd
+  local mgr cmd openmp=""
   mgr="$(detect_pkg_manager)" || mgr=unknown
-  if ! cmd="$(compose_install_cmd "$mgr")" || ! have_admin_path; then
+  openmp_runtime_present || openmp="$(openmp_package "$mgr" || true)"
+  # shellcheck disable=SC2086 # empty, or one package name
+  if ! cmd="$(compose_install_cmd "$mgr" "$(os_release_text)" $openmp)" || ! have_admin_path; then
     askwell_die "Askwell runs its containers through 'podman compose', which needs Docker Compose $ASKWELL_MIN_COMPOSE_VERSION or newer installed as its provider (podman-compose is not supported). Found: $found. Install Docker Compose (docs.docker.com/compose/install/linux), then run this installer again. Nothing has been copied."
     exit 1
   fi
@@ -161,6 +167,39 @@ check_compose_provider() {
     exit 1
   }
   askwell_say "Compose provider installed: $(printf '%s\n' "$reported" | grep -m1 'Docker Compose version')"
+}
+
+# ---------------------------------------------------------------- 1b. OpenMP runtime
+
+# Every bundled llama-server links libgomp.so.1, and a minimal Ubuntu has
+# none (M11-FIX-DEPLOY-225): the stack came up and the assistant never did.
+# Usually installed by one of the two steps above; this catches a machine
+# that already had Podman and Docker Compose.
+check_openmp_runtime() {
+  if openmp_runtime_present; then
+    askwell_say "OpenMP runtime found (libgomp.so.1)"
+    return 0
+  fi
+  local mgr package cmd
+  mgr="$(detect_pkg_manager)" || mgr=unknown
+  if ! package="$(openmp_package "$mgr")" || ! have_admin_path; then
+    askwell_die "Askwell's AI runs llama.cpp, which needs the OpenMP runtime (libgomp.so.1), and this machine has none. Install your distribution's libgomp package, then run this installer again. Nothing has been copied."
+    exit 1
+  fi
+  cmd="$(pkg_install_cmd "$mgr" "$package")"
+  askwell_say "Askwell's AI needs the OpenMP runtime (libgomp.so.1), which is not installed. This installer needs to run:"
+  askwell_say "  sudo $cmd"
+  confirm "Install it now?" || { askwell_die "The OpenMP runtime is required. Install it and re-run this installer. Nothing has been copied."; exit 1; }
+  if [ "$(id -u)" -eq 0 ]; then
+    sh -c "$cmd"
+  else
+    sudo sh -c "$cmd"
+  fi
+  openmp_runtime_present || {
+    askwell_die "The install finished, but libgomp.so.1 is still not in the loader's cache. Nothing has been copied."
+    exit 1
+  }
+  askwell_say "OpenMP runtime installed (libgomp.so.1)"
 }
 
 # docker-compose reaches Podman through its API socket, which Podman ships
@@ -409,7 +448,8 @@ register_session_start() {
 register_stack_and_inference() {
   systemd_stack_unit_contents "$INSTALL_PREFIX/compose.yaml" "$INSTALL_PREFIX/.env" "$INSTALL_PREFIX" \
     > "$SYSTEMD_USER_DIR/askwell-stack.service"
-  systemd_inference_unit_contents "$INSTALL_PREFIX/askwell-inference" > "$SYSTEMD_USER_DIR/askwell-inference.service"
+  systemd_inference_unit_contents "$INSTALL_PREFIX/askwell-inference" "$INSTALL_PREFIX/.env" "$INSTALL_PREFIX" \
+    > "$SYSTEMD_USER_DIR/askwell-inference.service"
 
   if ! command -v systemctl >/dev/null 2>&1 || ! systemctl --user daemon-reload 2>/dev/null; then
     askwell_say "Wrote $SYSTEMD_USER_DIR/askwell-stack.service and askwell-inference.service but could not enable them (no systemd --user session available right now). Enable them with: systemctl --user enable --now askwell-stack.service askwell-inference.service"
@@ -448,6 +488,7 @@ main() {
   askwell_say "Installing Askwell $VERSION"
   check_runtime
   check_compose_provider
+  check_openmp_runtime
   check_disk_space
   check_previous_install
   check_artefacts

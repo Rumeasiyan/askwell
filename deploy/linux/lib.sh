@@ -44,14 +44,40 @@ detect_pkg_manager() {
 # string install.sh passes to `sh -c`. Never invoked from here — this only
 # names the command so it can be shown to the user and unit-tested without
 # actually installing anything.
+#
+# Further package names after the manager are installed in the same command,
+# so one `sudo` confirmation covers Podman, Docker Compose and the OpenMP
+# runtime together (M11-FIX-DEPLOY-225).
 runtime_install_cmd() {
-  case "$1" in
-    dnf) echo "dnf install -y podman" ;;
-    apt) echo "apt-get update && apt-get install -y podman" ;;
-    zypper) echo "zypper install -y podman" ;;
-    pacman) echo "pacman -Sy --noconfirm podman" ;;
+  local mgr="$1"
+  shift
+  pkg_install_cmd "$mgr" podman "$@"
+}
+
+# The command that installs the named packages with a given manager.
+pkg_install_cmd() {
+  local mgr="$1"
+  shift
+  case "$mgr" in
+    dnf) echo "dnf install -y $*" ;;
+    apt) echo "apt-get update && apt-get install -y $*" ;;
+    zypper) echo "zypper install -y $*" ;;
+    pacman) echo "pacman -Sy --noconfirm $*" ;;
     *) return 1 ;;
   esac
+}
+
+# /etc/os-release's text, or nothing. ASKWELL_OS_RELEASE is for tests.
+os_release_text() {
+  cat "${ASKWELL_OS_RELEASE:-/etc/os-release}" 2>/dev/null || true
+}
+
+# Whether /etc/os-release names Ubuntu or a distribution built on it (Mint,
+# Pop!_OS and the like say so in ID_LIKE). Takes the file's text so tests
+# need no Ubuntu. Debian itself has no `docker-compose-v2` in any suite
+# (packages.debian.org, 2026-09-30), so apt alone does not settle the name.
+is_ubuntu_family() {
+  printf '%s\n' "$1" | grep -qE '^(ID|ID_LIKE)="?([a-z]+ )*ubuntu( [a-z]+)*"?$'
 }
 
 # Whether this process can reach root, one way or another. Deliberately does
@@ -127,16 +153,98 @@ compose_provider_meets_minimum() {
   version_ge "$parsed" "$ASKWELL_MIN_COMPOSE_VERSION"
 }
 
-# The command that installs docker-compose, where it has been checked
-# against the distribution's own repository (Fedora's `docker-compose`,
-# 5.5.1 on 2026-09-28). Elsewhere the package name or its version differs
-# by release — Debian's `docker-compose` was the old 1.x line for years —
-# so the installer names the upstream instructions instead of guessing.
-compose_install_cmd() {
+# The docker-compose package, where it has been checked against the
+# distribution's own repository: Fedora's `docker-compose` (5.5.1 on
+# 2026-09-28), and Ubuntu's `docker-compose-v2` (2.40.3 in 22.04, 24.04 and
+# 26.04 updates, 2026-09-30), which `podman compose` finds as a Docker CLI
+# plugin. Elsewhere the name or its version differs by release — Debian's
+# `docker-compose` was the old 1.x line for years and it has no
+# `docker-compose-v2` — so the installer names the upstream instructions
+# instead of guessing. The second argument is /etc/os-release's text.
+compose_package() {
   case "$1" in
-    dnf) echo "dnf install -y docker-compose" ;;
+    dnf) echo docker-compose ;;
+    apt) is_ubuntu_family "$2" && echo docker-compose-v2 ;;
     *) return 1 ;;
   esac
+}
+
+# The command that installs docker-compose, and any further packages named
+# after the os-release text, in one go.
+compose_install_cmd() {
+  local mgr="$1" os_release="${2:-}" package
+  shift
+  [ "$#" -gt 0 ] && shift
+  package="$(compose_package "$mgr" "$os_release")" || return 1
+  pkg_install_cmd "$mgr" "$package" "$@"
+}
+
+# Whether some docker-compose is already on this machine, asked without
+# Podman, which the runtime step may not have installed yet: the standalone
+# binary, or the CLI plugin in any directory Docker's own documentation
+# names. Installing Ubuntu's `docker-compose-v2` over Docker's own
+# `docker-compose-plugin` would conflict, so a present one is left alone;
+# `check_compose_provider` still checks its version.
+compose_provider_present() {
+  command -v docker-compose >/dev/null 2>&1 && return 0
+  local dir
+  for dir in /usr/libexec/docker/cli-plugins /usr/lib/docker/cli-plugins \
+             /usr/local/lib/docker/cli-plugins "$HOME/.docker/cli-plugins"; do
+    [ -x "$dir/docker-compose" ] && return 0
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------- OpenMP runtime
+
+# llama.cpp's Linux builds link libgomp.so.1, which a minimal install does
+# not have: on a clean Ubuntu 24.04 every bundled llama-server stopped with
+# "libgomp.so.1: cannot open shared object file" (M11-FIX-DEPLOY-225). The
+# package that holds it, where checked: Debian and Ubuntu's `libgomp1`,
+# Fedora's `libgomp`.
+openmp_package() {
+  case "$1" in
+    dnf) echo libgomp ;;
+    apt) echo libgomp1 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Whether `ldconfig -p`'s listing (passed as text, so tests need no loader
+# cache) has libgomp.so.1.
+openmp_listed() {
+  printf '%s\n' "$1" | grep -qE '^[[:space:]]*libgomp\.so\.1[[:space:]]'
+}
+
+# The dynamic loader's cache. ldconfig lives in /sbin, which is not on a
+# normal account's PATH on Debian.
+ldconfig_listing() {
+  local ldconfig
+  for ldconfig in "$(command -v ldconfig 2>/dev/null)" /sbin/ldconfig /usr/sbin/ldconfig; do
+    [ -n "$ldconfig" ] && [ -x "$ldconfig" ] && { "$ldconfig" -p 2>/dev/null; return 0; }
+  done
+  return 1
+}
+
+openmp_runtime_present() {
+  openmp_listed "$(ldconfig_listing)"
+}
+
+# The packages the runtime and compose steps add to their own install
+# command, so the person confirms one `sudo` rather than three: Docker
+# Compose unless one is already here, and OpenMP unless it is. Each only
+# where its name is known for this manager.
+extra_packages() {
+  local mgr="$1" os_release="$2" with_compose="$3" package
+  local -a packages=()
+  if [ "$with_compose" = yes ] && ! compose_provider_present \
+    && package="$(compose_package "$mgr" "$os_release")"; then
+    packages+=("$package")
+  fi
+  if ! openmp_runtime_present && package="$(openmp_package "$mgr")"; then
+    packages+=("$package")
+  fi
+  echo "${packages[*]}"
 }
 
 # ---------------------------------------------------------------- disk space
@@ -531,8 +639,14 @@ EOF
 # hit its own restart cap does not also block inference from being tried —
 # the two failure causes stay independently reported, per this ticket's own
 # Acceptance Criteria.
+#
+# `--env-file` and `WorkingDirectory=` are what give it Askwell's settings
+# (M11-FIX-DEPLOY-225). Not `EnvironmentFile=`: the `.env`'s socket path is
+# the containers' `/run/askwell/inference.sock`, which the supervisor must
+# not take; given the file itself, it puts its socket and state.json in
+# ASKWELL_RUN_DIR instead, the host directory mounted there.
 systemd_inference_unit_contents() {
-  local exec_path="$1"
+  local exec_path="$1" env_path="$2" working_dir="$3"
   cat <<EOF
 [Unit]
 Description=Askwell native inference supervisor
@@ -543,7 +657,8 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-ExecStart=$exec_path
+WorkingDirectory=$working_dir
+ExecStart=$exec_path --env-file $env_path
 Restart=on-failure
 RestartSec=5
 

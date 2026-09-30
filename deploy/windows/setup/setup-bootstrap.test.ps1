@@ -24,6 +24,14 @@ $env:COMPUTERNAME = 'NIMAL-LAPTOP'
 New-Item -ItemType Directory -Force -Path $env:TEMP, $env:ProgramData | Out-Null
 $Stage = Join-Path $env:ProgramData 'AskwellSetup'
 $WslConfigPath = Join-Path $env:USERPROFILE '.wslconfig'
+# Where Setup looks for the Visual C++ runtime. The Windows runner has a real
+# one, so each scenario gets its own System32, and SystemRoot points at it
+# only while the scenario runs. Everything else Setup reaches through
+# SystemRoot is faked.
+$RealSystemRoot = $env:SystemRoot
+$FakeSystemRoot = Join-Path $Scratch 'windows'
+$global:FakeSystem32 = Join-Path $FakeSystemRoot 'System32'
+New-Item -ItemType Directory -Force -Path $FakeSystem32 | Out-Null
 $Desktop = [Environment]::GetFolderPath('Desktop')
 if (-not $Desktop -or -not (Test-Path $Desktop)) { $Desktop = $env:TEMP }
 
@@ -32,6 +40,16 @@ if (-not $Desktop -or -not (Test-Path $Desktop)) { $Desktop = $env:TEMP }
 # on the Windows runner the real hash of the fake download was taken. Load
 # it now, so the fakes below are the ones that stay.
 Import-Module Microsoft.PowerShell.Utility -ErrorAction SilentlyContinue
+Import-Module Microsoft.PowerShell.Security -ErrorAction SilentlyContinue
+# The Visual C++ runtime's installer: what Windows says about its signature.
+function global:Get-AuthenticodeSignature {
+    param($FilePath)
+    $subject = $(if ($global:VcSignedBy) { $global:VcSignedBy } else { $null })
+    [pscustomobject]@{
+        Status = $global:VcSignatureStatus
+        SignerCertificate = $(if ($subject) { [pscustomobject]@{ Subject = $subject } } else { $null })
+    }
+}
 function global:winget { $global:LASTEXITCODE = 0 }
 # The WSL installer: a download, its checksum, and msiexec.
 function global:Invoke-WebRequest {
@@ -115,10 +133,21 @@ function global:Start-Process {
         $global:PythonInstalled = $global:PythonInstallerWorks
         return [pscustomobject]@{ ExitCode = $(if ($global:PythonInstallerWorks) { 0 } else { 1603 }) }
     }
+    if ("$FilePath" -match 'vc_redist\.x64\.exe$') {
+        $global:VcRuns++
+        $global:VcArguments = "$ArgumentList"
+        if ($global:VcInstallWorks) { New-FakeVcRuntime }
+        return [pscustomobject]@{ ExitCode = $global:VcExitCode }
+    }
     if ("$FilePath" -match 'msiexec') {
         $global:MsiRuns++
         $global:WslInstalled = $global:MsiInstallsWsl
         return [pscustomobject]@{ ExitCode = $(if ($global:MsiInstallsWsl) { 3010 } else { 1603 }) }
+    }
+}
+function global:New-FakeVcRuntime {
+    foreach ($dll in 'vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll') {
+        Set-Content -Path (Join-Path $FakeSystem32 $dll) -Value 'dll'
     }
 }
 function global:Start-Sleep { }
@@ -131,7 +160,10 @@ function Invoke-Scenario {
     param([string]$Name, [string]$Initial, [string]$AfterInstall, [int]$Want, [scriptblock]$Check, [int]$InstallCode = 0,
           [bool]$WslInstalled = $true, [bool]$MsiInstallsWsl = $true, [bool]$DownloadMatches = $true,
           [bool]$PythonInstalled = $true, [bool]$PythonInstallerWorks = $true,
-          [int]$WinBuild = 26200, [string]$WslConfig = $null, [bool]$MachineRunning = $true)
+          [int]$WinBuild = 26200, [string]$WslConfig = $null, [bool]$MachineRunning = $true,
+          [bool]$VcPresent = $true, [bool]$VcInstallWorks = $true, [int]$VcExitCode = 0,
+          [string]$VcSignatureStatus = 'Valid',
+          [string]$VcSignedBy = 'CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US')
     $global:VmState = $Initial
     $global:AfterInstall = $AfterInstall
     $global:InstallCode = $InstallCode
@@ -150,13 +182,26 @@ function Invoke-Scenario {
     $global:WinBuild = $WinBuild
     $global:MachineRunning = $MachineRunning
     $global:MachineStarts = 0
+    $global:VcInstallWorks = $VcInstallWorks
+    $global:VcExitCode = $VcExitCode
+    $global:VcSignatureStatus = $VcSignatureStatus
+    $global:VcSignedBy = $VcSignedBy
+    $global:VcRuns = 0
+    $global:VcArguments = $null
+    Get-ChildItem -Path $FakeSystem32 | Remove-Item -Force
+    if ($VcPresent) { New-FakeVcRuntime }
     Remove-Item -Force -Path $WslConfigPath -ErrorAction SilentlyContinue
     if ($WslConfig) { [System.IO.File]::WriteAllText($WslConfigPath, $WslConfig) }
     Remove-Item -Recurse -Force -Path $Stage -ErrorAction SilentlyContinue
     Get-ChildItem -Path $env:TEMP, $Desktop -Filter 'Askwell*' -ErrorAction SilentlyContinue | Remove-Item -Force
     $ErrorActionPreference = 'Continue'
-    $global:Output = (& $Boot -Root $Tree *>&1 | Out-String)
-    $code = $LASTEXITCODE
+    $env:SystemRoot = $FakeSystemRoot
+    try {
+        $global:Output = (& $Boot -Root $Tree *>&1 | Out-String)
+        $code = $LASTEXITCODE
+    } finally {
+        $env:SystemRoot = $RealSystemRoot
+    }
     $ErrorActionPreference = 'Stop'
     $ok = ($code -eq $Want) -and [bool](& $Check)
     if ($ok) { $script:Pass++; Write-Host "  ok    $Name" }
@@ -252,6 +297,36 @@ Invoke-Scenario 'Windows too old: refused before anything is installed' 'Disable
 } -WinBuild 19045 -WslInstalled $false -PythonInstalled $false
 Invoke-Scenario 'Windows 11 21H2 is refused too: no mirrored networking' 'Enabled' 'Enabled' 26 { -not $global:Installed } -WinBuild 22000
 Invoke-Scenario 'Windows 11 22H2, the minimum, installs' 'Enabled' 'Enabled' 0 { $global:Installed } -WinBuild 22621
+
+# M11-FIX-DEPLOY-225: every llama-server.exe needs Microsoft's Visual C++
+# runtime, and a new Windows has none.
+$VcUrl = 'https://aka.ms/vs/17/release/vc_redist.x64.exe'
+Invoke-Scenario 'no Visual C++ runtime: Microsoft''s, signature checked, installed quietly, then Askwell' 'Enabled' 'Enabled' 0 {
+    $global:VcRuns -eq 1 -and $global:Installed -and ($global:Downloads -contains $VcUrl) -and
+    ($global:VcArguments -eq '/install /quiet /norestart') -and
+    ($global:Output -match 'signature Valid, signed by: CN=Microsoft Corporation,') -and
+    ($global:Output -match 'Installer version')
+} -VcPresent $false
+Invoke-Scenario 'a runtime installer not signed by Microsoft is refused and never run' 'Enabled' 'Enabled' 28 {
+    $report = Get-Report
+    $global:VcRuns -eq 0 -and -not $global:Installed -and [bool]$report -and
+    ([System.IO.File]::ReadAllText($report.FullName) -match 'Result: code 28') -and
+    ($global:Output -match 'not validly signed by Microsoft') -and
+    -not (Test-Path (Join-Path $env:TEMP 'vc_redist.x64.exe'))
+} -VcPresent $false -VcSignedBy 'CN=Contoso Ltd, O=Contoso Ltd, C=US'
+Invoke-Scenario 'a runtime installer whose signature is broken is refused and never run' 'Enabled' 'Enabled' 28 {
+    $global:VcRuns -eq 0 -and -not $global:Installed
+} -VcPresent $false -VcSignatureStatus 'HashMismatch'
+Invoke-Scenario 'runtime present: the step is skipped, nothing downloaded' 'Enabled' 'Enabled' 0 {
+    $global:VcRuns -eq 0 -and $global:Installed -and -not ($global:Downloads -contains $VcUrl) -and
+    ($global:Output -match 'Visual C\+\+ runtime: ')
+}
+Invoke-Scenario 'a newer runtime already installed (1638) counts as success' 'Enabled' 'Enabled' 0 {
+    $global:VcRuns -eq 1 -and $global:Installed -and ($global:Output -match 'newer version is already installed')
+} -VcPresent $false -VcExitCode 1638
+Invoke-Scenario 'the runtime installer fails: code 28, with a report' 'Enabled' 'Enabled' 28 {
+    $global:VcRuns -eq 1 -and -not $global:Installed -and [bool](Get-Report) -and ($global:Output -match 'stopped with code 1603')
+} -VcPresent $false -VcInstallWorks $false -VcExitCode 1603
 
 Remove-Item -Recurse -Force -Path $Scratch -ErrorAction SilentlyContinue
 Write-Host ''

@@ -4,6 +4,16 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.13 - 2026-09-30
+
+`Fixed`: an installed Askwell's AI now starts once its models are in place, on every platform, with nothing to set up by hand (`M11-FIX-DEPLOY-225`). Before, the stack came up and `/health` answered, but the assistant never started, and neither you nor `/health` could see why.
+
+- **The AI supervisor is given Askwell's settings.** Every installer starts it with `--env-file` pointing at the install's `.env`: the systemd unit on Linux (which also runs it in the app folder now), the LaunchAgent on macOS, and the `AskwellInference` scheduled task on Windows. Before, it started with none, so it looked for a model at "." and wrote its state where Askwell never looks (`/run/askwell` on Linux and macOS, `C:\run\askwell` on Windows). It now writes its state into `ASKWELL_RUN_DIR` (`.run` in the app folder by default), the folder Askwell's services read. Settings already in its environment still win over the file, and the file's passwords are never passed on to llama.cpp.
+- **Windows: Setup installs Microsoft's Visual C++ runtime** when it is missing, before Askwell itself. A new Windows has none, and without it every bundled `llama-server.exe` stopped at once with `0xC0000135`. Setup downloads it from Microsoft and runs it only if Windows reports it validly signed by Microsoft Corporation; anything else is deleted unrun, and Setup stops with the new code 28. Its log names the installer's version and signer. A newer runtime already installed counts as success.
+- **Linux: the installer also installs Docker Compose and the OpenMP runtime**, with the same one password prompt as Podman: `docker-compose-v2` and `libgomp1` on Ubuntu and distributions built on it, `docker-compose` and `libgomp` on Fedora. Before, a new Ubuntu stopped after Podman and asked you to install Docker Compose yourself, and then every bundled `llama-server` failed for want of `libgomp.so.1`. A machine that already has Podman and Docker Compose but no OpenMP runtime is offered it on its own.
+
+`Known`: Debian itself has no `docker-compose-v2` package, so on Debian the installer still stops and names what to install, as before. Other distributions get the same for the OpenMP runtime if it is missing.
+
 ## 0.9.12 - 2026-09-30
 
 `Added`: a spreadsheet's rows can be queried like a table (#827, `M11-FIX-ING-224`). "How many people work in Logistics?" is answered from the sheet even when the column is called **Headcount**, where searching the workbook's text found nothing close enough.

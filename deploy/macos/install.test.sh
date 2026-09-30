@@ -266,9 +266,16 @@ case "$out" in *"<key>KeepAlive</key>"*"<key>SuccessfulExit</key>"*"<false/>"*)
 case "$out" in *"com.askwell.stack"*) ok "stack agent has its own label, distinct from the app" ;;
                *) bad "stack agent has its own label, distinct from the app" ;; esac
 
-out="$(launch_agent_inference_plist_contents "/data/askwell-inference" "/data/logs")"
+out="$(launch_agent_inference_plist_contents "/data/askwell-inference" "/data/logs" "/data/.env" "/data")"
 case "$out" in *"<string>/data/askwell-inference</string>"*) ok "inference agent execs the real supervisor script" ;;
                *) bad "inference agent execs the real supervisor script" ;; esac
+# M11-FIX-DEPLOY-225: launchd gives it no environment, so it is handed the
+# install's .env and run from the app directory.
+case "$out" in *"<string>/data/askwell-inference</string>"*"<string>--env-file</string>"*"<string>/data/.env</string>"*"</array>"*)
+                 ok "inference agent passes the install's .env to the supervisor" ;;
+               *) bad "inference agent passes the install's .env to the supervisor (got: $out)" ;; esac
+case "$out" in *"<key>WorkingDirectory</key>"*"<string>/data</string>"*) ok "inference agent runs in the app directory" ;;
+               *) bad "inference agent runs in the app directory" ;; esac
 case "$out" in *"com.askwell.inference"*) ok "inference agent has its own label, distinct from the app" ;;
                *) bad "inference agent has its own label, distinct from the app" ;; esac
 

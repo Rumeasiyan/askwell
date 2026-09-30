@@ -297,8 +297,41 @@ if ($stackArgs -match '--abort-on-container-exit --no-attach migrate') {
     Test-Bad 'stack task arguments do not let migrate''s successful exit stop the stack' $stackArgs '--no-attach migrate'
 }
 
-$inferenceArgs = Get-AskwellInferenceTaskArguments -ScriptPath 'C:\Askwell\askwell-inference'
-Test-Check 'inference task arguments name the real supervisor script' $inferenceArgs '"C:\Askwell\askwell-inference"'
+# M11-FIX-DEPLOY-225: a scheduled task has no environment of Askwell's, so
+# the supervisor is handed the install's .env.
+$inferenceArgs = Get-AskwellInferenceTaskArguments -ScriptPath 'C:\Users\A B\Askwell\askwell-inference' -EnvPath 'C:\Users\A B\Askwell\.env'
+Test-Check 'inference task arguments name the supervisor and the install''s .env, paths quoted' $inferenceArgs `
+    '"C:\Users\A B\Askwell\askwell-inference" --env-file "C:\Users\A B\Askwell\.env"'
+
+# --- the Visual C++ runtime (M11-FIX-DEPLOY-225) ------------------------------
+$microsoft = 'CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US'
+if (Test-AskwellMicrosoftSignature 'Valid' $microsoft) { Test-Ok 'a valid Microsoft signature is accepted' } else { Test-Bad 'a valid Microsoft signature is accepted' $false $true }
+foreach ($case in @(
+        @('HashMismatch', $microsoft, 'a tampered file signed by Microsoft'),
+        @('NotSigned', '', 'an unsigned file'),
+        @('UnknownError', $microsoft, 'a signature Windows could not verify'),
+        @('Valid', 'CN=Contoso Ltd, O=Contoso Ltd, C=US', 'a valid signature by someone else'),
+        @('Valid', 'CN=Microsoft Corporation Fake Ltd, O=Fake, C=US', 'a signer whose name only starts like Microsoft''s'),
+        @('Valid', 'O=Microsoft Corporation, CN=Someone Else', 'Microsoft named outside the common name'),
+        @('Valid', 'cn=microsoft corporation, O=Fake', 'a lower-case look-alike'))) {
+    if (-not (Test-AskwellMicrosoftSignature $case[0] $case[1])) { Test-Ok "refused: $($case[2])" } else { Test-Bad "refused: $($case[2])" $true $false }
+}
+foreach ($code in 0, 3010, 1638) {
+    if (Test-AskwellVcRedistSucceeded $code) { Test-Ok "the runtime installer's code $code is success" } else { Test-Bad "the runtime installer's code $code is success" $false $true }
+}
+foreach ($code in 1603, 1602, -1) {
+    if (-not (Test-AskwellVcRedistSucceeded $code)) { Test-Ok "the runtime installer's code $code is failure" } else { Test-Bad "the runtime installer's code $code is failure" $true $false }
+}
+Test-Check 'the runtime comes from Microsoft''s own link' $AskwellVcRedistUrl 'https://aka.ms/vs/17/release/vc_redist.x64.exe'
+$system32 = New-AskwellTempDir
+if (-not (Test-AskwellVcRuntimePresent $system32)) { Test-Ok 'no runtime DLLs: missing' } else { Test-Bad 'no runtime DLLs: missing' $true $false }
+Set-Content -Path (Join-Path $system32 'vcruntime140.dll') -Value 'x'
+Set-Content -Path (Join-Path $system32 'msvcp140.dll') -Value 'x'
+if (-not (Test-AskwellVcRuntimePresent $system32)) { Test-Ok 'vcruntime140_1.dll alone missing: still missing' } else { Test-Bad 'vcruntime140_1.dll alone missing: still missing' $true $false }
+Set-Content -Path (Join-Path $system32 'vcruntime140_1.dll') -Value 'x'
+if (Test-AskwellVcRuntimePresent $system32) { Test-Ok 'all three DLLs: present' } else { Test-Bad 'all three DLLs: present' $false $true }
+Remove-Item -Recurse -Force -Path $system32
+Test-Check 'a runtime that will not install has its own report meaning' (Get-AskwellSetupCodeMeaning 28) "Microsoft's Visual C++ runtime could not be installed"
 
 # --- database migration and purge (M9-FIX-DEPLOY-200, #698, #700) -----------
 $migrationArgs = Get-AskwellMigrationArguments -ComposePath 'C:\Users\A B\Askwell\compose.yaml' -EnvPath 'C:\Users\A B\Askwell\.env'

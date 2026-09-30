@@ -418,7 +418,8 @@ register_stack_and_inference() {
 
   launch_agent_stack_plist_contents "$podman_bin" "$INSTALL_PREFIX/compose.yaml" "$INSTALL_PREFIX/.env" "$INSTALL_PREFIX" "$DATA_DIR/logs" \
     > "$plist_stack"
-  launch_agent_inference_plist_contents "$INSTALL_PREFIX/askwell-inference" "$DATA_DIR/logs" > "$plist_inference"
+  launch_agent_inference_plist_contents "$INSTALL_PREFIX/askwell-inference" "$DATA_DIR/logs" \
+    "$INSTALL_PREFIX/.env" "$INSTALL_PREFIX" > "$plist_inference"
 
   launchctl unload "$plist_stack" >/dev/null 2>&1 || true
   launchctl unload "$plist_inference" >/dev/null 2>&1 || true
