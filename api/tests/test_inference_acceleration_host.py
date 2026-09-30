@@ -596,11 +596,18 @@ async def test_generation_settles_when_ready(
 async def test_generation_with_no_model_settles_so_the_others_still_start(
     host: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A missing generation model must not hold retrieval back."""
+    """A missing generation model must not hold retrieval back.
+
+    Since `M11-FIX-BE-235` the role no longer returns: it settles, then waits
+    for the file to arrive, so a download finishing later starts it."""
     monkeypatch.setenv("ASKWELL_INFERENCE_MODEL_PATH", str(tmp_path / "absent.gguf"))
     sup = host.Supervisor()
-    await sup.supervise()
-    assert sup.settled.is_set()
+    task = asyncio.create_task(sup.supervise())
+    await asyncio.wait_for(sup.settled.wait(), timeout=5)
+    assert not task.done()
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
 
 
 async def test_a_crashing_generation_settles_before_its_backoff(

@@ -84,3 +84,37 @@ def spec_for_sha256(digest: str) -> ModelSpec | None:
         if spec.sha256 == digest:
             return spec
     return None
+
+
+# The two models every tier needs besides its generation model: without them
+# nothing can be indexed or searched. `M11-FIX-BE-235`: they had no download
+# at all, and a release bundles no model, so no fresh install could ever
+# answer a question. Verified against the Hugging Face registry on 2026-09-30
+# (`GET /api/models/<repo>?blobs=true`): both ungated, `gpustack/bge-m3-GGUF`
+# MIT and `gpustack/bge-reranker-v2-m3-GGUF` Apache-2.0, sizes and sha256 from
+# the repo's LFS metadata. They are byte-for-byte the files the supervisor has
+# been running (`bge-m3-FP16.gguf`, `bge-reranker-v2-m3-FP16.gguf`), converted
+# from `BAAI/bge-m3` and `BAAI/bge-reranker-v2-m3` (`askwell.notices`).
+COMPANIONS: list[ModelSpec] = [
+    ModelSpec(
+        tier="embedding",
+        display_name="BGE-M3 (FP16)",
+        repo="gpustack/bge-m3-GGUF",
+        filename="bge-m3-FP16.gguf",
+        url="https://huggingface.co/gpustack/bge-m3-GGUF/resolve/main/bge-m3-FP16.gguf",
+        size_bytes=1_157_671_200,
+        sha256="daec91ffb5dd0c27411bd71f29932917c49cf529a641d0168496c3a501e3062c",
+    ),
+    ModelSpec(
+        tier="reranking",
+        display_name="BGE reranker v2 M3 (FP16)",
+        repo="gpustack/bge-reranker-v2-m3-GGUF",
+        filename="bge-reranker-v2-m3-FP16.gguf",
+        url=(
+            "https://huggingface.co/gpustack/bge-reranker-v2-m3-GGUF/"
+            "resolve/main/bge-reranker-v2-m3-FP16.gguf"
+        ),
+        size_bytes=1_159_776_896,
+        sha256="5df93be121c09c43432102ad2b9569d369ccb85c209ca7583e8ccd28f0e41b88",
+    ),
+]

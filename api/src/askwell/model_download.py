@@ -33,6 +33,7 @@ from shutil import disk_usage
 
 import httpx
 
+from askwell import models_catalog
 from askwell.logging import get_logger
 from askwell.models_catalog import CATALOG, ModelSpec, spec_for_sha256, spec_for_tier
 
@@ -164,6 +165,18 @@ class ModelDownloadManager:
     def _shown_dir(self) -> str:
         return self._shown_path.rsplit("/", 1)[0] if "/" in self._shown_path else "."
 
+    def _companions(self) -> list[ModelSpec]:
+        """The models every tier needs besides its generation model
+        (`models_catalog.COMPANIONS`), read at call time so a test can
+        replace them."""
+        return list(models_catalog.COMPANIONS)
+
+    def _total_bytes(self, spec: ModelSpec) -> int:
+        """Everything one Download fetches: the generation model and both
+        companions. The screen shows one total, because the user pressed one
+        button and Askwell needs all of it to answer anything."""
+        return spec.size_bytes + sum(c.size_bytes for c in self._companions())
+
     def _write_request(self, spec: ModelSpec) -> None:
         """Ask the host to fetch this, and say exactly which bytes count.
 
@@ -178,9 +191,24 @@ class ModelDownloadManager:
             json.dumps(
                 {
                     "url": spec.url,
-                    "filename": spec.filename,
+                    # The file the supervisor loads, not the name the file has
+                    # on the registry. They differ (`Qwen_Qwen3.5-4B-…` there,
+                    # `Qwen3.5-4B-…` in every installer's `.env`), and on a
+                    # clean Ubuntu VM a finished, verified download sat beside
+                    # a supervisor reporting "No model file" (`M11-FIX-BE-235`).
+                    # The checksum, not the name, is what identifies it.
+                    "filename": self._target_path.name,
                     "sha256": spec.sha256,
                     "size_bytes": spec.size_bytes,
+                    "companions": [
+                        {
+                            "url": c.url,
+                            "filename": c.filename,
+                            "sha256": c.sha256,
+                            "size_bytes": c.size_bytes,
+                        }
+                        for c in self._companions()
+                    ],
                 }
             ),
             encoding="utf-8",
@@ -197,11 +225,21 @@ class ModelDownloadManager:
         return self._target_path.with_name(self._target_path.name + ".part")
 
     def _bytes_on_disk(self, spec: ModelSpec) -> int:
-        part = self._part_path()
-        if self._target_path.is_file() and self._target_path.stat().st_size == spec.size_bytes:
-            return spec.size_bytes
+        """The generation model's bytes plus each companion's, as far as the
+        files show. Complete files count in full; a `.part` counts as far as
+        it goes."""
+        total = self._file_bytes(self._target_path, spec.size_bytes)
+        for companion in self._companions():
+            total += self._file_bytes(self._models_dir / companion.filename, companion.size_bytes)
+        return total
+
+    @staticmethod
+    def _file_bytes(target: Path, size: int) -> int:
+        if target.is_file() and target.stat().st_size == size:
+            return size
+        part = target.with_name(target.name + ".part")
         if part.is_file():
-            return min(part.stat().st_size, spec.size_bytes)
+            return min(part.stat().st_size, size)
         return 0
 
     def snapshot(self, tier: str) -> DownloadProgress:
@@ -219,7 +257,7 @@ class ModelDownloadManager:
         # progress bar that stopped moving when the API restarted, over a
         # download that never paused.
         reported = self._host_progress()
-        if reported is not None and reported.get("filename") == spec.filename:
+        if reported is not None and reported.get("filename") == self._target_path.name:
             status = _HOST_STATUS.get(str(reported.get("status")), DownloadStatus.IDLE)
             if status is not DownloadStatus.IDLE:
                 return DownloadProgress(
@@ -227,7 +265,7 @@ class ModelDownloadManager:
                     tier=tier,
                     display_name=spec.display_name,
                     downloaded_bytes=_as_int(reported.get("downloaded_bytes")),
-                    total_bytes=spec.size_bytes,
+                    total_bytes=self._total_bytes(spec),
                     error=(str(reported["error"]) if reported.get("error") else None),
                 )
 
@@ -235,7 +273,8 @@ class ModelDownloadManager:
             return self._progress
 
         on_disk = self._bytes_on_disk(spec)
-        if self._target_path.is_file() and on_disk == spec.size_bytes:
+        total = self._total_bytes(spec)
+        if self._target_path.is_file() and on_disk == total:
             status = DownloadStatus.READY
         elif on_disk > 0:
             status = DownloadStatus.PAUSED
@@ -246,7 +285,7 @@ class ModelDownloadManager:
             tier=tier,
             display_name=spec.display_name,
             downloaded_bytes=on_disk,
-            total_bytes=spec.size_bytes,
+            total_bytes=total,
         )
 
     def disk_space_needed(self, tier: str) -> tuple[bool, int, int]:
@@ -258,7 +297,7 @@ class ModelDownloadManager:
         """
         spec = spec_for_tier(tier)
         already = self._bytes_on_disk(spec)
-        needed = max(spec.size_bytes - already, 0) + _DISK_MARGIN_BYTES
+        needed = max(self._total_bytes(spec) - already, 0) + _DISK_MARGIN_BYTES
         # The nearest folder that exists, never created here: the API does not
         # write into the models directory (read-only in the stack), and a
         # missing one is the host's to create — `verify_manual` says where.
@@ -283,7 +322,7 @@ class ModelDownloadManager:
             tier=tier,
             display_name=spec.display_name,
             downloaded_bytes=on_disk,
-            total_bytes=spec.size_bytes,
+            total_bytes=self._total_bytes(spec),
         )
         self._cancel.clear()
         # Asked for, not performed. Nothing in a container may reach the

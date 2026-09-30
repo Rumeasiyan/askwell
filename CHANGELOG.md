@@ -4,6 +4,14 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.18 - 2026-10-01
+
+`Fixed`: a fresh install could never answer a question, on any platform. Found by installing `0.9.15` on a clean Ubuntu 24.04 machine with no manual steps (`M11-FIX-BE-235`):
+
+- **The setup screen downloaded one of the three models Askwell needs.** The embedding and reranking models, without which nothing can be indexed or searched, had no download at all, and no release contains any model. Download now fetches all three, about 5.3 GB, shown as one total and checked against the registry's published checksums.
+- **The downloaded model was saved under a name Askwell did not look for.** It is now saved as the file Askwell loads, and identified by its checksum.
+- **A model that arrived after Askwell started was never noticed** until a restart. Askwell now looks for a missing model every few seconds and starts using it as soon as it is there, whether it was downloaded or placed by hand.
+
 ## 0.9.17 - 2026-09-30
 
 `Added`: the library says when a sheet of a spreadsheet was not loaded as a table, and why (`M11-FIX-UI-229`).
