@@ -202,7 +202,7 @@ def register_setup(
     manager = ModelDownloadManager(
         settings.generation_model_file,
         shown_path=settings.generation_model_file_shown,
-        signal_dir=settings.inference_socket.parent,
+        signal_dir=settings.supervisor_directory,
     )
     app.state.model_download = manager
 

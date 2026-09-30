@@ -111,6 +111,10 @@ def _route(settings: Settings, request_line: bytes) -> tuple[int, str]:
 
 async def serve(settings: Settings) -> None:
     path = Path(settings.inference_socket)
+    # Before binding, so a socket directory that cannot hold a socket — a
+    # bind-mounted Windows directory, `Errno 95` — is named in the log beside
+    # the error rather than left to be inferred from it (`M11-FIX-DEPLOY-223`).
+    log.info("inference_bridge_starting", socket=str(path))
     _prepare_socket_path(path)
 
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:

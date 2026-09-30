@@ -114,6 +114,33 @@ async def test_a_supervisor_that_never_reported_is_unavailable(
         await client.embed(["x"])
 
 
+async def test_sockets_and_supervisor_files_can_live_apart(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """Windows (`M11-FIX-DEPLOY-223`): the socket is on a named volume, and the
+    supervisor's `state.json` stays on the bind mount the host writes to. The
+    client dials one and reads the other."""
+    sockets = tmp_path / "sockets"
+    sockets.mkdir()
+    supervisor = tmp_path / "run"
+    _ready(supervisor)
+    socket_path = sockets / "inference.sock"
+    stub = Stub(body={"content": "Ninety days.", "tokens_predicted": 4})
+    server = await asyncio.start_unix_server(stub.handle, path=str(socket_path))
+    try:
+        client = InferenceClient(
+            settings.model_copy(
+                update={"inference_socket": socket_path, "supervisor_dir": supervisor}
+            )
+        )
+        result = await client.generate("anything")
+    finally:
+        server.close()
+        await server.wait_closed()
+    assert result.text == "Ninety days."
+    assert not (sockets / "state.json").exists()
+
+
 async def test_a_refused_request_is_a_failure_not_unavailability(serving: Any) -> None:
     """The assistant is there and said no. Retrying elsewhere would not help."""
     start, _ = serving

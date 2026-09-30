@@ -34,6 +34,8 @@
       23  Setup's own files did not load (lib.ps1 failed to parse)
       24  running as 32-bit PowerShell, which cannot see wsl.exe
       25  Python could not be installed
+      26  Windows is older than Windows 11 22H2 (build 22621)
+      27  WSL's settings file (%USERPROFILE%\.wslconfig) could not be updated
       30  WSL was just enabled; Windows must restart, and Setup continues
           by itself after the next sign-in
       31  the Podman machine could not be started
@@ -160,6 +162,24 @@ if (-not (Get-Command Test-AskwellComposeMeetsMinimum -ErrorAction SilentlyConti
 if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
     Say "Askwell Setup is running as 32-bit PowerShell, which cannot see the Windows Subsystem for Linux. This is a fault in Setup, not in your PC. Please report it: https://github.com/Rumeasiyan/askwell/issues"
     Stop-Setup 24
+}
+
+# Mirrored networking, which is how Askwell's containers reach its AI on this
+# PC (M11-FIX-DEPLOY-223), needs Windows 11 22H2. Checked before anything is
+# installed: on an older Windows, Askwell would install, open and answer
+# nothing, which is worse than not installing.
+function Get-WindowsBuild {
+    try {
+        return [int](Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).BuildNumber
+    } catch {
+        return [Environment]::OSVersion.Version.Build
+    }
+}
+$build = Get-WindowsBuild
+if (-not (Test-AskwellWindowsBuildSupported $build)) {
+    Say ("Askwell needs Windows 11, version 22H2 (build 22621) or newer. This PC runs build $build. " +
+        "Update Windows (Settings, Windows Update), then run Askwell Setup again. Nothing has been installed.")
+    Stop-Setup 26
 }
 
 function Update-AskwellPath {
@@ -404,6 +424,21 @@ if ($state -eq 'restart') {
     exit 30
 }
 
+# WSL's mirrored networking, before the machine is created or started, so
+# the machine comes up with it (M11-FIX-DEPLOY-223, lib.ps1). Without it the
+# containers cannot reach llama.cpp on this PC's 127.0.0.1, and Askwell
+# installs, opens and answers nothing - so a file that cannot be written
+# stops Setup rather than being skipped.
+$wslConfigPath = Join-Path $env:USERPROFILE '.wslconfig'
+try {
+    $wslConfig = Set-AskwellWslConfigMirrored $wslConfigPath
+} catch {
+    Say "Setup could not update $wslConfigPath`: $($_.Exception.Message)"
+    Say "Askwell needs networkingMode=mirrored under [wsl2] in that file. Fix what the message above names, then run Askwell Setup again."
+    Stop-Setup 27
+}
+Say $wslConfig.Message
+
 # The Podman machine: create it on first use, start it if stopped.
 $machines = (& podman machine list --format '{{.Name}}' 2>$null) -join ''
 if ([string]::IsNullOrWhiteSpace($machines)) {
@@ -411,6 +446,14 @@ if ([string]::IsNullOrWhiteSpace($machines)) {
     & podman machine init 2>&1 | ForEach-Object { Say "  $_" }
 }
 $running = (& podman machine list --format '{{.Running}}' 2>$null) -join ' '
+if ($running -match 'true' -and $wslConfig.Changed) {
+    # WSL reads .wslconfig when its VM starts, and every distribution shares
+    # that one VM, so only stopping all of WSL applies the change. This also
+    # stops any other WSL distribution the person has running.
+    Say "Restarting WSL and Podman's machine so the new networking setting takes effect..."
+    & wsl.exe --shutdown 2>&1 | ForEach-Object { Say "  $_" }
+    $running = ''
+}
 if ($running -notmatch 'true') {
     Say "Starting Podman's machine..."
     & podman machine start 2>&1 | ForEach-Object { Say "  $_" }

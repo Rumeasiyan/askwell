@@ -421,7 +421,7 @@ fresh; fake_podman; fp="$FP"
 for v in $ASKWELL_VOLUMES; do : > "$fp/volumes/$v"; done
 mkdir -p "$HOME/Library/Application Support/Askwell"
 out="$(PATH="$fp:$PATH" bash "$HERE/uninstall.sh" 2>&1)" && r=0 || r=1
-check "an uninstall without --purge-data keeps every volume" "$(ls "$fp/volumes" | wc -l | tr -d ' ')" "4"
+check "an uninstall without --purge-data keeps every volume" "$(ls "$fp/volumes" | wc -l | tr -d ' ')" "$(printf '%s\n' $ASKWELL_VOLUMES | wc -l | tr -d ' ')"
 case "$out" in *"database volumes are also left in place"*) ok "an uninstall without --purge-data says the volumes stay" ;;
                *) bad "an uninstall without --purge-data says the volumes stay" ;; esac
 

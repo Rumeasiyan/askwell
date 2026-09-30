@@ -357,7 +357,7 @@ def _size_warning(model_path: Path, settings: Settings) -> str | None:
 
 
 def _run_dir(settings: Settings) -> Path:
-    return settings.inference_socket.parent
+    return settings.supervisor_directory
 
 
 async def _perform_swap(settings: Settings, model_path: Path) -> SwapOutcome:
@@ -495,7 +495,7 @@ async def active_model_identity(session: AsyncSession, settings: Settings) -> di
     record describes the loaded file, and otherwise from the loaded file's
     own bytes (issues #670, #672).
     """
-    state = read_inference_state(settings.inference_socket.parent / "state.json")
+    state = read_inference_state(settings.supervisor_directory / "state.json")
     if not state.usable:
         return {"source": str(ModelSource.NONE), "display_name": None}
 
@@ -555,7 +555,7 @@ async def reapply_user_model(factory: async_sessionmaker[AsyncSession], settings
         # Nothing to reapply, but the first answer stamps the loaded model's
         # identity from its bytes (issue #672). Hash it now, off the request
         # path, if it is already loaded; otherwise the first question pays.
-        booted = read_inference_state(settings.inference_socket.parent / "state.json")
+        booted = read_inference_state(settings.supervisor_directory / "state.json")
         if booted.usable:
             await asyncio.to_thread(_identity_of_loaded, settings, booted.model)
         return
@@ -563,7 +563,7 @@ async def reapply_user_model(factory: async_sessionmaker[AsyncSession], settings
     # same file on both sides of the container boundary.
     model_file = Path(user_path).name
 
-    state_path = settings.inference_socket.parent / "state.json"
+    state_path = settings.supervisor_directory / "state.json"
     deadline = time.monotonic() + SWAP_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         state = read_inference_state(state_path)
@@ -638,7 +638,7 @@ def register_model_select(
 
     @app.get("/model")
     async def model_state() -> JSONResponse:
-        state = read_inference_state(settings.inference_socket.parent / "state.json")
+        state = read_inference_state(settings.supervisor_directory / "state.json")
         async with session_scope(factory) as db:
             identity = await active_model_identity(db, settings)
             throughput = await measured_throughput(db, identity["display_name"])

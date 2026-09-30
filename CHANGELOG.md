@@ -4,6 +4,15 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.11 - 2026-09-30
+
+`Fixed`: on Windows, Askwell's services can now reach its AI (#845, `M11-FIX-DEPLOY-223`). Before, an installed Askwell opened and downloaded its model, then could not answer anything: the AI runs on Windows itself, for the graphics card, and the services in Podman's WSL machine could not reach it.
+
+- **Setup turns on WSL's mirrored networking.** It adds `networkingMode=mirrored` under `[wsl2]` in `%USERPROFILE%\.wslconfig` before Podman's machine starts. It edits the file rather than replacing it, so every other setting stays, and it keeps the file's encoding, UTF-16 included. Its log says exactly what it changed: created the file, added the section or the key, or changed `nat` to `mirrored`. When it changed something and the machine was already running, it shuts WSL down and starts the machine again. This stops any other WSL distribution that is running at that moment.
+- **Setup needs Windows 11 22H2 (build 22621) or newer.** Mirrored networking needs it. On an older Windows, Setup stops before installing anything and says why (code 26). Windows 10 is past its end of support, and Askwell never answered on it.
+- **The services' sockets moved into a Podman volume on Windows.** A Windows folder shared into Podman's machine cannot hold them. On Linux and macOS nothing moves.
+- **Installing from a terminal** (`install.ps1`) does not change your WSL settings. It warns when mirrored networking is missing.
+
 ## 0.9.10 - 2026-09-30
 
 `Fixed`: Windows Setup now installs Askwell on a new PC, all the way to an open window. Every item below was found by running Setup on a real Windows 11 virtual machine, from a clean install, restart included (`scripts/winvm.sh`, #836). Each one would have stopped every new PC:
