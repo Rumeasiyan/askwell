@@ -4,6 +4,13 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.20 - 2026-10-01
+
+`Fixed`: a CSV or spreadsheet sheet with 100,000 rows now loads as a table (`M11-FIX-ING-234`).
+
+- **A large table no longer runs out of time.** Rows were written one at a time, so a 100,000-row sheet or CSV could not finish within the 10-minute limit and never became a table. Rows now go in a thousand at a time. On the build machine, 100,000 rows take about three seconds. The size and time limits are unchanged.
+- **A row that cannot be loaded is still reported by its row number**, and the rows around it still load.
+
 ## 0.9.19 - 2026-10-01
 
 `Fixed`: the database no longer restarts itself in the middle of work when the machine is busy (`M11-FIX-DEPLOY-236`).

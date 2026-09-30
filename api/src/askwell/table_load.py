@@ -111,11 +111,13 @@ _SQL_TYPE_BY_INFERRED_TYPE = {
     "string": "text",
 }
 
-# Same reasoning as `dump_import.CAP_POLL_SECONDS`: a database-size query on
-# every row would make the cap itself the slow part of the load, so the real
-# size is polled on a cadence and the elapsed-time check, which is free,
-# runs every row.
-SIZE_POLL_EVERY_ROWS = 200
+# Rows go in `BATCH_ROWS` at a time, all batches inside one transaction
+# (`M11-FIX-ING-234`, #862): one autocommitted `INSERT` per row could not load
+# 100,000 rows inside the default time cap. Both caps are checked after every
+# batch, including the last, so a batch that crosses the size cap is caught
+# the moment it lands. The size query costs a connection, which is why it runs
+# per batch and not per row.
+BATCH_ROWS = 1000
 
 
 class TableLoadFailed(RuntimeError):
@@ -273,7 +275,7 @@ def _parse_date(value: str, day_first: bool | None) -> Any:
 def cast_value(raw: str, sql_type: str, day_first: bool | None) -> Any:
     """One cell, cast to its column's SQL type — `None` for a blank cell in
     any column, never coerced to `0` or an empty string. Raises `ValueError`
-    for a value that does not fit, caught per row by `_insert_rows` and
+    for a value that does not fit, caught per row by `_insert_rows_blocking` and
     turned into a `RowFailure` rather than aborting the load."""
     value = raw.strip()
     if not value:
@@ -322,6 +324,35 @@ def _create_table_blocking(
             )
 
 
+def _check_caps(
+    admin_url: str,
+    database: str,
+    start: float,
+    *,
+    size_cap_bytes: int,
+    time_cap_seconds: float,
+) -> None:
+    elapsed = time.monotonic() - start
+    if elapsed > time_cap_seconds:
+        raise TableCapExceeded(
+            "time",
+            time_cap_seconds,
+            f"Load aborted: running for {elapsed:.1f}s, over the time cap of "
+            f"{time_cap_seconds:.1f}s.",
+        )
+    try:
+        loaded = _database_size(admin_url, database)
+    except Exception:  # pragma: no cover - the database always exists here
+        loaded = None
+    if loaded is not None and loaded > size_cap_bytes:
+        raise TableCapExceeded(
+            "size",
+            size_cap_bytes,
+            f"Load aborted: loaded data reached {_format_bytes(loaded)}, over "
+            f"the size cap of {_format_bytes(size_cap_bytes)}.",
+        )
+
+
 def _insert_rows_blocking(
     dsn: str,
     admin_url: str,
@@ -336,6 +367,16 @@ def _insert_rows_blocking(
     size_cap_bytes: int,
     time_cap_seconds: float,
 ) -> list[RowFailure]:
+    """Insert every row, `BATCH_ROWS` at a time, in one transaction.
+
+    Each batch is one `executemany` under its own savepoint. When Postgres
+    refuses a row the whole batch rolls back to that savepoint and is tried
+    again row by row, each under its own savepoint, so the refused row is
+    reported by its number and the rest of the batch still loads — the same
+    `RowFailure`s the one-insert-per-row loader reported. A value Python
+    cannot cast never reaches the database at all. A cap crossed rolls the
+    whole transaction back; the caller drops what was created either way.
+    """
     from psycopg import sql as psql
 
     insert_stmt = psql.SQL("INSERT INTO {} ({}) VALUES ({})").format(
@@ -343,44 +384,53 @@ def _insert_rows_blocking(
         psql.SQL(", ").join(psql.Identifier(name) for name in sql_column_names),
         psql.SQL(", ").join(psql.Placeholder() * len(sql_column_names)),
     )
+    first_row_number = 2 if header_present else 1
 
     failures: list[RowFailure] = []
     start = time.monotonic()
-    with psycopg.connect(dsn, autocommit=True) as conn:
-        for offset, row in enumerate(rows):
-            row_number = offset + (2 if header_present else 1)
-
-            elapsed = time.monotonic() - start
-            if elapsed > time_cap_seconds:
-                raise TableCapExceeded(
-                    "time",
-                    time_cap_seconds,
-                    f"Load aborted: running for {elapsed:.1f}s, over the time cap of "
-                    f"{time_cap_seconds:.1f}s.",
-                )
-            if offset and offset % SIZE_POLL_EVERY_ROWS == 0:
+    with psycopg.connect(dsn) as conn, conn.transaction(), conn.cursor() as cursor:
+        for batch_start in range(0, len(rows), BATCH_ROWS):
+            batch_failures: list[RowFailure] = []
+            castable: list[tuple[int, list[Any]]] = []
+            for offset, row in enumerate(
+                rows[batch_start : batch_start + BATCH_ROWS], start=batch_start
+            ):
                 try:
-                    loaded = _database_size(admin_url, database)
-                except Exception:  # pragma: no cover - the database always exists here
-                    loaded = None
-                if loaded is not None and loaded > size_cap_bytes:
-                    raise TableCapExceeded(
-                        "size",
-                        size_cap_bytes,
-                        f"Load aborted: loaded data reached {_format_bytes(loaded)}, over "
-                        f"the size cap of {_format_bytes(size_cap_bytes)}.",
-                    )
+                    values = [
+                        cast_value(row[index], sql_types[index], day_firsts[index])
+                        if index < len(row)
+                        else None
+                        for index in range(len(sql_column_names))
+                    ]
+                except ValueError as error:
+                    batch_failures.append(RowFailure(offset + first_row_number, str(error)))
+                else:
+                    castable.append((offset + first_row_number, values))
 
             try:
-                values = [
-                    cast_value(row[index], sql_types[index], day_firsts[index])
-                    if index < len(row)
-                    else None
-                    for index in range(len(sql_column_names))
-                ]
-                conn.execute(insert_stmt, values)
-            except (ValueError, psycopg.Error) as error:
-                failures.append(RowFailure(row_number, str(error)))
+                if castable:
+                    with conn.transaction():
+                        cursor.executemany(insert_stmt, [values for _, values in castable])
+            except psycopg.Error:
+                if conn.broken:
+                    raise
+                for row_number, values in castable:
+                    try:
+                        with conn.transaction():
+                            cursor.execute(insert_stmt, values)
+                    except psycopg.Error as error:
+                        if conn.broken:
+                            raise
+                        batch_failures.append(RowFailure(row_number, str(error)))
+
+            failures.extend(sorted(batch_failures, key=lambda failure: failure.row_number))
+            _check_caps(
+                admin_url,
+                database,
+                start,
+                size_cap_bytes=size_cap_bytes,
+                time_cap_seconds=time_cap_seconds,
+            )
     return failures
 
 
