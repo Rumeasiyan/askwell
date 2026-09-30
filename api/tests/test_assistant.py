@@ -100,7 +100,7 @@ def test_a_missing_model_says_askwell_does_not_download_one(
 ) -> None:
     publish(tmp_path, state="model_missing", reason="No model file at /x.gguf.")
     assistant = read(configured)
-    assert "does not download" in (assistant.fix or "")
+    assert "setup screen" in (assistant.fix or "")
     assert "/x.gguf" in (assistant.fix or "")
 
 
