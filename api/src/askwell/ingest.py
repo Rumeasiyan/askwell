@@ -67,7 +67,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from askwell import chunk, clarify, embed, extract, passphrase, roots, table_load
+from askwell import chunk, clarify, embed, extract, passphrase, paths, roots, table_load
 from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
@@ -128,6 +128,7 @@ class Work:
 
     document_id: uuid.UUID
     source_id: uuid.UUID
+    # The host path: what the user is shown, in every message about the file.
     path: str
     filename: str
     mime: str | None
@@ -137,6 +138,15 @@ class Work:
     # storing a document password needs the credential encryption path M4
     # adds, so until then it exists only for the lifetime of this attempt.
     password: str | None = None
+
+    @property
+    def local(self) -> str:
+        """Where this worker opens the file. Every read goes through here.
+
+        The identity on Linux and macOS; on Windows, the translated container
+        path (`askwell.paths`). `path` stays the one shown to the user.
+        """
+        return paths.to_container(self.path)
 
 
 Report = Callable[[int, int], Awaitable[None]]
@@ -955,7 +965,7 @@ async def sweep_missing(session: AsyncSession, settings: Settings) -> int:
         if state is not roots.SourceState.READABLE:
             continue
 
-        exists = await asyncio.to_thread(os.path.isfile, path)
+        exists = await asyncio.to_thread(os.path.isfile, paths.to_container(path))
         if exists and missing_since is not None:
             await session.execute(
                 text("UPDATE documents SET missing_since = NULL WHERE id = :id"),

@@ -394,9 +394,10 @@ services:
       # honours it; both must agree or the estimate is arithmetic over a number
       # nothing is using.
       ASKWELL_INGEST_CONCURRENCY: ${ASKWELL_INGEST_CONCURRENCY:-2}
-      # The window onto the user's own files. Empty means there is none yet,
-      # which is the correct state on a fresh install — nominating a folder
-      # then tells the user exactly what to set here.
+      # The window onto the user's own files: their home folder, which the
+      # installer sets (M11-FIX-BE-227). The *host* path — on Windows,
+      # `C:\Users\anna` — which `askwell.paths` translates for every read.
+      # Empty means no window; nominating a folder then says what to set.
       ASKWELL_ROOTS_MOUNT: ${ASKWELL_ROOTS_MOUNT:-}
       # Web search escalation, `M6.5-WEB-BE-195`. Empty means no provider is
       # configured — the escalation offer reports unavailable rather than
@@ -449,16 +450,26 @@ services:
       # Same directory, same options, as `voice`'s own mount below.
       - ${ASKWELL_MODELS_DIR:-~/.local/share/askwell/models}:/models:ro,z
       # The user's own files. Askwell indexes in place and copies nothing, so
-      # the containers need a route to the folders being indexed — and this is
-      # deliberately one narrow route rather than open filesystem access.
+      # the containers need a route to the folders being indexed. Since
+      # M11-FIX-BE-227 that route is the user's whole home folder, read-only,
+      # set by every installer (`docs/decisions.md`, "Askwell may read the
+      # user's whole home folder") — still one route, and still no network.
       #
-      # Mounted at the *same absolute path* inside the container as outside.
-      # That identity is load-bearing: `sources.root_path` and
-      # `documents.path` hold host paths, which is what the user sees, what
-      # the native picker returns in M7, and what a citation has to reopen. A
-      # different mount point would need a translation layer in every one of
-      # those places, and one missed translation is a file that cannot be
-      # found for reasons nobody can see.
+      # On Linux and macOS it is mounted at the *same absolute path* inside
+      # the container as outside, and that identity was load-bearing:
+      # `sources.root_path` and `documents.path` hold host paths, which is
+      # what the user sees, what the native picker returns, and what a
+      # citation has to reopen. A different mount point needs a translation
+      # in every one of those places, and one missed translation is a file
+      # that cannot be found for reasons nobody can see.
+      #
+      # Windows cannot have the identity — `C:\Users\anna` is not a path a
+      # Linux container can hold — so there, and only there, the installer
+      # sets ASKWELL_ROOTS_TARGET and the folder appears at
+      # `/host/c/Users/anna`. The translation the paragraph above warns about
+      # exists exactly once, in `askwell.paths`, and every filesystem read in
+      # the API and the worker goes through it; it is the identity wherever
+      # ASKWELL_ROOTS_TARGET is unset.
       #
       # Read-only, and without `z`. `z` relabels recursively — pointed at a
       # 40 GB tree of the user's own material that is slow, and it changes
@@ -467,11 +478,12 @@ services:
       # a root in the `unreadable` state naming SELinux, rather than as an
       # empty folder. Whether it does refuse is unverified — see BRAIN.md.
       #
-      # Unset by default. Podman would otherwise have to invent a directory,
-      # so the placeholder is an empty path under /tmp that exists to be inert:
-      # no root can be nominated under it, so every root reports `not_mounted`
-      # with the fix stated — which is exactly true on a fresh install.
-      - ${ASKWELL_ROOTS_MOUNT:-/tmp/askwell-no-roots-mount}:${ASKWELL_ROOTS_MOUNT:-/tmp/askwell-no-roots-mount}:ro
+      # Unset in `.env.example`; the installer fills it. A stack brought up
+      # without one would make Podman invent a directory, so the placeholder
+      # is an empty path under /tmp that exists to be inert: no root can be
+      # nominated under it, so every root reports `not_mounted` with the fix
+      # stated.
+      - ${ASKWELL_ROOTS_MOUNT:-/tmp/askwell-no-roots-mount}:${ASKWELL_ROOTS_TARGET:-${ASKWELL_ROOTS_MOUNT:-/tmp/askwell-no-roots-mount}}:ro
     # `sandbox` in addition to `internal`, not instead of it — the API still
     # needs Postgres, Redis and the proxy. Not a `depends_on` on `sandbox`:
     # the sandbox failing to start must not stop the API from starting,
@@ -544,7 +556,7 @@ services:
     volumes:
       - ${ASKWELL_RUN_DIR:-./.run}:/run/askwell:z
       - askwell-sockets:/run/askwell-sockets
-      - ${ASKWELL_ROOTS_MOUNT:-/tmp/askwell-no-roots-mount}:${ASKWELL_ROOTS_MOUNT:-/tmp/askwell-no-roots-mount}:ro
+      - ${ASKWELL_ROOTS_MOUNT:-/tmp/askwell-no-roots-mount}:${ASKWELL_ROOTS_TARGET:-${ASKWELL_ROOTS_MOUNT:-/tmp/askwell-no-roots-mount}}:ro
       # Same volume as `api`, same reasoning — this is the container that
       # writes into it.
       - askwell-state:/var/lib/askwell

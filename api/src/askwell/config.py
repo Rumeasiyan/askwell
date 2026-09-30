@@ -20,6 +20,8 @@ from typing import Annotated
 from pydantic import Field, SecretStr, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from askwell import paths
+
 # Every Askwell variable carries this prefix. Without it, `extra="forbid"`
 # below would reject the machine's entire environment.
 ENV_PREFIX = "ASKWELL_"
@@ -440,13 +442,16 @@ class Settings(BaseSettings):
     # image; a source checkout points it at web/out.
     web_assets_dir: Path = Path("/app/web/out")
 
-    # The one part of the user's filesystem the containers can see, bind-mounted
-    # at the *same* absolute path so that a path means the same thing on the
-    # host and inside the container. Nominated roots must lie under it.
+    # The one part of the user's filesystem the containers can see: their home
+    # folder, set by every installer (`docs/decisions.md`, "Askwell may read
+    # the user's whole home folder"). Bind-mounted at the *same* absolute path
+    # on Linux and macOS; on Windows, `C:\Users\anna` is mounted at
+    # `/host/c/Users/anna` and `askwell.paths` translates. Nominated roots must
+    # lie under it.
     #
-    # None — the default — means Askwell has no window onto the filesystem at
-    # all, which is the correct state on a fresh install and the honest one
-    # here: a container's mounts cannot be changed while it runs, so a root
+    # None means Askwell has no window onto the filesystem at all — a stack
+    # brought up without an installer. A container's mounts cannot be changed
+    # while it runs, so a root
     # outside this is registered and reported as `not_mounted` with the fix
     # stated, rather than failing later somewhere that will not mention a
     # mount. See `askwell.roots`.
@@ -629,6 +634,12 @@ class Settings(BaseSettings):
         """
         if value is None:
             return None
+        if paths.is_windows(str(value)):
+            # A Windows home folder, `C:\\Users\\anna`. A `PosixPath` is not
+            # absolute for it, but the path is: it is the host side of a
+            # mount `askwell.paths` translates, and it is kept in the spelling
+            # the user sees.
+            return Path(paths.normalise_windows(str(value)))
         expanded = value.expanduser()
         if not expanded.is_absolute():
             raise ValueError(

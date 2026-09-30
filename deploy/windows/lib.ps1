@@ -338,6 +338,51 @@ function Set-AskwellEnvValue {
     Write-AskwellUtf8File -Path $EnvFile -Lines $lines
 }
 
+# The container side of the roots mount (M11-FIX-BE-227): `C:\Users\anna`
+# -> `/host/c/Users/anna`. compose.yaml cannot mount a Windows path at the
+# same path inside a Linux container, and Compose cannot compute a path, so
+# the installer writes this into .env as ASKWELL_ROOTS_TARGET. It is a copy of
+# `askwell.paths.to_container`, which is the translation the API and the
+# worker use for every read; the API logs at start whether the folder is
+# where that function says it is, so the two cannot disagree silently.
+# $null for anything that is not a drive-letter path.
+function Get-AskwellRootsTarget {
+    param([string]$HostPath)
+    if ($HostPath -notmatch '^([A-Za-z]):[\\/]') { return $null }
+    $drive = $Matches[1].ToLowerInvariant()
+    $parts = @($HostPath.Substring(3) -split '[\\/]' | Where-Object { $_ -ne '' -and $_ -ne '.' })
+    $kept = New-Object System.Collections.Generic.List[string]
+    foreach ($part in $parts) {
+        if ($part -eq '..') {
+            if ($kept.Count -gt 0) { $kept.RemoveAt($kept.Count - 1) }
+        } else {
+            $kept.Add($part)
+        }
+    }
+    if ($kept.Count -eq 0) { return "/host/$drive" }
+    return "/host/$drive/" + ($kept -join '/')
+}
+
+# The folder Askwell may read: the user's whole home folder, read-only
+# (M11-FIX-BE-227; docs/decisions.md, "Askwell may read the user's whole home
+# folder"). Every run, upgrades included: fills ASKWELL_ROOTS_MOUNT only when
+# it is missing or empty - a folder the user chose is theirs - and then always
+# derives ASKWELL_ROOTS_TARGET from whatever the mount is, so the target is
+# never a second value someone edits by hand.
+function Set-AskwellRootsMount {
+    param([string]$EnvFile, [string]$HomeDir)
+    $current = @(Get-Content $EnvFile -Encoding UTF8 | Where-Object { $_ -match '^ASKWELL_ROOTS_MOUNT=' } |
+        ForEach-Object { $_.Substring('ASKWELL_ROOTS_MOUNT='.Length) } | Select-Object -Last 1)
+    $mount = if ($current.Count -gt 0 -and $current[0].Trim() -ne '') { $current[0].Trim() } else { $HomeDir }
+    if ($current.Count -eq 0 -or $current[0].Trim() -eq '') {
+        Set-AskwellEnvValue $EnvFile 'ASKWELL_ROOTS_MOUNT' $mount
+    }
+    $target = Get-AskwellRootsTarget $mount
+    if ($target) {
+        Set-AskwellEnvValue $EnvFile 'ASKWELL_ROOTS_TARGET' $target
+    }
+}
+
 # Where the containers keep their Unix sockets on Windows: the askwell-sockets
 # volume inside Podman's machine, because a Windows directory bind-mounted
 # into it cannot hold a socket (drvfs, Errno 95; M11-FIX-DEPLOY-223). Linux

@@ -63,6 +63,51 @@ def test_a_relative_folder_is_refused_with_a_reason_not_a_schema_error(
     assert body["folder"] == "documents"
 
 
+@pytest.fixture
+def windows_client(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> TestClient:
+    """`client`, on a Windows install: the home folder is a drive-letter path."""
+
+    async def fixed_secret(_db: object) -> bytes:
+        return b"0" * 32
+
+    monkeypatch.setattr(sessions, "secret", fixed_secret)
+    monkeypatch.setattr("askwell.middleware.sessions.secret", fixed_secret)
+
+    built = tmp_path / "out"
+    built.mkdir()
+    (built / "index.html").write_text("<!doctype html><title>Askwell</title>")
+    windows = settings.model_copy(
+        update={"web_assets_dir": built, "roots_mount": Path("C:\\Users\\askwell")}
+    )
+    return TestClient(create_app(windows))
+
+
+@pytest.mark.parametrize(
+    ("folder", "names"),
+    [
+        # M11-FIX-BE-227: a share cannot be reached from the containers at all.
+        ("\\\\server\\share\\corpus", ["network share", "home folder"]),
+        ("//server/share/corpus", ["network share", "home folder"]),
+        # And another drive can never be under the home folder.
+        ("D:\\corpus", ["drive D:", "C:\\Users\\askwell"]),
+    ],
+)
+def test_a_windows_folder_askwell_cannot_reach_is_refused_naming_why(
+    windows_client: TestClient, folder: str, names: list[str]
+) -> None:
+    with windows_client:
+        with_session(windows_client)
+        response = windows_client.post("/sources", json={"folder": folder, "files": ["a.pdf"]})
+
+    assert response.status_code == 400
+    error = response.json()["error"]
+    for name in names:
+        assert name in error
+    assert "slash" not in error
+
+
 def test_a_batch_with_no_files_is_refused(client: TestClient) -> None:
     with client:
         with_session(client)

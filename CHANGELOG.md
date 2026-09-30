@@ -4,6 +4,15 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.15 - 2026-09-30
+
+`Fixed`: a new install can read your folders with no configuration file to edit, and on Windows a folder is no longer refused as "relative to something" (`M11-FIX-BE-227`).
+
+- **Askwell may read your home folder, read-only.** Every installer now gives Askwell's services your home folder — `$HOME` on Linux, `/Users/<you>` on macOS, `C:\Users\<you>` on Windows — on install, and on upgrade if none was set. Before, nothing could be indexed until `ASKWELL_ROOTS_MOUNT` was edited by hand in `.env`. A folder you set there yourself is kept. Askwell still opens only the folders you add, the access is read-only, and its services still have no route off your computer.
+- **Windows folders work.** Adding `C:\Users\<you>\Documents\corpus` used to answer *"Askwell needs the whole path, starting with a slash"*. Windows paths are now accepted, stored and shown as Windows paths, and every citation reopens them. Paths with spaces and non-English letters work.
+- **Folders Askwell cannot reach say why.** A folder on another drive (`D:\`) or a network share (`\\server\share`) is refused with the reason. A folder outside your home folder is reported as not reachable and suggests moving the files under it.
+- **The folder Askwell can read is logged at start**, with whether its services can actually see it.
+
 ## 0.9.14 - 2026-09-30
 
 `Fixed`: Askwell's AI is no longer reported as "stopped reporting" while it is running, and opening the desktop app no longer starts a second copy of it (`M11-FIX-SHELL-226`).

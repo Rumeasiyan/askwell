@@ -112,7 +112,8 @@ Copy on refusal:
 | **Queued, nothing indexed yet** | Said plainly, with what has to arrive before the files are searchable. Not a progress bar that never moves |
 | **The browser will not say where a file is** | One question per drop, not per file: which folder these came from, typed. The desktop shell answers it itself (§7 known gap) |
 | **File outside every nominated folder** | The folder to nominate, and why Askwell needs telling. Not a bare rejection (§7) |
-| **Folder nominated but not yet mounted** | Accepted, with the line to add and that the stack has to come up again. Said now, not discovered later |
+| **Folder nominated but not yet mounted** | Since `M11-FIX-BE-227` the mount is the user's whole home folder, set by the installer, so this appears only for a folder **outside the home folder**. Accepted, saying the home folder is the one part of the machine Askwell may read and to move or copy the material under it. Said now, not discovered later |
+| **A Windows folder on another drive, or a network share** | **Refused**, naming why: `D:\...` is not on the home folder's drive, and `\\server\share` cannot be reached from the containers at all. Neither can ever become readable by nominating it (`M11-FIX-BE-227`) |
 | **Nominated folder not connected** | Its sources report unavailable — a drive unplugged, a share disconnected. **Never** rendered as deleted or as moved |
 | **Nominated folder cannot be read** | Named, with permissions and SELinux labelling as the two causes |
 
@@ -150,7 +151,9 @@ Accept, and the file continues to indexing. A second file from the same folder a
 | `/` | **Refused.** Nominating the whole disk is the exact thing nominating a folder exists to avoid |
 | A folder already inside a nominated one | Recognised, not registered twice. Reported as already covered, because it is — files under it can be added, which is all the user was asking |
 | A folder containing ones already nominated | Registered. Both stay: two rules that permit the same path permit it once, and removing one the user chose would be a decision taken on their behalf |
-| A folder outside the mount window | **Accepted**, with the configuration line to add and that the stack has to come up again. A container's mounts cannot be changed while it runs, so refusing would make a fresh install unable to nominate anything |
+| A folder outside the mount window | **Accepted**, reported `not_mounted`. The window is the user's home folder since `M11-FIX-BE-227`, so this is a folder outside it; the reason says so and suggests moving the material under it. A container's mounts cannot be changed while it runs |
+| On Windows, `C:\Users\<you>\...` | **Accepted**, and stored and shown in that Windows spelling. Inside the containers it is `/host/c/Users/<you>/...`; `askwell.paths` translates every read (`M11-FIX-BE-227`) |
+| On Windows, another drive (`D:\`) or a UNC share (`\\server\share`) | **Refused**, naming why. The home folder is the only mount, and neither is under it |
 | A network share | **Permitted**, with a warning: indexing will be considerably slower, and the share has to be connected whenever a citation is opened — a source viewer cannot render a page it cannot reach |
 
 ### Removing one

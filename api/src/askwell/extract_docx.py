@@ -108,7 +108,7 @@ def _load(path: str) -> Document:
 
 
 async def run(work: "Work", report: "Report", factory: "async_sessionmaker[AsyncSession]") -> None:
-    document = await asyncio.to_thread(_load, work.path)
+    document = await asyncio.to_thread(_load, work.local)
     has_revisions = _has_revisions(document)
 
     sections: list[list[str]] = [[]]

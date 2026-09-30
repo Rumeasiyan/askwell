@@ -39,7 +39,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from askwell import chunk as chunk_module
-from askwell import extract, extract_pdf, ingest, passphrase
+from askwell import extract, extract_pdf, ingest, passphrase, paths, roots
 from askwell.config import Settings
 from askwell.db.engine import session_scope
 from askwell.extract_common import WrongPassword
@@ -2173,3 +2173,54 @@ async def test_a_workbook_loads_its_sheet_tables_once_its_document_is_indexed(
         )
     ).scalar_one()
     assert status == "ready"
+
+
+# --- Windows paths, through the translation (M11-FIX-BE-227) ----------------
+
+
+async def test_a_windows_folder_is_added_and_indexed_through_the_translation(
+    factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    tmp_path: Path,
+    unreachable_queue: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Windows VM's own walkthrough, below the HTTP layer.
+
+    The home folder is `C:\\Users\\askwell`; inside the containers it is under
+    `/host/c`, pointed here at a temporary directory so the real translation
+    runs end to end. The folder is nominated, the file added and indexed, and
+    everything the user sees keeps the Windows path — including a folder name
+    with a space and a non-ASCII letter.
+    """
+    monkeypatch.setattr(paths, "CONTAINER_PREFIX", str(tmp_path / "host"))
+    corpus = tmp_path / "host" / "c" / "Users" / "askwell" / "Documents" / "Meridian Loom é"
+    corpus.mkdir(parents=True)
+    written(corpus, "handbook.pdf", _pdf("The standard resignation notice period is one month."))
+    home = unreachable_queue.model_copy(update={"roots_mount": Path("C:\\Users\\askwell")})
+    folder = "C:\\Users\\askwell\\Documents\\Meridian Loom é"
+
+    registration = await roots.register(session, home, folder)
+    assert registration.view.state is roots.MountState.AVAILABLE
+    result = await add(session, folder, ["handbook.pdf"], mount=home.roots_mount)
+    await session.commit()
+    (document_id,) = [item.document_id for item in result.files if item.document_id is not None]
+
+    assert await ingest.process(factory, unreachable_queue, document_id) == "parked"
+
+    row = (
+        await session.execute(
+            text(
+                "SELECT d.path, s.root_path, p.text FROM documents d "
+                "JOIN sources s ON s.id = d.source_id "
+                "JOIN document_pages p ON p.document_id = d.id WHERE d.id = :id"
+            ),
+            {"id": document_id},
+        )
+    ).one()
+    assert row[0] == f"{folder}\\handbook.pdf"
+    assert row[1] == folder
+    assert "resignation notice period" in row[2]
+
+    # The periodic sweep reads the same file through the same translation.
+    assert await ingest.sweep_missing(session, home) == 0

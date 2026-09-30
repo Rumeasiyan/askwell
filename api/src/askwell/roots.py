@@ -58,6 +58,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from askwell import paths
 from askwell.audit import Store, record
 from askwell.config import Settings
 from askwell.db.engine import session_scope
@@ -152,7 +153,7 @@ class Root:
     @property
     def name(self) -> str:
         """What to call it in a sentence. The last component, or the path."""
-        return os.path.basename(self.path) or self.path
+        return paths.basename(self.path) or self.path
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,8 +245,15 @@ def consequence(path: str, sources_affected: int) -> str:
 # --- paths ------------------------------------------------------------------
 
 
-def normalise(requested: str) -> str:
+def normalise(requested: str, mount: Path | str | None = None) -> str:
     """The stored form of a nominated path, or a refusal a person can act on.
+
+    `mount` is `Settings.roots_mount`, the home folder the containers can see.
+    It is what says the host is Windows: a drive-letter mount means drive-letter
+    paths are absolute here, stored in their Windows spelling
+    (`askwell.paths.normalise_windows`), and a path on another drive is refused
+    now rather than registered as a folder that can never be mounted —
+    `docs/decisions.md`, "Askwell may read the user's whole home folder".
 
     Symlinks are deliberately **not** resolved. What is stored is the path the
     user nominated — the same string the native directory picker will hand over
@@ -257,6 +265,24 @@ def normalise(requested: str) -> str:
     stripped = requested.strip()
     if not stripped:
         raise RootRefused("No folder was given.")
+
+    home = str(mount) if mount is not None else None
+    windows_host = home is not None and paths.is_windows(home)
+    if paths.is_unc(stripped) or (windows_host and stripped.startswith("//")):
+        raise RootRefused(
+            f"{stripped} is a network share. Askwell reads only your own home "
+            "folder, read-only, and cannot reach a share from inside its "
+            "containers. Copy or sync the files into a folder under your home "
+            "folder and add that instead."
+        )
+    if windows_host and home is not None and paths.is_windows(stripped):
+        return _normalise_windows(stripped, home)
+    if paths.is_windows(stripped):
+        raise RootRefused(
+            f"{stripped} is a Windows path, and this Askwell was not set up to "
+            "read Windows folders — ASKWELL_ROOTS_MOUNT in .env does not name "
+            "a Windows home folder. Run the installer again, which sets it."
+        )
     if not stripped.startswith("/"):
         raise RootRefused(
             f"Askwell needs the whole path, starting with a slash — {stripped!r} "
@@ -274,6 +300,26 @@ def normalise(requested: str) -> str:
     return path
 
 
+def _normalise_windows(requested: str, home: str) -> str:
+    """`normalise` for a drive-letter path on a Windows host."""
+    path = paths.normalise_windows(requested)
+    home_drive = paths.drive(home)
+    if paths.drive(path) != home_drive:
+        raise RootRefused(
+            f"{path} is on drive {paths.drive(path)}:, and Askwell can read only "
+            f"your home folder, {paths.normalise_windows(home)}, which is on "
+            f"drive {home_drive}:. Copy the files into a folder under your home "
+            "folder and add that instead."
+        )
+    if path == f"{home_drive}:\\":
+        raise RootRefused(
+            f"Nominating {path} would give Askwell your whole disk, which is the "
+            "thing nominating a folder exists to avoid. Name the folder your "
+            "material is actually in."
+        )
+    return path
+
+
 def contains(root: str, candidate: str) -> bool:
     """Whether `candidate` lies at or under `root`.
 
@@ -281,7 +327,12 @@ def contains(root: str, candidate: str) -> bool:
     that `/home/anna/clients` contains `/home/anna/clients-archive`, which is a
     different folder that the user did not nominate — and that is precisely the
     over-permission this whole module exists to prevent.
+
+    Compared in container spelling (`askwell.paths.to_container`), which is
+    the identity on Linux and macOS and turns a Windows path's backslashes
+    into the separators this comparison splits on.
     """
+    root, candidate = paths.to_container(root), paths.to_container(candidate)
     if root == candidate:
         return True
     return candidate.startswith(root.rstrip("/") + "/")
@@ -298,6 +349,7 @@ def detect_filesystem(path: str, mounts: Path = MOUNTS) -> str | None:
         content = mounts.read_text(encoding="utf-8")
     except OSError:
         return None
+    path = paths.to_container(path)
 
     best: tuple[int, str] | None = None
     for line in content.splitlines():
@@ -329,22 +381,24 @@ def probe(path: str, mount: Path | None) -> tuple[MountState, str | None]:
         return (
             MountState.NOT_MOUNTED,
             "Askwell has no window onto your filesystem yet. Set "
-            "ASKWELL_ROOTS_MOUNT in .env to a folder containing this one and "
-            "run `podman compose up -d` again.",
+            "ASKWELL_ROOTS_MOUNT in .env to your home folder — the installer "
+            "does this, so running it again is the simplest fix — and run "
+            "`podman compose up -d` again.",
         )
-    window = os.path.normpath(str(mount))
-    if not contains(window, path):
+    home = str(mount)
+    if not contains(home, path):
         return (
             MountState.NOT_MOUNTED,
-            f"This folder is outside {window}, which is the only part of your "
-            "filesystem the containers can see. Widen ASKWELL_ROOTS_MOUNT in "
-            ".env to a folder containing both, then run `podman compose up -d` "
-            "again — a container's mounts cannot be changed while it runs, on "
-            "any platform Askwell supports.",
+            f"This folder is outside {home}, your home folder, which is the only "
+            "part of this machine Askwell may read. Move or copy the material "
+            "into a folder under it and add that instead. (To give Askwell a "
+            "different folder, set ASKWELL_ROOTS_MOUNT in .env to one "
+            "containing both and run `podman compose up -d` again — a "
+            "container's mounts cannot be changed while it runs.)",
         )
 
     try:
-        with os.scandir(path) as entries:
+        with os.scandir(paths.to_container(path)) as entries:
             next(iter(entries), None)
     except FileNotFoundError:
         return (
@@ -378,6 +432,34 @@ def warning_for(filesystem: str | None) -> str | None:
         "connected whenever you open a document from it — a citation cannot "
         "show you a page it cannot reach."
     )
+
+
+def log_effective_mount(settings: Settings) -> None:
+    """Say at start which folder Askwell may read, and whether it can.
+
+    Logged because "why is my folder not mounted" starts with this line, and a
+    wrong value in `.env` is otherwise visible only as roots in the
+    `not_mounted` state. On Windows the container side is computed twice — by
+    the installer for `compose.yaml` and by `askwell.paths` here — so the check
+    that the translated directory exists is also the check that the two copies
+    agree.
+    """
+    mount = settings.roots_mount
+    if mount is None:
+        log.warning("roots_mount", mount=None, container_path=None, visible=False)
+        return
+    inside = paths.to_container(str(mount))
+    visible = os.path.isdir(inside)
+    if visible:
+        log.info("roots_mount", mount=str(mount), container_path=inside, visible=True)
+    else:
+        log.error(
+            "roots_mount",
+            mount=str(mount),
+            container_path=inside,
+            visible=False,
+            hint="the mount in compose.yaml does not put this folder where Askwell looks",
+        )
 
 
 # How long a single probe may take before the folder is treated as unreachable.
@@ -504,10 +586,15 @@ def literal_and_real(candidate: str) -> tuple[str, str] | None:
     `covering()` is a coroutine; the resolution is a syscall per component and
     belongs somewhere it is visibly synchronous.
     """
-    path = os.path.normpath(candidate)
-    if not path.startswith("/"):
-        return None
-    return (path, os.path.realpath(path))
+    if paths.is_windows(candidate):
+        path = paths.normalise_windows(candidate)
+    else:
+        path = os.path.normpath(candidate)
+        if not path.startswith("/"):
+            return None
+    # The real path is a container path: it is what the kernel resolved, and
+    # only ever compared, never stored or shown.
+    return (path, os.path.realpath(paths.to_container(path)))
 
 
 def lexical_and_parent(candidate: str) -> tuple[str, str]:
@@ -518,6 +605,9 @@ def lexical_and_parent(candidate: str) -> tuple[str, str]:
     coroutine is flagged all the same, and the lint cannot tell the two apart.
     Naming them here settles it once instead of at every call site.
     """
+    if paths.is_windows(candidate):
+        path = paths.normalise_windows(candidate)
+        return (path, paths.parent(path))
     path = os.path.normpath(candidate)
     return (path, os.path.dirname(path) or "/")
 
@@ -570,7 +660,8 @@ def first_covering(root_paths: list[str], path: str, real: str) -> int | None:
         # Both halves are still required. The literal check keeps the stored
         # path meaningful, and the resolved check is what stops a symlink
         # placed inside a nominated folder standing in for the whole disk.
-        if contains(root_path, path) and contains(os.path.realpath(root_path), real):
+        real_root = os.path.realpath(paths.to_container(root_path))
+        if contains(root_path, path) and contains(real_root, real):
             return index
     return None
 
@@ -585,7 +676,7 @@ async def register(session: AsyncSession, settings: Settings, requested: str) ->
     and refusing would make it impossible to nominate anything on a fresh
     install. `docs/backlog` calls that restart a known gap, not a defect.
     """
-    path = normalise(requested)
+    path = normalise(requested, settings.roots_mount)
 
     for existing in await active(session):
         if contains(existing.path, path):
@@ -640,13 +731,14 @@ async def sources_under(session: AsyncSession, path: str) -> int:
     `starts_with` rather than `LIKE`: a folder called `100%_final` is a folder
     somebody has, and in a LIKE pattern it matches most of the disk.
     """
+    separator = "\\" if paths.is_windows(path) else "/"
     result = await session.execute(
         text(
             "SELECT count(*) FROM sources WHERE root_path IS NOT NULL "
             "AND status <> 'deleted' "
             "AND (root_path = :path OR starts_with(root_path, :prefix))"
         ),
-        {"path": path, "prefix": path.rstrip("/") + "/"},
+        {"path": path, "prefix": path.rstrip(separator) + separator},
     )
     return int(result.scalar_one())
 

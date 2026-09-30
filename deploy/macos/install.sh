@@ -254,6 +254,9 @@ place_files() {
   # Every run, not only a fresh one: an upgrade from before Redis had users
   # needs these generated too, or the stack refuses to start.
   ensure_redis_passwords "$INSTALL_PREFIX/.env"
+  # Every run too: an install from before M11-FIX-BE-227 has no folder to
+  # read, and a new one would otherwise index nothing until .env is edited.
+  ensure_roots_mount "$INSTALL_PREFIX/.env" "$HOME"
   cp -r "$REPO_ROOT/deploy/postgres/." "$INSTALL_PREFIX/deploy/postgres/"
   cp -r "$REPO_ROOT/deploy/sandbox/." "$INSTALL_PREFIX/deploy/sandbox/"
   cp -r "$REPO_ROOT/deploy/redis/." "$INSTALL_PREFIX/deploy/redis/"

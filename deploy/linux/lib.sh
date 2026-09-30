@@ -445,6 +445,29 @@ ensure_redis_passwords() {
   fi
 }
 
+# The folder Askwell may read: the user's whole home folder, read-only
+# (M11-FIX-BE-227; docs/decisions.md, "Askwell may read the user's whole home
+# folder"). Without it a new install can index nothing until someone edits
+# .env by hand. Runs on every install, upgrades included, and fills the value
+# only when it is missing or empty — a folder the user chose themselves is
+# theirs and is left alone.
+#
+# `ENVIRON` rather than `awk -v`, which would interpret a backslash in the
+# path as an escape. A temp file and a move, not `sed -i`, for the BSD/GNU
+# reason generate_env_passwords gives.
+ensure_roots_mount() {
+  local env_file="$1" home_dir="$2" value tmp_file
+  value="$(grep -E '^ASKWELL_ROOTS_MOUNT=' "$env_file" | tail -1 | cut -d= -f2-)" || value=""
+  [ -n "$value" ] && return 0
+  tmp_file="$(mktemp "${TMPDIR:-/tmp}/askwell-env.XXXXXX")"
+  if grep -q -E '^ASKWELL_ROOTS_MOUNT=' "$env_file"; then
+    ASKWELL_HOME_DIR="$home_dir" awk '/^ASKWELL_ROOTS_MOUNT=/ { print "ASKWELL_ROOTS_MOUNT=" ENVIRON["ASKWELL_HOME_DIR"]; next } { print }' "$env_file" > "$tmp_file"
+  else
+    { cat "$env_file"; printf '\n\n# The folder Askwell may read, read-only — set by the installer (M11-FIX-BE-227).\nASKWELL_ROOTS_MOUNT=%s\n' "$home_dir"; } > "$tmp_file"
+  fi
+  mv "$tmp_file" "$env_file"
+}
+
 # ---------------------------------------------------------------- database
 
 # The named volumes `compose.yaml` declares, as Podman names them (the
