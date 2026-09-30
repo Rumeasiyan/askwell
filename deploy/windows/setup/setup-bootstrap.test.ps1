@@ -26,6 +26,11 @@ $Stage = Join-Path $env:ProgramData 'AskwellSetup'
 $Desktop = [Environment]::GetFolderPath('Desktop')
 if (-not $Desktop -or -not (Test-Path $Desktop)) { $Desktop = $env:TEMP }
 
+# In Windows PowerShell 5.1 Get-FileHash is a function in a module that
+# loads on first use, and loading it replaces a fake defined before it:
+# on the Windows runner the real hash of the fake download was taken. Load
+# it now, so the fakes below are the ones that stay.
+Import-Module Microsoft.PowerShell.Utility -ErrorAction SilentlyContinue
 function global:winget { $global:LASTEXITCODE = 0 }
 # The WSL installer: a download, its checksum, and msiexec.
 function global:Invoke-WebRequest {
