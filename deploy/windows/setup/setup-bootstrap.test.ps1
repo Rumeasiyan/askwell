@@ -23,6 +23,7 @@ $env:USERPROFILE = $Scratch
 $env:COMPUTERNAME = 'NIMAL-LAPTOP'
 New-Item -ItemType Directory -Force -Path $env:TEMP, $env:ProgramData | Out-Null
 $Stage = Join-Path $env:ProgramData 'AskwellSetup'
+$WslConfigPath = Join-Path $env:USERPROFILE '.wslconfig'
 $Desktop = [Environment]::GetFolderPath('Desktop')
 if (-not $Desktop -or -not (Test-Path $Desktop)) { $Desktop = $env:TEMP }
 
@@ -56,10 +57,11 @@ function global:podman {
         $global:LASTEXITCODE = 125
     }
     elseif ($a -eq 'compose version') { 'Docker Compose version v5.5.1' }
-    elseif ($a -like 'machine start*' -or $a -like 'machine init*') { $global:MachineStarted = $true }
+    elseif ($a -like 'machine init*') { $global:MachineStarted = $true }
+    elseif ($a -like 'machine start*') { $global:MachineStarted = $true; $global:MachineStarts++ }
     elseif ($a -eq '--version') { 'podman version 5.8.3' }
     elseif ($a -like 'machine list*Name*') { 'podman-machine-default' }
-    elseif ($a -like 'machine list*Running*') { 'true' }
+    elseif ($a -like 'machine list*Running*') { "$global:MachineRunning".ToLower() }
 }
 function global:wsl.exe {
     $global:WslCalls += , ($args -join ' ')
@@ -69,6 +71,16 @@ function global:wsl.exe {
     if ($args[0] -eq '--install') { 'The Windows Subsystem for Linux is not installed.'; $global:LASTEXITCODE = 1 }
     if ($args[0] -eq '--version' -and -not $global:WslInstalled) { $global:LASTEXITCODE = 1 }
     if ($args[0] -eq '--status') { $global:LASTEXITCODE = -1 }
+}
+# The Windows build, and the rest of what the report reads about the PC. The
+# Windows runner is Server 2022, build 20348, which Setup would rightly
+# refuse, so the build is always the scenario's.
+function global:Get-CimInstance {
+    param($ClassName, $ErrorAction)
+    [pscustomobject]@{
+        BuildNumber = "$global:WinBuild"; Caption = 'Microsoft Windows 11 Pro'; Version = "10.0.$global:WinBuild"
+        OSArchitecture = '64-bit'; TotalVisibleMemorySize = 16777216; Name = 'Test CPU'; VirtualizationFirmwareEnabled = $true
+    }
 }
 function global:Enable-WindowsOptionalFeature {
     if ($global:VmState -eq 'THROW') { throw 'unreadable' }
@@ -118,7 +130,8 @@ $script:Fail = 0
 function Invoke-Scenario {
     param([string]$Name, [string]$Initial, [string]$AfterInstall, [int]$Want, [scriptblock]$Check, [int]$InstallCode = 0,
           [bool]$WslInstalled = $true, [bool]$MsiInstallsWsl = $true, [bool]$DownloadMatches = $true,
-          [bool]$PythonInstalled = $true, [bool]$PythonInstallerWorks = $true)
+          [bool]$PythonInstalled = $true, [bool]$PythonInstallerWorks = $true,
+          [int]$WinBuild = 26200, [string]$WslConfig = $null, [bool]$MachineRunning = $true)
     $global:VmState = $Initial
     $global:AfterInstall = $AfterInstall
     $global:InstallCode = $InstallCode
@@ -134,10 +147,15 @@ function Invoke-Scenario {
     $global:PythonInstalled = $PythonInstalled
     $global:PythonInstallerWorks = $PythonInstallerWorks
     $global:PythonRuns = 0
+    $global:WinBuild = $WinBuild
+    $global:MachineRunning = $MachineRunning
+    $global:MachineStarts = 0
+    Remove-Item -Force -Path $WslConfigPath -ErrorAction SilentlyContinue
+    if ($WslConfig) { [System.IO.File]::WriteAllText($WslConfigPath, $WslConfig) }
     Remove-Item -Recurse -Force -Path $Stage -ErrorAction SilentlyContinue
     Get-ChildItem -Path $env:TEMP, $Desktop -Filter 'Askwell*' -ErrorAction SilentlyContinue | Remove-Item -Force
     $ErrorActionPreference = 'Continue'
-    & $Boot -Root $Tree *> $null
+    $global:Output = (& $Boot -Root $Tree *>&1 | Out-String)
     $code = $LASTEXITCODE
     $ErrorActionPreference = 'Stop'
     $ok = ($code -eq $Want) -and [bool](& $Check)
@@ -205,6 +223,35 @@ Invoke-Scenario "install.ps1 failing also saves a report" 'Enabled' 'Enabled' 9 
 Invoke-Scenario 'success leaves no report and no log' 'Enabled' 'Enabled' 0 {
     -not (Get-Report) -and -not (Test-Path (Join-Path $env:TEMP 'AskwellSetup.log'))
 }
+
+# M11-FIX-DEPLOY-223: the containers reach llama.cpp on this PC's 127.0.0.1
+# only under WSL's mirrored networking, which needs Windows 11 22H2.
+Invoke-Scenario 'mirrored set, machine restarted: WSL shut down, machine started again' 'Enabled' 'Enabled' 0 {
+    $text = [System.IO.File]::ReadAllText($WslConfigPath)
+    ($text -match 'networkingMode=mirrored') -and ($global:WslCalls -contains '--shutdown') -and
+    $global:MachineStarts -eq 1 -and $global:Installed -and ($global:Output -match 'Created .*\.wslconfig')
+}
+Invoke-Scenario 'networkingMode=nat is changed, the log says so, other settings kept' 'Enabled' 'Enabled' 0 {
+    $text = [System.IO.File]::ReadAllText($WslConfigPath)
+    ($text -match 'networkingMode=mirrored') -and ($text -match 'memory=8GB') -and ($text -notmatch 'nat') -and
+    ($global:Output -match 'Changed networkingMode from nat to mirrored') -and ($global:WslCalls -contains '--shutdown')
+} -WslConfig "[wsl2]`r`nmemory=8GB`r`nnetworkingMode=nat`r`n"
+Invoke-Scenario 'already mirrored: nothing written, no WSL restart' 'Enabled' 'Enabled' 0 {
+    -not ($global:WslCalls -contains '--shutdown') -and $global:MachineStarts -eq 0 -and $global:Installed -and
+    ($global:Output -match 'already uses mirrored networking')
+} -WslConfig "[wsl2]`r`nnetworkingMode=mirrored`r`n"
+Invoke-Scenario 'mirrored set before a stopped machine starts: started once, no WSL restart' 'Enabled' 'Enabled' 0 {
+    -not ($global:WslCalls -contains '--shutdown') -and $global:MachineStarts -eq 1 -and
+    ([System.IO.File]::ReadAllText($WslConfigPath) -match 'networkingMode=mirrored')
+} -MachineRunning $false
+Invoke-Scenario 'Windows too old: refused before anything is installed' 'Disabled' 'EnablePending' 26 {
+    $report = Get-Report
+    [bool]$report -and ([System.IO.File]::ReadAllText($report.FullName) -match 'Result: code 26') -and
+    ($global:Output -match 'build 22621') -and -not $global:Installed -and -not $global:RunOnce -and
+    $global:Downloads.Count -eq 0 -and $global:PythonRuns -eq 0 -and -not (Test-Path $WslConfigPath)
+} -WinBuild 19045 -WslInstalled $false -PythonInstalled $false
+Invoke-Scenario 'Windows 11 21H2 is refused too: no mirrored networking' 'Enabled' 'Enabled' 26 { -not $global:Installed } -WinBuild 22000
+Invoke-Scenario 'Windows 11 22H2, the minimum, installs' 'Enabled' 'Enabled' 0 { $global:Installed } -WinBuild 22621
 
 Remove-Item -Recurse -Force -Path $Scratch -ErrorAction SilentlyContinue
 Write-Host ''

@@ -179,3 +179,46 @@ def test_the_api_binds_to_loopback_by_default() -> None:
     from askwell.config import Settings
 
     assert Settings.model_fields["host"].default == "127.0.0.1"
+
+
+def test_supervisor_files_default_to_the_inference_sockets_directory(
+    settings: Settings,
+) -> None:
+    """Linux and macOS: one directory for sockets and supervisor files, as before
+    `M11-FIX-DEPLOY-223`."""
+    from pathlib import Path
+
+    moved = settings.model_copy(update={"inference_socket": Path("/run/askwell/inference.sock")})
+    assert moved.supervisor_directory == Path("/run/askwell")
+
+
+def test_supervisor_files_can_be_placed_apart_from_the_sockets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows: sockets on a named volume, supervisor files on the bind mount."""
+    from pathlib import Path
+
+    monkeypatch.setenv("ASKWELL_DATABASE_URL", "postgresql://u:p@postgres:5432/askwell")
+    monkeypatch.setenv("ASKWELL_SANDBOX_DATABASE_URL", "postgresql://u:p@sandbox:5432/postgres")
+    monkeypatch.setenv("ASKWELL_SANDBOX_OWNER_PASSWORD", "pw")
+    monkeypatch.setenv("ASKWELL_SANDBOX_READONLY_PASSWORD", "pw")
+    monkeypatch.setenv("ASKWELL_INFERENCE_SOCKET", "/run/askwell-sockets/inference.sock")
+    monkeypatch.setenv("ASKWELL_SUPERVISOR_DIR", "/run/askwell")
+    loaded = load_settings()
+    assert loaded.inference_socket == Path("/run/askwell-sockets/inference.sock")
+    assert loaded.supervisor_directory == Path("/run/askwell")
+
+
+def test_an_empty_supervisor_dir_means_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`.env.example` ships `ASKWELL_SUPERVISOR_DIR=` — empty, not a directory named ""."""
+    from pathlib import Path
+
+    monkeypatch.setenv("ASKWELL_DATABASE_URL", "postgresql://u:p@postgres:5432/askwell")
+    monkeypatch.setenv("ASKWELL_SANDBOX_DATABASE_URL", "postgresql://u:p@sandbox:5432/postgres")
+    monkeypatch.setenv("ASKWELL_SANDBOX_OWNER_PASSWORD", "pw")
+    monkeypatch.setenv("ASKWELL_SANDBOX_READONLY_PASSWORD", "pw")
+    monkeypatch.setenv("ASKWELL_INFERENCE_SOCKET", "/run/askwell/inference.sock")
+    monkeypatch.setenv("ASKWELL_SUPERVISOR_DIR", "")
+    loaded = load_settings()
+    assert loaded.supervisor_dir is None
+    assert loaded.supervisor_directory == Path("/run/askwell")

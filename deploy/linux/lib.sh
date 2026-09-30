@@ -343,9 +343,10 @@ ensure_redis_passwords() {
 # project is `name: askwell`). Everything Askwell keeps outside the data
 # directory lives in these: the database (index, extracted text, memory,
 # conversations, audit log), the imported-database sandbox, the queue, and
-# `/var/lib/askwell` (stored backups, crash reports, traces). install.test.sh
+# `/var/lib/askwell` (stored backups, crash reports, traces), and the sockets
+# volume (empty here; Windows uses it, M11-FIX-DEPLOY-223). install.test.sh
 # checks this list against compose.yaml so the two cannot drift.
-ASKWELL_VOLUMES="askwell_postgres-data askwell_sandbox-data askwell_redis-data askwell_askwell-state"
+ASKWELL_VOLUMES="askwell_postgres-data askwell_sandbox-data askwell_redis-data askwell_askwell-state askwell_askwell-sockets"
 
 # Brings the schema to the image's migration head by running compose's own
 # one-shot `migrate` service (M9-FIX-DEPLOY-200, issue #698), which starts

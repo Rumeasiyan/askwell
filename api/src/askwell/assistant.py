@@ -147,7 +147,7 @@ def read(settings: Settings) -> Assistant:
     the shell on a timer, and logging each poll would bury the one line that
     says what changed.
     """
-    published = read_state(settings.inference_socket.parent / "state.json")
+    published = read_state(settings.supervisor_directory / "state.json")
     assistant = _explain(published)
 
     if _last_cause["value"] != assistant.cause:

@@ -256,6 +256,9 @@ function Copy-AskwellFiles {
     # Every run, not only a fresh one: an upgrade from before Redis had users
     # needs these generated too, or the stack refuses to start.
     Set-AskwellRedisPasswords $envFile
+    # Every run too: an upgrade from before M11-FIX-DEPLOY-223 has its
+    # sockets on the bind mount, where Windows cannot hold them.
+    Set-AskwellEnvValue $envFile 'ASKWELL_SOCKET_DIR' $script:AskwellWindowsSocketDir
 
     Copy-Item (Join-Path $RepoRoot 'deploy\postgres\*') (Join-Path $InstallPrefix 'deploy\postgres\') -Recurse -Force
     Copy-Item (Join-Path $RepoRoot 'deploy\sandbox\*') (Join-Path $InstallPrefix 'deploy\sandbox\') -Recurse -Force
@@ -537,6 +540,26 @@ function Register-AskwellUninstallEntry {
     }
 }
 
+# ---------------------------------------------------------------- 8a. WSL networking (M11-FIX-DEPLOY-223)
+
+# Setup (setup-bootstrap.ps1) sets WSL's mirrored networking before Podman's
+# machine starts; this installer, run from a terminal, does not touch the
+# person's WSL configuration. It only says so when the setting is missing,
+# because without it Askwell installs and opens but its AI cannot answer.
+function Test-AskwellWslNetworking {
+    $path = Join-Path $env:USERPROFILE '.wslconfig'
+    try {
+        $merged = Merge-AskwellWslConfig (Read-AskwellTextFile $path).Text
+    } catch {
+        Write-AskwellSay "Could not read $path to check WSL's networking mode: $($_.Exception.Message)"
+        return
+    }
+    if (-not $merged.Changed) { return }
+    Write-AskwellSay ("Warning: WSL is not set to mirrored networking, so Askwell's services will not reach its AI. " +
+        "Add networkingMode=mirrored under [wsl2] in $path, run 'wsl --shutdown', then start Askwell again - " +
+        "or install with Askwell Setup, which does this for you. Needs Windows 11 22H2 or newer.")
+}
+
 # ---------------------------------------------------------------- 9. install record + launch
 
 function Write-AskwellRecord {
@@ -569,6 +592,7 @@ function Main {
     Register-AskwellStackTask
     Register-AskwellInferenceTask
     Register-AskwellUninstallEntry
+    Test-AskwellWslNetworking
     Write-AskwellRecord
     Start-Askwell
     Write-AskwellSay 'Done. Askwell is also available any time from your Start menu.'

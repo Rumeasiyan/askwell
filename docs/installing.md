@@ -83,9 +83,13 @@ Only run that after the checksum matches. It is the same decision as clicking Op
 
 **Download `Askwell-Setup-<version>.exe` and double-click it.** Verify its checksum first, as above.
 
+**Askwell needs Windows 11, version 22H2 or newer.** On an older Windows, Setup says so and installs nothing.
+
 1. Windows asks for administrator permission. Setup needs it once, to install Podman, which runs Askwell's local services.
 2. Click **Install**. Setup checks this PC and installs anything Askwell needs that is missing: Podman, the Windows Subsystem for Linux and Docker Compose. It then installs Askwell itself, and every step is shown as it happens. This takes several minutes. Only those components come from the internet; nothing of yours is sent anywhere.
 3. When it finishes, Askwell is in your Start menu and in *Add or remove programs*.
+
+Setup changes one Windows setting, and its log says so. It sets WSL's networking to *mirrored* (`networkingMode=mirrored` under `[wsl2]` in `%USERPROFILE%\.wslconfig`), which is how Askwell's services reach its AI on your PC. It keeps everything else in that file. If WSL was running, it restarts WSL once, which also stops any other Linux distribution you had open.
 
 Two things Setup cannot do by itself, and tells you when they happen:
 
@@ -97,6 +101,8 @@ Two things Setup cannot do by itself, and tells you when they happen:
 ```
 powershell -ExecutionPolicy Bypass -File deploy\windows\install.ps1
 ```
+
+`install.ps1` does not change your WSL settings. If mirrored networking is not set, it warns you, and Askwell will not be able to answer until you set it.
 
 `-ExecutionPolicy Bypass` applies to this one command only. Windows otherwise refuses to run a script that came from the internet. Run this way, the installer stops after installing Podman or Docker Compose and asks you to open a new PowerShell and run it again, because a running session cannot see a program installed during it. Setup avoids that.
 

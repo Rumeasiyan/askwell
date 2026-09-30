@@ -55,9 +55,12 @@ function Test-AskwellVirtualizationEnabled {
     return $false
 }
 
-# The Windows build number WSL2 requires. Anything older only has WSL1, which
-# cannot run Podman's Linux VM at all.
-$script:AskwellMinWindowsBuild = 19041
+# The oldest Windows Askwell installs on: Windows 11 22H2, build 22621. WSL2
+# alone needs 19041, but Askwell's containers reach its AI through WSL's
+# mirrored networking (M11-FIX-DEPLOY-223, docs/decisions.md), which needs
+# 22H2. On an older build Askwell would install, open, and answer nothing.
+# Windows 10 is past its end of support, and Askwell never worked on it.
+$script:AskwellMinWindowsBuild = 22621
 
 function Test-AskwellWindowsBuildSupported {
     param([int]$BuildNumber)
@@ -319,6 +322,28 @@ function Set-AskwellRedisPasswords {
     Write-AskwellUtf8File -Path $EnvFile -Lines $lines
 }
 
+# Sets one variable in .env: replaces its line, or appends it. Every other
+# line is left as it was. Used for settings the Windows install must have
+# whatever the .env was written by - a fresh copy of .env.example, or one kept
+# from an older install.
+function Set-AskwellEnvValue {
+    param([string]$EnvFile, [string]$Name, [string]$Value)
+    $lines = @(Get-Content $EnvFile -Encoding UTF8)
+    $pattern = "^$([regex]::Escape($Name))="
+    if (@($lines | Where-Object { $_ -match $pattern }).Count -gt 0) {
+        $lines = @($lines | ForEach-Object { if ($_ -match $pattern) { "$Name=$Value" } else { $_ } })
+    } else {
+        $lines += "$Name=$Value"
+    }
+    Write-AskwellUtf8File -Path $EnvFile -Lines $lines
+}
+
+# Where the containers keep their Unix sockets on Windows: the askwell-sockets
+# volume inside Podman's machine, because a Windows directory bind-mounted
+# into it cannot hold a socket (drvfs, Errno 95; M11-FIX-DEPLOY-223). Linux
+# and macOS leave ASKWELL_SOCKET_DIR empty and keep the bind mount.
+$script:AskwellWindowsSocketDir = '/run/askwell-sockets'
+
 # ---------------------------------------------------------------- supervision (M7-PACK-DEPLOY-142)
 
 # Task names as their own functions, not inline literals, so install.ps1,
@@ -393,8 +418,9 @@ function Get-AskwellBundledImages {
 # Mirrors deploy/linux/lib.sh's database section; see it for the reasoning.
 # The named volumes compose.yaml declares, as Podman names them (project
 # `name: askwell`): the database, the imported-database sandbox, the queue,
-# and /var/lib/askwell (stored backups, crash reports, traces).
-$script:AskwellVolumes = @('askwell_postgres-data', 'askwell_sandbox-data', 'askwell_redis-data', 'askwell_askwell-state')
+# /var/lib/askwell (stored backups, crash reports, traces), and the sockets
+# (M11-FIX-DEPLOY-223).
+$script:AskwellVolumes = @('askwell_postgres-data', 'askwell_sandbox-data', 'askwell_redis-data', 'askwell_askwell-state', 'askwell_askwell-sockets')
 
 # compose's own one-shot `migrate` service (issue #698): `alembic upgrade
 # head` as the owner role, starting Postgres first if it is not up. One quoted
@@ -534,6 +560,157 @@ function Get-AskwellWslState {
     }
 }
 
+# ---------------------------------------------------------------- setup: WSL mirrored networking
+# M11-FIX-DEPLOY-223, issue #845. llama.cpp runs on Windows, for the GPU, and
+# listens on 127.0.0.1. The inference bridge runs in Podman's WSL machine and
+# dials 127.0.0.1. Under WSL's default NAT networking that is the VM's own
+# loopback and the dial is refused; with `networkingMode=mirrored` the VM
+# shares the PC's loopback and it answers (tested on the Windows 11 VM,
+# 2026-09-30). So Setup makes sure the per-user %USERPROFILE%\.wslconfig says
+# mirrored under [wsl2] - editing the file, never replacing it, because it is
+# the person's own WSL configuration and may carry memory limits, proxies or
+# anything else they set.
+
+# The .wslconfig text with networkingMode=mirrored under [wsl2], and what was
+# done to get there. Pure: text in, text out. Returns an object with
+#   Text    - the new text (the same text when nothing changed)
+#   Changed - whether it differs
+#   Action  - 'unchanged', 'created', 'section-added', 'key-added' or 'changed'
+#   Previous - the value networkingMode had, when Action is 'changed'
+# Keys and section names compare case-insensitively, as WSL reads them. Lines
+# starting with # or ; are comments and are never read or rewritten. Every
+# networkingMode in every [wsl2] section is set, because WSL reads the last
+# one and a stale earlier copy would be a trap for whoever reads the file
+# next. The file's own line ending is kept; a new file gets CRLF.
+function Merge-AskwellWslConfig {
+    param([AllowEmptyString()][string]$Text)
+    $newline = "`r`n"
+    if ($Text -and $Text -notmatch "`r`n" -and $Text -match "`n") { $newline = "`n" }
+    $endsWithNewline = [bool]($Text -match "\r?\n$")
+    $lines = @()
+    if ($Text) {
+        $lines = @(($Text -replace "\r?\n$", '') -split "\r?\n")
+    }
+    $wanted = 'networkingMode=mirrored'
+    $inWsl2 = $false
+    $sawSection = $false
+    $firstSectionEnd = -1
+    $sawKey = $false
+    $previous = ''
+    $changed = $false
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $trimmed = $lines[$i].Trim()
+        if ($trimmed -match '^\[([^\]]*)\]') {
+            if ($inWsl2 -and $firstSectionEnd -lt 0) { $firstSectionEnd = $i }
+            $inWsl2 = ($Matches[1].Trim() -ieq 'wsl2')
+            if ($inWsl2) { $sawSection = $true }
+            continue
+        }
+        if (-not $inWsl2) { continue }
+        $key = [regex]::Match($trimmed, '^networkingMode\s*=(.*)$', 'IgnoreCase')
+        if (-not $key.Success) { continue }
+        $sawKey = $true
+        $value = (($key.Groups[1].Value -split '[#;]', 2)[0]).Trim().Trim('"').Trim()
+        if ($value -ieq 'mirrored') { continue }
+        if (-not $previous) { $previous = $value }
+        $lines[$i] = $wanted
+        $changed = $true
+    }
+    if ($inWsl2 -and $firstSectionEnd -lt 0) { $firstSectionEnd = $lines.Count }
+
+    $action = 'unchanged'
+    if ($changed) {
+        $action = 'changed'
+    } elseif (-not $sawKey -and $sawSection) {
+        # After the section's last setting, not after the blank lines that
+        # separate it from the next section.
+        $at = $firstSectionEnd
+        while ($at -gt 0 -and -not $lines[$at - 1].Trim()) { $at-- }
+        $before = @(); if ($at -gt 0) { $before = $lines[0..($at - 1)] }
+        $after = @(); if ($at -lt $lines.Count) { $after = $lines[$at..($lines.Count - 1)] }
+        $lines = @($before) + @($wanted) + @($after)
+        $action = 'key-added'
+    } elseif (-not $sawKey) {
+        $action = if ($lines.Count -eq 0 -or -not ($lines -join '').Trim()) { 'created' } else { 'section-added' }
+        if ($action -eq 'created') {
+            $lines = @('[wsl2]', $wanted)
+        } else {
+            if ($lines[-1].Trim()) { $lines += '' }
+            $lines += @('[wsl2]', $wanted)
+        }
+        $endsWithNewline = $true
+    }
+
+    $out = $Text
+    if ($action -ne 'unchanged') {
+        $out = ($lines -join $newline)
+        if ($endsWithNewline) { $out += $newline }
+    }
+    return [pscustomobject]@{
+        Text     = $out
+        Changed  = ($action -ne 'unchanged')
+        Action   = $action
+        Previous = $previous
+    }
+}
+
+# What Setup's log says about the .wslconfig, from Merge-AskwellWslConfig's
+# result. Exactly what changed, in the person's terms: this is their file.
+function Get-AskwellWslConfigMessage {
+    param($Result, [string]$Path)
+    switch ($Result.Action) {
+        'unchanged' { return "WSL already uses mirrored networking ($Path); left unchanged." }
+        'created' { return "Created $Path with [wsl2] networkingMode=mirrored, so Askwell's services can reach its AI on this PC." }
+        'section-added' { return "Added a [wsl2] section with networkingMode=mirrored to $Path, so Askwell's services can reach its AI on this PC. Its other settings are unchanged." }
+        'key-added' { return "Added networkingMode=mirrored to the [wsl2] section of $Path, so Askwell's services can reach its AI on this PC. Its other settings are unchanged." }
+        'changed' { return "Changed networkingMode from $($Result.Previous) to mirrored in $Path, so Askwell's services can reach its AI on this PC. Its other settings are unchanged." }
+    }
+}
+
+# A text file's content and the encoding to write it back in. .wslconfig is
+# edited by hand and by WSL's own Settings app, and turns up as UTF-8 with or
+# without a byte-order mark and as UTF-16 (Notepad's "Unicode"); written back
+# in any other encoding, WSL may no longer read it. UTF-16 without a mark is
+# recognised by its second byte being zero, which is what an ASCII first
+# character - '[' or '#' - looks like in UTF-16LE. A missing or empty file
+# reads as '' in UTF-8 without a mark.
+function Read-AskwellTextFile {
+    param([string]$Path)
+    $utf8 = New-Object System.Text.UTF8Encoding $false
+    if (-not (Test-Path -LiteralPath $Path)) { return [pscustomobject]@{ Text = ''; Encoding = $utf8 } }
+    $full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+    $bytes = [System.IO.File]::ReadAllBytes($full)
+    $encoding = $utf8
+    $skip = 0
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+        $encoding = New-Object System.Text.UTF8Encoding $true; $skip = 3
+    } elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) {
+        $encoding = New-Object System.Text.UnicodeEncoding $false, $true; $skip = 2
+    } elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) {
+        $encoding = New-Object System.Text.UnicodeEncoding $true, $true; $skip = 2
+    } elseif ($bytes.Length -ge 2 -and $bytes[0] -ne 0 -and $bytes[1] -eq 0) {
+        $encoding = New-Object System.Text.UnicodeEncoding $false, $false
+    }
+    $text = $encoding.GetString($bytes, $skip, $bytes.Length - $skip)
+    return [pscustomobject]@{ Text = $text; Encoding = $encoding }
+}
+
+# Makes the .wslconfig at $Path say mirrored, writing only when that changes
+# anything, in the encoding it was read in. Returns Merge-AskwellWslConfig's
+# result with Message (for the log) added. Throws when the file cannot be
+# read or written; the caller says so and stops.
+function Set-AskwellWslConfigMirrored {
+    param([string]$Path)
+    $read = Read-AskwellTextFile $Path
+    $result = Merge-AskwellWslConfig $read.Text
+    if ($result.Changed) {
+        $full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+        [System.IO.File]::WriteAllText($full, $result.Text, $read.Encoding)
+    }
+    $result | Add-Member -NotePropertyName Message -NotePropertyValue (Get-AskwellWslConfigMessage $result $Path)
+    return $result
+}
+
 # The WSL installer Setup downloads when WSL is missing: Microsoft's own MSI
 # from its GitHub release (MIT), pinned by version and SHA-256 (GitHub's
 # published digest). Not `wsl.exe --install`, which refuses without a
@@ -657,6 +834,8 @@ $script:AskwellSetupCodeMeanings = @{
     23 = "Setup's own files did not load"
     24 = 'Setup ran as 32-bit PowerShell'
     25 = 'Python could not be installed'
+    26 = 'Windows is older than Windows 11 22H2 (build 22621)'
+    27 = "WSL's settings file (.wslconfig) could not be updated"
     31 = "Podman's machine could not be started"
     32 = 'WSL could not be enabled'
     33 = 'WSL still waited for a restart after Setup restarted'

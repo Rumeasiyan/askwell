@@ -6,8 +6,10 @@ embeds and re-introspects connections, all of which need the key — had no way
 to unlock at all, so once a passphrase was set no new document ever finished
 indexing. This is the channel that closes that gap.
 
-**The worker listens; the API speaks.** A Unix socket on the run-directory
-mount both containers already share (the inference socket's mount). The key
+**The worker listens; the API speaks.** A Unix socket in the directory both
+containers already share with the inference socket — the run-directory bind
+mount on Linux and macOS, a named volume on Windows, where a bind-mounted
+Windows directory cannot hold a socket (`M11-FIX-DEPLOY-223`). The key
 travels kernel to kernel between two processes on this machine: no route, no
 Redis, no file. The socket file itself holds nothing, and the key is never
 logged on either side.
@@ -15,7 +17,8 @@ logged on either side.
 **Push only. Nothing can ask the worker for its key.** Three requests exist —
 `status`, `unlock`, `lock` — and none of them returns key material. `status`
 answers two booleans. Anything that can reach the socket can already read the
-install secret beside it, but not the passphrase, so a channel that *served*
+install secret, which is mounted into the same two containers, but not the
+passphrase, so a channel that *served*
 the key would hand it the one thing the passphrase protects.
 
 **The worker verifies what it is given.** `unlock` goes through

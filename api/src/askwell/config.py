@@ -102,6 +102,15 @@ class Settings(BaseSettings):
     # on a bind mount needs no route at all. See docs/decisions.md.
     inference_socket: Path = Path("/run/askwell/inference.sock")
 
+    # Where the host supervisor's own files are, as this container sees them:
+    # its `state.json` and the signal files a model download or swap is asked
+    # through. Unset, it is the inference socket's directory, which is how
+    # Linux and macOS run. On Windows the two part (`M11-FIX-DEPLOY-223`):
+    # the sockets move to a named volume because a bind-mounted Windows
+    # directory cannot hold a Unix socket (drvfs, `Errno 95`), and these files
+    # stay on the bind mount because the host has to reach them.
+    supervisor_dir: Path | None = None
+
     # How the API hands its unlocked passphrase key to the worker
     # (`askwell.worker_unlock`, `M9-FIX-BE-205`). The worker listens; the API
     # connects. Same mount as the inference socket, for the same reason: no
@@ -589,6 +598,7 @@ class Settings(BaseSettings):
     @field_validator(
         "roots_mount",
         "web_search_provider",
+        "supervisor_dir",
         mode="before",
     )
     @classmethod
@@ -655,6 +665,13 @@ class Settings(BaseSettings):
         "no model file" message pointing at a path that looks correct.
         """
         return value.expanduser()
+
+    @property
+    def supervisor_directory(self) -> Path:
+        """Where the host supervisor's `state.json` and signal files are."""
+        if self.supervisor_dir is not None:
+            return self.supervisor_dir.expanduser()
+        return self.inference_socket.parent
 
     @property
     def models_dir_shown(self) -> str:

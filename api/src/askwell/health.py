@@ -286,7 +286,7 @@ async def _probe_inference(settings: Settings, timeout: float) -> ComponentHealt
     started = loop.time()
     address = str(settings.inference_socket)
 
-    published = inference_state.read(settings.inference_socket.parent / "state.json")
+    published = inference_state.read(settings.supervisor_directory / "state.json")
 
     def finish(state: ComponentState, reason: str | None) -> ComponentHealth:
         return ComponentHealth(

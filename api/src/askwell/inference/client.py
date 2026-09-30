@@ -127,7 +127,7 @@ class InferenceClient:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self._state_path = settings.inference_socket.parent / "state.json"
+        self._state_path = settings.supervisor_directory / "state.json"
 
     def _client(self, timeout_seconds: float) -> httpx.AsyncClient:
         # Unix socket rather than a host and port: every service is on a

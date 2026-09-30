@@ -247,7 +247,13 @@ services:
       ASKWELL_SANDBOX_DATABASE_URL: postgresql://${SANDBOX_POSTGRES_USER:-askwell_sandbox}:${SANDBOX_POSTGRES_PASSWORD:?set SANDBOX_POSTGRES_PASSWORD in .env}@127.0.0.1:5432/postgres
       ASKWELL_SANDBOX_OWNER_PASSWORD: ${SANDBOX_OWNER_PASSWORD:?set SANDBOX_OWNER_PASSWORD in .env}
       ASKWELL_SANDBOX_READONLY_PASSWORD: ${SANDBOX_READONLY_PASSWORD:?set SANDBOX_READONLY_PASSWORD in .env}
-      ASKWELL_INFERENCE_SOCKET: /run/askwell/inference.sock
+      # The sockets' directory. Unset, it is the run-directory bind mount,
+      # as it always was on Linux and macOS. The Windows installer sets it to
+      # the `askwell-sockets` volume, because a bind-mounted Windows
+      # directory cannot hold a Unix socket (drvfs, `Errno 95`) —
+      # M11-FIX-DEPLOY-223. The same value is repeated for `api` and `worker`,
+      # which must dial the socket this one listens on.
+      ASKWELL_INFERENCE_SOCKET: ${ASKWELL_SOCKET_DIR:-/run/askwell}/inference.sock
       ASKWELL_INFERENCE_UPSTREAM_PORT: ${ASKWELL_INFERENCE_UPSTREAM_PORT:-8080}
       ASKWELL_EMBEDDING_PORT: ${ASKWELL_EMBEDDING_PORT:-8081}
       ASKWELL_RERANKER_PORT: ${ASKWELL_RERANKER_PORT:-8082}
@@ -255,6 +261,7 @@ services:
       ASKWELL_LOG_LEVEL: ${ASKWELL_LOG_LEVEL:-INFO}
     volumes:
       - ${ASKWELL_RUN_DIR:-./.run}:/run/askwell:z
+      - askwell-sockets:/run/askwell-sockets
     # The one container with host networking, and it is a real widening of the
     # claim above rather than a technicality.
     #
@@ -349,7 +356,11 @@ services:
       ASKWELL_PROFILE: ${ASKWELL_PROFILE:-balanced}
       ASKWELL_LOG_LEVEL: ${ASKWELL_LOG_LEVEL:-INFO}
       ASKWELL_WEB_ASSETS_DIR: /app/web/out
-      ASKWELL_INFERENCE_SOCKET: /run/askwell/inference.sock
+      ASKWELL_INFERENCE_SOCKET: ${ASKWELL_SOCKET_DIR:-/run/askwell}/inference.sock
+      ASKWELL_WORKER_UNLOCK_SOCKET: ${ASKWELL_SOCKET_DIR:-/run/askwell}/worker-unlock.sock
+      # The host supervisor's own files stay on the bind mount wherever the
+      # sockets are, because the host has to reach them.
+      ASKWELL_SUPERVISOR_DIR: /run/askwell
       # `M7-SET-FE-146`, issue #660: the models directory, mounted below, so
       # Settings can list the model files placed there and name one to the
       # host supervisor by file name. `_DISPLAY` is the same directory as the
@@ -418,6 +429,7 @@ services:
       # machine — so a socket file is what joins them, with no route involved in
       # either direction. See docs/decisions.md.
       - ${ASKWELL_RUN_DIR:-./.run}:/run/askwell:z
+      - askwell-sockets:/run/askwell-sockets
       # State the worker writes and the api serves back out — trace files
       # (`Settings.trace_dir`) today, log-export zips once M7-LOG-BE-155 lands.
       # `api` and `worker` are separate containers with separate filesystems;
@@ -497,7 +509,11 @@ services:
       # (`deploy/redis/users.acl`).
       ASKWELL_REDIS_USERNAME: worker
       ASKWELL_REDIS_PASSWORD: ${REDIS_WORKER_PASSWORD:?set REDIS_WORKER_PASSWORD in .env}
-      ASKWELL_INFERENCE_SOCKET: /run/askwell/inference.sock
+      ASKWELL_INFERENCE_SOCKET: ${ASKWELL_SOCKET_DIR:-/run/askwell}/inference.sock
+      ASKWELL_WORKER_UNLOCK_SOCKET: ${ASKWELL_SOCKET_DIR:-/run/askwell}/worker-unlock.sock
+      # The host supervisor's own files stay on the bind mount wherever the
+      # sockets are, because the host has to reach them.
+      ASKWELL_SUPERVISOR_DIR: /run/askwell
       # See the api service — same control-plane connection, same reasoning.
       # The worker is what reclaims an orphaned sandbox database at startup.
       ASKWELL_SANDBOX_DATABASE_URL: postgresql://${SANDBOX_POSTGRES_USER:-askwell_sandbox}:${SANDBOX_POSTGRES_PASSWORD:?set SANDBOX_POSTGRES_PASSWORD in .env}@sandbox:5432/postgres
@@ -527,6 +543,7 @@ services:
       no_proxy: localhost,127.0.0.1,postgres,redis
     volumes:
       - ${ASKWELL_RUN_DIR:-./.run}:/run/askwell:z
+      - askwell-sockets:/run/askwell-sockets
       - ${ASKWELL_ROOTS_MOUNT:-/tmp/askwell-no-roots-mount}:${ASKWELL_ROOTS_MOUNT:-/tmp/askwell-no-roots-mount}:ro
       # Same volume as `api`, same reasoning — this is the container that
       # writes into it.
@@ -576,3 +593,11 @@ volumes:
   # `podman compose down` and `up` without shipping the data back through
   # Postgres or Redis for something that deliberately stays off-heap.
   askwell-state:
+  # The Unix sockets the containers talk over — the inference bridge's and
+  # the worker's unlock socket — when `ASKWELL_SOCKET_DIR` points here, which
+  # the Windows installer does (M11-FIX-DEPLOY-223). A Windows directory
+  # bind-mounted into Podman's WSL machine cannot hold a socket (drvfs,
+  # `Errno 95`); a volume inside the machine can. Mounted everywhere so the
+  # choice is one variable, and empty on Linux and macOS, whose sockets stay on
+  # the run-directory bind mount. Holds nothing but socket files.
+  askwell-sockets:

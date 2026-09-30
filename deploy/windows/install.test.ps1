@@ -50,8 +50,120 @@ Hyper-V Requirements:      A hypervisor has been detected. Features required for
 if (Test-AskwellVirtualizationEnabled $hypervisorRunning) { Test-Ok 'an already-running hypervisor reads as enabled' } else { Test-Bad 'an already-running hypervisor reads as enabled' $false $true }
 
 # --- Windows build ------------------------------------------------------------
-if (Test-AskwellWindowsBuildSupported 22631) { Test-Ok 'Windows 11 build meets the WSL2 minimum' } else { Test-Bad 'Windows 11 build meets the WSL2 minimum' $false $true }
-if (-not (Test-AskwellWindowsBuildSupported 18363)) { Test-Ok 'a pre-WSL2 build is refused' } else { Test-Bad 'a pre-WSL2 build is refused' $true $false }
+# M11-FIX-DEPLOY-223: mirrored networking needs Windows 11 22H2, build 22621.
+Test-Check 'Windows 11 23H2 (22631) is supported' (Test-AskwellWindowsBuildSupported 22631) $true
+Test-Check 'Windows 11 22H2 (22621), the minimum, is supported' (Test-AskwellWindowsBuildSupported 22621) $true
+Test-Check 'Windows 11 21H2 (22000) is refused: no mirrored networking' (Test-AskwellWindowsBuildSupported 22000) $false
+Test-Check 'Windows 10 22H2 (19045) is refused' (Test-AskwellWindowsBuildSupported 19045) $false
+Test-Check 'a pre-WSL2 build is refused' (Test-AskwellWindowsBuildSupported 18363) $false
+Test-Check 'the build refusal has its own report meaning' (Get-AskwellSetupCodeMeaning 26) 'Windows is older than Windows 11 22H2 (build 22621)'
+Test-Check 'a .wslconfig that cannot be written has its own report meaning' (Get-AskwellSetupCodeMeaning 27) "WSL's settings file (.wslconfig) could not be updated"
+
+# --- the sockets' directory in .env (M11-FIX-DEPLOY-223) ----------------------
+$tmp = New-AskwellTempDir
+$socketEnv = Join-Path $tmp '.env'
+Write-AskwellUtf8File -Path $socketEnv -Lines @('POSTGRES_PASSWORD=kept', 'ASKWELL_SOCKET_DIR=', 'OTHER=kept')
+Set-AskwellEnvValue $socketEnv 'ASKWELL_SOCKET_DIR' $script:AskwellWindowsSocketDir
+Test-Check 'an empty ASKWELL_SOCKET_DIR is set to the sockets volume, in place' `
+    ((Get-Content $socketEnv) -join '|') 'POSTGRES_PASSWORD=kept|ASKWELL_SOCKET_DIR=/run/askwell-sockets|OTHER=kept'
+Write-AskwellUtf8File -Path $socketEnv -Lines @('POSTGRES_PASSWORD=kept')
+Set-AskwellEnvValue $socketEnv 'ASKWELL_SOCKET_DIR' $script:AskwellWindowsSocketDir
+Set-AskwellEnvValue $socketEnv 'ASKWELL_SOCKET_DIR' $script:AskwellWindowsSocketDir
+Test-Check 'an older .env without it gains it once' `
+    ((Get-Content $socketEnv) -join '|') 'POSTGRES_PASSWORD=kept|ASKWELL_SOCKET_DIR=/run/askwell-sockets'
+Test-Check 'the .env is still written without a BOM' ([System.IO.File]::ReadAllBytes($socketEnv)[0]) ([byte][char]'P')
+$composeText = Get-Content (Join-Path $Here '..\..\compose.yaml') -Raw
+Test-Check 'compose.yaml mounts the sockets volume where Windows points the sockets' `
+    ($composeText -match [regex]::Escape("- askwell-sockets:$script:AskwellWindowsSocketDir")) $true
+Remove-Item -Recurse -Force $tmp
+
+# --- .wslconfig: mirrored networking (M11-FIX-DEPLOY-223) ----------------------
+$crlf = "`r`n"
+
+$merged = Merge-AskwellWslConfig ''
+Test-Check 'no .wslconfig: created with [wsl2] mirrored' $merged.Text "[wsl2]${crlf}networkingMode=mirrored${crlf}"
+Test-Check 'no .wslconfig: reported as created' $merged.Action 'created'
+
+$existing = "[wsl2]${crlf}memory=8GB${crlf}processors=4${crlf}"
+$merged = Merge-AskwellWslConfig $existing
+Test-Check '[wsl2] with other keys: key added, others kept' $merged.Text "[wsl2]${crlf}memory=8GB${crlf}processors=4${crlf}networkingMode=mirrored${crlf}"
+Test-Check '[wsl2] with other keys: reported as key-added' $merged.Action 'key-added'
+
+$existing = "[wsl2]${crlf}memory=8GB${crlf}networkingMode=nat${crlf}swap=0${crlf}"
+$merged = Merge-AskwellWslConfig $existing
+Test-Check 'networkingMode=nat is changed in place' $merged.Text "[wsl2]${crlf}memory=8GB${crlf}networkingMode=mirrored${crlf}swap=0${crlf}"
+Test-Check 'networkingMode=nat: reported as changed from nat' "$($merged.Action) $($merged.Previous)" 'changed nat'
+Test-Check 'the log line names the old value and the file' (Get-AskwellWslConfigMessage $merged 'C:\Users\anna\.wslconfig') `
+    "Changed networkingMode from nat to mirrored in C:\Users\anna\.wslconfig, so Askwell's services can reach its AI on this PC. Its other settings are unchanged."
+
+$existing = "[experimental]${crlf}autoMemoryReclaim=gradual${crlf}"
+$merged = Merge-AskwellWslConfig $existing
+Test-Check 'no [wsl2] section: one is added after the rest' $merged.Text "[experimental]${crlf}autoMemoryReclaim=gradual${crlf}${crlf}[wsl2]${crlf}networkingMode=mirrored${crlf}"
+Test-Check 'no [wsl2] section: reported as section-added' $merged.Action 'section-added'
+
+$existing = "[wsl2]${crlf}memory=8GB${crlf}${crlf}[experimental]${crlf}sparseVhd=true${crlf}"
+$merged = Merge-AskwellWslConfig $existing
+Test-Check 'the key goes into [wsl2], not the section after it' $merged.Text "[wsl2]${crlf}memory=8GB${crlf}networkingMode=mirrored${crlf}${crlf}[experimental]${crlf}sparseVhd=true${crlf}"
+
+$existing = "[experimental]${crlf}networkingMode=nat${crlf}"
+$merged = Merge-AskwellWslConfig $existing
+Test-Check 'a networkingMode in another section is not the one WSL reads' $merged.Text "[experimental]${crlf}networkingMode=nat${crlf}${crlf}[wsl2]${crlf}networkingMode=mirrored${crlf}"
+
+$existing = "[WSL2]${crlf}NetworkingMode = Mirrored${crlf}"
+$merged = Merge-AskwellWslConfig $existing
+Test-Check 'already mirrored, any case: nothing changes' "$($merged.Changed) $($merged.Text -eq $existing)" 'False True'
+
+$existing = "[wsl2]${crlf}# networkingMode=nat is what I had${crlf}memory=4GB${crlf}"
+$merged = Merge-AskwellWslConfig $existing
+Test-Check 'a comment is neither read nor rewritten' $merged.Text "[wsl2]${crlf}# networkingMode=nat is what I had${crlf}memory=4GB${crlf}networkingMode=mirrored${crlf}"
+
+$existing = "[wsl2]`nmemory=8GB`nnetworkingMode=nat"
+$merged = Merge-AskwellWslConfig $existing
+Test-Check 'LF line endings and no final newline are kept' $merged.Text "[wsl2]`nmemory=8GB`nnetworkingMode=mirrored"
+
+$merged = Merge-AskwellWslConfig "[wsl2]${crlf}memory=8GB${crlf}networkingMode=mirrored${crlf}"
+$again = Merge-AskwellWslConfig $merged.Text
+Test-Check 'a second merge changes nothing' "$($again.Changed) $($again.Action)" 'False unchanged'
+Test-Check 'the unchanged log line says so' (Get-AskwellWslConfigMessage $again 'C:\x\.wslconfig') 'WSL already uses mirrored networking (C:\x\.wslconfig); left unchanged.'
+
+# The file itself: read, merged and written back in its own encoding.
+$tmp = New-AskwellTempDir
+$wslconfig = Join-Path $tmp '.wslconfig'
+$result = Set-AskwellWslConfigMirrored $wslconfig
+$bytes = [System.IO.File]::ReadAllBytes($wslconfig)
+Test-Check 'a new .wslconfig is written as UTF-8 without a BOM' $bytes[0] ([byte][char]'[')
+Test-Check 'a new .wslconfig reads back mirrored' ([System.IO.File]::ReadAllText($wslconfig)) "[wsl2]${crlf}networkingMode=mirrored${crlf}"
+Test-Check 'Set reports the action and a message' "$($result.Action) $([bool]$result.Message)" 'created True'
+
+$unicode = New-Object System.Text.UnicodeEncoding $false, $true
+[System.IO.File]::WriteAllText($wslconfig, "[wsl2]${crlf}networkingMode=nat${crlf}memory=6GB${crlf}", $unicode)
+$result = Set-AskwellWslConfigMirrored $wslconfig
+$bytes = [System.IO.File]::ReadAllBytes($wslconfig)
+Test-Check 'a UTF-16 .wslconfig keeps its byte-order mark' "$($bytes[0]) $($bytes[1])" '255 254'
+Test-Check 'a UTF-16 .wslconfig is rewritten as UTF-16, other keys kept' `
+    ([System.IO.File]::ReadAllText($wslconfig, $unicode)) "[wsl2]${crlf}networkingMode=mirrored${crlf}memory=6GB${crlf}"
+Test-Check 'a UTF-16 .wslconfig reports nat changed' "$($result.Action) $($result.Previous)" 'changed nat'
+
+$bare = New-Object System.Text.UnicodeEncoding $false, $false
+[System.IO.File]::WriteAllText($wslconfig, "[wsl2]${crlf}memory=6GB${crlf}", $bare)
+$null = Set-AskwellWslConfigMirrored $wslconfig
+$bytes = [System.IO.File]::ReadAllBytes($wslconfig)
+Test-Check 'UTF-16 without a byte-order mark stays that way' "$($bytes[0]) $($bytes[1])" "$([int][char]'[') 0"
+Test-Check 'UTF-16 without a byte-order mark reads back merged' `
+    ([System.IO.File]::ReadAllText($wslconfig, $bare)) "[wsl2]${crlf}memory=6GB${crlf}networkingMode=mirrored${crlf}"
+
+$bom = New-Object System.Text.UTF8Encoding $true
+[System.IO.File]::WriteAllText($wslconfig, "[wsl2]${crlf}memory=6GB${crlf}", $bom)
+$null = Set-AskwellWslConfigMirrored $wslconfig
+$bytes = [System.IO.File]::ReadAllBytes($wslconfig)
+Test-Check 'UTF-8 with a byte-order mark keeps it, and only one' "$($bytes[0]) $($bytes[1]) $($bytes[2]) $($bytes[3])" "239 187 191 $([int][char]'[')"
+
+$before = [System.IO.File]::ReadAllBytes($wslconfig)
+$stamp = [System.IO.File]::GetLastWriteTimeUtc($wslconfig)
+Start-Sleep -Milliseconds 50
+$result = Set-AskwellWslConfigMirrored $wslconfig
+Test-Check 'an already-mirrored .wslconfig is not rewritten' "$($result.Changed) $([System.IO.File]::GetLastWriteTimeUtc($wslconfig) -eq $stamp)" 'False True'
+Remove-Item -Recurse -Force $tmp
 
 # --- version comparison --------------------------------------------------------
 Test-Check 'equal versions compare 0' (Compare-AskwellVersion '4.3.0' '4.3.0') 0
