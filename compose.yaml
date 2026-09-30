@@ -34,6 +34,13 @@ services:
     # Building it into the stock image would mean a compiler in the runtime
     # image and a build step on every user's machine.
     image: docker.io/pgvector/pgvector:pg18
+    # Podman's `catatonit` as PID 1, not Postgres (`M11-FIX-DEPLOY-236`). A
+    # process orphaned in this container is reparented to PID 1, and the
+    # postmaster treats an unknown child dying on a signal as a crash and
+    # resets every connection. The orphan was the health check's
+    # `pg_isready`, left behind when Podman killed its `sh -c` for running
+    # past the timeout on a loaded machine. An init reaps it instead.
+    init: true
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-askwell}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is not set. Copy .env.example to .env and set it. It is never committed (C8).}
@@ -78,6 +85,8 @@ services:
     # memory and audit log would make that untrue no matter how the roles
     # inside it are configured.
     image: docker.io/pgvector/pgvector:pg18
+    # Same reason as `postgres`: it reset in the same second every time.
+    init: true
     environment:
       # The instance superuser. Used only by `askwell.sandbox`'s control
       # plane — `CREATE DATABASE` / `DROP DATABASE` cannot run as a role that
@@ -116,6 +125,10 @@ services:
 
   redis:
     image: docker.io/redis:8-alpine
+    # See `postgres`. Redis logs an orphaned `redis-cli` as "detected child
+    # with unmatched pid" rather than restarting, but it should not be reaping
+    # the health check's processes at all.
+    init: true
     # One Redis user per service, and none for a connection that does not
     # authenticate (`M8-FIX-SEC-177`, issue #730). The egress proxy opens a
     # route off the machine for whatever grant Redis holds, so which service
