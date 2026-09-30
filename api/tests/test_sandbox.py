@@ -21,7 +21,6 @@ from askwell.config import Settings
 from askwell.db.engine import build_engine, session_factory
 from askwell.sandbox import (
     OWNER_ROLE,
-    PREFIX,
     READONLY_ROLE,
     InvalidSandboxName,
     SandboxRoleMisconfigured,
@@ -34,14 +33,23 @@ from askwell.sandbox import (
     seal_owner,
     verify_readonly_role,
 )
-from tests.conftest_sandbox import role_url
+from tests.conftest_sandbox import PRODUCT_NAME_RE, PRODUCT_PREFIX, TEST_PREFIX, role_url
 
 # --- naming and validation: no database needed ------------------------------
 
 
 def test_generate_name_carries_the_prefix() -> None:
+    """Under test, the test prefix — see `conftest_sandbox.use_test_prefix`."""
     name = generate_name()
-    assert name.startswith(PREFIX)
+    assert name.startswith(TEST_PREFIX)
+
+
+def test_the_products_own_naming_is_unchanged() -> None:
+    """C3: the test prefix exists only inside the test process. The product
+    still names, and only accepts, `askwell_sbx_` plus 32 hex digits."""
+    assert PRODUCT_PREFIX == "askwell_sbx_"
+    assert PRODUCT_NAME_RE.match(f"{PRODUCT_PREFIX}{uuid.uuid4().hex}")
+    assert not PRODUCT_NAME_RE.match(f"{TEST_PREFIX}{uuid.uuid4().hex}")
 
 
 def test_generate_name_is_unpredictable() -> None:
@@ -54,11 +62,14 @@ def test_generate_name_is_unpredictable() -> None:
         "postgres",
         "template1",
         "askwell",
-        f"{PREFIX}not-hex",
-        f"{PREFIX}{'a' * 31}",  # one short
-        f"{PREFIX}{'a' * 33}",  # one long
+        f"{TEST_PREFIX}not-hex",
+        f"{TEST_PREFIX}{'a' * 31}",  # one short
+        f"{TEST_PREFIX}{'a' * 33}",  # one long
         "'; DROP DATABASE postgres; --",
-        f'{PREFIX}{uuid.uuid4().hex}"; DROP DATABASE postgres; --',
+        f'{TEST_PREFIX}{uuid.uuid4().hex}"; DROP DATABASE postgres; --',
+        # A well-formed product name: under test, no code path may touch the
+        # stack's or an eval's sandbox databases (#858).
+        f"{PRODUCT_PREFIX}{uuid.uuid4().hex}",
     ],
 )
 async def test_names_not_from_generate_name_are_refused(bogus: str, settings: Settings) -> None:
@@ -393,6 +404,30 @@ async def test_reclaim_orphans_drops_only_databases_no_live_source_claims(
     finally:
         await drop_database(session, sandbox_admin_url, claimed)
         await session.commit()
+
+
+@pytest.mark.requires_db
+async def test_reclaim_orphans_under_test_leaves_a_product_named_database_alone(
+    sandbox_admin_url: str, session: AsyncSession
+) -> None:
+    """The test database claims no sources, so every database `reclaim_orphans`
+    can see is an orphan to it. The stack's and an eval's must not be visible
+    (#858)."""
+    theirs = f"{PRODUCT_PREFIX}{uuid.uuid4().hex}"
+    with psycopg.connect(sandbox_admin_url, autocommit=True) as admin:
+        admin.execute(f'CREATE DATABASE "{theirs}"')
+    try:
+        reclaimed = await reclaim_orphans(session, sandbox_admin_url)
+        await session.commit()
+        assert theirs not in reclaimed
+        with psycopg.connect(sandbox_admin_url, autocommit=True) as admin:
+            row = admin.execute(
+                "SELECT count(*) FROM pg_database WHERE datname = %s", (theirs,)
+            ).fetchone()
+        assert row == (1,)
+    finally:
+        with psycopg.connect(sandbox_admin_url, autocommit=True) as admin:
+            admin.execute(f'DROP DATABASE IF EXISTS "{theirs}" WITH (FORCE)')
 
 
 @pytest.mark.requires_db

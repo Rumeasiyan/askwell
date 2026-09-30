@@ -135,3 +135,48 @@ def test_a_database_orphaned_by_a_crashed_run_is_swept_up(database_url: str) -> 
         finally:
             for name in (stale, fresh):
                 admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+
+
+def test_the_sandbox_sweep_leaves_a_database_it_did_not_create(sandbox_admin_url: str) -> None:
+    """#858: `test-db` shares the stack's sandbox instance, which holds the
+    development database's imported tables and any running eval's. An idle
+    product-named database there is not a test run's leftover, however long
+    nothing has connected to it; a crashed test run's database is.
+    """
+    import uuid
+
+    from tests.conftest_sandbox import PRODUCT_PREFIX, TEST_PREFIX, _sweep
+
+    theirs = f"{PRODUCT_PREFIX}{uuid.uuid4().hex}"
+    leftover = f"{TEST_PREFIX}{uuid.uuid4().hex}"
+
+    with psycopg.connect(sandbox_admin_url, autocommit=True) as admin:
+        for name in (theirs, leftover):
+            admin.execute(f'CREATE DATABASE "{name}"')
+        try:
+            _sweep(admin)
+            remaining = {
+                str(row[0])
+                for row in admin.execute(
+                    "SELECT datname FROM pg_database WHERE datname IN (%s, %s)",
+                    (theirs, leftover),
+                ).fetchall()
+            }
+            assert theirs in remaining, "the sweep dropped a database a test did not create"
+            assert leftover not in remaining, "a crashed run's sandbox database survived the sweep"
+        finally:
+            for name in (theirs, leftover):
+                admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+
+
+def test_the_product_does_not_enumerate_test_sandbox_databases(sandbox_admin_url: str) -> None:
+    """The product lists its databases with `LIKE 'askwell_sbx_%'`, where `_`
+    is a wildcard. If a test name matched it, a stack worker starting during
+    a test run would reclaim that run's databases as orphans."""
+    from tests.conftest_sandbox import PRODUCT_PREFIX, TEST_PREFIX
+
+    with psycopg.connect(sandbox_admin_url, autocommit=True) as admin:
+        row = admin.execute(
+            "SELECT %s LIKE %s", (f"{TEST_PREFIX}{'a' * 32}", f"{PRODUCT_PREFIX}%")
+        ).fetchone()
+    assert row == (False,)
