@@ -81,6 +81,16 @@ function global:python {
     # the Store's placeholder on a new PC.
     $global:LASTEXITCODE = $(if ($global:PythonInstalled) { 0 } else { 1 })
 }
+# "This PC has no Python but the fake one": the Windows runner has a real
+# Python on PATH, which Setup would rightly find and use, so the lookup is
+# faked for python and py and passed through for everything else.
+function global:Get-Command {
+    if ($args.Count -gt 0 -and ($args[0] -eq 'python' -or $args[0] -eq 'py')) {
+        if ($args[0] -eq 'python') { return (Microsoft.PowerShell.Core\Get-Command -Name python -CommandType Function) }
+        return
+    }
+    Microsoft.PowerShell.Core\Get-Command @args
+}
 function global:Start-Process {
     param($FilePath, $ArgumentList, [switch]$Wait, [switch]$PassThru, $Verb, $WindowStyle, $ErrorAction)
     if ("$FilePath" -match 'python-.*\.exe$') {
@@ -127,7 +137,12 @@ function Invoke-Scenario {
     $ErrorActionPreference = 'Stop'
     $ok = ($code -eq $Want) -and [bool](& $Check)
     if ($ok) { $script:Pass++; Write-Host "  ok    $Name" }
-    else { $script:Fail++; Write-Host "  FAIL  $Name (exit $code, want $Want)" }
+    else {
+        $script:Fail++
+        Write-Host "  FAIL  $Name (exit $code, want $Want)"
+        Get-Content (Join-Path $env:TEMP 'AskwellSetup.log') -ErrorAction SilentlyContinue |
+            Select-Object -Last 12 | ForEach-Object { Write-Host "        | $_" }
+    }
 }
 
 function Get-Report {
