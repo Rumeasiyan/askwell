@@ -11,7 +11,9 @@ than diagnosable.
 """
 
 import json
+import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -113,7 +115,8 @@ STALE_REASON = (
     "believing a file nothing is keeping current."
 )
 
-# The supervisor rewrites its state every 10s while running. Three missed
+# The supervisor rewrites its state every 10s while running
+# (`HEARTBEAT_SECONDS` in `deploy/inference/askwell-inference`). Three missed
 # heartbeats is stopped — long enough that a slow machine is not called dead,
 # short enough that "available" never outlives the process by much.
 #
@@ -124,7 +127,43 @@ STALE_REASON = (
 STALE_AFTER_SECONDS = 35.0
 
 
-def read(state_path: Path) -> InferenceState:
+class _Observed:
+    """When this process last saw each heartbeat change, on its own clock.
+
+    `updated_at` is written on the host; this code runs in a container whose
+    clock is Podman's VM's, and the two are different machines. On the Windows
+    VM the WSL clock ran seven hours ahead of Windows and a `ready` supervisor
+    was reported as having stopped reporting (`M11-FIX-SHELL-226`). So
+    `updated_at` is never compared with `time.time()` here. It is compared only
+    with itself: a value different from the last one read is a heartbeat, seen
+    now, on `time.monotonic()`. Stale is no change for longer than the limit.
+
+    The first sighting — the API started after the supervisor, or after one
+    was killed — counts as a change. A dead supervisor's leftover `ready` is
+    believed for at most one limit after the API starts, which is the same
+    bound a live one gets, and the alternative (calling every supervisor dead
+    until its next heartbeat) would report a working assistant as stopped on
+    every API restart.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._seen: dict[tuple[str, str], tuple[object, float]] = {}
+
+    def fresh(self, key: tuple[str, str], stamp: object, now: float) -> bool:
+        with self._lock:
+            previous = self._seen.get(key)
+            if previous is None or previous[0] != stamp:
+                self._seen[key] = (stamp, now)
+                return True
+            return now - previous[1] <= STALE_AFTER_SECONDS
+
+
+_observed = _Observed()
+_clock: Callable[[], float] = time.monotonic
+
+
+def read(state_path: Path, *, clock: Callable[[], float] | None = None) -> InferenceState:
     """The supervisor's state, or an honest statement that it has not reported.
 
     A file rather than an endpoint: the supervisor runs on the host and the API
@@ -149,22 +188,21 @@ def read(state_path: Path) -> InferenceState:
             f"{payload.get('state')!r}.",
         )
 
-    updated_at = payload.get("updated_at")
-    if state is ProcessState.READY and isinstance(updated_at, (int, float)):
-        if time.time() - float(updated_at) > STALE_AFTER_SECONDS:
-            return InferenceState(
-                state=ProcessState.STOPPED,
-                model=payload.get("model"),
-                reason=STALE_REASON,
-                restarts=int(payload.get("restarts", 0)),
-            )
+    now = (clock or _clock)()
+    if state is ProcessState.READY and not _fresh(state_path, "", payload, now):
+        return InferenceState(
+            state=ProcessState.STOPPED,
+            model=payload.get("model"),
+            reason=STALE_REASON,
+            restarts=int(payload.get("restarts", 0)),
+        )
 
     roles: dict[str, InferenceState] = {}
     published = payload.get("roles")
     if isinstance(published, dict):
         for name, entry in published.items():
             if isinstance(entry, dict):
-                roles[str(name)] = _one(entry)
+                roles[str(name)] = _one(state_path, str(name), entry, now)
 
     return InferenceState(
         state=state,
@@ -179,19 +217,29 @@ def read(state_path: Path) -> InferenceState:
     )
 
 
-def _one(entry: dict[str, Any]) -> InferenceState:
+def _fresh(state_path: Path, role: str, entry: dict[str, Any], now: float) -> bool:
+    """Whether this entry's heartbeat has changed within the limit.
+
+    An entry with no `updated_at` — a file older than the heartbeat — is not
+    judged, as before.
+    """
+    updated_at = entry.get("updated_at")
+    if not isinstance(updated_at, (int, float)):
+        return True
+    return _observed.fresh((str(state_path), role), updated_at, now)
+
+
+def _one(state_path: Path, role: str, entry: dict[str, Any], now: float) -> InferenceState:
     """One role's entry, without recursing into `roles` again."""
     try:
         state = ProcessState(str(entry.get("state")))
     except ValueError:
         state = ProcessState.STOPPED
 
-    updated_at = entry.get("updated_at")
-    if state is ProcessState.READY and isinstance(updated_at, (int, float)):
-        if time.time() - float(updated_at) > STALE_AFTER_SECONDS:
-            return InferenceState(
-                state=ProcessState.STOPPED, model=entry.get("model"), reason=STALE_REASON
-            )
+    if state is ProcessState.READY and not _fresh(state_path, role, entry, now):
+        return InferenceState(
+            state=ProcessState.STOPPED, model=entry.get("model"), reason=STALE_REASON
+        )
 
     return InferenceState(
         state=state,

@@ -8,13 +8,20 @@ the most valuable test here is the one that catches those drifting apart.
 
 import json
 import re
+import time
 from pathlib import Path
 
 import pytest
 
 from askwell.config import Settings
 from askwell.health import ComponentState, check_components
-from askwell.inference.state import InferenceState, ProcessState, read
+from askwell.inference.state import (
+    STALE_AFTER_SECONDS,
+    STALE_REASON,
+    InferenceState,
+    ProcessState,
+    read,
+)
 
 SUPERVISOR = Path(__file__).resolve().parents[2] / "deploy" / "inference" / "askwell-inference"
 
@@ -221,18 +228,125 @@ def test_a_stale_role_is_not_believed_either(tmp_path: Path) -> None:
     A supervisor killed outright cannot write anything on the way out, and one
     role's entry going stale must not read as that role being fine.
     """
-    import time
-
+    clock = FakeClock()
+    path = write_state(
+        tmp_path,
+        state="ready",
+        updated_at=1.0,
+        roles={
+            "generation": {"state": "ready", "updated_at": 1.0},
+            "embedding": {"state": "ready", "updated_at": 1.0},
+        },
+    )
+    read(path, clock=clock)
+    clock.now += STALE_AFTER_SECONDS + 1
     write_state(
         tmp_path,
         state="ready",
+        updated_at=2.0,
         roles={
-            "generation": {"state": "ready", "updated_at": time.time()},
-            "embedding": {"state": "ready", "updated_at": time.time() - 3600},
+            "generation": {"state": "ready", "updated_at": 2.0},
+            "embedding": {"state": "ready", "updated_at": 1.0},
         },
     )
-    state = read(tmp_path / "state.json")
+    state = read(path, clock=clock)
+    assert state.roles["generation"].state is ProcessState.READY
     assert state.roles["embedding"].state is ProcessState.STOPPED
+
+
+# --- freshness, on the API's own clock (M11-FIX-SHELL-226) -------------------
+
+
+class FakeClock:
+    """A monotonic clock the test moves by hand."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+SEVEN_HOURS = 7 * 3600.0
+
+
+def test_a_heartbeat_seven_hours_in_the_future_that_keeps_changing_is_fresh(
+    tmp_path: Path,
+) -> None:
+    """The Windows VM: the host's clock seven hours behind the container's.
+
+    `updated_at` is the host's; comparing it with the container's own time
+    called a `ready` supervisor dead. Only whether it changes counts.
+    """
+    clock = FakeClock()
+    ahead = time.time() + SEVEN_HOURS
+    for beat in range(10):
+        path = write_state(tmp_path, state="ready", updated_at=ahead + beat * 10)
+        assert read(path, clock=clock).state is ProcessState.READY
+        clock.now += 10
+
+
+def test_a_heartbeat_seven_hours_behind_that_keeps_changing_is_fresh(tmp_path: Path) -> None:
+    """The other direction: the old comparison called this one stale at once."""
+    clock = FakeClock()
+    behind = time.time() - SEVEN_HOURS
+    for beat in range(5):
+        path = write_state(tmp_path, state="ready", updated_at=behind + beat * 10)
+        assert read(path, clock=clock).usable
+        clock.now += 10
+
+
+def test_a_heartbeat_seven_hours_in_the_future_that_stops_changing_is_stale(
+    tmp_path: Path,
+) -> None:
+    """A future timestamp must not buy a dead supervisor seven hours of belief."""
+    clock = FakeClock()
+    path = write_state(tmp_path, state="ready", updated_at=time.time() + SEVEN_HOURS)
+    assert read(path, clock=clock).usable
+
+    clock.now += STALE_AFTER_SECONDS - 1
+    assert read(path, clock=clock).usable, "not yet past the limit"
+
+    clock.now += 2
+    state = read(path, clock=clock)
+    assert state.state is ProcessState.STOPPED
+    assert state.reason == STALE_REASON
+
+
+def test_a_supervisor_that_comes_back_is_believed_again(tmp_path: Path) -> None:
+    clock = FakeClock()
+    path = write_state(tmp_path, state="ready", updated_at=5.0)
+    read(path, clock=clock)
+    clock.now += STALE_AFTER_SECONDS + 1
+    assert not read(path, clock=clock).usable
+
+    write_state(tmp_path, state="ready", updated_at=6.0)
+    assert read(path, clock=clock).usable
+
+
+def test_the_api_started_before_the_supervisor(tmp_path: Path) -> None:
+    """No file, then a file: its first heartbeat is fresh."""
+    clock = FakeClock()
+    path = tmp_path / "state.json"
+    assert read(path, clock=clock).state is ProcessState.STOPPED
+    clock.now += 600
+    write_state(tmp_path, state="starting", updated_at=1.0)
+    assert read(path, clock=clock).state is ProcessState.STARTING
+    clock.now += 5
+    write_state(tmp_path, state="ready", updated_at=6.0)
+    assert read(path, clock=clock).usable
+
+
+def test_the_api_never_reads_the_wall_clock_for_freshness() -> None:
+    """The rule, where it is easiest to break again: `updated_at` is another
+    machine's time, and `time.time()` in the reader would compare the two."""
+    import ast
+
+    import askwell.inference.state as module
+
+    tree = ast.parse(Path(module.__file__ or "").read_text(encoding="utf-8"))
+    called = {ast.unparse(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
+    assert "time.time" not in called
 
 
 def test_a_state_file_from_before_three_roles_still_reads(tmp_path: Path) -> None:
