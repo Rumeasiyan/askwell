@@ -15,7 +15,7 @@ There is no reliable way to tell "two passages genuinely disagree on the
 asked fact" from "two passages phrase the same fact differently" without
 reading them for meaning, which is what the model is doing anyway — so, like
 `askwell.agent.partial`, detection here is prompt-driven, not a Python
-heuristic over candidate text. `prompts/conflicting_sources.v1.md` is the
+heuristic over candidate text. `prompts/conflicting_sources.v2.md` is the
 call site's prompt going forward: it is `partial_answer.v1.md`'s content in
 full — a conflicting-sources question can equally be a multi-part one — plus
 the conflict convention this ticket adds, so `split_partial_answer` still
@@ -73,10 +73,10 @@ from askwell.memory import MemoryFact, SchemaNote
 from askwell.retrieve import Candidate
 
 PROMPT_DIR = Path(__file__).parent / "prompts"
-PROMPT_VERSION = "conflicting_sources.v1"
+PROMPT_VERSION = "conflicting_sources.v2"
 PROMPT_PATH = PROMPT_DIR / f"{PROMPT_VERSION}.md"
 
-# Matches `prompts/conflicting_sources.v1.md`'s fixed line exactly, the same
+# Matches `prompts/conflicting_sources.v2.md`'s fixed line exactly, the same
 # deliberately-not-fuzzy convention `askwell.agent.partial` uses for
 # "Not covered:" — a loose match would risk pulling ordinary prose into the
 # conflict signal.
@@ -99,9 +99,21 @@ class ConflictAnswer:
         return self.topic is not None
 
 
-@lru_cache(maxsize=1)
-def _load_system_prompt() -> str:
-    return PROMPT_PATH.read_text(encoding="utf-8")
+# The memory-fact section is sent only when a `<memory-fact>` block is
+# (#908). Sent without one, a 4B model wrote about the block it was told
+# might be there — "the memory fact block was not provided" — and an empty
+# "Resolved by memory:" line, into a new user's first answer.
+_MEMORY_SECTION_RE = re.compile(
+    r"<!-- memory-fact-section -->\n(?P<body>.*?)<!-- /memory-fact-section -->\n", re.S
+)
+
+
+@lru_cache(maxsize=2)
+def _load_system_prompt(with_memory_fact: bool = False) -> str:
+    text = PROMPT_PATH.read_text(encoding="utf-8")
+    return _MEMORY_SECTION_RE.sub(
+        lambda match: match.group("body") if with_memory_fact else "", text
+    )
 
 
 def _delimit_memory_fact(memory_fact: str | None) -> str:
@@ -140,7 +152,7 @@ def compose_conflict(
     facts_start = len(candidates) + 1
     notes_start = facts_start + len(retrieved_facts)
     return ComposedPrompt(
-        system_prompt=_load_system_prompt(),
+        system_prompt=_load_system_prompt(with_memory_fact=memory_fact is not None),
         user_content=(
             f"{delimit_candidates(candidates)}{_delimit_memory_fact(memory_fact)}"
             f"{delimit_memory_facts(retrieved_facts, facts_start)}"

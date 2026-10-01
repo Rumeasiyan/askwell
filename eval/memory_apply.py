@@ -56,7 +56,7 @@ from eval.suite import Suite, Task
 # `CONFLICT_2025_PAGES`/`CONFLICT_2026_PAGES` — two documents that stay live and
 # genuinely disagree, exactly `conflicting_sources.v1.json`'s own fixtures.
 # A memory fact naming which year is "currently in force" is the documented
-# resolution path (`agent/prompts/conflicting_sources.v1.md`'s "When a memory
+# resolution path (`agent/prompts/conflicting_sources.v2.md`'s "When a memory
 # fact resolves the conflict"), not an invented mechanism for this suite.
 
 # (subject, clarification question, answer written to memory)

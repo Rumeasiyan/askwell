@@ -52,7 +52,7 @@ turn's index space, so `[N]` resolves to a memory fact or a tool result
 without a second marker syntax. `LoopResult.memory_start` is where that
 range starts, which is what `askwell.ask` resolves fact citations against.
 The prompt (`tool_loop.v2.md`) also carries the same "Not covered:" and
-"Conflicting sources on ...:" conventions `conflicting_sources.v1.md` does,
+"Conflicting sources on ...:" conventions `conflicting_sources.v2.md` does,
 so `split_partial_answer`/`split_conflict_answer` read a loop answer exactly
 as they read a single-step one.
 """

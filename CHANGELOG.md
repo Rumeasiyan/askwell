@@ -4,6 +4,12 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.25 - 2026-10-01
+
+`Fixed`: an answer where your documents disagree no longer ends with notes about a "memory fact" that does not exist (#908).
+
+- **The model is told about memory facts only when there is one.** Before, its instructions always described how to use a correction you had given Askwell, and on a clean install the first answer went on to say the "memory fact block was not provided". Measured on `conflicting_sources.v1` (3 runs per task): mean 0.40 → 0.67, worst-of-3 0.10 → 0.50. The suite's pass bar is 0.75, so it still does not pass.
+
 ## 0.9.24 - 2026-10-01
 
 `Fixed`: an answer from a spreadsheet's sheet now cites the spreadsheet (`M11-FIX-BE-231`).

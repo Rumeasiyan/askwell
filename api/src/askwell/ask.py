@@ -2453,7 +2453,7 @@ async def _run_generation(
             # cleared the threshold above (`M2-PARTIAL-BE-057`); what cleared
             # it can also disagree with itself across years of superseding
             # material (`M2-PARTIAL-BE-059`). The prompt this loads
-            # (`agent/prompts/conflicting_sources.v1.md`) answers, with
+            # (`agent/prompts/conflicting_sources.v2.md`) answers, with
             # citations, exactly what is supported, names anything uncovered
             # plainly, and presents both sides of a genuine conflict rather
             # than choosing one — an ordinary single-aspect, single-position

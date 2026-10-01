@@ -97,6 +97,7 @@ naming the actual fact — a threshold, a date, a term — never a generic line
 like "the sources disagree". This line is how the conflict is recorded, so
 write it whenever, and only whenever, a real conflict is being presented.
 
+<!-- memory-fact-section -->
 ## When a memory fact resolves the conflict
 
 If a `<memory-fact>` block is provided below the retrieved passages, it is a
@@ -106,10 +107,7 @@ Answer using the memory fact, cite it as memory rather than as a document,
 and add one line, after the rest of your answer, in exactly this form:
 
     Resolved by memory: <the fact that was in conflict>.
-
-If no `<memory-fact>` block is provided, there is nothing yet to resolve the
-conflict with — decide between the conflicting passages exactly as described
-above.
+<!-- /memory-fact-section -->
 
 ## Memory and schema notes
 
