@@ -27,7 +27,7 @@ occasional missed interruption, which the ordinary post-hoc queue still
 catches.
 
 **A shared passage is one the answer would actually rest on** (#892): a
-retrieved candidate scoring at or above the retrieval threshold, and, for a
+reranked candidate scoring at or above the retrieval threshold, and, for a
 contradiction, on the page the conflicting value was found on. Sharing a
 *document* was the rule until `0.9.22`, and on a small corpus retrieval
 reaches every document, so every pending contradiction interrupted every
@@ -115,7 +115,14 @@ async def find_blocking(
     if not rows:
         return None, 0
 
-    supporting = [c for c in candidates if candidate_score(c) >= threshold]
+    # Only reranked candidates (#910): without the reranker, scores fall back
+    # to dense similarity, which ranks almost every passage of a small,
+    # single-company corpus above the threshold — exactly the "every
+    # contradiction is relevant" failure #892 fixed. The question still names
+    # its subject, or the clarification waits in the queue.
+    supporting = [
+        c for c in candidates if c.rerank_score is not None and candidate_score(c) >= threshold
+    ]
     question_lower = question.lower()
     matches: list[BlockingClarification] = []
     for row_id, subject, row_question, options, evidence in rows:

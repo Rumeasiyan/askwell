@@ -7,6 +7,7 @@ modules honest about the wire shape they actually share (`evidence ->>
 'trigger'` in particular, added by this ticket).
 """
 
+import math
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -113,7 +114,9 @@ async def _abbreviation(session: AsyncSession, source_id: uuid.UUID) -> None:
     )
 
 
-def _candidate(filename: str, *, page: int = 1, dense_score: float = 0.9) -> Candidate:
+def _candidate(
+    filename: str, *, page: int = 1, dense_score: float = 0.9, reranked: bool = True
+) -> Candidate:
     return Candidate(
         chunk_id=uuid.uuid4(),
         document_id=uuid.uuid4(),
@@ -126,6 +129,9 @@ def _candidate(filename: str, *, page: int = 1, dense_score: float = 0.9) -> Can
         score=1.0,
         dense_score=dense_score,
         lexical_score=None,
+        # The logit whose sigmoid is `dense_score`, so `candidate_score` reads
+        # the same number either way.
+        rerank_score=math.log(dense_score / (1 - dense_score)) if reranked else None,
     )
 
 
@@ -278,18 +284,34 @@ async def test_a_contradicting_passage_below_the_threshold_does_not_block(
 
 
 @pytest.mark.asyncio
-async def test_a_contradicting_passage_at_the_threshold_blocks(session: AsyncSession) -> None:
+async def test_a_contradicting_passage_above_the_threshold_blocks(session: AsyncSession) -> None:
     await _store_hours_contradiction(session)
 
     blocking, _deferred = await find_blocking(
         session,
         "When do you close on weekdays?",
-        [_candidate("store_hours_2026.pdf", page=2, dense_score=_THRESHOLD)],
+        [_candidate("store_hours_2026.pdf", page=2, dense_score=_THRESHOLD + 0.01)],
         _THRESHOLD,
     )
 
     assert blocking is not None
     assert blocking.subject == "the store closing time"
+
+
+@pytest.mark.asyncio
+async def test_a_passage_the_reranker_never_scored_does_not_block(session: AsyncSession) -> None:
+    """#910: a rerank that timed out leaves dense similarity, which puts the
+    store-hours page above the threshold for a question about notice."""
+    await _store_hours_contradiction(session)
+
+    blocking, _deferred = await find_blocking(
+        session,
+        "What is the standard resignation notice period at Meridian Loom?",
+        [_candidate("store_hours_2026.pdf", page=2, dense_score=0.8, reranked=False)],
+        _THRESHOLD,
+    )
+
+    assert blocking is None
 
 
 @pytest.mark.asyncio
