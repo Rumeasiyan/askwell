@@ -2893,6 +2893,116 @@ async def test_skipping_an_inline_clarification_states_the_assumption_used(
     _truncate(database_url)
 
 
+_NOTICE_CONTRADICTION: dict[str, Any] = {
+    "kind": "contradiction",
+    "trigger": "contradiction",
+    "passages": [
+        {"document": "handbook-2024.pdf", "value": "90 days", "page": 1, "text": "..."},
+        {"document": "policy-2025.pdf", "value": "45 days", "page": 2, "text": "..."},
+    ],
+}
+
+
+async def _paused_notice_turn(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    database_url: str,
+    factory: async_sessionmaker[AsyncSession],
+) -> tuple[Any, asyncio.Task[None], uuid.UUID]:
+    _truncate(database_url)
+    vector = _vector(0.0)
+    _seed_chunk(database_url, "Notice must be given ninety days in advance.", vector)
+    clarification_id = _seed_pending_clarification(
+        database_url, subject="the notice period", evidence=_NOTICE_CONTRADICTION
+    )
+    fake = _FakeInferenceClient(
+        settings, tokens=["Notice must be given ninety days in advance [1]."], vector=vector
+    )
+    monkeypatch.setattr(ask_module, "InferenceClient", lambda _settings: fake)
+    conversation_id = uuid.uuid4()
+    with psycopg.connect(database_url, autocommit=True) as db:
+        db.execute("INSERT INTO conversations (id) VALUES (%s)", (conversation_id,))
+    turn, task = await _run_turn_until_clarification(
+        settings, factory, fake, "What is the notice period?", conversation_id
+    )
+    return turn, task, clarification_id
+
+
+async def test_a_clarification_answered_from_the_queue_resumes_the_paused_turn(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    database_url: str,
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """#893: the Clarifications screen answers the same row the turn is
+    paused on, and never calls `clarify/resolve` — the turn reads it back."""
+    monkeypatch.setattr(ask_module, "CLARIFY_POLL_SECONDS", 0.05)
+    turn, task, clarification_id = await _paused_notice_turn(
+        settings, monkeypatch, database_url, factory
+    )
+    from askwell.review import answer_clarification
+
+    async with factory() as db:
+        await answer_clarification(db, clarification_id, "handbook-2024.pdf")
+        await db.commit()
+
+    await asyncio.wait_for(task, timeout=10)
+    assert turn.status == "completed"
+    assert turn.resolved_clarify_id == clarification_id
+    assert any(e.kind == "clarification_resolved" for e in turn.events)
+
+    _truncate(database_url)
+
+
+async def test_a_paused_turn_nobody_is_watching_stops_and_frees_its_permit(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    database_url: str,
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """#893: a closed window must not hold a generation permit until
+    Askwell restarts. The clarification itself stays pending in the queue."""
+    monkeypatch.setattr(ask_module, "CLARIFY_UNATTENDED_SECONDS", 0.3)
+    turn, task, clarification_id = await _paused_notice_turn(
+        settings, monkeypatch, database_url, factory
+    )
+
+    await asyncio.wait_for(task, timeout=10)
+    assert turn.status == "stopped"
+    semaphore = ask_module.generation_semaphore(settings)
+    assert semaphore._value == settings.generation_max_concurrent
+    with psycopg.connect(database_url, autocommit=True) as db:
+        status = db.execute(
+            "SELECT status FROM clarifications WHERE id = %s", (clarification_id,)
+        ).fetchone()[0]
+    assert status == "pending"
+
+    _truncate(database_url)
+
+
+async def test_a_paused_turn_with_a_browser_attached_keeps_waiting(
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    database_url: str,
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    monkeypatch.setattr(ask_module, "CLARIFY_UNATTENDED_SECONDS", 0.3)
+    turn, task, _clarification_id = await _paused_notice_turn(
+        settings, monkeypatch, database_url, factory
+    )
+    turn.listeners = 1
+
+    await asyncio.sleep(0.8)
+    assert not task.done()
+
+    turn.clarify_result = {"skipped": True, "answer": None}
+    turn.clarify_event.set()
+    await asyncio.wait_for(task, timeout=10)
+    assert turn.status == "completed"
+
+    _truncate(database_url)
+
+
 # --- routing between documents and tables (`M10-FIX-BE-220`) ----------------
 
 

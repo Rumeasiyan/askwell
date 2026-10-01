@@ -368,6 +368,22 @@ def test_a_local_filesystem_produces_no_warning() -> None:
     assert roots.warning_for(None) is None
 
 
+def test_a_windows_folder_reached_over_9p_is_not_called_a_network_share() -> None:
+    """#897: 9p is how every Windows folder reaches Podman's WSL machine,
+    the user's own Documents included."""
+    assert roots.warning_for("9p", "C:\\Users\\anna\\Documents") is None
+    assert not roots.is_network_share("9p", "C:\\Users\\anna\\Documents")
+
+
+def test_9p_on_linux_is_still_a_network_share() -> None:
+    assert roots.warning_for("9p", "/home/anna/share") is not None
+    assert roots.is_network_share("9p", "/home/anna/share")
+
+
+def test_a_windows_folder_on_a_real_network_filesystem_still_warns() -> None:
+    assert roots.warning_for("cifs", "C:\\Users\\anna\\Documents") is not None
+
+
 def test_a_network_share_is_permitted_rather_than_refused() -> None:
     """Permitted, with a warning. Refusing would exclude a real way of working."""
     assert a_root("/mnt/cases", "cifs").network_share

@@ -156,6 +156,12 @@ _UNCOVERED_LINE_RE = re.compile(
 _UNCOVERED_OPENERS = ("Not covered:", "**Not covered:**", "**Not covered**:", "**Not covered:")
 
 
+# What a small model writes when nothing was uncovered and it filled the
+# line in anyway (#894). Dropped: "Not covered: None." read back by the
+# screen is an uncovered aspect called "None".
+_EMPTY_ASPECTS = frozenset({"none", "nothing", "n/a", "na", "-", "none so far"})
+
+
 def _aspect_key(aspect: str) -> str:
     return aspect.strip().strip("*").strip().rstrip(".").strip().casefold()
 
@@ -175,7 +181,7 @@ class _UncoveredLineFilter:
             return line + newline
         aspect = match.group("aspect").strip().strip("*").strip()
         key = _aspect_key(aspect)
-        if key and key in self._seen:
+        if key in _EMPTY_ASPECTS or (key and key in self._seen):
             return ""
         if key:
             self._seen.add(key)
