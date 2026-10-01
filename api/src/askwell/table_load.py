@@ -1402,3 +1402,200 @@ async def sweep_workbook_tables(
             log.info("workbook_tables_dropped", source_id=str(source_id), tables=orphans)
             dropped += len(orphans)
     return dropped
+
+
+# --- workbooks indexed before their sheets became tables (#850, #895) ---------
+
+SANDBOX_DATABASE_LOST = "sandbox_database_lost"
+
+
+async def forget_lost_databases(
+    factory: async_sessionmaker[AsyncSession], settings: Settings
+) -> list[uuid.UUID]:
+    """Let go of every folder's sandbox database that no longer exists.
+    `M11-FIX-ING-230`, issue #895. Called at worker start, before
+    `sweep_workbook_tables`, which would otherwise fail connecting to it.
+
+    Losing the sandbox volume while keeping the main one leaves a folder
+    whose `sandbox_db` names nothing, and whose workbooks are all marked
+    loaded. Its inferred notes describe tables that are not there, so they
+    are retired, and `sandbox_db` is cleared so the next load creates a new
+    database. The `sandbox_database_lost` decision is what makes the folder's
+    workbooks eligible for `backfill_workbook_tables` again: a load decision
+    older than it no longer counts. Recorded in the same transaction as the
+    clear, so a stop between the two cannot strand a workbook.
+
+    A `dump` or `csv` source whose database is gone is not handled here —
+    its tables cannot be rebuilt from anything Askwell holds (#895).
+    """
+    admin_url = settings.sandbox_database_url.get_secret_value()
+    known = set(await asyncio.to_thread(sandbox.known_databases, admin_url))
+    async with session_scope(factory) as session:
+        sources = (
+            await session.execute(
+                text(
+                    "SELECT id, sandbox_db FROM sources WHERE kind = 'file' "
+                    "AND sandbox_db IS NOT NULL AND status != 'deleted'"
+                )
+            )
+        ).all()
+
+    lost: list[uuid.UUID] = []
+    for source_id, database in sources:
+        if database in known:
+            continue
+        async with session_scope(factory) as session:
+            await session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext('workbook_tables'), hashtext(:id))"),
+                {"id": str(source_id)},
+            )
+            cleared = await session.execute(
+                text(
+                    "UPDATE sources SET sandbox_db = NULL WHERE id = :id AND sandbox_db = :db "
+                    "RETURNING id"
+                ),
+                {"id": source_id, "db": database},
+            )
+            if cleared.first() is None:
+                continue
+            # Every table a folder has is a workbook's sheet.
+            await _forget_workbook_notes(session, source_id, "")
+            await audit.record(
+                session,
+                Store.DECISIONS,
+                SANDBOX_DATABASE_LOST,
+                {"source_id": str(source_id), "database": database},
+            )
+        log.warning("sandbox_database_lost", source_id=str(source_id), database=database)
+        lost.append(uuid.UUID(str(source_id)))
+    return lost
+
+
+async def _workbooks_without_tables(session: AsyncSession) -> list[tuple[uuid.UUID, uuid.UUID]]:
+    """`(source_id, document_id)` for every live, `ready` workbook with no
+    load decision since its folder last lost its database.
+
+    Either decision counts. A workbook whose sheets were all skipped is
+    recorded `workbook_tables_loaded` with no tables, so it is not rescanned
+    at every start; one that failed is recorded `workbook_tables_failed`, and
+    is retried by indexing it again, as any failed load is.
+    """
+    rows = await session.execute(
+        text(
+            "SELECT d.source_id, d.id FROM documents d JOIN sources s ON s.id = d.source_id "
+            "WHERE d.mime = :mime AND d.status = 'ready' AND d.deleted_at IS NULL "
+            "AND d.superseded_by IS NULL AND s.kind = 'file' AND s.status != 'deleted' "
+            "ORDER BY d.source_id, d.added_at"
+        ),
+        {"mime": WORKBOOK_MIME},
+    )
+    candidates = [(uuid.UUID(str(source)), uuid.UUID(str(document))) for source, document in rows]
+    if not candidates:
+        return []
+    # One pass over the decisions store, whatever its size, rather than one
+    # per workbook: nothing indexes a payload field.
+    decided = {
+        str(document): occurred_at
+        for document, occurred_at in await session.execute(
+            text(
+                "SELECT payload->>'document_id', max(occurred_at) FROM audit_decisions "
+                "WHERE kind IN (:loaded, :failed) GROUP BY 1"
+            ),
+            {"loaded": WORKBOOK_TABLES_LOADED, "failed": WORKBOOK_TABLES_FAILED},
+        )
+    }
+    lost = {
+        str(source): occurred_at
+        for source, occurred_at in await session.execute(
+            text(
+                "SELECT payload->>'source_id', max(occurred_at) FROM audit_decisions "
+                "WHERE kind = :lost GROUP BY 1"
+            ),
+            {"lost": SANDBOX_DATABASE_LOST},
+        )
+    }
+    eligible: list[tuple[uuid.UUID, uuid.UUID]] = []
+    for source_id, document_id in candidates:
+        at = decided.get(str(document_id))
+        since = lost.get(str(source_id))
+        if at is None or (since is not None and at < since):
+            eligible.append((source_id, document_id))
+    return eligible
+
+
+async def backfill_workbook_tables(
+    factory: async_sessionmaker[AsyncSession], settings: Settings
+) -> int:
+    """Load the tables of every workbook indexed before its sheets became
+    tables. `M11-FIX-ING-230`, issue #850. Called at worker start, after
+    `forget_lost_databases` and `sweep_workbook_tables`.
+
+    A sheet's tables load only when its workbook is ingested
+    (`M11-FIX-ING-224`), so without this a workbook added before `0.9.12`
+    has none until someone happens to re-index, and nothing tells them to.
+    Only the tables load — its passages and embeddings are left alone. Each
+    load records a decision, which is what stops the next start doing it
+    again, so the work is bounded by the number of workbooks and happens
+    once.
+
+    Raises when the sandbox instance cannot be reached, checked before every
+    workbook: `load_workbook_tables` would record that as the workbook's
+    failure, and a sandbox that is merely not up yet is a reason to wait for
+    the next start, not a fact about the file. A workbook whose file cannot
+    be read right now is skipped the same way, recording nothing. So is one
+    deleted after the scan.
+    Returns how many workbooks were loaded.
+    """
+    admin_url = settings.sandbox_database_url.get_secret_value()
+    async with session_scope(factory) as session:
+        pending = await _workbooks_without_tables(session)
+    loaded = 0
+    touched: set[uuid.UUID] = set()
+    try:
+        for source_id, document_id in pending:
+            await asyncio.to_thread(sandbox.known_databases, admin_url)
+            async with session_scope(factory) as session:
+                live = (
+                    await session.execute(
+                        text(
+                            "SELECT path FROM documents WHERE id = :id AND deleted_at IS NULL "
+                            "AND superseded_by IS NULL AND status = 'ready'"
+                        ),
+                        {"id": document_id},
+                    )
+                ).first()
+            if live is None:
+                continue
+            if not await asyncio.to_thread(Path(paths.to_container(str(live[0]))).is_file):
+                # Not readable from here now — a folder outside the mount, a
+                # drive not plugged in. Like a sandbox not up yet, that is a
+                # reason to try at the next start, not the workbook's failure.
+                log.info(
+                    "workbook_backfill_deferred",
+                    source_id=str(source_id),
+                    document_id=str(document_id),
+                    reason="file not readable",
+                )
+                continue
+            outcome = await load_workbook_tables(factory, settings, source_id, document_id)
+            log.info(
+                "workbook_tables_backfilled",
+                source_id=str(source_id),
+                document_id=str(document_id),
+                tables=len(outcome.tables),
+                failure=outcome.failure,
+            )
+            loaded += 1
+            touched.add(source_id)
+    finally:
+        # Nothing is indexing, so nothing else refreshes the folder: a load that
+        # failed puts it in attention now, as `reload_source` does — including
+        # the folders loaded before the sandbox went away mid-way.
+        from askwell import ingest
+
+        for source_id in touched:
+            async with session_scope(factory) as session:
+                await ingest.refresh_source(
+                    session, source_id, settings.ocr_confidence_threshold, settings
+                )
+    return loaded

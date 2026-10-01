@@ -480,11 +480,19 @@ async def _reclaim_sandbox_orphans(
             interrupted = await dump_import.reclaim_interrupted(session, admin_url)
         async with session_scope(sessions) as session:
             orphaned = await sandbox.reclaim_orphans(session, admin_url)
+        # A folder whose database is gone (#895), before the sweep connects
+        # to it.
+        await table_load.forget_lost_databases(sessions, settings)
         # Tables a deleted workbook left in its folder's database (#852).
         await table_load.sweep_workbook_tables(sessions, settings)
     except Exception as error:  # the sandbox instance may not be up yet
         log.warning("sandbox_reclaim_deferred", error=f"{type(error).__name__}: {error}")
         return ()
+    try:
+        # Workbooks indexed before their sheets became tables (#850).
+        await table_load.backfill_workbook_tables(sessions, settings)
+    except Exception as error:  # the sandbox went away mid-way: next start
+        log.warning("workbook_backfill_deferred", error=f"{type(error).__name__}: {error}")
     return [str(source_id) for source_id in interrupted] + list(orphaned)
 
 

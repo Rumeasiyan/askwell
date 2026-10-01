@@ -16,6 +16,7 @@ import openpyxl
 import psycopg
 import pytest
 import pytest_asyncio
+from pydantic import SecretStr
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -1347,3 +1348,257 @@ async def test_a_newer_version_of_the_workbook_hides_the_older_versions_note(
     async with factory() as session:
         snapshot = await ingest.snapshot(session, table_settings)
     assert snapshot["sheet_notes"] == []
+
+
+# --- workbooks indexed before their sheets became tables (`M11-FIX-ING-230`) -
+
+
+async def _indexed_before_tables(
+    factory: async_sessionmaker[AsyncSession], source_id: uuid.UUID, path: Path
+) -> uuid.UUID:
+    """A workbook `ready` before `0.9.12`: indexed, with no load decision."""
+    document_id = await _workbook_document(factory, source_id, path)
+    async with factory() as session:
+        await session.execute(
+            text("UPDATE documents SET status = 'ready' WHERE id = :id"), {"id": document_id}
+        )
+        await session.commit()
+    return document_id
+
+
+async def test_a_workbook_indexed_before_its_sheets_became_tables_gets_them_at_start(
+    factory: async_sessionmaker[AsyncSession], table_settings: Settings, tmp_path: Path
+) -> None:
+    from askwell.table_load import backfill_workbook_tables
+
+    root = tmp_path / "work"
+    workbook = root / "figures.xlsx"
+    _write_workbook(workbook, {"Figures": _FIGURES})
+    source_id = await _folder_source(factory, root)
+    document_id = await _indexed_before_tables(factory, source_id, workbook)
+
+    assert await backfill_workbook_tables(factory, table_settings) == 1
+
+    status, database = await _source_row(factory, source_id)
+    assert status == "ready"
+    assert database is not None
+    assert _sandbox_tables(table_settings, database) == {
+        "figures_xlsx_figures": "askwell workbook: figures.xlsx"
+    }
+    [loaded] = await _audit(factory, WORKBOOK_TABLES_LOADED)
+    assert loaded["document_id"] == str(document_id)
+    async with factory() as session:
+        # No re-embedding: the document is left exactly as indexed.
+        document_status = (
+            await session.execute(
+                text("SELECT status FROM documents WHERE id = :id"), {"id": document_id}
+            )
+        ).scalar_one()
+    assert document_status == "ready"
+
+    # Idempotent: the next start finds nothing to do.
+    assert await backfill_workbook_tables(factory, table_settings) == 0
+    assert len(await _audit(factory, WORKBOOK_TABLES_LOADED)) == 1
+
+
+async def test_a_workbook_whose_sheets_were_all_skipped_is_not_rescanned_at_every_start(
+    factory: async_sessionmaker[AsyncSession], table_settings: Settings, tmp_path: Path
+) -> None:
+    from askwell.table_load import backfill_workbook_tables
+
+    root = tmp_path / "work"
+    workbook = root / "raw.xlsx"
+    _write_workbook(workbook, {"Raw": [[1, 2], [3, 4], [5, 6]]})
+    source_id = await _folder_source(factory, root)
+    document_id = await _indexed_before_tables(factory, source_id, workbook)
+
+    assert await backfill_workbook_tables(factory, table_settings) == 1
+    # Nothing loadable, so no database — but the decision is the marker.
+    assert (await _source_row(factory, source_id))[1] is None
+    [loaded] = await _audit(factory, WORKBOOK_TABLES_LOADED)
+    assert loaded["tables"] == []
+    failure, skipped = await _sheet_outcome(factory, document_id)
+    assert failure is None
+    assert [item["sheet"] for item in skipped] == ["Raw"]  # type: ignore[union-attr]
+
+    assert await backfill_workbook_tables(factory, table_settings) == 0
+    assert len(await _audit(factory, WORKBOOK_TABLES_LOADED)) == 1
+
+
+async def test_the_backfill_leaves_failed_deleted_superseded_and_unfinished_workbooks_alone(
+    factory: async_sessionmaker[AsyncSession], table_settings: Settings, tmp_path: Path
+) -> None:
+    from askwell.table_load import backfill_workbook_tables
+
+    root = tmp_path / "work"
+    workbook = root / "figures.xlsx"
+    _write_workbook(workbook, {"Figures": _FIGURES})
+    source_id = await _folder_source(factory, root)
+    failed = await _indexed_before_tables(factory, source_id, workbook)
+    async with factory() as session:
+        await set_dump_size_cap_bytes(session, 1024)
+        await session.commit()
+    assert (await load_workbook_tables(factory, table_settings, source_id, failed)).failure
+    async with factory() as session:
+        await set_dump_size_cap_bytes(session, 1024 * 1024 * 1024)
+        await session.commit()
+    deleted = await _indexed_before_tables(factory, source_id, workbook)
+    superseded = await _indexed_before_tables(factory, source_id, workbook)
+    unfinished = await _workbook_document(factory, source_id, workbook)  # still indexing
+    async with factory() as session:
+        await session.execute(
+            text("UPDATE documents SET deleted_at = now(), status = 'deleted' WHERE id = :id"),
+            {"id": deleted},
+        )
+        await session.execute(
+            text("UPDATE documents SET superseded_by = :newer WHERE id = :older"),
+            {"newer": unfinished, "older": superseded},
+        )
+        await session.commit()
+
+    assert await backfill_workbook_tables(factory, table_settings) == 0
+    assert await _audit(factory, WORKBOOK_TABLES_LOADED) == []
+    assert len(await _audit(factory, WORKBOOK_TABLES_FAILED)) == 1
+
+
+async def test_a_workbook_deleted_between_the_scan_and_the_load_is_not_loaded(
+    factory: async_sessionmaker[AsyncSession],
+    table_settings: Settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from askwell import table_load
+
+    root = tmp_path / "work"
+    workbook = root / "figures.xlsx"
+    _write_workbook(workbook, {"Figures": _FIGURES})
+    source_id = await _folder_source(factory, root)
+    document_id = await _indexed_before_tables(factory, source_id, workbook)
+
+    scan = table_load._workbooks_without_tables
+
+    async def scan_then_delete(
+        session: AsyncSession,
+    ) -> list[tuple[uuid.UUID, uuid.UUID]]:
+        found = await scan(session)
+        async with factory() as other:
+            await other.execute(
+                text("UPDATE documents SET deleted_at = now(), status = 'deleted' WHERE id = :id"),
+                {"id": document_id},
+            )
+            await other.commit()
+        return found
+
+    monkeypatch.setattr(table_load, "_workbooks_without_tables", scan_then_delete)
+
+    assert await table_load.backfill_workbook_tables(factory, table_settings) == 0
+    # Nothing created, nothing recorded: a deleted workbook is not a failure.
+    assert (await _source_row(factory, source_id))[1] is None
+    assert await _audit(factory, WORKBOOK_TABLES_LOADED) == []
+    assert await _audit(factory, WORKBOOK_TABLES_FAILED) == []
+
+
+async def test_a_sandbox_that_is_not_up_at_worker_start_defers_the_backfill_not_fails_it(
+    factory: async_sessionmaker[AsyncSession],
+    table_settings: Settings,
+    tmp_path: Path,
+    database_url: str,
+) -> None:
+    from askwell import worker
+    from askwell.table_load import backfill_workbook_tables
+
+    root = tmp_path / "work"
+    workbook = root / "figures.xlsx"
+    _write_workbook(workbook, {"Figures": _FIGURES})
+    source_id = await _folder_source(factory, root)
+    await _indexed_before_tables(factory, source_id, workbook)
+    down = table_settings.model_copy(
+        update={"sandbox_database_url": SecretStr("postgresql://x:x@127.0.0.1:1/askwell_sandbox")}
+    )
+
+    assert await worker._reclaim_sandbox_orphans(factory, down) == ()
+    assert await _audit(factory, WORKBOOK_TABLES_FAILED) == []
+    assert await _audit(factory, WORKBOOK_TABLES_LOADED) == []
+
+    # The next start, with the sandbox up, does it.
+    assert await backfill_workbook_tables(factory, table_settings) == 1
+    assert len(await _audit(factory, WORKBOOK_TABLES_LOADED)) == 1
+
+
+async def test_a_folder_whose_sandbox_database_is_gone_gets_its_tables_back(
+    factory: async_sessionmaker[AsyncSession], table_settings: Settings, tmp_path: Path
+) -> None:
+    """#895. A workbook marked loaded into a database that no longer exists
+    is eligible again, once, and the folder gets a new database."""
+    from askwell import sandbox
+    from askwell.table_load import (
+        SANDBOX_DATABASE_LOST,
+        backfill_workbook_tables,
+        forget_lost_databases,
+    )
+
+    root = tmp_path / "work"
+    workbook = root / "figures.xlsx"
+    _write_workbook(workbook, {"Figures": _FIGURES})
+    source_id = await _folder_source(factory, root)
+    document_id = await _indexed_before_tables(factory, source_id, workbook)
+    await load_workbook_tables(factory, table_settings, source_id, document_id)
+    _, lost = await _source_row(factory, source_id)
+    assert lost is not None
+    admin_url = table_settings.sandbox_database_url.get_secret_value()
+    async with factory() as session:
+        await sandbox.drop_database(session, admin_url, lost, reason="test")
+        await session.commit()
+
+    assert await forget_lost_databases(factory, table_settings) == [source_id]
+    status, database = await _source_row(factory, source_id)
+    assert (status, database) == ("ready", None)
+    [recorded] = await _audit(factory, SANDBOX_DATABASE_LOST)
+    assert recorded == {"source_id": str(source_id), "database": lost}
+    async with factory() as session:
+        inferred = (
+            await session.execute(
+                text(
+                    "SELECT count(*) FROM schema_notes "
+                    "WHERE source_id = :id AND origin = 'inferred'"
+                ),
+                {"id": source_id},
+            )
+        ).scalar_one()
+    # No note points SQL generation at a table that is not there.
+    assert inferred == 0
+
+    assert await backfill_workbook_tables(factory, table_settings) == 1
+    _, database = await _source_row(factory, source_id)
+    assert database is not None and database != lost
+    assert _sandbox_tables(table_settings, database) == {
+        "figures_xlsx_figures": "askwell workbook: figures.xlsx"
+    }
+
+    # Once: nothing more is lost, and nothing is loaded again.
+    assert await forget_lost_databases(factory, table_settings) == []
+    assert await backfill_workbook_tables(factory, table_settings) == 0
+
+
+async def test_a_workbook_whose_file_cannot_be_read_at_start_is_deferred_not_failed(
+    factory: async_sessionmaker[AsyncSession], table_settings: Settings, tmp_path: Path
+) -> None:
+    """A folder outside the mount, or a drive not plugged in: the next start
+    tries again, rather than a failure stopping it for good."""
+    from askwell.table_load import backfill_workbook_tables
+
+    root = tmp_path / "work"
+    workbook = root / "figures.xlsx"
+    _write_workbook(workbook, {"Figures": _FIGURES})
+    source_id = await _folder_source(factory, root)
+    await _indexed_before_tables(factory, source_id, workbook)
+    hidden = root.with_name("elsewhere")
+    root.rename(hidden)
+
+    assert await backfill_workbook_tables(factory, table_settings) == 0
+    assert await _audit(factory, WORKBOOK_TABLES_FAILED) == []
+    assert await _audit(factory, WORKBOOK_TABLES_LOADED) == []
+
+    hidden.rename(root)
+    assert await backfill_workbook_tables(factory, table_settings) == 1
+    assert len(await _audit(factory, WORKBOOK_TABLES_LOADED)) == 1
