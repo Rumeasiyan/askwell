@@ -19,12 +19,19 @@ place. Those two are different: an unresolved "which source is current"
 question changes which fact the answer would state, not just how well it is
 explained.
 
-**Relevance is exact-subject-or-shared-document, not semantic.** The same
+**Relevance is exact-subject-or-shared-passage, not semantic.** The same
 reasoning `askwell.clarify._known_facts`'s own docstring gives for exact
 subject matching applies here even more: a near-match interrupting a
 question the ambiguity has nothing to do with is a worse failure than an
 occasional missed interruption, which the ordinary post-hoc queue still
 catches.
+
+**A shared passage is one the answer would actually rest on** (#892): a
+retrieved candidate scoring at or above the retrieval threshold, and, for a
+contradiction, on the page the conflicting value was found on. Sharing a
+*document* was the rule until `0.9.22`, and on a small corpus retrieval
+reaches every document, so every pending contradiction interrupted every
+question — store closing hours stopped a question about notice periods.
 """
 
 import uuid
@@ -34,7 +41,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from askwell.retrieve import Candidate
+from askwell.retrieve import Candidate, candidate_score
 
 # `clarify.py`'s own `_TRIGGER_PRIORITY` ranks these two ahead of a
 # vocabulary gap or a scan-quality note for the same reason: the wrong
@@ -51,27 +58,43 @@ class BlockingClarification:
     evidence: dict[str, Any]
 
 
-def _named_documents(evidence: dict[str, Any], options: list[str] | None) -> set[str]:
+def _on_page(candidate: Candidate, page: Any) -> bool:
+    # A passage or candidate with no page (a sheet, a text file) can only be
+    # matched by its document.
+    if not isinstance(page, int) or candidate.page_from is None:
+        return True
+    page_to = candidate.page_to if candidate.page_to is not None else candidate.page_from
+    return candidate.page_from <= page <= page_to
+
+
+def _rests_on(
+    evidence: dict[str, Any], options: list[str] | None, supporting: list[Candidate]
+) -> bool:
+    """Whether one of the passages this answer would compose from is what
+    the clarification is about."""
     if evidence.get("kind") == "contradiction":
-        return {
-            passage.get("document")
+        return any(
+            candidate.filename == passage.get("document")
+            and _on_page(candidate, passage.get("page"))
             for passage in evidence.get("passages", [])
-            if passage.get("document")
-        }
-    return set(options or [])
+            for candidate in supporting
+        )
+    named = set(options or [])
+    return any(candidate.filename in named for candidate in supporting)
 
 
 async def find_blocking(
-    session: AsyncSession, question: str, candidates: list[Candidate]
+    session: AsyncSession, question: str, candidates: list[Candidate], threshold: float
 ) -> tuple[BlockingClarification | None, int]:
     """The highest-ranked still-pending contradiction or document-identity
     clarification relevant to this question, plus how many other relevant
     ones exist beyond it.
 
     Relevant means the clarification's own subject is named in the
-    question, or one of the documents its evidence names was actually
-    retrieved for this question — either is enough to say the answer
-    depends on it.
+    question, or a passage it is about was retrieved for this question at
+    or above `threshold` — either is enough to say the answer depends on
+    it. A retrieved passage from the same document, but a different page,
+    is not (#892).
 
     Only the first match interrupts. A turn with more than one relevant
     ambiguity defers the rest to the queue rather than asking in sequence
@@ -92,13 +115,13 @@ async def find_blocking(
     if not rows:
         return None, 0
 
-    candidate_filenames = {candidate.filename for candidate in candidates}
+    supporting = [c for c in candidates if candidate_score(c) >= threshold]
     question_lower = question.lower()
     matches: list[BlockingClarification] = []
     for row_id, subject, row_question, options, evidence in rows:
         related = subject.lower() in question_lower
         if not related:
-            related = bool(_named_documents(evidence, options) & candidate_filenames)
+            related = _rests_on(evidence, options, supporting)
         if related:
             matches.append(
                 BlockingClarification(

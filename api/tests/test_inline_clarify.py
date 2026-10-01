@@ -113,7 +113,7 @@ async def _abbreviation(session: AsyncSession, source_id: uuid.UUID) -> None:
     )
 
 
-def _candidate(filename: str) -> Candidate:
+def _candidate(filename: str, *, page: int = 1, dense_score: float = 0.9) -> Candidate:
     return Candidate(
         chunk_id=uuid.uuid4(),
         document_id=uuid.uuid4(),
@@ -121,10 +121,10 @@ def _candidate(filename: str) -> Candidate:
         anchor_kind="page",
         content="irrelevant",
         heading=None,
-        page_from=1,
-        page_to=1,
+        page_from=page,
+        page_to=page,
         score=1.0,
-        dense_score=0.9,
+        dense_score=dense_score,
         lexical_score=None,
     )
 
@@ -146,7 +146,10 @@ async def test_a_contradiction_relevant_to_the_question_blocks(session: AsyncSes
     await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     blocking, deferred = await find_blocking(
-        session, "How much notice must I give?", [_candidate("handbook-2024.pdf")]
+        session,
+        "How much notice must I give?",
+        [_candidate("handbook-2024.pdf", page=3)],
+        _THRESHOLD,
     )
 
     assert blocking is not None
@@ -170,7 +173,7 @@ async def test_subject_named_in_the_question_also_matches(session: AsyncSession)
     # No overlap with retrieved candidates at all, but the question names the
     # subject directly — either signal is enough (this module's own docstring).
     blocking, _deferred = await find_blocking(
-        session, "What is the notice period?", [_candidate("unrelated.pdf")]
+        session, "What is the notice period?", [_candidate("unrelated.pdf")], _THRESHOLD
     )
 
     assert blocking is not None
@@ -193,7 +196,10 @@ async def test_document_identity_relevant_to_retrieved_documents_blocks(
     await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     blocking, _deferred = await find_blocking(
-        session, "What do the contract terms say?", [_candidate("contract-v2-FINAL.pdf")]
+        session,
+        "What do the contract terms say?",
+        [_candidate("contract-v2-FINAL.pdf")],
+        _THRESHOLD,
     )
 
     assert blocking is not None
@@ -215,11 +221,100 @@ async def test_an_unrelated_pending_contradiction_does_not_block(session: AsyncS
     await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     blocking, deferred = await find_blocking(
-        session, "What is the office address?", [_candidate("other.pdf")]
+        session, "What is the office address?", [_candidate("other.pdf")], _THRESHOLD
     )
 
     assert blocking is None
     assert deferred == 0
+
+
+async def _store_hours_contradiction(session: AsyncSession) -> None:
+    source_id = await _source(session)
+    old = await _document(
+        session, source_id, "store_hours_2025.pdf", added_at=datetime(2025, 1, 10, tzinfo=UTC)
+    )
+    new = await _document(
+        session, source_id, "store_hours_2026.pdf", added_at=datetime(2026, 1, 10, tzinfo=UTC)
+    )
+    await _page(session, old, 1, "Welcome to Meridian Loom.")
+    await _page(session, old, 2, "The store closing time is 8 PM on weekdays.")
+    await _page(session, new, 1, "Welcome to Meridian Loom.")
+    await _page(session, new, 2, "The store closing time is 9 PM on weekdays.")
+    await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
+
+
+@pytest.mark.asyncio
+async def test_a_retrieved_document_on_another_page_does_not_block(session: AsyncSession) -> None:
+    """#892: on a small corpus retrieval reaches every document, so the
+    contradicting documents being among the candidates says nothing about
+    whether the answer depends on the contradiction."""
+    await _store_hours_contradiction(session)
+
+    blocking, deferred = await find_blocking(
+        session,
+        "What is the standard resignation notice period at Meridian Loom?",
+        [_candidate("store_hours_2025.pdf", page=1), _candidate("store_hours_2026.pdf", page=1)],
+        _THRESHOLD,
+    )
+
+    assert blocking is None
+    assert deferred == 0
+
+
+@pytest.mark.asyncio
+async def test_a_contradicting_passage_below_the_threshold_does_not_block(
+    session: AsyncSession,
+) -> None:
+    await _store_hours_contradiction(session)
+
+    blocking, _deferred = await find_blocking(
+        session,
+        "What is the standard resignation notice period at Meridian Loom?",
+        [_candidate("store_hours_2026.pdf", page=2, dense_score=_THRESHOLD - 0.2)],
+        _THRESHOLD,
+    )
+
+    assert blocking is None
+
+
+@pytest.mark.asyncio
+async def test_a_contradicting_passage_at_the_threshold_blocks(session: AsyncSession) -> None:
+    await _store_hours_contradiction(session)
+
+    blocking, _deferred = await find_blocking(
+        session,
+        "When do you close on weekdays?",
+        [_candidate("store_hours_2026.pdf", page=2, dense_score=_THRESHOLD)],
+        _THRESHOLD,
+    )
+
+    assert blocking is not None
+    assert blocking.subject == "the store closing time"
+
+
+@pytest.mark.asyncio
+async def test_a_document_identity_retrieved_below_the_threshold_does_not_block(
+    session: AsyncSession,
+) -> None:
+    source_id = await _source(session)
+    old = await _document(
+        session, source_id, "contract-v1.pdf", added_at=datetime(2025, 1, 1, tzinfo=UTC)
+    )
+    new = await _document(
+        session, source_id, "contract-v2-FINAL.pdf", added_at=datetime(2025, 6, 1, tzinfo=UTC)
+    )
+    await _page(session, old, 1, "Old terms apply here.")
+    await _page(session, new, 1, "New terms apply here, superseding the old.")
+    await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
+
+    blocking, _deferred = await find_blocking(
+        session,
+        "Where is the office?",
+        [_candidate("contract-v2-FINAL.pdf", dense_score=0.1)],
+        _THRESHOLD,
+    )
+
+    assert blocking is None
 
 
 @pytest.mark.asyncio
@@ -234,7 +329,7 @@ async def test_a_non_blocking_trigger_never_interrupts(session: AsyncSession) ->
     assert (await session.execute(text("SELECT 1 FROM clarifications"))).first() is not None
 
     blocking, _deferred = await find_blocking(
-        session, "What does RFQ mean?", [_candidate("tender.pdf")]
+        session, "What does RFQ mean?", [_candidate("tender.pdf")], _THRESHOLD
     )
 
     assert blocking is None
@@ -259,7 +354,10 @@ async def test_an_answered_clarification_never_blocks_a_later_turn(session: Asyn
     )
 
     blocking, _deferred = await find_blocking(
-        session, "How much notice must I give?", [_candidate("handbook-2024.pdf")]
+        session,
+        "How much notice must I give?",
+        [_candidate("handbook-2024.pdf", page=3)],
+        _THRESHOLD,
     )
 
     assert blocking is None
@@ -292,7 +390,8 @@ async def test_two_blocking_ambiguities_defer_the_second(session: AsyncSession) 
     blocking, deferred = await find_blocking(
         session,
         "How much notice must I give under the contract terms?",
-        [_candidate("handbook-2024.pdf"), _candidate("contract-v2-FINAL.pdf")],
+        [_candidate("handbook-2024.pdf", page=3), _candidate("contract-v2-FINAL.pdf")],
+        _THRESHOLD,
     )
 
     # Contradiction outranks document identity (`clarify.py`'s own
@@ -321,7 +420,10 @@ async def test_default_assumption_for_a_contradiction_names_the_newer_passage(
     await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     blocking, _deferred = await find_blocking(
-        session, "How much notice must I give?", [_candidate("handbook-2024.pdf")]
+        session,
+        "How much notice must I give?",
+        [_candidate("handbook-2024.pdf", page=3)],
+        _THRESHOLD,
     )
     assert blocking is not None
     assumption = default_assumption(blocking)
@@ -345,7 +447,10 @@ async def test_default_assumption_for_document_identity_names_the_newest_file(
     await raise_candidates(session, source_id, _THRESHOLD, _SETTINGS)
 
     blocking, _deferred = await find_blocking(
-        session, "What do the contract terms say?", [_candidate("contract-v2-FINAL.pdf")]
+        session,
+        "What do the contract terms say?",
+        [_candidate("contract-v2-FINAL.pdf")],
+        _THRESHOLD,
     )
     assert blocking is not None
     assert default_assumption(blocking) == "contract-v2-FINAL.pdf"

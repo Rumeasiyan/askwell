@@ -4,6 +4,15 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.23 - 2026-10-01
+
+`Fixed`: four problems a new user meets on their first questions, all found on clean Linux and Windows installs of `0.9.18`.
+
+- **A question is only interrupted by a clarification that is about it** (#892). Askwell used to ask about any disagreement in a document the search touched, and on a small folder the search touches every document, so a question about notice periods stopped to ask about store closing hours. It now asks only when the disagreeing page is one of the passages the answer would actually be built from.
+- **Closing the window while Askwell asks you something no longer stops later questions** (#893). A paused question used to wait forever, and two of them stopped every question after until Askwell restarted. It now stops once no window has been watching it for 30 seconds. Answering the same clarification from the Clarifications screen resumes it with that answer. The clarification itself is never lost.
+- **An answer no longer lists "None" as something your files do not cover** (#894). A "Not covered: None." line written by the model is dropped.
+- **On Windows, your own folders are no longer called a "network share"** (#897). 9p is how Podman reaches every Windows folder; it is not a share. A real network filesystem still gets the warning.
+
 ## 0.9.22 - 2026-10-01
 
 `Fixed`: spreadsheets added before `0.9.12` now answer questions from their sheets, without re-indexing (`M11-FIX-ING-230`).

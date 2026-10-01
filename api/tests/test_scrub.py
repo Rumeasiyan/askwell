@@ -184,6 +184,16 @@ def test_different_aspects_are_all_kept_in_order(scrub: Scrub) -> None:
     assert split_partial_answer(out).uncovered == ("sick leave", "jury duty")
 
 
+@pytest.mark.parametrize("filler", ["None.", "None", "**None**", "Nothing.", "N/A"])
+def test_a_not_covered_line_naming_nothing_is_dropped(scrub: Scrub, filler: str) -> None:
+    """#894: seen on a clean install, after a complete answer."""
+    answer = f"Notice is sixty-three days [1].\n\nNot covered: {filler}\n"
+    out = scrub(answer)
+    assert "Not covered" not in out
+    assert split_partial_answer(out).uncovered == ()
+    assert "sixty-three days [1]." in out
+
+
 def test_prose_about_coverage_is_not_a_not_covered_line(scrub: Scrub) -> None:
     answer = "This is not covered: see the policy.\nNot covered by insurance, sadly.\n"
     assert scrub(answer) == answer

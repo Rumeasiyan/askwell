@@ -94,6 +94,12 @@ NETWORK_FILESYSTEMS = frozenset(
     }
 )
 
+# How a Windows folder reaches the containers at all (#897): Podman's WSL
+# machine sees the Windows drives over 9p. For a Windows path that is the
+# user's own disk, not a share; a real Windows network share is refused at
+# nomination before it gets this far.
+WINDOWS_DRIVE_FILESYSTEMS = frozenset({"9p"})
+
 MOUNTS = Path("/proc/self/mounts")
 
 # The four characters the kernel escapes in a mount point, and nothing else.
@@ -148,7 +154,7 @@ class Root:
 
     @property
     def network_share(self) -> bool:
-        return self.filesystem in NETWORK_FILESYSTEMS
+        return is_network_share(self.filesystem, self.path)
 
     @property
     def name(self) -> str:
@@ -422,9 +428,17 @@ def probe(path: str, mount: Path | None) -> tuple[MountState, str | None]:
     return (MountState.AVAILABLE, None)
 
 
-def warning_for(filesystem: str | None) -> str | None:
-    """The one thing worth saying at registration that is not an error."""
+def is_network_share(filesystem: str | None, path: str | None = None) -> bool:
     if filesystem not in NETWORK_FILESYSTEMS:
+        return False
+    return not (
+        path is not None and paths.is_windows(path) and filesystem in WINDOWS_DRIVE_FILESYSTEMS
+    )
+
+
+def warning_for(filesystem: str | None, path: str | None = None) -> str | None:
+    """The one thing worth saying at registration that is not an error."""
+    if not is_network_share(filesystem, path):
         return None
     return (
         f"This folder is on a network share ({filesystem}). Indexing it will be "
@@ -492,13 +506,17 @@ async def view_async(root: Root, mount: Path | None) -> RootView:
             "the folder is not gone, and Askwell has stopped waiting so the "
             "rest of it keeps working.",
         )
-    return RootView(root=root, state=state, reason=reason, warning=warning_for(root.filesystem))
+    return RootView(
+        root=root, state=state, reason=reason, warning=warning_for(root.filesystem, root.path)
+    )
 
 
 def view(root: Root, mount: Path | None) -> RootView:
     """The synchronous form, for tests and for code already off the loop."""
     state, reason = probe(root.path, mount)
-    return RootView(root=root, state=state, reason=reason, warning=warning_for(root.filesystem))
+    return RootView(
+        root=root, state=state, reason=reason, warning=warning_for(root.filesystem, root.path)
+    )
 
 
 def source_availability(
@@ -720,7 +738,7 @@ async def register(session: AsyncSession, settings: Settings, requested: str) ->
     log.info("root_registered", path=path, state=str(state), filesystem=filesystem)
     return Registration(
         created=True,
-        view=RootView(root=root, state=state, reason=reason, warning=warning_for(filesystem)),
+        view=RootView(root=root, state=state, reason=reason, warning=warning_for(filesystem, path)),
         covers=covers,
     )
 

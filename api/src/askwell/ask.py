@@ -145,6 +145,17 @@ ONLINE_AI_REQUEST = "online_ai_request"
 # answering it.
 STREAM_INTERVAL_SECONDS = 0.1
 
+# How long a turn paused on an inline clarification waits with no browser
+# attached before it stops (#893). Long enough for a reload or a dropped
+# connection to reattach through `GET /ask/{id}/stream`; short enough that a
+# closed window does not hold a generation permit, and with it every later
+# question, until Askwell restarts.
+CLARIFY_UNATTENDED_SECONDS = 30.0
+
+# How often a paused turn re-reads its clarification, so one answered or
+# skipped from the Clarifications screen rather than inline still resumes it.
+CLARIFY_POLL_SECONDS = 1.0
+
 # How many finished turns the registry keeps so a reconnect shortly after
 # completion still finds the live object rather than falling back to the
 # database. Bounded because this is memory, not a table — a machine left
@@ -209,6 +220,15 @@ class _Turn:
     clarify_id: uuid.UUID | None = None
     clarify_event: asyncio.Event = field(default_factory=asyncio.Event)
     clarify_result: dict[str, Any] | None = None
+    # #893: how many `_tail`s are attached, and when the last one left (or
+    # the turn started, before any attached). A paused turn nobody is
+    # watching stops after `CLARIFY_UNATTENDED_SECONDS`.
+    # The clarification this turn last resumed from, so the browser's own
+    # `clarify/resolve` arriving just after the poll already resumed it is
+    # acknowledged rather than refused.
+    resolved_clarify_id: uuid.UUID | None = None
+    listeners: int = 0
+    unattended_since: float = field(default_factory=time.monotonic)
     # `M5-TRACE-BE-125`: the same list `_run_generation` builds `messages.trace`
     # from, shared by reference rather than copied — so `GET
     # /ask/{message_id}/trace` can read a running turn's steps as they are
@@ -305,18 +325,24 @@ async def _tail(turn: _Turn, request: Request) -> AsyncIterator[str]:
     nothing a single user needs.
     """
     cursor = 0
-    while True:
-        if await request.is_disconnected():
-            return
-        pending = turn.events[cursor:]
-        cursor = len(turn.events)
-        for event in pending:
-            yield _sse(event.kind, event.data)
-            if event.kind == "done":
+    turn.listeners += 1
+    try:
+        while True:
+            if await request.is_disconnected():
                 return
-        if turn.status != "running" and cursor >= len(turn.events):
-            return
-        await asyncio.sleep(STREAM_INTERVAL_SECONDS)
+            pending = turn.events[cursor:]
+            cursor = len(turn.events)
+            for event in pending:
+                yield _sse(event.kind, event.data)
+                if event.kind == "done":
+                    return
+            if turn.status != "running" and cursor >= len(turn.events):
+                return
+            await asyncio.sleep(STREAM_INTERVAL_SECONDS)
+    finally:
+        turn.listeners -= 1
+        if turn.listeners == 0:
+            turn.unattended_since = time.monotonic()
 
 
 # content, status, summary, source_count, conversation_id, sql_result, sql_query,
@@ -570,10 +596,20 @@ def _cite_claim(
             )
 
 
-async def _await_clarification(turn: _Turn) -> dict[str, Any] | None:
+async def _await_clarification(
+    turn: _Turn, factory: async_sessionmaker[AsyncSession]
+) -> dict[str, Any] | None:
     """Wait for `POST /ask/{id}/clarify/resolve` to answer or skip the
     clarification just emitted, or for the browser to stop this turn while
     it waits — `None` on the latter.
+
+    #893 adds two ways out, because a paused turn holds a generation permit
+    and two of them stop every later question. The clarification answered
+    or skipped anywhere else, the Clarifications screen included, resumes
+    the turn with that answer: it is the same row, so it is the same
+    answer. And with no browser attached for `CLARIFY_UNATTENDED_SECONDS`,
+    the turn stops as `Stop` would. The clarification stays `pending` in
+    the queue either way; nothing is invented and nothing is lost.
 
     Polled rather than a bare `await turn.clarify_event.wait()` so `Stop`
     (`docs/ux/clarifications.md` §5's own rule: this never becomes a second
@@ -586,9 +622,25 @@ async def _await_clarification(turn: _Turn) -> dict[str, Any] | None:
     of "never bounce the user mid-question" rather than a timeout inventing
     an answer nobody gave.
     """
+    next_poll = time.monotonic() + CLARIFY_POLL_SECONDS
     while not turn.clarify_event.is_set():
         if turn.stop_requested:
             return None
+        now = time.monotonic()
+        if turn.listeners == 0 and now - turn.unattended_since >= CLARIFY_UNATTENDED_SECONDS:
+            log.info("ask_clarification_unattended", message_id=str(turn.message_id))
+            return None
+        if turn.clarify_id is not None and now >= next_poll:
+            next_poll = now + CLARIFY_POLL_SECONDS
+            async with session_scope(factory) as db:
+                row = (
+                    await db.execute(
+                        text("SELECT status, answer FROM clarifications WHERE id = :id"),
+                        {"id": turn.clarify_id},
+                    )
+                ).first()
+            if row is not None and row[0] in ("answered", "skipped"):
+                return {"skipped": row[0] == "skipped", "answer": row[1]}
         try:
             await asyncio.wait_for(turn.clarify_event.wait(), timeout=0.2)
         except TimeoutError:
@@ -2279,7 +2331,9 @@ async def _run_generation(
             memory_fact: str | None = None
             appended_note: str | None = None
             async with session_scope(factory) as db:
-                blocking, deferred = await find_blocking(db, question, candidates)
+                blocking, deferred = await find_blocking(
+                    db, question, candidates, retrieval_threshold
+                )
             if blocking is not None:
                 turn.clarify_id = blocking.id
                 turn.emit(
@@ -2293,9 +2347,10 @@ async def _run_generation(
                         "deferred_count": deferred,
                     },
                 )
-                resolution = await _await_clarification(turn)
+                resolution = await _await_clarification(turn, factory)
                 if resolution is None:
                     raise _ClarificationAbandoned
+                turn.resolved_clarify_id = blocking.id
                 turn.clarify_id = None
                 turn.emit(
                     "clarification_resolved",
@@ -3217,6 +3272,11 @@ def register_ask(
         with it — never a second way to write a `memory` row.
         """
         turn = _turns.get(message_id)
+        if turn is not None and turn.resolved_clarify_id == body.clarification_id:
+            # Already resumed by reading the same row back (#893).
+            return JSONResponse(
+                {"message_id": str(message_id), "status": "resumed"}, status_code=202
+            )
         if turn is None or turn.clarify_id != body.clarification_id or turn.clarify_event.is_set():
             return JSONResponse(
                 {"error": "Askwell has no pending clarification for that turn."}, status_code=404
