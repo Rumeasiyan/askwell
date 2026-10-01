@@ -4,6 +4,14 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.26 - 2026-10-01
+
+`Fixed`: on a slower computer, the first question after installing no longer stops on an unrelated clarification (#910).
+
+- **The passage ranker gets 30 seconds, not 10.** On a 4-core Windows PC with no graphics acceleration, ranking takes about 5.5 seconds, and the very first time takes longer. Past the limit Askwell fell back to rough scores in which almost every passage looked relevant.
+- **A clarification only interrupts a question when the ranker has scored the passage it is about.** When ranking fails, the clarification waits in Clarifications instead.
+- Still open: Askwell deciding whether to say "nothing in your files answers this" when ranking fails (#911).
+
 ## 0.9.25 - 2026-10-01
 
 `Fixed`: an answer where your documents disagree no longer ends with notes about a "memory fact" that does not exist (#908).

@@ -328,7 +328,14 @@ class Settings(BaseSettings):
     # fusion order. Shorter than `DEFAULT_TIMEOUT_SECONDS` on purpose — a slow
     # rerank should degrade to a still-useful answer, not make the user wait
     # twice for the same passages. `M1-ASK-RET-036`.
-    rerank_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
+    #
+    # 30, not 10 (#910): on a 4-core CPU-only Windows machine a warm rerank of
+    # ten passages takes about 5.5 s, and the first one after install is
+    # slower still. Past the limit, scores fall back to dense similarity,
+    # which puts nearly every passage above the threshold, so the turn can
+    # neither abstain nor tell a relevant clarification from an unrelated one.
+    # Waiting longer once is the smaller cost.
+    rerank_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
 
     # The ceiling on one answer's own length. Streamed, never truncated
     # silently — `docs/ux/ask.md` §5's "very long answer" state requires that
