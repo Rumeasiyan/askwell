@@ -295,6 +295,32 @@ def test_extract_query_keeps_only_the_fenced_query_not_the_prose_after_it() -> N
     assert _extract_query("```sql\nSELECT 1;\n```\n\nThis returns one.") == "SELECT 1"
 
 
+# The shipped model's real completion for `figures-design-headcount`, every
+# run of `grounded_qa.v1` (#901): it echoes the prompt's closing tag before
+# reasoning, so the think block is not leading. The whole text reached
+# `sqlglot`, was rejected as unparseable, and the question abstained.
+_ECHOED_TAG_COMPLETION = (
+    "</Question>\n\n<think>\nThe user is asking about the Design department.\n\n"
+    "```sql\nSELECT headcount FROM figures WHERE department = 'Design';\n```\n</think>\n\n"
+    "```sql\nSELECT headcount FROM figures WHERE department = 'Design';\n```"
+)
+
+
+def test_extract_query_drops_a_think_block_after_an_echoed_tag() -> None:
+    assert (
+        _extract_query(_ECHOED_TAG_COMPLETION)
+        == "SELECT headcount FROM figures WHERE department = 'Design'"
+    )
+
+
+def test_extract_query_is_none_for_an_unclosed_think_block_after_an_echoed_tag() -> None:
+    assert _extract_query("</Question>\n<think>\n```sql\nSELECT 1;\n```\nstill going") is None
+
+
+def test_extract_query_keeps_the_fenced_query_after_a_lead_in_sentence() -> None:
+    assert _extract_query("Here is the query:\n```sql\nSELECT 1;\n```") == "SELECT 1"
+
+
 # --- select_database_source / list_database_sources ------------------------
 
 

@@ -4,6 +4,14 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.24 - 2026-10-01
+
+`Fixed`: an answer from a spreadsheet's sheet now cites the spreadsheet (`M11-FIX-BE-231`).
+
+- **A sheet answer shows where its number came from.** When a question is answered from a workbook's sheet, the answer now cites the workbook, as any other answer does. If the answer came from particular rows, each row is cited, and opening the citation shows that row. If it came from many rows at once, such as a total, the sheet is cited instead.
+- **Only rows the answer used are cited.** If two rows could have produced the same answer and Askwell cannot tell which one did, it cites the sheet, not either row. If the spreadsheet was changed since its sheets were loaded and no longer holds the row, nothing is cited rather than a passage that disagrees with the answer.
+- **Some spreadsheet questions that were never answered now are.** The model sometimes wrote a stray tag before its reasoning, and the query it wrote after it was thrown away, so the question got "Nothing in your files answers this." The query is now found.
+
 ## 0.9.23 - 2026-10-01
 
 `Fixed`: four problems a new user meets on their first questions, all found on clean Linux and Windows installs of `0.9.18`.

@@ -569,6 +569,12 @@ async def _load_table(
     )
 
 
+def _loaded_as(sql_table_name: str) -> str:
+    """How a sheet's table-level note begins. `sheet_of_table` reads it back:
+    it is the one record of which sheet a physical table holds."""
+    return f"Loaded as table `{sql_table_name}`,"
+
+
 async def _write_load_notes(
     session: AsyncSession,
     source_id: uuid.UUID,
@@ -584,7 +590,7 @@ async def _write_load_notes(
             table_name=inference.table_name,
             column_name=None,
             description=(
-                f"Loaded as table `{result.sql_table_name}`, "
+                f"{_loaded_as(result.sql_table_name)} "
                 f"{result.row_count} row(s), {len(inference.columns)} column(s)."
                 + (
                     f" {len(result.failed_rows)} row(s) failed to load."
@@ -979,6 +985,53 @@ async def _workbook_of_table(
         if table_name.startswith(workbook_table_prefix(relative)):
             return uuid.UUID(str(document_id)), relative
     return None
+
+
+async def workbook_tables(settings: Settings, database: str) -> dict[str, str]:
+    """Every workbook sheet table in a folder's sandbox database, with the
+    workbook's path inside the folder its comment names. Read as the
+    read-only role: this is for answering, not loading."""
+    admin_url = settings.sandbox_database_url.get_secret_value()
+    password = settings.sandbox_readonly_password.get_secret_value()
+    tables = await asyncio.to_thread(
+        _tables_blocking, sandbox.readonly_url(admin_url, database, password)
+    )
+    return {
+        name: comment[len(_WORKBOOK_COMMENT_PREFIX) :]
+        for name, comment in tables.items()
+        if comment is not None and comment.startswith(_WORKBOOK_COMMENT_PREFIX)
+    }
+
+
+async def sheet_of_table(
+    session: AsyncSession, source_id: uuid.UUID, relative_path: str, sql_table_name: str
+) -> str | None:
+    """The sheet of `relative_path` loaded as `sql_table_name`, from the
+    table-level note `_write_load_notes` wrote for it. `None` when that note
+    is gone, which a person's own note on the table replaces."""
+    prefix = workbook_table_prefix(relative_path)
+    rows = await session.execute(
+        text(
+            "SELECT table_name, description FROM schema_notes "
+            "WHERE source_id = :id AND column_name IS NULL AND origin = 'inferred' "
+            "AND superseded_by IS NULL AND left(table_name, length(:prefix)) = :prefix"
+        ),
+        {"id": source_id, "prefix": prefix},
+    )
+    for table_name, description in rows:
+        if str(description).startswith(_loaded_as(sql_table_name)):
+            return str(table_name)[len(prefix) :]
+    return None
+
+
+async def live_workbook(
+    session: AsyncSession, source_id: uuid.UUID, relative_path: str
+) -> uuid.UUID | None:
+    """The live, newest document of the workbook at `relative_path`."""
+    found = await _workbook_of_table(session, source_id, workbook_table_prefix(relative_path))
+    if found is None or found[1] != relative_path:
+        return None
+    return found[0]
 
 
 async def _live_workbooks(session: AsyncSession, source_id: uuid.UUID) -> set[str]:
