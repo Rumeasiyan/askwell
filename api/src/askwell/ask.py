@@ -119,6 +119,7 @@ from askwell.logging import get_logger
 from askwell.memory import MemoryFact, RelevantMemory, SchemaNote, retrieve_relevant_facts
 from askwell.model_select import active_model_identity
 from askwell.retrieve import Candidate, candidate_score, retrieve
+from askwell.sheet_citations import SheetCitation, cite_sheet_result
 from askwell.sql import execute as sql_execute_checked
 from askwell.sql.dry_run import DryRunReason, dry_run_connection_query, dry_run_sandbox_query
 from askwell.sql.limit import inject_limit
@@ -819,6 +820,10 @@ class _SqlAnswer:
     # looking up its schema notes (`no_connections`/`source_attention`/
     # `source_importing`/`ambiguous`).
     schema_step: dict[str, Any] | None = None
+    # `M11-FIX-BE-231`: the workbook passages an executed query over a
+    # folder's sheet tables is cited to. Empty for every other source, whose
+    # rows have no passage to cite.
+    citations: tuple[SheetCitation, ...] = ()
 
 
 def _json_safe(value: Any) -> Any:
@@ -1252,6 +1257,25 @@ async def _run_sql_turn(
             },
         )
 
+    # `M11-FIX-BE-231`: a folder's tables are its workbooks' sheets, and the
+    # workbook is a document whose rows can be cited. A failure here costs
+    # the citation, never the answer the query already produced.
+    citations: list[SheetCitation] = []
+    if kind == "file":
+        assert sandbox_db is not None
+        try:
+            citations = await cite_sheet_result(
+                db,
+                settings,
+                source_id=generated.source_id,
+                database=sandbox_db,
+                query=limited.query,
+                rows=checked.rows,
+                truncated=checked.truncated,
+            )
+        except Exception:
+            log.exception("ask_sheet_citation_failed", source_id=str(generated.source_id))
+
     sql_result = {
         "engine": engine,
         "source_id": str(generated.source_id),
@@ -1277,7 +1301,9 @@ async def _run_sql_turn(
             "duration_ms": checked.duration_ms,
             "limit_injected": limited.limit,
             "query": limited.query,
+            "citations": len(citations),
         },
+        citations=tuple(citations),
     )
 
 
@@ -1593,6 +1619,33 @@ async def _finish_sql_turn(
     """
     turn.text = strip_placeholders(sql_answer.text)
     turn.emit("token", {"text": turn.text})
+    # `M11-FIX-BE-231`: the answer is one fixed-shape line, one claim, and
+    # every workbook passage it came from supports it.
+    citation_rows: list[dict[str, Any]] = []
+    for index, citation in enumerate(sql_answer.citations, start=1):
+        citation_rows.append(
+            {
+                "ordinal": 1,
+                "chunk_id": citation.chunk_id,
+                "quoted_span": citation.quoted_span,
+            }
+        )
+        turn.emit(
+            "citation",
+            {
+                "claim_ordinal": 1,
+                "index": index,
+                "chunk_id": str(citation.chunk_id),
+                "document_id": str(citation.document_id),
+                "filename": citation.filename,
+                "anchor_kind": citation.anchor_kind,
+                "heading": citation.heading,
+                "page_from": citation.page_from,
+                "page_to": citation.page_to,
+                "passage": citation.passage,
+                "quoted_span": citation.quoted_span,
+            },
+        )
     sql_result = sql_answer.sql_result
     status: Status = sql_answer.status
     reason: str | None = None
@@ -1624,8 +1677,8 @@ async def _finish_sql_turn(
             status=status,
             reason=reason,
             partial=False,
-            citation_rows=[],
-            candidates=[],
+            citation_rows=citation_rows,
+            candidates=[citation.as_candidate() for citation in sql_answer.citations],
         )
     except Exception:
         log.error("ask_summary_failed", message_id=str(turn.message_id))
@@ -1661,6 +1714,21 @@ async def _finish_sql_turn(
                     "sql_result": json.dumps(sql_result) if sql_result is not None else None,
                 },
             )
+            for row in citation_rows:
+                await db.execute(
+                    text(
+                        "INSERT INTO citations "
+                        "(id, message_id, chunk_id, claim_ordinal, quoted_span) "
+                        "VALUES (:id, :message_id, :chunk_id, :ordinal, :quoted_span)"
+                    ),
+                    {
+                        "id": uuid.uuid4(),
+                        "message_id": turn.message_id,
+                        "chunk_id": row["chunk_id"],
+                        "ordinal": row["ordinal"],
+                        "quoted_span": row["quoted_span"],
+                    },
+                )
             await record(
                 db,
                 Store.INTERACTIONS,
@@ -1680,7 +1748,7 @@ async def _finish_sql_turn(
                     "schema_note_ids": [],
                     "threshold": None,
                     "source_id": str(source_id) if source_id else None,
-                    "citation_count": 0,
+                    "citation_count": len(citation_rows),
                     "duration_ms": duration_ms,
                     "backend": "local",
                     "model": model_name,

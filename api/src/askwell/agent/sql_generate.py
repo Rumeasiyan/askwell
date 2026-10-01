@@ -224,6 +224,11 @@ def compose_sql_generation(
     )
 
 
+# `askwell.agent.think`'s own delimiters, for a block it did not strip.
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+
+
 def _extract_query(completion_text: str) -> str | None:
     """Read the model's response back out: `None` for a declined
     (`CANNOT_ANSWER: ...`) or empty completion, the bare query text
@@ -241,13 +246,26 @@ def _extract_query(completion_text: str) -> str | None:
     `askwell.sql.validate` with its reasoning attached and was rejected as
     unparseable. This only picks which text is the candidate — every
     candidate is still parsed and checked by `sqlglot` there (C2).
+
+    `M11-FIX-BE-231` (#901): the block is not always first. For
+    `figures-design-headcount` the model echoes the prompt's `</Question>`
+    before reasoning, every run, so the stripper passed everything through
+    and the question abstained. A block that survives the stripper is
+    dropped up to its last close; one never closed is no query. And a
+    fenced query after a lead-in sentence is the query, not the sentence.
     """
     stripper = ThinkStripper()
     stripped = (stripper.feed(completion_text) + stripper.flush()).strip()
+    if _THINK_OPEN in stripped:
+        close = stripped.rfind(_THINK_CLOSE)
+        if close < stripped.rfind(_THINK_OPEN):
+            return None
+        stripped = stripped[close + len(_THINK_CLOSE) :].strip()
     if not stripped or stripped.upper().startswith(_CANNOT_ANSWER_PREFIX):
         return None
-    if stripped.startswith("```"):
-        stripped = stripped[3:]
+    fence = stripped.find("```")
+    if fence != -1:
+        stripped = stripped[fence + 3 :]
         end = stripped.find("```")
         if end != -1:
             stripped = stripped[:end]
