@@ -4,6 +4,14 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.22 - 2026-10-01
+
+`Fixed`: spreadsheets added before `0.9.12` now answer questions from their sheets, without re-indexing (`M11-FIX-ING-230`).
+
+- **Workbooks added before upgrading get their tables.** When Askwell starts, it loads the sheets of any workbook that was indexed before sheets became tables. Only the tables load, so nothing is re-read for search or re-embedded, and it happens once per workbook. A workbook whose sheets were all skipped is not read again at every start.
+- **A workbook that cannot be reached at start waits.** If its folder is on a drive that is not plugged in, or the table database is still starting, it is tried at the next start rather than marked failed.
+- **A folder whose table database was lost gets a new one.** If the sandbox's data was lost but Askwell's own database was kept, a folder's workbooks pointed at tables that no longer existed. Askwell now notices this when it starts and loads them again. An imported database dump or CSV in that state is not repaired yet (#895).
+
 ## 0.9.21 - 2026-10-01
 
 `Fixed`: the grounded-answers eval suite finishes on a fresh database (`M11-FIX-TEST-232`).
