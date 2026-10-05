@@ -313,8 +313,8 @@ function SourceRow({ source, state }: { source: SourceCoverage; state: IngestSta
 
             {source.kind === "connection" ? (
               <p className="ask-micro" style={{ color: "var(--muted)" }}>
-                Read access confirmed at connection time. Write permissions have not been
-                checked — that refusal is not wired up yet.
+                Connected with a read-only user. Askwell refuses a user that can change the
+                database.
               </p>
             ) : null}
 

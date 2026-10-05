@@ -1454,7 +1454,7 @@ function LaterRoutes() {
           <div className="flex items-baseline justify-between gap-3">
             <span style={{ fontSize: "var(--t-ui)" }}>{route.title}</span>
             <span className="ask-micro" style={{ color: "var(--inferred)" }}>
-              Arrives in {route.arrives}
+              Not read yet
             </span>
           </div>
           <p style={{ fontSize: "var(--t-meta)", lineHeight: "var(--t-meta-lh)" }}>
