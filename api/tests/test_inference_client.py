@@ -193,6 +193,50 @@ async def test_the_final_stream_event_carries_llama_cpps_timings(serving: Any) -
     assert (timings.prompt_tokens, timings.prompt_ms) == (900, 30000.5)
 
 
+def _chat(content: str | None, finish: str | None = None, **extra: Any) -> dict[str, Any]:
+    delta = {} if content is None else {"content": content}
+    return {"choices": [{"delta": delta, "finish_reason": finish}], **extra}
+
+
+async def test_chat_sends_system_and_user_through_the_template(serving: Any) -> None:
+    """#919: one raw string made the model continue its own instructions.
+    The chat endpoint applies the model's template, with thinking off."""
+    start, _ = serving
+    stub = Stub(raw=_sse(_chat("Ninety"), _chat(" days [1].", "stop")) + b"data: [DONE]\n\n")
+    client = await start(stub)
+
+    chunks = [chunk async for chunk in client.stream_chat("Answer from passages.", "Q?")]
+
+    assert "".join(chunk.text for chunk in chunks) == "Ninety days [1]."
+    assert chunks[-1].done and not chunks[-1].truncated
+    request = stub.requests[0]
+    assert request["messages"] == [
+        {"role": "system", "content": "Answer from passages."},
+        {"role": "user", "content": "Q?"},
+    ]
+    assert request["chat_template_kwargs"] == {"enable_thinking": False}
+    assert request["stream"] is True
+
+
+async def test_chat_reports_the_length_limit_and_timings(serving: Any) -> None:
+    start, _ = serving
+    timings = {"prompt_n": 900, "prompt_ms": 30.0, "predicted_n": 40, "predicted_ms": 4.0}
+    client = await start(Stub(raw=_sse(_chat("Ninety"), _chat("", "length", timings=timings))))
+
+    chunks = [chunk async for chunk in client.stream_chat("s", "q")]
+
+    assert chunks[-1].done and chunks[-1].truncated
+    assert chunks[-1].timings is not None and chunks[-1].timings.predicted_tokens == 40
+    assert chunks[0].timings is None
+
+
+async def test_chat_refused_is_a_failure_not_absence(serving: Any) -> None:
+    start, _ = serving
+    client = await start(Stub(status=500, body={"error": "no"}))
+    with pytest.raises(InferenceFailed):
+        _ = [chunk async for chunk in client.stream_chat("s", "q")]
+
+
 async def test_a_final_event_without_timings_is_unmeasured_not_zero(serving: Any) -> None:
     start, _ = serving
     client = await start(Stub(raw=_sse({"content": "Ninety", "stop": True})))

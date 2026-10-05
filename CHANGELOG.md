@@ -4,6 +4,13 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.31 - 2026-10-05
+
+`Fixed`: answers are clean, short and cited (#919).
+
+- **Answers no longer repeat themselves, paste in Askwell's own instructions, or list unrelated sentences as "conflicting sources".** Askwell sent its instructions and your question to the AI model as one block of text, without the chat format the model is trained on, so the model carried on writing the text instead of answering it. Askwell now uses the model's own chat format. On the same questions, every answer became a single sentence with its source.
+- **An answer is written only from the passages that matched your question well enough,** not from everything the search looked at.
+
 ## 0.9.30 - 2026-10-05
 
 `Fixed`: a document with a long, dense passage can be indexed (#925).

@@ -119,6 +119,25 @@ class _FakeInferenceClient:
             yield StreamChunk(text=piece, done=False)
         yield StreamChunk(text="", done=True, truncated=self.truncated, timings=self.timings)
 
+    async def stream_chat(
+        self,
+        system: str,
+        user: str,
+        *,
+        max_tokens: int = 512,
+        temperature: float = 0.2,
+        timeout_seconds: float = 0.0,
+    ) -> AsyncIterator[StreamChunk]:
+        # Through `stream_generate`, so a subclass recording or tracking the
+        # prompt sees the same text either way.
+        async for chunk in self.stream_generate(
+            f"{system}\n\n{user}",
+            max_tokens=max_tokens,
+            temperature=temperature,
+            timeout_seconds=timeout_seconds,
+        ):
+            yield chunk
+
     async def generate(
         self,
         _prompt: str,

@@ -291,6 +291,95 @@ class InferenceClient:
                 f"The assistant stopped answering: {type(error).__name__}."
             ) from error
 
+    async def stream_chat(
+        self,
+        system: str,
+        user: str,
+        *,
+        max_tokens: int = 512,
+        temperature: float = 0.2,
+        timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    ) -> AsyncGenerator[StreamChunk, None]:
+        """Generation through the model's own chat template, streamed (#919).
+
+        `stream_generate` sends one raw string to `/completion`, so an
+        instruction-tuned model never sees where its instructions end and
+        the question begins: it continued the text instead of answering it,
+        copying the system prompt into the answer, repeating lines and
+        listing unrelated passages as "conflicting sources". Measured on the
+        same prompt and passages: raw, the instructions came back verbatim;
+        through `/v1/chat/completions`, one cited sentence.
+
+        `/v1/chat/completions` applies the template stored in the GGUF.
+        Thinking is turned off through the template (`enable_thinking`),
+        which is what the raw path's `<think></think>` prefill approximated.
+        Same chunks and the same two exceptions as `stream_generate`.
+        """
+        self._require_available()
+        try:
+            async with (
+                self._client(timeout_seconds) as client,
+                client.stream(
+                    "POST",
+                    "/v1/chat/completions",
+                    json={
+                        "messages": [
+                            {"role": "system", "content": system},
+                            {"role": "user", "content": user},
+                        ],
+                        "max_tokens": max_tokens,
+                        "temperature": temperature,
+                        "cache_prompt": True,
+                        "stream": True,
+                        "chat_template_kwargs": {"enable_thinking": False},
+                    },
+                ) as response,
+            ):
+                if response.status_code >= 400:
+                    detail = (await response.aread())[:300]
+                    raise InferenceFailed(
+                        f"The assistant refused the request ({response.status_code}): {detail!r}"
+                    )
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    raw = line[len("data:") :].strip()
+                    if not raw:
+                        continue
+                    if raw == "[DONE]":
+                        yield StreamChunk(text="", done=True)
+                        return
+                    try:
+                        chunk = json.loads(raw)
+                    except ValueError as error:
+                        raise InferenceFailed(
+                            "The assistant streamed something that is not JSON."
+                        ) from error
+                    choices = chunk.get("choices") or [{}]
+                    choice = choices[0] if isinstance(choices[0], dict) else {}
+                    delta = choice.get("delta") or {}
+                    piece = delta.get("content") if isinstance(delta, dict) else None
+                    finish = choice.get("finish_reason")
+                    stopping = finish is not None
+                    yield StreamChunk(
+                        text=piece if isinstance(piece, str) else "",
+                        done=stopping,
+                        truncated=finish == "length",
+                        timings=_timings(chunk) if stopping else None,
+                    )
+                    if stopping:
+                        return
+        except httpx.TimeoutException as error:
+            raise InferenceFailed(
+                f"The assistant did not answer within {timeout_seconds:g}s. On a light "
+                f"profile this can mean the question was long rather than that "
+                f"anything is wrong."
+            ) from error
+        except httpx.HTTPError as error:
+            raise InferenceUnavailable(
+                f"The assistant stopped answering: {type(error).__name__}."
+            ) from error
+
     # --- embedding ----------------------------------------------------------
 
     async def embed(

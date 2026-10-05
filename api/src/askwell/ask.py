@@ -153,6 +153,11 @@ STREAM_INTERVAL_SECONDS = 0.1
 # question, until Askwell restarts.
 CLARIFY_UNATTENDED_SECONDS = 30.0
 
+# The most passages an answer is composed from (#919). Enough for a
+# multi-part question across a few documents; few enough that a 4B model
+# keeps to what was asked.
+COMPOSE_MAX_PASSAGES = 6
+
 # How often a paused turn re-reads its clarification, so one answered or
 # skipped from the Clarifications screen rather than inline still resumes it.
 CLARIFY_POLL_SECONDS = 1.0
@@ -2462,6 +2467,18 @@ async def _run_generation(
             # resolved inline, is the same hook `M2-PARTIAL-BE-059` built and
             # left inert — the model settles the conflict with it and writes
             # "Resolved by memory: ..." rather than presenting both sides.
+            # #919: compose from the passages that cleared the threshold, not
+            # from everything retrieval returned. A small model given the
+            # store-hours page alongside the sensor spec wrote "conflicting
+            # sources" between unrelated sentences and cited passages that do
+            # not say what it claimed. The abstention decision above still
+            # reads every candidate's score, and the threshold is unchanged
+            # (C5); this only narrows what the answer is written from. Every
+            # later use of `candidates` (citations, sent contents, summary)
+            # reads the same narrowed list, so citation numbers line up.
+            candidates = [
+                candidate for candidate, score in scored_candidates if score >= retrieval_threshold
+            ][:COMPOSE_MAX_PASSAGES]
             composed = compose_conflict(
                 question,
                 candidates,
@@ -2494,12 +2511,11 @@ async def _run_generation(
             )
             for backend in backends:
                 if backend is None:
-                    prompt = f"{composed.system_prompt}\n\n{composed.user_content}"
-                    # No separator: the directive is a prefill that has to sit
-                    # exactly where the model's own output would begin.
-                    prompt = f"{prompt}{settings.generation_thinking_directive}"
-                    stream = client.stream_generate(
-                        prompt, max_tokens=settings.generation_max_tokens
+                    # The model's own chat template, not one raw string (#919).
+                    stream = client.stream_chat(
+                        composed.system_prompt,
+                        composed.user_content,
+                        max_tokens=settings.generation_max_tokens,
                     )
                 else:
                     stream = backend.stream_generate(
