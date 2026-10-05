@@ -119,6 +119,25 @@ class _FakeInferenceClient:
             yield StreamChunk(text=piece, done=False)
         yield StreamChunk(text="", done=True, truncated=self.truncated, timings=self.timings)
 
+    async def stream_chat(
+        self,
+        system: str,
+        user: str,
+        *,
+        max_tokens: int = 512,
+        temperature: float = 0.2,
+        timeout_seconds: float = 0.0,
+    ) -> AsyncIterator[StreamChunk]:
+        # Through `stream_generate`, so a subclass recording or tracking the
+        # prompt sees the same text either way.
+        async for chunk in self.stream_generate(
+            f"{system}\n\n{user}",
+            max_tokens=max_tokens,
+            temperature=temperature,
+            timeout_seconds=timeout_seconds,
+        ):
+            yield chunk
+
     async def generate(
         self,
         _prompt: str,
@@ -2821,7 +2840,11 @@ async def test_a_relevant_contradiction_pauses_the_turn_and_answering_resolves_i
     assert turn.status == "completed"
     assert any(e.kind == "clarification_resolved" for e in turn.events)
 
-    assert any("the notice period: handbook-2024.pdf" in prompt for prompt in seen_prompts)
+    # #928: the choice reaches the model as a statement, not a bare filename.
+    assert any(
+        "For the notice period, handbook-2024.pdf is the current source" in prompt
+        for prompt in seen_prompts
+    )
     with psycopg.connect(database_url, autocommit=True) as db:
         content = db.execute("SELECT content FROM messages WHERE role = 'assistant'").fetchone()[0]
     assert "Resolved by memory" in content

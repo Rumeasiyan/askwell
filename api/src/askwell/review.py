@@ -37,6 +37,7 @@ from askwell.audit import Store, record
 from askwell.clarify import CANDIDATE_CAPPED, get_clarification_cap
 from askwell.config import Settings
 from askwell.db.engine import session_scope
+from askwell.inline_clarify import answer_as_fact
 from askwell.logging import get_logger
 
 log = get_logger(__name__)
@@ -310,7 +311,7 @@ async def answer_clarification(
         {
             "id": memory_id,
             "subject": subject,
-            "fact": answer,
+            "fact": answer_as_fact(subject, evidence or {}, answer),
             "confidence": ANSWER_CONFIDENCE,
         },
     )

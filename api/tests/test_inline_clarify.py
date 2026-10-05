@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from askwell.clarify import raise_candidates
 from askwell.config import Settings
-from askwell.inline_clarify import default_assumption, find_blocking
+from askwell.inline_clarify import answer_as_fact, default_assumption, find_blocking
 from askwell.retrieve import Candidate
 
 pytestmark = pytest.mark.requires_db
@@ -476,3 +476,47 @@ async def test_default_assumption_for_document_identity_names_the_newest_file(
     )
     assert blocking is not None
     assert default_assumption(blocking) == "contract-v2-FINAL.pdf"
+
+
+# --- answer_as_fact (#928) -----------------------------------------------------
+
+
+_STORE_HOURS = {
+    "kind": "contradiction",
+    "trigger": "contradiction",
+    "passages": [
+        {
+            "document": "store_hours_2025.pdf",
+            "value": "8 PM",
+            "text": "Meridian Loom retail stores close at 8 PM on weekdays.",
+        },
+        {
+            "document": "store_hours_2026.pdf",
+            "value": "9 PM",
+            "text": "Meridian Loom retail stores close at 9 PM on weekdays.",
+        },
+    ],
+}
+
+
+def test_choosing_a_document_becomes_a_statement_of_its_value() -> None:
+    """A bare filename left the model unable to tell what had been settled."""
+    fact = answer_as_fact("meridian loom retail stores close", _STORE_HOURS, "store_hours_2026.pdf")
+    assert fact.startswith(
+        "For meridian loom retail stores close, store_hours_2026.pdf is the current source (9 PM)."
+    )
+    assert "close at 9 PM on weekdays" in fact
+    assert "8 PM" not in fact
+
+
+def test_a_typed_answer_is_kept_as_written() -> None:
+    assert answer_as_fact("the notice period", _STORE_HOURS, "Sixty days, per HR.") == (
+        "Sixty days, per HR."
+    )
+
+
+def test_a_document_version_answer_names_the_current_version() -> None:
+    evidence = {"kind": "passage", "samples": [{"document": "contract-v2.pdf", "page": 1}]}
+    assert answer_as_fact("contract", evidence, "contract-v2.pdf") == (
+        "contract-v2.pdf is the current version of contract."
+    )
