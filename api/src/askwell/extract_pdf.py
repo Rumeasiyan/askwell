@@ -70,6 +70,10 @@ not a false one").
 """
 
 import asyncio
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING
 
 import pypdfium2 as pdfium
@@ -86,6 +90,21 @@ if TYPE_CHECKING:
     from askwell.ingest import Report, Work
 
 log = get_logger(__name__)
+
+# PDFium is not thread-safe (#933). The worker extracts `ingest_concurrency`
+# documents at once, and before this every page read went to whichever
+# `asyncio.to_thread` worker was free while `len()` and `close()` ran on the
+# event loop: two PDFs at once failed with `PdfiumError: Failed to load page.`
+# and left the process's PDFium broken for every document after. Every PDFium
+# call in the process — open, page count, text, render, metadata, close — goes
+# through this one thread. Tesseract does not: `extract_ocr.ocr_page` takes a
+# rendered image and runs on the ordinary pool, so OCR stays parallel.
+_PDFIUM = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pdfium")
+
+
+async def _on_pdfium[T](call: Callable[[], T]) -> T:
+    return await asyncio.get_running_loop().run_in_executor(_PDFIUM, call)
+
 
 # A character is "junk" if it is the Unicode replacement character — pdfium's
 # stand-in for a glyph it could not map back to text, which is exactly what an
@@ -161,37 +180,65 @@ def _metadata_date(  # type: ignore[no-any-unimported]
         return None
 
 
-async def run(work: "Work", report: "Report", factory: "async_sessionmaker[AsyncSession]") -> None:
-    document_id = str(work.document_id)
+@dataclass(frozen=True, slots=True)
+class _Read:
+    """What PDFium gave back for one document, before anything is written."""
+
+    page_count: int
+    pages: list[tuple[int, str | None, bool, float | None]]
+    ocr_used: bool
+    metadata_date: document_date.DocumentDate | None
+
+
+async def _read_pages(
+    local: str,
+    password: str | None,
+    filename: str,
+    document_id: str,
+    report: "Report",
+) -> _Read:
     try:
-        document = await asyncio.to_thread(pdfium.PdfDocument, work.local, work.password)
+        document = await _on_pdfium(lambda: pdfium.PdfDocument(local, password))
     except pdfium.PdfiumError as error:
         raise _classify_open_failure(
-            error, filename=work.filename, password_supplied=work.password is not None
+            error, filename=filename, password_supplied=password is not None
         ) from error
     try:
-        page_count = len(document)
+        page_count = await _on_pdfium(lambda: len(document))
         pages: list[tuple[int, str | None, bool, float | None]] = []
         ocr_used = False
 
         for index in range(page_count):
-            raw = await asyncio.to_thread(_page_text, document, index)
+            raw = await _on_pdfium(partial(_page_text, document, index))
             if _usable(raw):
                 pages.append((index + 1, raw, True, None))
             else:
+                image = await _on_pdfium(partial(extract_ocr.render_page, document, index))
                 ocr_text, has_text, _language, confidence = await asyncio.to_thread(
                     extract_ocr.ocr_page,
-                    document,
+                    image,
                     index,
                     document_id=document_id,
-                    filename=work.filename,
+                    filename=filename,
                 )
                 ocr_used = True
                 pages.append((index + 1, ocr_text, has_text, confidence))
             await report(index + 1, page_count)
-        metadata_date = _metadata_date(document, document_id)
+        metadata_date = await _on_pdfium(partial(_metadata_date, document, document_id))
     finally:
-        document.close()
+        await _on_pdfium(document.close)
+    return _Read(page_count, pages, ocr_used, metadata_date)
+
+
+async def run(work: "Work", report: "Report", factory: "async_sessionmaker[AsyncSession]") -> None:
+    document_id = str(work.document_id)
+    read = await _read_pages(work.local, work.password, work.filename, document_id, report)
+    page_count, pages, ocr_used, metadata_date = (
+        read.page_count,
+        read.pages,
+        read.ocr_used,
+        read.metadata_date,
+    )
 
     usable_pages = sum(1 for _, _, has_text, _ in pages if has_text)
 
