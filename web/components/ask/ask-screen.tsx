@@ -58,6 +58,7 @@ import { MemoryChip } from "@/components/ask/memory-chip";
 import { type FactChip } from "@/lib/memory-chips";
 import { fetchSearch, type SearchHit } from "@/lib/search";
 import { fetchSuggestions, type Suggestion } from "@/lib/suggestions";
+import { inlineMarkdown, normaliseAnswerLines } from "@/lib/answer-markdown";
 import { proseParts, segmentClaims } from "@/lib/claims";
 import { machineLine, SEND_REFUSED, sendAllowed } from "@/lib/online-conversation";
 import { useStatus } from "@/lib/use-status";
@@ -126,7 +127,7 @@ export function fillComposer(question: string, scope: ComposerFill["scope"] = nu
  */
 export function AskScreen() {
   const corpus = useCorpusState();
-  const { turns, online } = useAsk();
+  const { turns, online, startNewConversation } = useAsk();
   const liveId = liveTurnId(turns);
   const status = useStatus();
   // `status.kind === "loading"` renders neither state rather than flashing
@@ -154,9 +155,23 @@ export function AskScreen() {
           so it reaches the exported `index.html` before `corpus` resolves on
           the client. `scripts/check-version.mjs` reads exactly that file for
           exactly this string (`AGENTS.md` §7). */}
-      <p className="ask-micro">
-        Askwell {VERSION} · {machineLine(online)}
-      </p>
+      <div className="flex items-baseline justify-between gap-3">
+        <p className="ask-micro">
+          Askwell {VERSION} · {machineLine(online)}
+        </p>
+        {/* Issue 199. Only once there is a conversation to leave; a
+            streaming answer finishes and is saved, and stays in History. */}
+        {turns.length > 0 ? (
+          <button
+            type="button"
+            onClick={startNewConversation}
+            className="ask-navigates px-3 py-1"
+            style={{ border: "1px solid var(--rule)", fontSize: "var(--t-ui)" }}
+          >
+            New conversation
+          </button>
+        ) : null}
+      </div>
 
       {/* `useSearchParams` needs a `Suspense` boundary, and this is the one
           piece of the screen that reads it (`M1-VIEW-FE-048`'s "back to
@@ -219,10 +234,9 @@ function ReturnToClaim(): null {
 /**
  * The turn list with paging (`conversation.md` §5, §7; `M1-CONV-FE-179`).
  *
- * Every turn already lives in `AskProvider`'s own state — there is no reload
- * of a past conversation yet (issue number 156: `conversation_id` is not
- * threaded across turns, so nothing survives a refresh to page a request
- * against) — so "paging in on scroll" here means revealing more of that same
+ * Every turn already lives in `AskProvider`'s own state — a conversation
+ * reopened from History (issue 199) is read back whole, then shown here like
+ * any other — so "paging in on scroll" here means revealing more of that same
  * in-memory list, oldest last, never a network call that could fail. `revealed` counts
  * back from the newest turn (`conversationWindow`, `lib/ask.ts`); scrolling
  * the boundary row into view grows it by one more page.
@@ -814,9 +828,7 @@ function TurnRow({ turn, live }: { turn: AskTurn; live: boolean }) {
 function QueuedTurn({ turn }: { turn: AskTurn }) {
   return (
     <article className="flex flex-col gap-1">
-      <p className="ask-prose" style={{ color: "var(--muted)" }}>
-        {turn.question}
-      </p>
+      <p className="ask-question">{turn.question}</p>
       <p className="ask-micro">Waiting for the question ahead of it.</p>
     </article>
   );
@@ -876,13 +888,13 @@ function CollapsedTurn({ turn }: { turn: AskTurn }) {
       >
         <p
           className="ask-prose ask-collapsed-line"
-          style={{ color: "var(--muted)", flex: "0 1 auto", maxWidth: "45%" }}
+          style={{ color: "var(--ink)", fontWeight: 600, flex: "0 1 auto", maxWidth: "45%" }}
           title={turn.question}
         >
           {turn.question}
         </p>
         <p className="ask-micro ask-collapsed-line" style={{ textTransform: "none", flex: 1 }}>
-          {turn.summary ?? ""}
+          <InlineMd text={turn.summary ?? ""} />
         </p>
         {turn.webCitations.length > 0 ? <WebMarker /> : null}
         <TurnBackendLabel turn={turn} />
@@ -1099,10 +1111,8 @@ function LiveTurn({ turn }: { turn: AskTurn }) {
   const isRetrieving = isRunning && turn.answer === "";
 
   return (
-    <article className="flex flex-col gap-2" aria-busy={isRunning}>
-      <p className="ask-prose" style={{ color: "var(--muted)" }}>
-        {turn.question}
-      </p>
+    <article className="flex flex-col gap-3" aria-busy={isRunning}>
+      <p className="ask-question">{turn.question}</p>
 
       {turn.status === "queued" ? (
         <p className="ask-micro">Waiting for the question ahead of it.</p>
@@ -1700,7 +1710,11 @@ function AnsweredContent({ turn }: { turn: AskTurn }) {
             <AnswerProse turnId={turn.id} text={layout.before} factChips={turn.factChips} />
           ) : null}
           <ConflictPositions turn={turn} layout={layout} />
-          {layout.unplaced !== "" ? <p className="ask-prose">{layout.unplaced}</p> : null}
+          {layout.unplaced !== "" ? (
+            <p className="ask-prose" style={{ whiteSpace: "pre-line" }}>
+              <InlineMd text={normaliseAnswerLines(layout.unplaced)} />
+            </p>
+          ) : null}
           {layout.after !== "" ? (
             <AnswerProse
               turnId={turn.id}
@@ -2027,12 +2041,14 @@ function AnswerProse({
   factChips: FactChip[];
   ordinalOffset?: number;
 }) {
-  const parts = useMemo(() => proseParts(text), [text]);
+  // `normaliseAnswerLines` rewrites line prefixes only (GH-936), so the claims
+  // segmented here keep the ordinals the server's citations name.
+  const parts = useMemo(() => proseParts(normaliseAnswerLines(text)), [text]);
 
   const nodes: ReactNode[] = [];
-  for (const part of parts) {
+  for (const [index, part] of parts.entries()) {
     if (part.kind === "text") {
-      nodes.push(part.text);
+      nodes.push(<InlineMd key={`text-${index}`} text={part.text} />);
       continue;
     }
     const { claim } = part;
@@ -2040,7 +2056,7 @@ function AnswerProse({
     const chipsForClaim = factChips.filter((chip) => chip.claimOrdinal === ordinal);
     nodes.push(
       <ClaimSpan key={`claim-${ordinal}`} turnId={turnId} ordinal={ordinal}>
-        {claim.text}
+        <InlineMd text={claim.text} />
         {claim.terminator}
       </ClaimSpan>,
     );
@@ -2055,6 +2071,30 @@ function AnswerProse({
     <p className="ask-prose" style={{ whiteSpace: "pre-line" }}>
       {nodes}
     </p>
+  );
+}
+
+/**
+ * One fragment of an answer with the model's inline Markdown applied
+ * (`lib/answer-markdown.ts`, GH-936). Runs become elements, never HTML parsed
+ * from the text, so markup a model writes is shown as the characters it is.
+ */
+function InlineMd({ text }: { text: string }) {
+  return (
+    <>
+      {inlineMarkdown(text).map((run, index) => {
+        if (run.kind === "strong") return <strong key={index}>{run.text}</strong>;
+        if (run.kind === "em") return <em key={index}>{run.text}</em>;
+        if (run.kind === "code") {
+          return (
+            <code key={index} style={{ fontFamily: "var(--font-app)", fontSize: "0.9em" }}>
+              {run.text}
+            </code>
+          );
+        }
+        return run.text;
+      })}
+    </>
   );
 }
 

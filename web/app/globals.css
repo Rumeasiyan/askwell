@@ -306,6 +306,25 @@
     max-width: var(--measure);
   }
 
+  /* The user's own question, set apart from the answer under it. Same face —
+     a question is language, so serif (`design-system.md` §3) — but full ink,
+     heavier, on the card surface, where it used to be muted prose that read
+     as part of the answer. `pre-line` keeps a Shift+Enter line break. */
+  .ask-question {
+    font-family: var(--font-text);
+    font-size: var(--t-body);
+    line-height: var(--t-body-lh);
+    font-weight: 600;
+    color: var(--ink);
+    background: var(--surface);
+    border-radius: 6px;
+    padding: 8px 14px;
+    width: fit-content;
+    max-width: var(--measure);
+    white-space: pre-line;
+    overflow-wrap: anywhere;
+  }
+
   /* The answer measure as a box, for a block that is not all prose — the
      composer's input, scope line and action row (`M7-FIX-FE-169`). `ch`
      resolves against the element's own font, so the box takes prose

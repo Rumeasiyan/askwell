@@ -4,6 +4,28 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.34 - 2026-10-05
+
+`Added`: start a new conversation, and go back to earlier ones (#199).
+
+- **New conversation** at the top of the Ask screen clears it and starts afresh. An answer still being written is finished and kept.
+- **History**, in the list on the left, shows your earlier conversations, newest first. Click one to read it again with every answer and its source cards, and ask a follow-up to carry on.
+- A conversation reopened from History always continues on your computer, even if it used a larger online model before.
+- If a document an old answer cited has since been removed, its source card stays and says so.
+
+## 0.9.33 - 2026-10-05
+
+`Fixed`: answers show formatting instead of asterisks, and your question stands apart from the answer (#936, #938).
+
+- **Answers no longer show `**`, `***` or `###`.** The AI model writes bold text, headings and lists in Markdown, and Askwell printed the symbols. Bold, italics and lists now display as formatting, and dividing lines are removed. The same applies to the one-line summaries of earlier questions.
+- **Your question is set apart from the answer.** It used to be grey text in the same style as the answer under it. It now sits in its own shaded box, in darker, heavier type.
+
+## 0.9.32 - 2026-10-05
+
+`Fixed`: adding several PDFs at once no longer fails them all (#933).
+
+- **PDFs failed to index with "PdfiumError: Failed to load page."** Askwell indexes two files at a time, and the library it reads PDFs with cannot be used by two at once. When two PDFs overlapped, pages failed to load, and every PDF after that failed too until Askwell was restarted. All PDF reading now happens one step at a time, while reading scanned pages (OCR) still runs side by side. If a file failed this way, open **Library** and click **Re-index**.
+
 ## 0.9.31 - 2026-10-05
 
 `Fixed`: answers are clean, short and cited (#919).
