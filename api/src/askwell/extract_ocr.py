@@ -58,7 +58,13 @@ _DEFAULT_LANGUAGE = "eng"
 _SUPPORTED_LANGUAGES = frozenset({"eng"})
 
 
-def _render(document: "pdfium.PdfDocument", index: int) -> "Image":  # type: ignore[no-any-unimported]
+def render_page(document: "pdfium.PdfDocument", index: int) -> "Image":  # type: ignore[no-any-unimported]
+    """The PDFium half of OCR: one page rasterised to a greyscale image.
+
+    Split from `ocr_page` because PDFium is not thread-safe (#933): the caller
+    runs this on the one thread every PDFium call shares, and hands the image
+    — plain pixels, no PDFium in it — to `ocr_page` on any thread.
+    """
     page = document.get_page(index)
     try:
         bitmap = page.render(scale=RENDER_SCALE, grayscale=True)
@@ -114,18 +120,20 @@ def _confidence(image: "Image", *, language: str) -> float | None:
     return (sum(scores) / len(scores)) / 100
 
 
-def ocr_page(  # type: ignore[no-any-unimported]
-    document: "pdfium.PdfDocument",
+def ocr_page(
+    image: "Image",
     index: int,
     *,
     document_id: str,
     filename: str,
 ) -> tuple[str | None, bool, str, float | None]:
-    """The blocking half: render, orient, recognise one page.
+    """The blocking half: orient and recognise one page already rendered by
+    `render_page`.
 
-    Run through `asyncio.to_thread` by the caller, the same way
-    `extract_pdf._page_text` is — a 900-page scan reports progress between
-    pages only if control returns to the event loop between them.
+    Run through `asyncio.to_thread` by the caller — a 900-page scan reports
+    progress between pages only if control returns to the event loop between
+    them. Touches no PDFium, so it may run on any thread, and two documents'
+    OCR still runs in parallel.
 
     Returns `(text, has_text, language, confidence)`. `text` is `None` when
     nothing came back — the "photograph with no text" edge case, recorded
@@ -133,7 +141,6 @@ def ocr_page(  # type: ignore[no-any-unimported]
     is `None` alongside it for the same reason: there is nothing to score.
     """
     page_number = index + 1
-    image = _render(document, index)
     rotation, language = _orientation_and_language(
         image, document_id=document_id, page_number=page_number, filename=filename
     )
