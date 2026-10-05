@@ -228,7 +228,8 @@ test("a CSV is named as arriving, not as unsupported", () => {
   assert.equal(result.arrives, "M4");
   assert.equal(result.refusal, null);
   assert.match(laterLine("exports/q3.csv", result), /^exports\/q3\.csv — a CSV file\./);
-  assert.match(laterLine("exports/q3.csv", result), /from M4/);
+  assert.match(laterLine("exports/q3.csv", result), /does not read these yet/);
+  assert.doesNotMatch(laterLine("exports/q3.csv", result), /M4/);
   assert.doesNotMatch(laterLine("exports/q3.csv", result), /unsupported/i);
 });
 
@@ -253,7 +254,9 @@ test("the supported list names every format read today, and dates the rest", () 
     assert.ok(SUPPORTED_SUMMARY.includes(format), `${format} is missing from the supported list`);
   }
   assert.match(SUPPORTED_SUMMARY, /PostgreSQL database\s+dumps are read today/);
-  assert.match(SUPPORTED_SUMMARY, /CSV and live connections arrive in M4/);
+  assert.match(SUPPORTED_SUMMARY, /CSV files are not read yet/);
+  // A milestone name means nothing to the person reading the screen.
+  assert.doesNotMatch(SUPPORTED_SUMMARY, /\bM\d/);
 });
 
 test("a corrupt but well-headed PDF is still supported, so it fails at extraction and not here", () => {

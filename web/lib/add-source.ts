@@ -123,7 +123,7 @@ export const MAX_FILES = 5000;
  */
 export const SUPPORTED_SUMMARY =
   "PDF, Word, Excel, PowerPoint, plain text, Markdown, HTML, images and PostgreSQL database " +
-  "dumps are read today. CSV and live connections arrive in M4.";
+  "dumps are read today. CSV files are not read yet.";
 
 /** When each route starts working, from the one place that already says so. */
 const ARRIVES: Record<Route, string | null> = Object.fromEntries(
@@ -594,7 +594,7 @@ export function refusalLine(name: string, detection: Detection): string {
  * the product a user who was a good fit.
  */
 export function laterLine(name: string, detection: Detection): string {
-  return `${name} — ${detection.format}. Askwell reads these from ${detection.arrives}; nothing was added for it now.`;
+  return `${name} — ${detection.format}. Askwell does not read these yet; nothing was added for it now.`;
 }
 
 /**

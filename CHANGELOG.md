@@ -4,6 +4,14 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.27 - 2026-10-05
+
+`Fixed`: screens no longer show internal milestone names or notes that stopped being true.
+
+- **Adding files** said CSV files and live connections "arrive in M4". It now says CSV files are not read yet; live connections already work.
+- **Settings** opened with a note that its settings "arrive in M7", and a line about voice timing. Both are gone.
+- **Library** said a database connection's write permissions were not checked. They are: Askwell refuses a user that can change the database, and the Library now says so.
+
 ## 0.9.26 - 2026-10-01
 
 `Fixed`: on a slower computer, the first question after installing no longer stops on an unrelated clarification (#910).
