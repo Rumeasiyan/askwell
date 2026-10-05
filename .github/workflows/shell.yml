@@ -67,3 +67,9 @@ jobs:
         # failure.
         working-directory: web/src-tauri
         run: cargo check --locked
+
+      - name: cargo test
+        # The supervisor's decisions (when to start the Podman machine, the
+        # restart backoff) are unit-tested; `check` alone never ran them.
+        working-directory: web/src-tauri
+        run: cargo test --locked

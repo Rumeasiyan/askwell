@@ -4,6 +4,12 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.28 - 2026-10-05
+
+`Fixed`: after Windows restarts, Askwell starts again by itself (#921).
+
+- **Askwell stayed on "Still starting Askwell" after every restart on Windows**, and on macOS, because nothing started the Podman machine its services run in. When its services cannot reach Podman, Askwell now starts the machine and tries again.
+
 ## 0.9.27 - 2026-10-05
 
 `Fixed`: screens no longer show internal milestone names or notes that stopped being true.
