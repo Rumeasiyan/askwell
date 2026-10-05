@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Askwell user manual</title>
+<!-- Built by scripts/manual/build.mjs from docs/manual/chapters. Do not edit by hand. -->
+<style>
+/* The Askwell user manual. Tokens from docs/ux/design-system.md (light theme).
+   No web fonts: the reader's machine, or the PDF builder's, supplies them. */
+:root {
+  --paper: #e9ebe7;
+  --surface: #f3f4f1;
+  --ink: #232722;
+  --muted: #5f655e;
+  --rule: #c9cdc6;
+  --rule-strong: #7a8078;
+  --provenance: #2f6b62;
+  --inferred: #7d601f;
+  --alarm: #8c3a2e;
+  --font-text: Charter, "Bitstream Charter", Georgia, "Iowan Old Style", serif;
+  --font-app: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+}
+
+* { box-sizing: border-box; }
+
+html { background: var(--paper); }
+
+body {
+  margin: 0 auto;
+  max-width: 46rem;
+  padding: 3rem 1.25rem 5rem;
+  color: var(--ink);
+  font-family: var(--font-text);
+  font-size: 1.0625rem;
+  line-height: 1.6;
+}
+
+h1, h2, h3 {
+  font-family: var(--font-app);
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+
+h1 { font-size: 2.1rem; margin: 0 0 0.5rem; }
+h2 {
+  font-size: 1.5rem;
+  margin: 0 0 1rem;
+  padding-top: 0.5rem;
+}
+h3 { font-size: 1.05rem; margin: 2rem 0 0.5rem; }
+
+p, ul, ol { margin: 0 0 1rem; }
+li { margin: 0.3rem 0; }
+li > ul { margin: 0.4rem 0 0; }
+
+b { font-weight: 600; }
+
+code, pre, kbd {
+  font-family: var(--font-app);
+  font-size: 0.86em;
+}
+code { background: var(--surface); padding: 0.05em 0.3em; border-radius: 3px; }
+pre {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 0.6rem 0.8rem;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  margin: 0.5rem 0;
+}
+
+a { color: var(--provenance); }
+
+.note, .warn {
+  border-left: 3px solid var(--provenance);
+  background: var(--surface);
+  padding: 0.6rem 0.9rem;
+  border-radius: 0 4px 4px 0;
+}
+.warn { border-left-color: var(--alarm); }
+
+figure { margin: 1.5rem 0; }
+figure img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+}
+figcaption {
+  font-family: var(--font-app);
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin-top: 0.4rem;
+}
+
+.cover { margin-bottom: 3rem; }
+.cover p { color: var(--muted); }
+
+nav.contents {
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+  padding: 1rem 0;
+  margin-bottom: 3rem;
+  font-family: var(--font-app);
+  font-size: 0.95rem;
+}
+nav.contents ol { margin: 0; padding-left: 2.4rem; }
+
+section.chapter {
+  border-top: 1px solid var(--rule-strong);
+  padding-top: 1.5rem;
+  margin-top: 3rem;
+}
+
+@media print {
+  @page { size: A4; margin: 18mm 16mm 20mm; }
+  html, body { background: #fff; }
+  body { max-width: none; padding: 0; font-size: 10.5pt; }
+  section.chapter { break-before: page; border-top: none; margin-top: 0; padding-top: 0; }
+  figure, pre, .note, .warn { break-inside: avoid; }
+  h2, h3 { break-after: avoid; }
+  a { color: var(--ink); text-decoration: none; }
+}
+</style>
+</head>
+<body>
+<header class="cover">
+  <h1>Askwell</h1>
+  <p>User manual. A personal AI over your own files, on your own computer.</p>
+</header>
+<nav class="contents" aria-label="Contents">
+  <ol>
+      <li><a href="#ch-install">Install Askwell</a></li>
+      <li><a href="#ch-first-start">Start Askwell for the first time</a></li>
+      <li><a href="#ch-add-files">Add a folder of documents</a></li>
+      <li><a href="#ch-ask">Ask a question</a></li>
+      <li><a href="#ch-clarifications">Answer Askwell's questions</a></li>
+      <li><a href="#ch-memory">Review what Askwell remembers</a></li>
+      <li><a href="#ch-library">Manage your sources</a></li>
+      <li><a href="#ch-databases">Ask about a database</a></li>
+      <li><a href="#ch-settings">Change settings</a></li>
+      <li><a href="#ch-troubleshooting">When something goes wrong</a></li>
+  </ol>
+</nav>
+
+<section class="chapter" id="ch-install">
+<h2>Install Askwell</h2>
+
+<p>Askwell runs on your own computer. Nothing you add to it is uploaded. You need:</p>
+<ul>
+  <li><b>Windows 11</b>, version 22H2 or newer, or <b>Linux</b> (Fedora, Ubuntu, or a distribution built on Ubuntu), or <b>macOS</b> on Apple silicon.</li>
+  <li>Free disk space for Askwell itself, the AI models it downloads on first start (about 5 GB on most computers), and the index of your files.</li>
+  <li>Askwell measures your computer's memory and graphics card when it starts, and picks a model that fits. More memory means faster answers.</li>
+  <li>An internet connection for the installation and the model download. After that, Askwell works offline.</li>
+</ul>
+
+<h3>Check what you downloaded</h3>
+<p>Askwell is not code-signed, so Windows and macOS warn you before they run it. The warning means your computer cannot confirm who published the file. A checksum is how <em>you</em> confirm it is the file that was published. Check it before running anything.</p>
+<ol>
+  <li>From the release page, download the file for your computer and the file <code>SHA256SUMS</code>.</li>
+  <li>Work out the checksum of your download.
+    <ul>
+      <li>Windows, in PowerShell: <code>Get-FileHash Askwell-Setup-&lt;version&gt;.exe -Algorithm SHA256</code></li>
+      <li>Linux and macOS, in a terminal: <code>shasum -a 256 askwell-&lt;version&gt;-&lt;platform&gt;.tar.gz</code></li>
+    </ul>
+  </li>
+  <li>Compare it with the line for your file in <code>SHA256SUMS</code>.</li>
+</ol>
+<p class="warn">If the two values do not match, stop. Do not run the file. Report it on the project's issue page: a mismatch means the file changed after it was published.</p>
+
+<h3>Windows</h3>
+<ol>
+  <li>Double-click <code>Askwell-Setup-&lt;version&gt;.exe</code>.</li>
+  <li>Windows shows <b>Windows protected your PC</b>. Click <b>More info</b>, the small link above the buttons, then <b>Run anyway</b>.</li>
+  <li>Windows asks for administrator permission. Click <b>Yes</b>. Setup needs it to install the services Askwell runs on.</li>
+  <li>Click through the welcome and licence pages, then <b>Install</b>. Setup installs whatever this PC is missing: Podman, the Windows Subsystem for Linux, Docker Compose, Python and Microsoft's Visual C++ runtime. Each step is shown as it happens. This takes several minutes.</li>
+  <li>If Setup says <b>Windows needs to restart once</b>, leave <b>Restart now</b> selected and click <b>Finish</b>. After the restart, sign in. Setup carries on by itself and tells you when it is done.</li>
+  <li>When Setup says <b>Askwell is installed and opening</b>, Askwell opens. It is also in your Start menu.</li>
+</ol>
+<p class="note">Setup changes one Windows setting, and says so in its log: it sets the Windows Subsystem for Linux to <em>mirrored</em> networking, which is how Askwell's services reach its AI on your PC.</p>
+<p>If Setup stops with a message about <b>virtualisation</b>, your PC's firmware has virtualisation turned off. Setup names the setting. It is in the BIOS or UEFI setup, not in Windows, so you change it there, then run Setup again.</p>
+<p>If Setup cannot finish, it saves a text file on your Desktop whose name starts with <code>Askwell-Setup-report</code>. Nothing is sent anywhere. See <a href="#ch-troubleshooting">When something goes wrong</a>.</p>
+
+<h3>Linux</h3>
+<ol>
+  <li>Open a terminal in the folder you downloaded to, and unpack the download:
+    <pre>tar -xzf askwell-&lt;version&gt;-linux-x86_64.tar.gz</pre></li>
+  <li>Run the installer:
+    <pre>askwell-&lt;version&gt;-linux-x86_64/deploy/linux/install.sh</pre></li>
+  <li>It lists what your computer is missing (Podman, Docker Compose and the OpenMP runtime) and asks before installing them. Answer <b>y</b>. It asks for your password once.</li>
+  <li>It then sets up Askwell and opens it. Askwell is also in your applications menu.</li>
+</ol>
+<p>On a distribution other than Fedora or Ubuntu, the installer stops before changing anything and tells you what to install yourself.</p>
+
+<h3>macOS</h3>
+<ol>
+  <li>Open Terminal in the folder you downloaded to, unpack the download and run its installer:
+    <pre>tar -xzf askwell-&lt;version&gt;-macos-arm64.tar.gz
+askwell-&lt;version&gt;-macos-arm64/deploy/macos/install.sh</pre>
+    It installs Podman and Docker Compose with Homebrew if they are missing, and places Askwell in Applications.</li>
+  <li>macOS refuses the first launch: <b>Askwell cannot be opened because the developer cannot be verified.</b> Click <b>Done</b>.</li>
+  <li>Open <b>System Settings → Privacy &amp; Security</b> and scroll to <b>Security</b>. Next to the line saying Askwell was blocked, click <b>Open Anyway</b>, then confirm.</li>
+</ol>
+<p>You do this once. Afterwards Askwell opens normally.</p>
+</section>
+
+<section class="chapter" id="ch-first-start">
+<h2>Start Askwell for the first time</h2>
+
+<p>The first time Askwell opens, it walks you through four short steps: <b>What this is</b>, <b>Check the machine</b>, <b>Get the model</b> and <b>Add something and ask</b>. The one that matters most is getting the model. Askwell cannot answer anything until it has one.</p>
+
+<figure><img src="screenshots/welcome.png" alt="The Welcome to Askwell screen, with the four steps across the top and a Get started button."><figcaption>The first screen.</figcaption></figure>
+
+<ol>
+  <li>Read the first screen and click <b>Get started</b>.</li>
+  <li><b>Check the machine</b> shows how much memory and graphics memory your computer has. Askwell picks the right AI model for it from this. It also offers <b>Set a passphrase</b>. Choose <b>Not now</b> to carry on; you can set one at any time in <b>Settings</b>, see <a href="#ch-settings">Change settings</a>. Click <b>Continue</b>.</li>
+  <li><b>Get the model</b> names the model Askwell picked and how much it will download. Click <b>Download</b>.</li>
+</ol>
+
+<figure><img src="screenshots/welcome-model.png" alt="The Get the model step, showing the model's name, its download size and a Download button."><figcaption>Download the AI models once.</figcaption></figure>
+
+<p>The download is about 5 GB on most computers, and larger on one with a capable graphics card. It includes the model that writes answers and two smaller models that read and rank your documents. A progress bar shows how much is done and roughly how long is left. This is the only download Askwell makes, and only because you started it.</p>
+
+<ul>
+  <li>You can carry on while it downloads: add your files now, and they are ready as soon as the model is.</li>
+  <li><b>Cancel</b> pauses it. <b>Resume</b> carries on from where it stopped; nothing already downloaded is lost.</li>
+  <li>If the download fails, Askwell says why and offers <b>Retry</b>.</li>
+  <li>If you already have the model file, for example on a computer with no internet, choose <b>I already have the file</b> and follow the steps shown.</li>
+</ul>
+
+<p>When the step says <b>Ready.</b>, the model is in place. Click <b>Continue</b>, then add your first folder: <a href="#ch-add-files">Add a folder of documents</a>.</p>
+
+<p class="note">You can leave the welcome steps at any time with <b>Skip setup</b>. Askwell opens on <b>Ask</b>. If no model is in place, the status at the top of the window says so, and the welcome steps are where you download it.</p>
+
+<h3>The window</h3>
+<p>The menu on the left has five places: <b>Ask</b>, where you ask questions; <b>Library</b>, everything you have added; <b>Clarifications</b>, questions Askwell has for you; <b>Memory</b>, what Askwell has learned about your material; and <b>Settings</b>. The status at the top left reads <b>Ready</b> when everything Askwell needs is running. <b>System</b>, <b>Light</b> and <b>Dark</b> at the top right choose the colour theme.</p>
+</section>
+
+<section class="chapter" id="ch-add-files">
+<h2>Add a folder of documents</h2>
+
+<p>Askwell reads your files where they are. It does not copy, move or upload them. It builds an index of what they say, so adding a large folder costs little disk space beyond that index, and every source an answer cites opens the file you already have.</p>
+
+<h3>What Askwell reads</h3>
+<ul>
+  <li>PDF, Word, Excel, PowerPoint, plain text, Markdown, HTML and images. Scanned PDFs and images are read with text recognition.</li>
+  <li>PostgreSQL database dumps (<code>.sql</code>, <code>.dump</code> and <code>.backup</code>). See <a href="#ch-databases">Ask about a database</a>.</li>
+  <li>CSV files are not read yet. An Excel workbook is read, including its tables.</li>
+</ul>
+
+<h3>Add a folder</h3>
+<ol>
+  <li>Open <b>Library</b> and click <b>Add a source</b>. During the welcome steps, the same panel is part of the last step.</li>
+  <li>Under <b>Files</b>, click <b>Choose a folder</b> and pick the folder in the dialog. You can also drag files or a folder anywhere into the Askwell window.</li>
+  <li>Askwell lists what it found, for example <i>9 files, 162 KB. From 1 folder.</i>, and what kind of files they are.</li>
+  <li>The first time you add something from a folder, Askwell says <b>Askwell has not been given this folder yet</b>. Click the <b>Nominate</b> button, which names the folder. This allows Askwell to read anything inside that folder, and nothing outside it. Askwell then adds the files.</li>
+</ol>
+
+<figure><img src="screenshots/add-nominate.png" alt="The Add a source panel after choosing a folder: a summary of nine files, the message that Askwell has not been given this folder yet, and a Nominate button."><figcaption>Allow Askwell to read the folder, once.</figcaption></figure>
+
+<p>Askwell may read folders inside your own user folder. You can see and remove the folders it may read under <b>Settings</b>, in <b>Folders Askwell may read</b>.</p>
+
+<h3>While Askwell reads the files</h3>
+<p>Indexing starts straight away and runs in the background. You can keep using Askwell. <b>Library</b> shows each source with its state: indexing, or <b>Ready</b> once every file has been read, with a line such as <i>All 9 indexed.</i></p>
+
+<figure><img src="screenshots/library.png" alt="The Library screen, listing one source as Ready with all nine files indexed, and Re-index and Delete buttons."><figcaption>The Library once indexing has finished.</figcaption></figure>
+
+<p>A folder of a few dozen documents takes a minute or two. Hundreds of documents, or long scanned PDFs, take longer. When it finishes, Askwell may have a question or two about what it read; see <a href="#ch-clarifications">Answer Askwell's questions</a>.</p>
+
+<h3>If you use Askwell in a web browser</h3>
+<p>A web browser does not tell Askwell where a file is on your computer, only its name. So after you choose a folder, Askwell asks <b>Which folder is “…” in?</b>. Type the full path of the folder that <em>contains</em> the one you chose, then click <b>Add them</b>. For a folder at <code>/home/anna/Documents/Meridian Loom</code>, type <code>/home/anna/Documents</code>.</p>
+<p>The Askwell window does not ask this. It gets the path from the folder dialog.</p>
+</section>
+
+<section class="chapter" id="ch-ask">
+<h2>Ask a question</h2>
+
+<p>Ask in plain English, the way you would ask a colleague who has read everything you added. Askwell answers only from your own material, and shows you where each part of the answer came from.</p>
+
+<ol>
+  <li>Open <b>Ask</b>.</li>
+  <li>Type your question in the box. Under <b>From what you have added</b>, Askwell suggests a few questions from your files. Click one to put it in the box.</li>
+  <li>Press <b>Enter</b> or click <b>Ask</b>. For a new line without sending, press <b>Shift</b>+<b>Enter</b>.</li>
+</ol>
+
+<p>Askwell shows what it is doing (<i>Searching your files.</i>, <i>Reading 9 sources.</i>) and then writes the answer as it goes. <b>Stop</b> ends an answer early.</p>
+
+<h3>Check where an answer came from</h3>
+<p>Every statement in an answer is connected by a line to a source card on the right. The card names the document and pages, and quotes the passage. Click <b>See full passage</b> to read it in context and open the document.</p>
+<p>Only trust a statement you can trace to a source. If a statement has no source card, Askwell could not support it, and you should treat it as unconfirmed.</p>
+<p><b>How did you get this?</b> under an answer shows the steps Askwell took: what it searched for, which passages it found and how well they matched.</p>
+
+<h3>When your files only answer part of a question</h3>
+<p>Askwell answers the part it can, and lists the rest under <b>Not covered by your files</b>.</p>
+
+<h3>When your documents disagree</h3>
+<p>If two of your documents say different things about what you asked, Askwell shows both, each with its source, rather than choosing one. It may also ask you which is current; see <a href="#ch-clarifications">Answer Askwell's questions</a>.</p>
+
+<h3>When nothing in your files answers it</h3>
+<p>Askwell says <b>Nothing in your files answers this.</b> rather than guessing, and names the closest material it found. It does not fall back on general knowledge.</p>
+
+<figure><img src="screenshots/abstain.png" alt="The Ask screen saying Nothing in your files answers this, with the number of passages searched, the closest material found, and three options below."><figcaption>Askwell says so when your files do not answer a question.</figcaption></figure>
+
+<p>Three ways on are offered below it:</p>
+<ul>
+  <li><b>Add a source</b>: add the document you would expect the answer in, then ask again.</li>
+  <li><b>Search the web</b> and <b>Ask a larger model</b> are shown as not set up. On a new install, nothing ever leaves your computer.</li>
+</ul>
+<p>Try rephrasing too. A question using the words your documents use is more likely to find them.</p>
+
+<h3>Follow-up questions</h3>
+<p>Ask a follow-up in the same box. Askwell keeps the conversation, so "and for part-time staff?" is understood in the light of what you asked before.</p>
+
+<h3>The buttons beside Ask</h3>
+<ul>
+  <li><b>Local</b> shows that this conversation stays on your computer. Every new conversation starts local.</li>
+  <li>The microphone is for asking aloud. It needs voice models that Askwell does not download, so on a new install it does not work.</li>
+</ul>
+</section>
+
+<section class="chapter" id="ch-clarifications">
+<h2>Answer Askwell's questions</h2>
+
+<p>While it reads your files, Askwell notices things it cannot work out on its own. Two documents give different figures for the same thing. Two files look like versions of the same document. An abbreviation is used everywhere and never explained. Instead of guessing, it asks you. It remembers your answer and uses it in every later answer.</p>
+
+<p>You never have to answer. Skipping is always possible, and Askwell then works with a stated assumption.</p>
+
+<h3>Answer from the Clarifications screen</h3>
+<p>When Askwell has questions, the number appears next to <b>Clarifications</b> in the menu, and a prompt with <b>Review</b> and <b>Dismiss</b> may appear at the top of the window.</p>
+<ol>
+  <li>Open <b>Clarifications</b>. Questions are grouped by the source they came from.</li>
+  <li>Each question shows the evidence: the passages involved, from which document, and what each says.</li>
+  <li>Answer it:
+    <ul>
+      <li>If Askwell offers choices, for example the two documents that disagree, click the one that is right.</li>
+      <li>Otherwise type the answer in the box and click <b>Save</b>, or press <b>Enter</b>.</li>
+      <li>Or click <b>Skip</b>. <b>Skip all</b> skips every question from that source.</li>
+    </ul>
+  </li>
+</ol>
+
+<figure><img src="screenshots/clarifications.png" alt="The Clarifications screen with one question: two store-hours documents disagree on closing time. Each passage is quoted, with a button for each document and a Skip button."><figcaption>A question about two documents that disagree.</figcaption></figure>
+
+<p>After you answer, Askwell confirms it and offers <b>Undo</b>. If the answer changes how your documents should be read, Askwell re-reads the ones affected and shows its progress.</p>
+
+<h3>Answer while asking a question</h3>
+<p>If a question you ask depends on something Askwell is unsure about, it asks you first, in the conversation, before it answers. The question shows the same evidence and choices. Choose an answer and Askwell carries on with it. Or click <b>Skip</b>: Askwell answers anyway and says which assumption it made, for example the most recently added document, and that you can answer the question later in <b>Clarifications</b>.</p>
+<p>Askwell interrupts like this only when the answer really depends on it. Anything else waits in <b>Clarifications</b>.</p>
+
+<h3>Change an answer later</h3>
+<p>Every answer you give becomes something Askwell remembers. You can see, change or delete it in <b>Memory</b>; see <a href="#ch-memory">Review what Askwell remembers</a>.</p>
+</section>
+
+<section class="chapter" id="ch-memory">
+<h2>Review what Askwell remembers</h2>
+
+<p><b>Memory</b> holds everything Askwell believes about your material that is not written in the documents themselves: your answers to its questions, and guesses it made on its own, such as what kind of data a spreadsheet column holds. Each entry says where it came from and how many answers have used it.</p>
+
+<figure><img src="screenshots/memory.png" alt="The Memory screen listing guesses Askwell made about a spreadsheet's columns, each with Confirm, Edit and Delete buttons."><figcaption>Guesses are marked, and wait for you to confirm them.</figcaption></figure>
+
+<ul>
+  <li><b>You told me</b> marks something you said, in an answer to a clarification or a correction.</li>
+  <li><b>I guessed</b> marks something Askwell inferred. A guess is used as background, never stated as fact on its own, until you confirm it.</li>
+</ul>
+
+<h3>Review an entry</h3>
+<ul>
+  <li><b>Confirm</b> marks a guess as right. From then on Askwell treats it as something you told it.</li>
+  <li><b>Edit</b> corrects it. Askwell re-reads anything that depended on it.</li>
+  <li><b>Delete</b> removes it. Askwell stops using it.</li>
+</ul>
+<p>The filters at the top narrow the list: <b>Inferred only</b> shows just the guesses, <b>Unused</b> shows entries no answer has used yet, and <b>Source</b> limits the list to one source.</p>
+
+<h3>Start again</h3>
+<p><b>Delete all memory</b>, at the bottom of the screen, removes everything Askwell has learned, after you confirm with <b>Delete all</b>. Your documents and the index are not touched.</p>
+<p class="warn">Deleting all memory cannot be undone. Every answer you gave to Askwell's questions is lost with it.</p>
+</section>
+
+<section class="chapter" id="ch-library">
+<h2>Manage your sources</h2>
+
+<p><b>Library</b> lists every source you have added (a folder, a database dump or a database connection) and what state it is in.</p>
+
+<h3>What the states mean</h3>
+<ul>
+  <li><b>Queued</b>: added, waiting to be read.</li>
+  <li><b>Indexing</b>: being read now. Questions about it may get thin answers until it finishes.</li>
+  <li><b>Ready</b>: every file has been read.</li>
+  <li><b>Needs attention</b>: some files could not be read. The source lists which ones and why, for example a file that has moved or a scan that could not be recognised.</li>
+</ul>
+<p>The filters at the top show one <b>Kind</b> or <b>Status</b> at a time, only sources with <b>Has open clarifications</b>, or sources you deleted, with <b>Show deleted</b>.</p>
+
+<h3>New files and moved files</h3>
+<p>Askwell checks regularly that every file it has read is still where it was, and lists any that have moved or gone under the source. It does not pick up files you put in a folder later. Add the folder again: files Askwell already has are skipped, and only the new ones are read.</p>
+
+<h3>Read a source again</h3>
+<p>To read everything in a source again from scratch, click <b>Re-index</b> and confirm. On a large source this can take a long time, and answers about it may be thin until it finishes.</p>
+
+<h3>Delete a source</h3>
+<ol>
+  <li>Click <b>Delete</b> on the source.</li>
+  <li>Askwell asks you to confirm. Click <b>Delete it</b>, or <b>Not now</b> to keep it.</li>
+</ol>
+<p>Deleting a source makes Askwell forget its contents and stop using it in answers. Your files on disk are not touched. Past answers that cited it show it as deleted.</p>
+</section>
+
+<section class="chapter" id="ch-databases">
+<h2>Ask about a database</h2>
+
+<p>Askwell can answer questions straight from database tables (counts, totals, lists of records) as well as from documents. It writes the query itself, shows it to you with the result, and only ever reads: it never changes your data. There are two ways to give it a database.</p>
+
+<h3>Import a database dump</h3>
+<p>A dump is a file exported from a database. Askwell imports PostgreSQL dumps: <code>.sql</code>, <code>.dump</code> and <code>.backup</code> files. MySQL and SQL Server dumps are not imported; connect to those databases instead, or export their tables as Excel files.</p>
+<ol>
+  <li>Open <b>Library</b>, click <b>Add a source</b>, and under <b>Database dump</b> click <b>Choose a dump file</b>.</li>
+  <li>Pick the file. Askwell imports it into a sealed database of its own, which cannot reach your other sources, the internet or Askwell's own files.</li>
+  <li>The source appears in <b>Library</b> and is ready once its tables have been read.</li>
+</ol>
+<p class="note">A dump can contain commands, not just data. That is why Askwell runs it in a sealed copy. If the dump is broken or malicious, only that copy is affected.</p>
+
+<h3>Connect to a live database</h3>
+<p>Askwell connects to PostgreSQL, MySQL, MariaDB and SQL Server. It needs a user that can only <em>read</em>. If the user you give it can change anything, Askwell refuses the connection, names the permission it found, and shows the statements to create a read-only user, ready to copy.</p>
+<ol>
+  <li>Open <b>Library</b>, click <b>Add a source</b>, and find <b>Connect a database</b>.</li>
+  <li>Choose the <b>Engine</b> and fill in <b>Host</b>, <b>Port</b>, <b>Database</b>, <b>User</b> and <b>Password</b>.</li>
+  <li>Click <b>Connect</b>. Askwell checks that it can read and that it cannot write, then says <b>Connected</b> and reads the list of tables in the background.</li>
+</ol>
+<p>The password is stored encrypted on your computer.</p>
+
+<h3>Asking about tables</h3>
+<p>Ask as you would about documents: "How many orders were placed in March?" Askwell decides whether your question is about documents or tables. For a table, it shows the result as a table, with the query it ran. Only a single read-only query is ever run. Anything else Askwell writes is refused before it reaches your database.</p>
+</section>
+
+<section class="chapter" id="ch-settings">
+<h2>Change settings</h2>
+
+<p><b>Settings</b> is one long page. Every change you make there is recorded.</p>
+
+<h3>Model and speed</h3>
+<ul>
+  <li><b>Hardware profile</b> shows what Askwell measured about this computer and the profile it chose: <i>Light</i>, <i>Standard</i>, <i>Accelerated</i> or <i>Workstation</i>. <b>Re-run the probe</b> measures again, for example after adding memory. You can choose another profile and click <b>Change profile</b>. Askwell warns that it will not check whether this computer can run it.</li>
+  <li><b>Model</b> names the model in use. <i>Validated</i> means it shipped with Askwell and passed its quality checks, including citing sources and saying when it does not know. It also shows how much memory the model uses and, once it has answered something, how fast it is.</li>
+  <li><b>Swap model</b> lists other model files in the models folder. A model that did not ship with Askwell is marked <i>Unverified</i>.</li>
+</ul>
+
+<h3>Retrieval threshold</h3>
+<p>How close a passage must be to your question before Askwell will answer from it. Lower it and Askwell answers more often, from weaker matches, and more of those answers are wrong. Raise it and Askwell says "nothing in your files answers this" more often, but what it does answer is more likely to be right. Leave it as it is unless you have a reason.</p>
+
+<h3>Online AI</h3>
+<p>Online AI would let a single conversation use a larger model at a provider you choose, with your own key. There is no switch here that turns it on everywhere. You can store a key under <b>Your key</b>: it is kept encrypted on this computer and never shown again. Online AI sends nothing today. The page says so under <b>What leaves this machine</b>.</p>
+
+<h3>Folders Askwell may read</h3>
+<p>The folders you have allowed Askwell to read, each marked <i>Readable</i> or with the reason it is not. <b>Remove</b> takes one off the list. To allow another folder, type its full path under <b>Nominate a folder</b> and click <b>Nominate</b>. Askwell can read your own user folder, read-only, and nothing outside it.</p>
+
+<h3>Storage</h3>
+<ul>
+  <li><b>Index size per source</b> shows roughly how much disk each source's index uses.</li>
+  <li><b>Log storage budget</b> is the most disk Askwell's logs may use. At the limit, Askwell stops adding new material until space is freed; asking questions keeps working.</li>
+  <li><b>Interaction retention window</b> is how long conversations are kept, 12 months unless you change it. Changing it deletes nothing.</li>
+</ul>
+
+<h3>Privacy and security</h3>
+<ul>
+  <li><b>Passphrase</b>: setting one encrypts your library and stored credentials, so a stolen laptop does not expose them.</li>
+  <li><b>Network activity</b> counts every connection Askwell tried to make from your computer, and how many were refused. It is measured, not a setting. On a new install both are zero.</li>
+  <li><b>Connected databases</b> lists live database connections.</li>
+</ul>
+<p class="warn">There is no way to recover a forgotten passphrase. Losing it means losing access to the library. Askwell asks you to confirm that you understand before it sets one.</p>
+
+<h3>Your data</h3>
+<ul>
+  <li><b>Export everything</b> saves your list of sources, memory, clarifications, conversations and logs as plain-text files, with a README explaining each one. Your own files are not copied.</li>
+  <li><b>Export the log</b> saves the record of what was asked and answered, with a checker that can confirm nobody has altered it.</li>
+</ul>
+</section>
+
+<section class="chapter" id="ch-troubleshooting">
+<h2>When something goes wrong</h2>
+
+<p>Askwell says what state it is in at the top of the window. When something is not working, a banner names it and, wherever possible, says what still works.</p>
+
+<h3>"Askwell is not running"</h3>
+<p>The window is open but Askwell's services behind it are not answering. Click <b>Open Supervision…</b> in the banner. The Supervision window shows Askwell's services and its AI, each with <b>Start</b>, <b>Stop</b> and <b>Restart</b>, and <b>Restart both</b> for everything at once. Try <b>Restart both</b>. If that does not help, restart the computer.</p>
+
+<h3>The AI is not available</h3>
+<p>If the banner says the assistant is unavailable, Askwell cannot write answers, but searching and reading your files keep working, and the banner lists what still works. The usual causes:</p>
+<ul>
+  <li><b>No model yet.</b> The models have not been downloaded. Open the welcome steps (<b>Skip setup</b> takes you past them; a new start brings them back until a model is in place) and click <b>Download</b>.</li>
+  <li><b>The download failed.</b> Askwell says why. Click <b>Retry</b> or <b>Resume</b>: nothing already downloaded is lost.</li>
+  <li><b>The computer ran out of memory</b> loading the model. Close other large programs and restart Askwell from the Supervision window, or choose a lighter profile under <b>Settings</b>, <b>Hardware profile</b>.</li>
+</ul>
+
+<h3>Askwell keeps saying "Nothing in your files answers this"</h3>
+<ul>
+  <li>Check in <b>Library</b> that the source holding the answer is <b>Ready</b>. While it is <b>Indexing</b>, answers about it are incomplete.</li>
+  <li>Ask using the words your documents use. "Notice period" finds a passage about notice periods more surely than "how long before I can leave".</li>
+  <li>Ask one thing at a time.</li>
+</ul>
+<p>Askwell would rather say it found nothing than guess, so an occasional "nothing in your files" for something that is there is the safer mistake.</p>
+
+<h3>A folder cannot be added</h3>
+<ul>
+  <li><b>Askwell has not been given this folder yet</b>: click <b>Nominate</b>. See <a href="#ch-add-files">Add a folder of documents</a>.</li>
+  <li><b>This folder is outside … your home folder</b>: Askwell can only read folders inside your own user folder. Move or copy the files into a folder there and add that instead.</li>
+  <li><b>This folder is not there at the moment</b>: it is on a drive or network share that is not connected. Reconnect it. Nothing has been deleted.</li>
+  <li><b>Askwell is not allowed to read this folder</b>: the folder's permissions do not let Askwell read it. On Fedora and other Linux distributions that use SELinux, this can happen even inside your user folder. That is a known problem.</li>
+</ul>
+
+<h3>A source says "Needs attention"</h3>
+<p>Some of its files could not be read. Open the source in <b>Library</b> to see which files and why. A file that has moved can be added again from its new place.</p>
+
+<h3>Windows Setup did not finish</h3>
+<p>Setup leaves a text file on your Desktop whose name starts with <code>Askwell-Setup-report</code>. It says what Setup found on your PC and which step failed. Your user name and computer name are removed from it, and it is not sent anywhere. To get help, attach it to a report on the project's issue page.</p>
+
+<h3>Getting help</h3>
+<p>Report problems on the project's issue page. Say what you did, what you expected and what happened. A screenshot helps. The Supervision window's <b>Logs, for a bug report</b> section shows where Askwell's logs are, with <b>Copy path</b>. Look through them before you share them: they can contain the names of your files.</p>
+</section>
+</body>
+</html>
