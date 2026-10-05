@@ -145,6 +145,32 @@ async def find_blocking(
     return matches[0], len(matches) - 1
 
 
+def answer_as_fact(subject: str, evidence: dict[str, Any], answer: str) -> str:
+    """What an answer to a clarification means, as one sentence the model can
+    use (#928).
+
+    The answer to "which source is current?" is a filename. Stored and sent
+    as "meridian loom retail stores close: store_hours_2026.pdf", the model
+    could not tell what the filename settled, kept presenting both values,
+    and wrote that the memory fact's document "is not provided". Said as a
+    statement with the chosen document's own value and words, it is a fact
+    the model can answer from and cite as memory. Any other answer, typed by
+    the user, is already a statement and is kept as written.
+    """
+    chosen = answer.strip()
+    if evidence.get("kind") == "contradiction":
+        for passage in evidence.get("passages", []):
+            if passage.get("document") == chosen:
+                value = passage.get("value")
+                quoted = str(passage.get("text") or "").strip()
+                said = f' It says: "{quoted}"' if quoted else ""
+                current = f" ({value})" if value else ""
+                return f"For {subject}, {chosen} is the current source{current}.{said}"
+    if evidence.get("kind") == "passage" and chosen:
+        return f"{chosen} is the current version of {subject}."
+    return chosen
+
+
 def default_assumption(blocking: BlockingClarification) -> str:
     """What a skip continues with — `docs/ux/ask.md` §5's own "the answer
     says which assumption it used."

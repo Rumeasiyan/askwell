@@ -114,7 +114,7 @@ from askwell.inference.client import (
 )
 from askwell.inference.provider import OnlineClient, OnlineFailed, Transmission
 from askwell.ingest import coverage
-from askwell.inline_clarify import default_assumption, find_blocking
+from askwell.inline_clarify import answer_as_fact, default_assumption, find_blocking
 from askwell.logging import get_logger
 from askwell.memory import MemoryFact, RelevantMemory, SchemaNote, retrieve_relevant_facts
 from askwell.model_select import active_model_identity
@@ -2436,7 +2436,9 @@ async def _run_generation(
                         f"assumes {assumption}. Answer it anytime in Clarifications."
                     )
                 else:
-                    memory_fact = f"{blocking.subject}: {resolution['answer']}"
+                    memory_fact = answer_as_fact(
+                        blocking.subject, blocking.evidence, str(resolution["answer"])
+                    )
                 if deferred > 0:
                     appended_note = (appended_note or "") + (
                         f"\n\n{deferred} more unresolved question"
