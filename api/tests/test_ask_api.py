@@ -2840,7 +2840,11 @@ async def test_a_relevant_contradiction_pauses_the_turn_and_answering_resolves_i
     assert turn.status == "completed"
     assert any(e.kind == "clarification_resolved" for e in turn.events)
 
-    assert any("the notice period: handbook-2024.pdf" in prompt for prompt in seen_prompts)
+    # #928: the choice reaches the model as a statement, not a bare filename.
+    assert any(
+        "For the notice period, handbook-2024.pdf is the current source" in prompt
+        for prompt in seen_prompts
+    )
     with psycopg.connect(database_url, autocommit=True) as db:
         content = db.execute("SELECT content FROM messages WHERE role = 'assistant'").fetchone()[0]
     assert "Resolved by memory" in content
