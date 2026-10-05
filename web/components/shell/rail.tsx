@@ -14,6 +14,7 @@ import { useClarificationsTotal } from "@/lib/use-clarifications-count";
  */
 export const DESTINATIONS = [
   { href: "/", label: "Ask", hint: "Ask a question of your own material" },
+  { href: "/history/", label: "History", hint: "Your earlier conversations" },
   { href: "/library/", label: "Library", hint: "Every source you have added" },
   {
     href: "/clarifications/",

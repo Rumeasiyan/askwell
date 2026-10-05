@@ -127,7 +127,7 @@ export function fillComposer(question: string, scope: ComposerFill["scope"] = nu
  */
 export function AskScreen() {
   const corpus = useCorpusState();
-  const { turns, online } = useAsk();
+  const { turns, online, startNewConversation } = useAsk();
   const liveId = liveTurnId(turns);
   const status = useStatus();
   // `status.kind === "loading"` renders neither state rather than flashing
@@ -155,9 +155,23 @@ export function AskScreen() {
           so it reaches the exported `index.html` before `corpus` resolves on
           the client. `scripts/check-version.mjs` reads exactly that file for
           exactly this string (`AGENTS.md` §7). */}
-      <p className="ask-micro">
-        Askwell {VERSION} · {machineLine(online)}
-      </p>
+      <div className="flex items-baseline justify-between gap-3">
+        <p className="ask-micro">
+          Askwell {VERSION} · {machineLine(online)}
+        </p>
+        {/* Issue 199. Only once there is a conversation to leave; a
+            streaming answer finishes and is saved, and stays in History. */}
+        {turns.length > 0 ? (
+          <button
+            type="button"
+            onClick={startNewConversation}
+            className="ask-navigates px-3 py-1"
+            style={{ border: "1px solid var(--rule)", fontSize: "var(--t-ui)" }}
+          >
+            New conversation
+          </button>
+        ) : null}
+      </div>
 
       {/* `useSearchParams` needs a `Suspense` boundary, and this is the one
           piece of the screen that reads it (`M1-VIEW-FE-048`'s "back to
@@ -220,10 +234,9 @@ function ReturnToClaim(): null {
 /**
  * The turn list with paging (`conversation.md` §5, §7; `M1-CONV-FE-179`).
  *
- * Every turn already lives in `AskProvider`'s own state — there is no reload
- * of a past conversation yet (issue number 156: `conversation_id` is not
- * threaded across turns, so nothing survives a refresh to page a request
- * against) — so "paging in on scroll" here means revealing more of that same
+ * Every turn already lives in `AskProvider`'s own state — a conversation
+ * reopened from History (issue 199) is read back whole, then shown here like
+ * any other — so "paging in on scroll" here means revealing more of that same
  * in-memory list, oldest last, never a network call that could fail. `revealed` counts
  * back from the newest turn (`conversationWindow`, `lib/ask.ts`); scrolling
  * the boundary row into view grows it by one more page.

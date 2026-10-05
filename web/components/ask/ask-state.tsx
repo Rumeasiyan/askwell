@@ -177,6 +177,14 @@ export interface AskApi {
    * each turn's backend label, so all three agree. */
   online: OnlineConversationState | null;
   setOnline: (state: OnlineConversationState) => void;
+  /** Issue 199: an empty screen and no conversation, so the next question
+   * starts a new one — always local. An answer still streaming is left to
+   * finish server-side, where it is saved, and stops updating this screen. */
+  startNewConversation: () => void;
+  /** Replaces the screen with a conversation read back from History; the
+   * next question continues it. The caller has already switched it to local
+   * (C1: online is never inherited by reopening). */
+  openConversation: (id: string, turns: AskTurn[]) => void;
 }
 
 const AskContext = createContext<AskApi | null>(null);
@@ -253,6 +261,13 @@ export function AskProvider({ children }: { children: ReactNode }) {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [online, setOnlineState] = useState<OnlineConversationState | null>(null);
   const onlineRef = useRef<OnlineConversationState | null>(null);
+  // Which conversation on screen a stream belongs to (issue 199). Bumped by
+  // `startNewConversation`/`openConversation`; a stream started under an
+  // older epoch keeps running to completion server-side but may no longer
+  // adopt a conversation id, patch a turn, or release the dispatch slot —
+  // otherwise its late events would attach the old conversation to the new
+  // screen.
+  const epoch = useRef(0);
 
   useEffect(() => {
     current.current = turns;
@@ -356,6 +371,7 @@ export function AskProvider({ children }: { children: ReactNode }) {
 
     dispatching.current = true;
     patch(id, { status: "running" });
+    const startedIn = epoch.current;
 
     void (async () => {
       let finalStatus: TurnStatus = "failed";
@@ -371,6 +387,7 @@ export function AskProvider({ children }: { children: ReactNode }) {
           next.question,
           { conversationId: conversation.current, sourceId: next.sourceId },
           (event: AskEvent) => {
+            if (epoch.current !== startedIn) return;
             const named = conversationOf(event);
             if (named !== null) adoptConversation(named);
           if (event.event === "done") {
@@ -428,6 +445,9 @@ export function AskProvider({ children }: { children: ReactNode }) {
         finalStatus = "failed";
         finalReason = error instanceof Error ? error.message : finalReason;
       }
+      // The screen moved on to another conversation while this streamed: the
+      // new one already owns the dispatch slot (released when it was opened).
+      if (epoch.current !== startedIn) return;
       patch(id, {
         status: finalStatus,
         reason: finalReason,
@@ -464,6 +484,30 @@ export function AskProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  const replaceConversation = useCallback((id: string | null, next: AskTurn[]): void => {
+    epoch.current += 1;
+    // Whatever was streaming is now another conversation's; this screen's
+    // next question must not wait behind it.
+    dispatching.current = false;
+    conversation.current = id;
+    setConversationId(id);
+    onlineRef.current = null;
+    setOnlineState(null);
+    setOpenTraceTurnId(null);
+    current.current = next;
+    setTurns(next);
+  }, []);
+
+  const startNewConversation = useCallback(
+    (): void => replaceConversation(null, []),
+    [replaceConversation],
+  );
+
+  const openConversation = useCallback(
+    (id: string, next: AskTurn[]): void => replaceConversation(id, next),
+    [replaceConversation],
+  );
+
   const api = useMemo<AskApi>(
     () => ({
       turns,
@@ -478,6 +522,8 @@ export function AskProvider({ children }: { children: ReactNode }) {
       ensureConversation,
       online,
       setOnline,
+      startNewConversation,
+      openConversation,
     }),
     [
       turns,
@@ -492,6 +538,8 @@ export function AskProvider({ children }: { children: ReactNode }) {
       ensureConversation,
       online,
       setOnline,
+      startNewConversation,
+      openConversation,
     ],
   );
 

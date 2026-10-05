@@ -4,6 +4,15 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.34 - 2026-10-05
+
+`Added`: start a new conversation, and go back to earlier ones (#199).
+
+- **New conversation** at the top of the Ask screen clears it and starts afresh. An answer still being written is finished and kept.
+- **History**, in the list on the left, shows your earlier conversations, newest first. Click one to read it again with every answer and its source cards, and ask a follow-up to carry on.
+- A conversation reopened from History always continues on your computer, even if it used a larger online model before.
+- If a document an old answer cited has since been removed, its source card stays and says so.
+
 ## 0.9.33 - 2026-10-05
 
 `Fixed`: answers show formatting instead of asterisks, and your question stands apart from the answer (#936, #938).

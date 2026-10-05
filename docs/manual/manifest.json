@@ -73,7 +73,11 @@
         { "label": "Search the web" },
         { "label": "Ask a larger model" },
         { "label": "Local" },
-        { "label": "Press and hold to speak" }
+        { "label": "Press and hold to speak" },
+        { "label": "New conversation" },
+        { "route": "/history/" },
+        { "label": "History" },
+        { "label": "Show older conversations" }
       ]
     },
     {

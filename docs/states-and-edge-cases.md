@@ -292,6 +292,14 @@ Every one of these is a real screen someone will see on day one, and each is an 
 | **New question while an answer streams** | Queued, not interleaved |
 | **Past turn expanded** | Full stored answer and its own margin render in place; clicking again re-collapses it. Several turns may be expanded at once — the user chose it, and expanding one never changes another (`M1-CONV-FE-179`) |
 | **Long conversation, scrolled to the top** | Older turns page in twenty at a time, with a visible "Load earlier turns" affordance; once every turn has been revealed it says "Start of this conversation" rather than simply stopping (`M1-CONV-FE-179`) |
+| **New conversation while an answer streams** | The screen clears at once and the next question starts a new, local conversation. The streaming answer finishes server-side, is saved, and appears in History; its late events never touch the new screen (issue 199) |
+| **History: reading** | "Reading your conversations…", never an empty list that could read as "no history" |
+| **History: nothing yet** | Says no conversations yet, and that questions asked on Ask appear here. A conversation created for the online disclosure and never asked anything is not listed |
+| **History: the list could not be read** | Says so in the alarm colour, with the reason and **Try again** |
+| **History: older conversations could not be read** | The list already shown stays; a line under **Show older conversations** says the next page could not be read |
+| **Reopening a conversation that used online AI** | Switched back to local *before* it is shown; if that fails, it is not opened and the row says why (C1: online is never inherited by reopening) |
+| **Reopened answer citing a deleted, locked or unreadable passage** | The source card stays, naming the document and page, and says why the passage cannot be shown instead of quoting it — the claim never looks uncited (C4) |
+| **Reopened answer that had not finished** | Shown as stopped: "This answer had not finished when it was opened." A question whose answer was never recorded is kept, marked failed, never dropped |
 
 ## 8. Decisions this document surfaced — all now answered
 

@@ -4,6 +4,26 @@ Append-only. **Newest first.** Never edit an entry to change its meaning — if 
 
 **Bar for an entry:** something a competent person would later ask *"why is it like this?"* about. Architecture changes, dependency choices, resolved `docs/PRD.md` §11 questions, reversals. **Not** routine implementation choices — those are visible in the diff.
 
+## 2026-10-05 — Past conversations are read back with their citations, and reopening one makes it local
+
+**Decision.** Two read-only routes, `GET /conversations` (newest activity first, twenty per page, cursor on the last row's activity time) and `GET /conversations/{id}/turns` (every turn with its citations), in `api/src/askwell/conversations.py`. The interface gains **History** in the left rail and **New conversation** on the Ask screen. Opening a past conversation replaces the Ask screen's turns, and the next question continues it. A conversation that used online AI is switched back to local through `DELETE /conversations/{id}/online` *before* it is shown, and is not opened if that fails. A passage that can no longer be shown comes back with `passage_unavailable` (`deleted`, `locked`, `unreadable`), and its card says why instead of quoting it. Turns are paired by `(created_at, role)`. A conversation with no question is not listed.
+
+**Why.** Every question and answer was always stored, but nothing read them back: a reload or restart lost the conversation on screen, and there was no way to start a fresh one but reloading (#199, and the owner's request during the Windows test, #590).
+- **Citations come back with the answer.** An answer reopened without its cards is a set of uncited claims on screen, which is C4's failure in a new place. A card for a deleted document stays and says so, rather than disappearing, for the same reason.
+- **Reopening makes a conversation local.** C1 makes online AI a deliberate act, per conversation, never sticky. Askwell already revokes every authorisation at start-up. Reopening an online conversation within the same session would otherwise carry the authorisation on without the user choosing it again.
+- **Pairing by `(created_at, role)`.** `POST /ask` writes the question and its answer row in one transaction, so they share `created_at` exactly. Ordering by time then role is deterministic, needed no migration, and keeps a question whose answer never landed (shown as failed) rather than dropping it.
+- **Rejected:**
+  - A `question_id` column linking answer to question: a migration for information the write order already guarantees.
+  - Re-running retrieval to rebuild citations: an old answer must show what it cited then, not what retrieval finds now.
+  - Opening via a URL parameter on the Ask screen: the History screen does the fetch and hands the turns to `AskProvider`, which already lives above the router.
+
+**Consequences.**
+- A stream still running when the user starts a new conversation finishes server-side and is saved. An epoch counter in `AskProvider` stops its late events from adopting the old conversation id into the new screen.
+- Deleting, renaming and searching conversations are not built.
+- `M1-CONV-FE-179`'s client-side paging of a long conversation is unchanged: a reopened conversation loads all its turns at once, which is fine at the sizes one person produces and is the place to page if that stops being true.
+
+**Refs:** #199, #590; `api/src/askwell/conversations.py`, `api/tests/test_conversations.py`, `web/lib/conversations.ts`, `web/components/history/history-screen.tsx`, `web/components/ask/ask-state.tsx`, `web/components/shell/rail.tsx`; `docs/states-and-edge-cases.md` §7.1; manual chapter 4.
+
 ## 2026-10-05 — The leader lines between claims and source cards are removed
 
 **Decision.** The Ask screen no longer draws a line from each cited claim to its card in the provenance margin. `LeaderCanvas` is deleted and `shell.tsx` no longer mounts it. The pairing itself stays: hovering or focusing a claim raises its card, and a card raises its claims (`leader.tsx`'s store, `useHoverHandlers`, `isRaised`).
