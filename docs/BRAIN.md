@@ -9,6 +9,21 @@
 
 > **Read this block first. Everything below it is the per-ticket history, oldest milestones first.**
 >
+> **2026-10-05: the first hands-on clean-Windows test of `0.9.31` ran (#590, full record in its comment).** Askwell installs and answers on Windows 11, but a first-time user would have been stopped four times:
+> - Smart App Control hard-blocks the unsigned installer (#929)
+> - Setup stops when winget is missing (#930)
+> - Setup misses a pending VM Platform restart, so Podman restarts Windows unannounced (#932)
+> - the install-time probe result is never read, so 16 GB reads as below the 8 GB floor (#931)
+>
+> Two model servers per role ran on one port (#934). **All 5 PDFs failed to index**: PDFium was called from two threads (#933, any platform). Answers: 3 of 5 factual answers correct and cleanly cited, 2 abstentions correct; false "Conflicting sources" sections still appear (evidence on #814); two versions of one Ordinance were mixed without a question (#935); answers showed raw Markdown (#936).
+>
+> **Open PRs, stacked, merge in order:**
+> 1. #937 (`0.9.32`): PDFium on one thread. CI green.
+> 2. #939 (`0.9.33`): Markdown rendering and a distinct question style (#936, #938).
+> 3. #940 (`0.9.34`): **New conversation** and **History**, with `GET /conversations` and `GET /conversations/{id}/turns` (#199). Follow-up: #941.
+>
+> #936's prompt half (tell the model to write plain prose) is deferred until an eval run. **On a Windows checkout:** `scripts/dev.sh` needs `MSYS_NO_PATHCONV=1` and a `REPO_ROOT` in Windows form, and 4 `test_redis_acl.py` tests fail from CRLF in `deploy/redis/start.sh` (worth a `.gitattributes` rule). The installed app's image tag equals the dev tag `localhost/askwell-api:dev`, so `scripts/dev.sh build` on a PC with Askwell installed replaces the installed image.
+>
 > **As of 2026-09-29: `0.9.0` is published as a GitHub pre-release (beta)** — https://github.com/Rumeasiyan/askwell/releases/tag/v0.9.0 — with Linux, Windows and macOS downloads and verified checksums. Every milestone M0–M9 is built (232 tickets); `M7-TAURI-DEPLOY-184a` (code signing) is not being done, by decision. `docs/release-log.md` records the release honestly: most gates were **not run**, and the two measured ones fail.
 >
 > **Toward `1.0.0`:** abstention 0.53 against a bar of 0.90 (#769, #814) — try the 9B model on the GPU profile first; this host has an 8 GB GPU, and since `M10-FIX-DEPLOY-222` (`0.9.9`) the model runs on it (bundled Vulkan llama.cpp, `/health` says `gpu`). Grounded answers 0.74 against 0.85 (#817, #818) — one routing fix between documents and spreadsheets. ~~CI compiling the desktop shell on every push (#821)~~ — done by `M10-TEST-DEPLOY-221`: `.github/workflows/shell.yml`, and `build.rs` now refuses to build when its command list and `generate_handler!` differ. The product owner's Windows and macOS testing of the `0.9.0` artefacts (#590, #592). Then the full release checklist, every gate.
