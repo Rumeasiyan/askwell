@@ -67,3 +67,7 @@ api/.venv-host/
 # The llama.cpp builds scripts/fetch-llama-cpp.sh places for a release or a
 # local try-out. Pinned in deploy/inference/llama-cpp.lock; never committed.
 deploy/inference/llama.cpp/
+
+# The user manual's PDF is built from the committed askwell-manual.html
+# (docs/manual/AUTHORING.md); the binary is an output, never a source.
+docs/manual/build/

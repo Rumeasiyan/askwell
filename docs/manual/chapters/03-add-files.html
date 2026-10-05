@@ -1,0 +1,33 @@
+<h2>Add a folder of documents</h2>
+
+<p>Askwell reads your files where they are. It does not copy, move or upload them. It builds an index of what they say, so adding a large folder costs little disk space beyond that index, and every source an answer cites opens the file you already have.</p>
+
+<h3>What Askwell reads</h3>
+<ul>
+  <li>PDF, Word, Excel, PowerPoint, plain text, Markdown, HTML and images. Scanned PDFs and images are read with text recognition.</li>
+  <li>PostgreSQL database dumps (<code>.sql</code>, <code>.dump</code> and <code>.backup</code>). See <a href="#ch-databases">Ask about a database</a>.</li>
+  <li>CSV files are not read yet. An Excel workbook is read, including its tables.</li>
+</ul>
+
+<h3>Add a folder</h3>
+<ol>
+  <li>Open <b>Library</b> and click <b>Add a source</b>. During the welcome steps, the same panel is part of the last step.</li>
+  <li>Under <b>Files</b>, click <b>Choose a folder</b> and pick the folder in the dialog. You can also drag files or a folder anywhere into the Askwell window.</li>
+  <li>Askwell lists what it found, for example <i>9 files, 162 KB. From 1 folder.</i>, and what kind of files they are.</li>
+  <li>The first time you add something from a folder, Askwell says <b>Askwell has not been given this folder yet</b>. Click the <b>Nominate</b> button, which names the folder. This allows Askwell to read anything inside that folder, and nothing outside it. Askwell then adds the files.</li>
+</ol>
+
+<figure><img src="screenshots/add-nominate.png" alt="The Add a source panel after choosing a folder: a summary of nine files, the message that Askwell has not been given this folder yet, and a Nominate button."><figcaption>Allow Askwell to read the folder, once.</figcaption></figure>
+
+<p>Askwell may read folders inside your own user folder. You can see and remove the folders it may read under <b>Settings</b>, in <b>Folders Askwell may read</b>.</p>
+
+<h3>While Askwell reads the files</h3>
+<p>Indexing starts straight away and runs in the background. You can keep using Askwell. <b>Library</b> shows each source with its state: indexing, or <b>Ready</b> once every file has been read, with a line such as <i>All 9 indexed.</i></p>
+
+<figure><img src="screenshots/library.png" alt="The Library screen, listing one source as Ready with all nine files indexed, and Re-index and Delete buttons."><figcaption>The Library once indexing has finished.</figcaption></figure>
+
+<p>A folder of a few dozen documents takes a minute or two. Hundreds of documents, or long scanned PDFs, take longer. When it finishes, Askwell may have a question or two about what it read; see <a href="#ch-clarifications">Answer Askwell's questions</a>.</p>
+
+<h3>If you use Askwell in a web browser</h3>
+<p>A web browser does not tell Askwell where a file is on your computer, only its name. So after you choose a folder, Askwell asks <b>Which folder is “…” in?</b>. Type the full path of the folder that <em>contains</em> the one you chose, then click <b>Add them</b>. For a folder at <code>/home/anna/Documents/Meridian Loom</code>, type <code>/home/anna/Documents</code>.</p>
+<p>The Askwell window does not ask this. It gets the path from the folder dialog.</p>

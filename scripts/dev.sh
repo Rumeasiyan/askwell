@@ -23,6 +23,9 @@
 #   scripts/dev.sh psql         a psql shell on the stack's database
 #   scripts/dev.sh inference    the native inference supervisor, ON THE HOST
 #   scripts/dev.sh tauri ...    the desktop shell, ON THE HOST (run / build / test)
+#   scripts/dev.sh manual       build the user manual (HTML and PDF), ON THE HOST
+#   scripts/dev.sh manual-shots retake the manual's screenshots from a demo stack,
+#                               ON THE HOST (docs/manual/AUTHORING.md)
 #   scripts/dev.sh test-db      the database-backed tests, against the stack
 #   scripts/dev.sh eval ...     the eval harness (e.g. `eval --suite smoke.v1`)
 #   scripts/dev.sh voice-latency ...
@@ -463,6 +466,19 @@ case "$cmd" in
         set +a
         ASKWELL_PROBE_RESULT_PATH="$REPO_ROOT/.run/probe.json" \
             exec python3 "$REPO_ROOT/deploy/probe/askwell-probe" "$@"
+        ;;
+
+    manual|manual-shots)
+        # On the host, like `inference`: both drive the Chrome already
+        # installed there (headless), which no image carries, and
+        # `manual-shots` starts and stops a demo Compose project. Node 22 or
+        # newer, for its built-in fetch and WebSocket; no dependencies.
+        command -v node >/dev/null 2>&1 || die "node (22 or newer) is needed on the host to build the manual"
+        if [ "$cmd" = manual ]; then
+            node "$REPO_ROOT/scripts/manual/build.mjs" --pdf "$@"
+        else
+            node "$REPO_ROOT/scripts/manual/shots.mjs" "$@"
+        fi
         ;;
 
     tauri)

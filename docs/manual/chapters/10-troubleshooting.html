@@ -1,0 +1,39 @@
+<h2>When something goes wrong</h2>
+
+<p>Askwell says what state it is in at the top of the window. When something is not working, a banner names it and, wherever possible, says what still works.</p>
+
+<h3>"Askwell is not running"</h3>
+<p>The window is open but Askwell's services behind it are not answering. Click <b>Open Supervision…</b> in the banner. The Supervision window shows Askwell's services and its AI, each with <b>Start</b>, <b>Stop</b> and <b>Restart</b>, and <b>Restart both</b> for everything at once. Try <b>Restart both</b>. If that does not help, restart the computer.</p>
+
+<h3>The AI is not available</h3>
+<p>If the banner says the assistant is unavailable, Askwell cannot write answers, but searching and reading your files keep working, and the banner lists what still works. The usual causes:</p>
+<ul>
+  <li><b>No model yet.</b> The models have not been downloaded. Open the welcome steps (<b>Skip setup</b> takes you past them; a new start brings them back until a model is in place) and click <b>Download</b>.</li>
+  <li><b>The download failed.</b> Askwell says why. Click <b>Retry</b> or <b>Resume</b>: nothing already downloaded is lost.</li>
+  <li><b>The computer ran out of memory</b> loading the model. Close other large programs and restart Askwell from the Supervision window, or choose a lighter profile under <b>Settings</b>, <b>Hardware profile</b>.</li>
+</ul>
+
+<h3>Askwell keeps saying "Nothing in your files answers this"</h3>
+<ul>
+  <li>Check in <b>Library</b> that the source holding the answer is <b>Ready</b>. While it is <b>Indexing</b>, answers about it are incomplete.</li>
+  <li>Ask using the words your documents use. "Notice period" finds a passage about notice periods more surely than "how long before I can leave".</li>
+  <li>Ask one thing at a time.</li>
+</ul>
+<p>Askwell would rather say it found nothing than guess, so an occasional "nothing in your files" for something that is there is the safer mistake.</p>
+
+<h3>A folder cannot be added</h3>
+<ul>
+  <li><b>Askwell has not been given this folder yet</b>: click <b>Nominate</b>. See <a href="#ch-add-files">Add a folder of documents</a>.</li>
+  <li><b>This folder is outside … your home folder</b>: Askwell can only read folders inside your own user folder. Move or copy the files into a folder there and add that instead.</li>
+  <li><b>This folder is not there at the moment</b>: it is on a drive or network share that is not connected. Reconnect it. Nothing has been deleted.</li>
+  <li><b>Askwell is not allowed to read this folder</b>: the folder's permissions do not let Askwell read it. On Fedora and other Linux distributions that use SELinux, this can happen even inside your user folder. That is a known problem.</li>
+</ul>
+
+<h3>A source says "Needs attention"</h3>
+<p>Some of its files could not be read. Open the source in <b>Library</b> to see which files and why. A file that has moved can be added again from its new place.</p>
+
+<h3>Windows Setup did not finish</h3>
+<p>Setup leaves a text file on your Desktop whose name starts with <code>Askwell-Setup-report</code>. It says what Setup found on your PC and which step failed. Your user name and computer name are removed from it, and it is not sent anywhere. To get help, attach it to a report on the project's issue page.</p>
+
+<h3>Getting help</h3>
+<p>Report problems on the project's issue page. Say what you did, what you expected and what happened. A screenshot helps. The Supervision window's <b>Logs, for a bug report</b> section shows where Askwell's logs are, with <b>Copy path</b>. Look through them before you share them: they can contain the names of your files.</p>

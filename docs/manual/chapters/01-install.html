@@ -1,0 +1,58 @@
+<h2>Install Askwell</h2>
+
+<p>Askwell runs on your own computer. Nothing you add to it is uploaded. You need:</p>
+<ul>
+  <li><b>Windows 11</b>, version 22H2 or newer, or <b>Linux</b> (Fedora, Ubuntu, or a distribution built on Ubuntu), or <b>macOS</b> on Apple silicon.</li>
+  <li>Free disk space for Askwell itself, the AI models it downloads on first start (about 5 GB on most computers), and the index of your files.</li>
+  <li>Askwell measures your computer's memory and graphics card when it starts, and picks a model that fits. More memory means faster answers.</li>
+  <li>An internet connection for the installation and the model download. After that, Askwell works offline.</li>
+</ul>
+
+<h3>Check what you downloaded</h3>
+<p>Askwell is not code-signed, so Windows and macOS warn you before they run it. The warning means your computer cannot confirm who published the file. A checksum is how <em>you</em> confirm it is the file that was published. Check it before running anything.</p>
+<ol>
+  <li>From the release page, download the file for your computer and the file <code>SHA256SUMS</code>.</li>
+  <li>Work out the checksum of your download.
+    <ul>
+      <li>Windows, in PowerShell: <code>Get-FileHash Askwell-Setup-&lt;version&gt;.exe -Algorithm SHA256</code></li>
+      <li>Linux and macOS, in a terminal: <code>shasum -a 256 askwell-&lt;version&gt;-&lt;platform&gt;.tar.gz</code></li>
+    </ul>
+  </li>
+  <li>Compare it with the line for your file in <code>SHA256SUMS</code>.</li>
+</ol>
+<p class="warn">If the two values do not match, stop. Do not run the file. Report it on the project's issue page: a mismatch means the file changed after it was published.</p>
+
+<h3>Windows</h3>
+<ol>
+  <li>Double-click <code>Askwell-Setup-&lt;version&gt;.exe</code>.</li>
+  <li>Windows shows <b>Windows protected your PC</b>. Click <b>More info</b>, the small link above the buttons, then <b>Run anyway</b>.</li>
+  <li>Windows asks for administrator permission. Click <b>Yes</b>. Setup needs it to install the services Askwell runs on.</li>
+  <li>Click through the welcome and licence pages, then <b>Install</b>. Setup installs whatever this PC is missing: Podman, the Windows Subsystem for Linux, Docker Compose, Python and Microsoft's Visual C++ runtime. Each step is shown as it happens. This takes several minutes.</li>
+  <li>If Setup says <b>Windows needs to restart once</b>, leave <b>Restart now</b> selected and click <b>Finish</b>. After the restart, sign in. Setup carries on by itself and tells you when it is done.</li>
+  <li>When Setup says <b>Askwell is installed and opening</b>, Askwell opens. It is also in your Start menu.</li>
+</ol>
+<p class="note">Setup changes one Windows setting, and says so in its log: it sets the Windows Subsystem for Linux to <em>mirrored</em> networking, which is how Askwell's services reach its AI on your PC.</p>
+<p>If Setup stops with a message about <b>virtualisation</b>, your PC's firmware has virtualisation turned off. Setup names the setting. It is in the BIOS or UEFI setup, not in Windows, so you change it there, then run Setup again.</p>
+<p>If Setup cannot finish, it saves a text file on your Desktop whose name starts with <code>Askwell-Setup-report</code>. Nothing is sent anywhere. See <a href="#ch-troubleshooting">When something goes wrong</a>.</p>
+
+<h3>Linux</h3>
+<ol>
+  <li>Open a terminal in the folder you downloaded to, and unpack the download:
+    <pre>tar -xzf askwell-&lt;version&gt;-linux-x86_64.tar.gz</pre></li>
+  <li>Run the installer:
+    <pre>askwell-&lt;version&gt;-linux-x86_64/deploy/linux/install.sh</pre></li>
+  <li>It lists what your computer is missing (Podman, Docker Compose and the OpenMP runtime) and asks before installing them. Answer <b>y</b>. It asks for your password once.</li>
+  <li>It then sets up Askwell and opens it. Askwell is also in your applications menu.</li>
+</ol>
+<p>On a distribution other than Fedora or Ubuntu, the installer stops before changing anything and tells you what to install yourself.</p>
+
+<h3>macOS</h3>
+<ol>
+  <li>Open Terminal in the folder you downloaded to, unpack the download and run its installer:
+    <pre>tar -xzf askwell-&lt;version&gt;-macos-arm64.tar.gz
+askwell-&lt;version&gt;-macos-arm64/deploy/macos/install.sh</pre>
+    It installs Podman and Docker Compose with Homebrew if they are missing, and places Askwell in Applications.</li>
+  <li>macOS refuses the first launch: <b>Askwell cannot be opened because the developer cannot be verified.</b> Click <b>Done</b>.</li>
+  <li>Open <b>System Settings → Privacy &amp; Security</b> and scroll to <b>Security</b>. Next to the line saying Askwell was blocked, click <b>Open Anyway</b>, then confirm.</li>
+</ol>
+<p>You do this once. Afterwards Askwell opens normally.</p>

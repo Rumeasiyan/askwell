@@ -1,0 +1,181 @@
+{
+  "title": "Askwell user manual",
+  "chapters": [
+    {
+      "id": "install",
+      "file": "01-install.html",
+      "title": "Install Askwell",
+      "screenshots": [],
+      "anchors": [
+        { "label": "Restart now", "in": "deploy/windows/setup" },
+        { "label": "Askwell is installed and opening", "in": "deploy/windows" },
+        { "label": "Askwell-Setup-report", "in": "deploy/windows" },
+        { "label": "Open Anyway", "in": "docs/installing.md" }
+      ]
+    },
+    {
+      "id": "first-start",
+      "file": "02-first-start.html",
+      "title": "Start Askwell for the first time",
+      "screenshots": ["welcome.png", "welcome-model.png"],
+      "anchors": [
+        { "route": "/welcome/" },
+        { "label": "What this is" },
+        { "label": "Check the machine" },
+        { "label": "Get the model" },
+        { "label": "Add something and ask" },
+        { "label": "Get started" },
+        { "label": "Set a passphrase" },
+        { "label": "Not now" },
+        { "label": "Continue" },
+        { "label": "Download" },
+        { "label": "I already have the file" },
+        { "label": "Resume" },
+        { "label": "Retry" },
+        { "label": "Skip setup" },
+        { "label": "Ready." },
+        { "label": "Clarifications" },
+        { "label": "Memory" },
+        { "label": "Settings" }
+      ]
+    },
+    {
+      "id": "add-files",
+      "file": "03-add-files.html",
+      "title": "Add a folder of documents",
+      "screenshots": ["add-nominate.png", "library.png"],
+      "anchors": [
+        { "route": "/library/" },
+        { "label": "Add a source" },
+        { "label": "Choose a folder" },
+        { "label": "Askwell has not been given this folder yet", "in": "api/src/askwell" },
+        { "label": "Nominate" },
+        { "label": "Which folder is" },
+        { "label": "Add them" },
+        { "label": "Folders Askwell may read" },
+        { "label": "CSV files are not read yet" }
+      ]
+    },
+    {
+      "id": "ask",
+      "file": "04-ask.html",
+      "title": "Ask a question",
+      "screenshots": ["abstain.png"],
+      "anchors": [
+        { "route": "/" },
+        { "label": "From what you have added" },
+        { "label": "Ask about your own files and databases" },
+        { "label": "Stop" },
+        { "label": "See full passage" },
+        { "label": "How did you get this?" },
+        { "label": "Not covered by your files" },
+        { "label": "Nothing in your files answers this.", "in": "api/src/askwell" },
+        { "label": "Search the web" },
+        { "label": "Ask a larger model" },
+        { "label": "Local" },
+        { "label": "Press and hold to speak" }
+      ]
+    },
+    {
+      "id": "clarifications",
+      "file": "05-clarifications.html",
+      "title": "Answer Askwell's questions",
+      "screenshots": ["clarifications.png"],
+      "anchors": [
+        { "route": "/clarifications/" },
+        { "label": "Review" },
+        { "label": "Dismiss" },
+        { "label": "Skip all" },
+        { "label": "Skip" },
+        { "label": "Save" },
+        { "label": "Undo" },
+        { "label": "Answer it anytime in Clarifications", "in": "api/src/askwell" }
+      ]
+    },
+    {
+      "id": "memory",
+      "file": "06-memory.html",
+      "title": "Review what Askwell remembers",
+      "screenshots": ["memory.png"],
+      "anchors": [
+        { "route": "/memory/" },
+        { "label": "You told me" },
+        { "label": "I guessed" },
+        { "label": "Confirm" },
+        { "label": "Edit" },
+        { "label": "Inferred only" },
+        { "label": "Unused" },
+        { "label": "Delete all memory" }
+      ]
+    },
+    {
+      "id": "library",
+      "file": "07-library.html",
+      "title": "Manage your sources",
+      "screenshots": [],
+      "anchors": [
+        { "route": "/library/" },
+        { "label": "Queued" },
+        { "label": "Indexing" },
+        { "label": "Needs attention" },
+        { "label": "Has open clarifications" },
+        { "label": "Show deleted" },
+        { "label": "Re-index" },
+        { "label": "Delete it" }
+      ]
+    },
+    {
+      "id": "databases",
+      "file": "08-databases.html",
+      "title": "Ask about a database",
+      "screenshots": [],
+      "anchors": [
+        { "label": "Database dump" },
+        { "label": "Choose a dump file" },
+        { "label": "Connect a database" },
+        { "label": "Engine" },
+        { "label": "Connected" }
+      ]
+    },
+    {
+      "id": "settings",
+      "file": "09-settings.html",
+      "title": "Change settings",
+      "screenshots": [],
+      "anchors": [
+        { "route": "/settings/" },
+        { "label": "Hardware profile" },
+        { "label": "Re-run the probe" },
+        { "label": "Change profile" },
+        { "label": "Swap model" },
+        { "label": "Retrieval threshold" },
+        { "label": "Your key" },
+        { "label": "What leaves this machine" },
+        { "label": "Nominate a folder" },
+        { "label": "Remove" },
+        { "label": "Log storage budget" },
+        { "label": "Interaction retention window" },
+        { "label": "Network activity" },
+        { "label": "I understand there is no recovery." },
+        { "label": "Export everything" },
+        { "label": "Export the log" }
+      ]
+    },
+    {
+      "id": "troubleshooting",
+      "file": "10-troubleshooting.html",
+      "title": "When something goes wrong",
+      "screenshots": [],
+      "anchors": [
+        { "label": "Askwell is not running" },
+        { "label": "Open Supervision…" },
+        { "label": "Restart both", "in": "web/src-tauri/shell-assets" },
+        { "label": "Logs, for a bug report", "in": "web/src-tauri/shell-assets" },
+        { "label": "Copy path", "in": "web/src-tauri/shell-assets" },
+        { "label": "This folder is not there at the moment", "in": "api/src/askwell" },
+        { "label": "Askwell is not allowed to read this folder", "in": "api/src/askwell" },
+        { "label": "your home folder, which is the only", "in": "api/src/askwell" }
+      ]
+    }
+  ]
+}

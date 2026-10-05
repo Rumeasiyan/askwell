@@ -67,6 +67,7 @@ Four facts shape almost every decision here:
 | What shipped in each version | `CHANGELOG.md` |
 | A cold introduction | `README.md` |
 | Exploring a UI direction before building it | `design-lab/` — a tool, never shipped |
+| The user manual: how it is written, built and kept current | `docs/manual/AUTHORING.md` |
 
 Paths under `api/`, `web/`, `eval/`, `deploy/` appear in `docs/build-plan.md` as **planned** and **do not exist yet**. Do not link to them as if they do. When you create one, move it out of the planned list in the same change, or that section stops being trustworthy and gets ignored.
 
@@ -102,6 +103,7 @@ C9 changed on 2026-09-25, by decision (`docs/decisions.md`, "Askwell is relicens
 - **Edit surgically.** Targeted string replacement over file rewrites. If a change touches more than three files, describe the plan and get agreement first. Full-file regeneration silently destroys prior decisions.
 - **Run the thing.** A task is not complete because the code looks right. Start the stack, hit the endpoint, read the response. `podman compose up -d && curl ...` is the definition of done.
 - **Tests accompany the code, not the phase.** Retrieval, SQL validation, and the agent loop get tests *first* — they are where correctness is hardest to eyeball.
+- **A user-visible flow change updates the manual in the same change.** Its chapter, its anchors in `docs/manual/manifest.json`, its screenshots and the built `docs/manual/askwell-manual.html` (`docs/manual/AUTHORING.md`). `api/tests/test_manual.py` fails when a documented label or route disappears from `web/`.
 - **A surface is not finished until its states are.** Before building or designing any screen, read the matching section of `docs/states-and-edge-cases.md`. A happy path with no empty, loading, denied, or failed state is a demo. When you find a state that document does not list, add it there in the same change.
 - **One task at a time.** Finish, verify, update `docs/BRAIN.md`, then take the next. Batching four features means discovering which broke by bisection.
 - **Never hardcode a model name in application code.** Models come from configuration, selected by deployment profile.
@@ -154,6 +156,8 @@ Everything runs through one entry point:
 | One image only | `scripts/dev.sh build-api` / `build-web` | **Verified** |
 | Eval suite | `scripts/dev.sh eval --suite <name>` | **Verified** |
 | Voice latency harness | `scripts/dev.sh voice-latency --fixture <path> --profile <tier>` | **Verified** |
+| Build the user manual (HTML and PDF), **on the host** | `scripts/dev.sh manual` | **Verified** |
+| Retake the manual's screenshots from a demo stack, **on the host** | `scripts/dev.sh manual-shots` (stops the development stack while it runs) | **Verified** |
 | Keep the build alive unattended | `scripts/watchdog.sh` (a systemd **user** timer runs it) | **Verified** |
 
 Two things about `scripts/dev.sh` that are deliberate:

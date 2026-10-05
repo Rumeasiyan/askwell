@@ -1,0 +1,40 @@
+<h2>Change settings</h2>
+
+<p><b>Settings</b> is one long page. Every change you make there is recorded.</p>
+
+<h3>Model and speed</h3>
+<ul>
+  <li><b>Hardware profile</b> shows what Askwell measured about this computer and the profile it chose: <i>Light</i>, <i>Standard</i>, <i>Accelerated</i> or <i>Workstation</i>. <b>Re-run the probe</b> measures again, for example after adding memory. You can choose another profile and click <b>Change profile</b>. Askwell warns that it will not check whether this computer can run it.</li>
+  <li><b>Model</b> names the model in use. <i>Validated</i> means it shipped with Askwell and passed its quality checks, including citing sources and saying when it does not know. It also shows how much memory the model uses and, once it has answered something, how fast it is.</li>
+  <li><b>Swap model</b> lists other model files in the models folder. A model that did not ship with Askwell is marked <i>Unverified</i>.</li>
+</ul>
+
+<h3>Retrieval threshold</h3>
+<p>How close a passage must be to your question before Askwell will answer from it. Lower it and Askwell answers more often, from weaker matches, and more of those answers are wrong. Raise it and Askwell says "nothing in your files answers this" more often, but what it does answer is more likely to be right. Leave it as it is unless you have a reason.</p>
+
+<h3>Online AI</h3>
+<p>Online AI would let a single conversation use a larger model at a provider you choose, with your own key. There is no switch here that turns it on everywhere. You can store a key under <b>Your key</b>: it is kept encrypted on this computer and never shown again. Online AI sends nothing today. The page says so under <b>What leaves this machine</b>.</p>
+
+<h3>Folders Askwell may read</h3>
+<p>The folders you have allowed Askwell to read, each marked <i>Readable</i> or with the reason it is not. <b>Remove</b> takes one off the list. To allow another folder, type its full path under <b>Nominate a folder</b> and click <b>Nominate</b>. Askwell can read your own user folder, read-only, and nothing outside it.</p>
+
+<h3>Storage</h3>
+<ul>
+  <li><b>Index size per source</b> shows roughly how much disk each source's index uses.</li>
+  <li><b>Log storage budget</b> is the most disk Askwell's logs may use. At the limit, Askwell stops adding new material until space is freed; asking questions keeps working.</li>
+  <li><b>Interaction retention window</b> is how long conversations are kept, 12 months unless you change it. Changing it deletes nothing.</li>
+</ul>
+
+<h3>Privacy and security</h3>
+<ul>
+  <li><b>Passphrase</b>: setting one encrypts your library and stored credentials, so a stolen laptop does not expose them.</li>
+  <li><b>Network activity</b> counts every connection Askwell tried to make from your computer, and how many were refused. It is measured, not a setting. On a new install both are zero.</li>
+  <li><b>Connected databases</b> lists live database connections.</li>
+</ul>
+<p class="warn">There is no way to recover a forgotten passphrase. Losing it means losing access to the library. Askwell asks you to confirm that you understand before it sets one.</p>
+
+<h3>Your data</h3>
+<ul>
+  <li><b>Export everything</b> saves your list of sources, memory, clarifications, conversations and logs as plain-text files, with a README explaining each one. Your own files are not copied.</li>
+  <li><b>Export the log</b> saves the record of what was asked and answered, with a checker that can confirm nobody has altered it.</li>
+</ul>

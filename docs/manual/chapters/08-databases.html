@@ -1,0 +1,24 @@
+<h2>Ask about a database</h2>
+
+<p>Askwell can answer questions straight from database tables (counts, totals, lists of records) as well as from documents. It writes the query itself, shows it to you with the result, and only ever reads: it never changes your data. There are two ways to give it a database.</p>
+
+<h3>Import a database dump</h3>
+<p>A dump is a file exported from a database. Askwell imports PostgreSQL dumps: <code>.sql</code>, <code>.dump</code> and <code>.backup</code> files. MySQL and SQL Server dumps are not imported; connect to those databases instead, or export their tables as Excel files.</p>
+<ol>
+  <li>Open <b>Library</b>, click <b>Add a source</b>, and under <b>Database dump</b> click <b>Choose a dump file</b>.</li>
+  <li>Pick the file. Askwell imports it into a sealed database of its own, which cannot reach your other sources, the internet or Askwell's own files.</li>
+  <li>The source appears in <b>Library</b> and is ready once its tables have been read.</li>
+</ol>
+<p class="note">A dump can contain commands, not just data. That is why Askwell runs it in a sealed copy. If the dump is broken or malicious, only that copy is affected.</p>
+
+<h3>Connect to a live database</h3>
+<p>Askwell connects to PostgreSQL, MySQL, MariaDB and SQL Server. It needs a user that can only <em>read</em>. If the user you give it can change anything, Askwell refuses the connection, names the permission it found, and shows the statements to create a read-only user, ready to copy.</p>
+<ol>
+  <li>Open <b>Library</b>, click <b>Add a source</b>, and find <b>Connect a database</b>.</li>
+  <li>Choose the <b>Engine</b> and fill in <b>Host</b>, <b>Port</b>, <b>Database</b>, <b>User</b> and <b>Password</b>.</li>
+  <li>Click <b>Connect</b>. Askwell checks that it can read and that it cannot write, then says <b>Connected</b> and reads the list of tables in the background.</li>
+</ol>
+<p>The password is stored encrypted on your computer.</p>
+
+<h3>Asking about tables</h3>
+<p>Ask as you would about documents: "How many orders were placed in March?" Askwell decides whether your question is about documents or tables. For a table, it shows the result as a table, with the query it ran. Only a single read-only query is ever run. Anything else Askwell writes is refused before it reaches your database.</p>
