@@ -449,7 +449,50 @@ fn looks_like_runtime_down(stderr: &str) -> bool {
         || (lowered.contains("machine") && lowered.contains("not running"))
 }
 
+/// Whether a failed `compose up` is the Podman machine being stopped, which
+/// Askwell can fix itself. Windows and macOS run containers inside a Podman
+/// machine that nothing starts after the computer restarts; on Linux Podman
+/// needs no machine, and a runtime that is down there is not ours to start.
+fn should_start_machine(target_os: &str, stderr: &str) -> bool {
+    target_os != "linux" && looks_like_runtime_down(stderr)
+}
+
+/// `podman machine start`. Starting a machine that is already running fails
+/// harmlessly, and the caller retries `compose up` either way.
+fn start_machine(config: &SupervisorConfig) -> Result<(), String> {
+    log_supervisor_event("stack", "supervisor_machine_start", None);
+    match Command::new(&config.container_binary)
+        .args(["machine", "start"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+    {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 fn stack_up(config: &SupervisorConfig) -> Result<(), Cause> {
+    match stack_up_once(config) {
+        Err(Cause::RuntimeMissing { detail })
+            if should_start_machine(std::env::consts::OS, &detail) =>
+        {
+            match start_machine(config) {
+                Ok(()) => stack_up_once(config),
+                Err(machine_error) => Err(Cause::RuntimeMissing {
+                    detail: format!(
+                        "Askwell could not start Podman's machine ({machine_error}). Restart the computer, \
+                         then open Askwell again. ({detail})"
+                    ),
+                }),
+            }
+        }
+        other => other,
+    }
+}
+
+fn stack_up_once(config: &SupervisorConfig) -> Result<(), Cause> {
     if !config.install_root.join("compose.yaml").is_file() {
         return Err(Cause::StackDown {
             detail: format!(
@@ -1104,6 +1147,29 @@ mod tests {
         policy.reset();
         let delay = policy.record_failure("c").expect("reset should reopen the walk");
         assert_eq!(delay, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_stopped_podman_machine_is_started_on_windows_and_macos() {
+        // What a Windows PC reported after a restart: the machine was off,
+        // and nothing started it (the stack task only runs `compose up`).
+        let refused = "Cannot connect to Podman. Please verify your connection to the Linux system \
+            using `podman system connection list`, or try `podman machine init` and `podman machine \
+            start` to manage a new Linux VM\nError: unable to connect to Podman socket: failed to \
+            connect: dial tcp 127.0.0.1:49690: connectex: No connection could be made because the \
+            target machine actively refused it.";
+        assert!(should_start_machine("windows", refused));
+        assert!(should_start_machine("macos", refused));
+        assert!(should_start_machine(
+            "windows",
+            "Error: podman machine \"podman-machine-default\" is not running"
+        ));
+    }
+
+    #[test]
+    fn linux_has_no_machine_to_start_and_other_failures_are_not_the_machine() {
+        assert!(!should_start_machine("linux", "Cannot connect to Podman."));
+        assert!(!should_start_machine("windows", "service \"api\" failed to build"));
     }
 
     #[test]
