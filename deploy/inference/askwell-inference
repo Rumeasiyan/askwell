@@ -159,13 +159,29 @@ def load_env_file(path: Path) -> None:
 # where the schema is vector(1024), so they would not merely be poor for
 # retrieval — the database would refuse them.
 #
+# How many tokens the embedding and reranking servers take in one pass.
+#
+# Both encode a whole input at once: llama.cpp refuses any input longer than
+# its physical batch ("input (519 tokens) is too large to process. increase
+# the physical batch size (current batch size: 512)"), and 512 is its
+# default. A chunk is at most `CHUNK_HARD_MAX_CHARS` (2400) characters in
+# `api/src/askwell/chunk.py`, and bge-m3's tokenizer never gives more than one
+# token per character plus its two specials, so 4096 holds the largest chunk
+# with room for a reranking query. `api/tests/test_inference_acceleration_host.py`
+# fails if the chunk limit outgrows this. A real Windows user's PDF hit the
+# 512 default and could not be indexed (#925).
+ENCODER_BATCH_TOKENS = 4096
+_ENCODER_BATCH = (
+    "--batch-size", str(ENCODER_BATCH_TOKENS), "--ubatch-size", str(ENCODER_BATCH_TOKENS),
+)
+
 # Each is (role, model env var, port env var, default port, extra flags).
 ROLES = (
     ("generation", "ASKWELL_INFERENCE_MODEL_PATH", "ASKWELL_INFERENCE_UPSTREAM_PORT", "8080", ()),
     ("embedding", "ASKWELL_EMBEDDING_MODEL_PATH", "ASKWELL_EMBEDDING_PORT", "8081",
-     ("--embeddings", "--pooling", "mean")),
+     ("--embeddings", "--pooling", "mean", *_ENCODER_BATCH)),
     ("reranking", "ASKWELL_RERANKER_MODEL_PATH", "ASKWELL_RERANKER_PORT", "8082",
-     ("--reranking",)),
+     ("--reranking", *_ENCODER_BATCH)),
 )
 
 

@@ -143,6 +143,22 @@ def test_without_a_device_the_command_is_what_it_always_was(
     ]
 
 
+def test_the_encoders_take_the_largest_chunk_in_one_pass(host: ModuleType) -> None:
+    """A Windows user's PDF failed to index: a 519-token chunk against
+    llama.cpp's default 512-token batch (#925). The embedding and reranking
+    servers must hold the largest chunk `askwell.chunk` can make, one token
+    per character at worst, plus the specials and a reranking query."""
+    from askwell.chunk import CHUNK_HARD_MAX_CHARS
+
+    assert host.ENCODER_BATCH_TOKENS >= CHUNK_HARD_MAX_CHARS + 256
+    roles = {role[0]: role[4] for role in host.ROLES}
+    for name in ("embedding", "reranking"):
+        flags = list(roles[name])
+        for flag in ("--batch-size", "--ubatch-size"):
+            assert flags[flags.index(flag) + 1] == str(host.ENCODER_BATCH_TOKENS), (name, flag)
+    assert "--ubatch-size" not in roles["generation"]
+
+
 def test_with_a_device_the_layers_go_to_it(host: ModuleType, tmp_path: Path) -> None:
     """`auto`, not a number: llama.cpp's own fit decides how many layers the
     card's free memory holds, which is what makes a small card a partial

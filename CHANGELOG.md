@@ -4,6 +4,12 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.30 - 2026-10-05
+
+`Fixed`: a document with a long, dense passage can be indexed (#925).
+
+- **Such a document failed with "input … is too large to process".** Askwell's passages can run to 2,400 characters, but the models that read and rank them took at most 512 tokens at a time, so text dense with numbers or codes was refused and the whole file was not indexed. They now take the largest passage Askwell makes. This costs about 1.2 GB more memory while Askwell runs.
+
 ## 0.9.29 - 2026-10-05
 
 `Changed`: no more lines across the Ask screen.
