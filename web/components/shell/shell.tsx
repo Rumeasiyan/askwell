@@ -5,8 +5,8 @@ import { useEffect, type ReactNode } from "react";
 
 import { AddProvider } from "@/components/add/add-state";
 import { AskProvider } from "@/components/ask/ask-state";
-import { LeaderCanvas, LeaderProvider } from "@/components/ask/leader";
-import { ProvenanceMargin, useLiveLeaderPairs } from "@/components/ask/provenance-margin";
+import { LeaderProvider } from "@/components/ask/leader";
+import { ProvenanceMargin } from "@/components/ask/provenance-margin";
 import { DropTarget } from "@/components/add/drop-target";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { ClarificationsPrompt } from "@/components/shell/clarifications-prompt";
@@ -198,16 +198,8 @@ function ShellFrame({
       {/* Outside the scrolling columns: the drop affordance covers the window,
           because the window is what the user is dropping onto. */}
       <DropTarget />
-      {isAsk && <LiveLeaderCanvas />}
     </div>
   );
-}
-
-/** Feeds `LeaderCanvas` the live turn's own claim-to-card pairs — split out
- * so `ShellFrame` itself does not need to know `useAsk` exists. */
-function LiveLeaderCanvas() {
-  const { pairs, active } = useLiveLeaderPairs();
-  return <LeaderCanvas pairs={pairs} active={active} />;
 }
 
 function StatusDot({ status }: { status: ReturnType<typeof useStatus> }) {

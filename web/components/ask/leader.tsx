@@ -4,15 +4,15 @@ import {
   createContext,
   useCallback,
   useContext,
-  useEffect,
   useState,
   useSyncExternalStore,
   type ReactNode,
 } from "react";
 
 /**
- * The hairline leader joining a cited claim to its margin card.
- * `M1-CITE-FE-043`.
+ * The pairing between a cited claim and its margin card: hovering or
+ * focusing one raises the other. `M1-CITE-FE-043`. No line is drawn between
+ * them (docs/decisions.md, 2026-10-05: the hairline was removed).
  *
  * The claim and its card are siblings under `ShellFrame` (`shell.tsx`) —
  * `Turn` renders in the centre column, `ProvenanceMargin` in the right
@@ -179,101 +179,4 @@ export function useHoverHandlers(key: string): {
 export interface LeaderPair {
   claimKey: string;
   cardKey: string;
-}
-
-interface Line {
-  key: string;
-  x1: number;
-  y1: number;
-  x2: number;
-  y2: number;
-  raised: boolean;
-}
-
-/**
- * The overlay itself: one `--rule-strong` line per pair whose both ends are
- * currently registered. `active` keeps a short poll running only while the
- * live turn is still streaming — tokens reflow the claim spans continuously,
- * a mount/unmount-driven recompute alone would leave the line trailing
- * behind the text it is meant to point at.
- *
- * Below the three-column breakpoint the margin column is CSS-hidden
- * (`shell.tsx`), so a line here would point at a collapsed, zero-size node —
- * `hidden @5xl:block` hides the canvas itself rather than skipping pairs
- * whose card has no layout to measure (`M1-CITE-FE-044`).
- */
-export function LeaderCanvas({ pairs, active }: { pairs: LeaderPair[]; active: boolean }) {
-  const store = useLeaderStore();
-  const version = useSyncExternalStore(
-    store.subscribe,
-    () => store.version,
-    () => store.version,
-  );
-  const hovered = useHoveredKey();
-  const [lines, setLines] = useState<Line[]>([]);
-
-  useEffect(() => {
-    const recompute = (): void => {
-      const next: Line[] = [];
-      for (const { claimKey, cardKey } of pairs) {
-        const claimNode = store.claims.get(claimKey);
-        const cardNode = store.cards.get(cardKey);
-        if (!claimNode || !cardNode) continue;
-        const claimRect = claimNode.getBoundingClientRect();
-        const cardRect = cardNode.getBoundingClientRect();
-        next.push({
-          key: `${claimKey}->${cardKey}`,
-          x1: claimRect.right,
-          y1: claimRect.top + claimRect.height / 2,
-          x2: cardRect.left,
-          y2: cardRect.top + cardRect.height / 2,
-          raised: hovered !== null && (hovered === claimKey || hovered === cardKey),
-        });
-      }
-      // Raised line drawn last so it sits on top of any it overlaps — the
-      // ticket's own "overlapping leaders in a dense answer" edge case.
-      next.sort((a, b) => Number(a.raised) - Number(b.raised));
-      setLines(next);
-    };
-
-    recompute();
-    window.addEventListener("resize", recompute);
-    // Capture phase: an inner scroll container's `scroll` event does not
-    // bubble, but it does fire on ancestors during the capture phase, which
-    // is the only way a listener on `window` sees the centre column or the
-    // margin rail scrolling independently.
-    window.addEventListener("scroll", recompute, true);
-    const interval = active ? window.setInterval(recompute, 150) : undefined;
-
-    return () => {
-      window.removeEventListener("resize", recompute);
-      window.removeEventListener("scroll", recompute, true);
-      if (interval !== undefined) window.clearInterval(interval);
-    };
-    // `version` re-runs this after a node newly registers — a card that
-    // just mounted otherwise waits for the next resize/scroll to be found,
-    // and `hovered` changing must repaint immediately, not on the next poll.
-  }, [store, pairs, active, version, hovered]);
-
-  if (lines.length === 0) return null;
-
-  return (
-    <svg
-      aria-hidden
-      className="pointer-events-none fixed inset-0 z-40 hidden @5xl:block"
-      style={{ width: "100vw", height: "100vh" }}
-    >
-      {lines.map((line) => (
-        <line
-          key={line.key}
-          x1={line.x1}
-          y1={line.y1}
-          x2={line.x2}
-          y2={line.y2}
-          stroke={line.raised ? "var(--provenance)" : "var(--rule-strong)"}
-          strokeWidth={line.raised ? 2 : 1}
-        />
-      ))}
-    </svg>
-  );
 }

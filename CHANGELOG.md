@@ -4,6 +4,12 @@ Notable changes per released version. Newest first. Versions follow `AGENTS.md` 
 
 Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Security`.
 
+## 0.9.29 - 2026-10-05
+
+`Changed`: no more lines across the Ask screen.
+
+- **The lines drawn from each sentence of an answer to its source card are gone.** The cards stay on the right. Point at a sentence to highlight its card, or at a card to highlight its sentences.
+
 ## 0.9.28 - 2026-10-05
 
 `Fixed`: after Windows restarts, Askwell starts again by itself (#921).

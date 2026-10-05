@@ -4,6 +4,16 @@ Append-only. **Newest first.** Never edit an entry to change its meaning — if 
 
 **Bar for an entry:** something a competent person would later ask *"why is it like this?"* about. Architecture changes, dependency choices, resolved `docs/PRD.md` §11 questions, reversals. **Not** routine implementation choices — those are visible in the diff.
 
+## 2026-10-05 — The leader lines between claims and source cards are removed
+
+**Decision.** The Ask screen no longer draws a line from each cited claim to its card in the provenance margin. `LeaderCanvas` is deleted and `shell.tsx` no longer mounts it. The pairing itself stays: hovering or focusing a claim raises its card, and a card raises its claims (`leader.tsx`'s store, `useHoverHandlers`, `isRaised`).
+
+**Why.** The project owner, looking at the running product, asked for the lines to be removed. They criss-cross the screen as soon as an answer cites more than one card, and the cards already carry the document and page. The hover pairing was always the accessible half of the design (`M1-CITE-FE-044`) and keeps the claim-to-source link without the visual noise. This reverses part of `M1-CITE-FE-043` and `docs/ux/ask.md`'s leader line; `--rule-strong`'s "claim leader" meaning in `docs/ux/design-system.md` no longer has a user.
+
+**Consequences.** The user manual's Ask chapter describes the cards and hover instead of lines. Nothing else read the line positions.
+
+**Refs.** `web/components/ask/leader.tsx`, `web/components/shell/shell.tsx`, `docs/manual/chapters/04-ask.html`.
+
 ## 2026-10-05 — The user manual is HTML chapters built by host scripts, illustrated from a demo stack, and held to the UI by a test
 
 **Decision.** `docs/manual/`: one HTML fragment per user task in `chapters/`, a `manifest.json` naming each chapter's screenshots and UI anchors (routes, labels, ids), `AUTHORING.md` with the current-behaviour-only rule, and `manual.css` from the design tokens. `scripts/manual/build.mjs` assembles the committed single file `askwell-manual.html`, and with `--pdf` prints `build/askwell-manual.pdf` (ignored) through headless Chrome. `scripts/manual/shots.mjs` captures every screenshot from `scripts/manual/demo-stack.sh`, a separate Compose project (`askwell-manual`) with its own empty volumes, the fictional `eval/fixtures/corpus` in a demo home folder (`/tmp/anna`), web search unset as on an install, and the standard profile. `api/tests/test_manual.py`, in `scripts/dev.sh test`, fails when an anchor disappears from the source, a chapter or screenshot is missing or unlisted, prose carries a version, milestone or ticket reference, or the built HTML was not rebuilt. `scripts/dev.sh manual` and `manual-shots` run on the host.
